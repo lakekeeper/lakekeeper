@@ -20,7 +20,7 @@ use std::ops::Deref;
 pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
 // If this is increased, we need to modify namespace creation and deletion
 // to take care of the hierarchical structure.
-pub const MAX_NAMESPACE_DEPTH: i32 = 1;
+pub const MAX_NAMESPACE_DEPTH: i32 = 5;
 pub const NAMESPACE_ID_PROPERTY: &str = "namespace_id";
 
 #[async_trait::async_trait]
@@ -123,35 +123,64 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                &CatalogWarehouseAction::CanCreateNamespace,
-            )
-            .await?;
+        let namespace_parent = namespace.parent();
+
+        if namespace_parent.is_some() {
+            // Pre-check before fetching the parent namespace id
+            authorizer
+                .require_warehouse_action(
+                    &request_metadata,
+                    warehouse_id,
+                    &CatalogWarehouseAction::CanUse,
+                )
+                .await?;
+        }
+
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let parent_id = if let Some(namespace_parent) = namespace.parent() {
+            let parent_namespace_id =
+                C::namespace_to_id(warehouse_id, &namespace_parent, t.transaction()).await;
+            let parent_namespace_id = authorizer
+                .require_namespace_action(
+                    &request_metadata,
+                    warehouse_id,
+                    parent_namespace_id,
+                    &CatalogNamespaceAction::CanCreateNamespace,
+                )
+                .await?;
+            Some(parent_namespace_id)
+        } else {
+            authorizer
+                .require_warehouse_action(
+                    &request_metadata,
+                    warehouse_id,
+                    &CatalogWarehouseAction::CanCreateNamespace,
+                )
+                .await?;
+            None
+        };
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = NamespaceIdentUuid::default();
-
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         // Set location if not specified - validate location if specified
         set_namespace_location_property(&mut namespace_props, &warehouse, namespace_id)?;
+        remove_managed_namespace_properties(&mut namespace_props);
 
         let mut request = request;
         request.properties = Some(namespace_props.into());
 
         let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        let authz_parent = if let Some(parent_id) = parent_id {
+            NamespaceParent::Namespace(parent_id)
+        } else {
+            NamespaceParent::Warehouse(warehouse_id)
+        };
         authorizer
-            .create_namespace(
-                &request_metadata,
-                namespace_id,
-                NamespaceParent::Warehouse(warehouse_id),
-            )
+            .create_namespace(&request_metadata, namespace_id, authz_parent)
             .await?;
         t.commit().await?;
         Ok(r)
@@ -312,9 +341,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .map(validate_namespace_properties_keys)
             .transpose()?;
 
-        namespace_location_may_not_changed(&updates, &removals)?;
-        let updates = NamespaceProperties::try_from_maybe_props(updates.clone())
+        namespace_location_may_not_change(&updates, &removals)?;
+        let mut updates = NamespaceProperties::try_from_maybe_props(updates.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
+        remove_managed_namespace_properties(&mut updates);
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
         authorizer
@@ -385,15 +415,12 @@ where
 
 pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()> {
     if namespace.len() > MAX_NAMESPACE_DEPTH as usize {
-        return Err(ErrorModel::builder()
-            .code(StatusCode::BAD_REQUEST.into())
-            .message(format!(
-                "Namespace exceeds maximum depth of {MAX_NAMESPACE_DEPTH}",
-            ))
-            .r#type("NamespaceDepthExceeded".to_string())
-            .stack(vec![format!("Namespace: {namespace:?}")])
-            .build()
-            .into());
+        return Err(ErrorModel::bad_request(
+            format!("Namespace exceeds maximum depth of {MAX_NAMESPACE_DEPTH}",),
+            "NamespaceDepthExceeded".to_string(),
+            None,
+        )
+        .into());
     }
 
     if namespace.deref().iter().any(|s| s.contains('.')) {
@@ -417,6 +444,10 @@ pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()>
     }
 
     Ok(())
+}
+
+fn remove_managed_namespace_properties(namespace_props: &mut NamespaceProperties) {
+    namespace_props.remove_untyped(NAMESPACE_ID_PROPERTY);
 }
 
 fn set_namespace_location_property(
@@ -497,7 +528,7 @@ fn update_namespace_properties(
     )
 }
 
-fn namespace_location_may_not_changed(
+fn namespace_location_may_not_change(
     updates: &Option<HashMap<String, String>>,
     removals: &Option<Vec<String>>,
 ) -> Result<()> {

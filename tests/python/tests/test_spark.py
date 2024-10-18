@@ -179,7 +179,6 @@ def test_drop_table(spark, warehouse: conftest.Warehouse):
     spark.sql("DROP TABLE test_drop_table.my_table")
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table(("test_drop_table", "my_table"))
-        assert "NoSuchTableError" in str(e)
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
@@ -194,8 +193,9 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
 
     spark.sql("DROP TABLE test_drop_table_purge_spark.my_table PURGE;")
     with pytest.raises(Exception) as e:
-        spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table").toPandas()
-        assert "NoSuchTableError" in str(e)
+        warehouse.pyiceberg_catalog.load_table(
+            ("test_drop_table_purge_spark", "my_table")
+        )
 
 
 def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):
@@ -241,7 +241,8 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
     ).raise_for_status()
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
-        assert "NoSuchTableError" in str(e)
+
+    properties = table_0.properties
     if storage_config["storage-profile"]["type"] == "s3":
         # Gotta use the s3 creds here since the prefix no longer exists after deletion & at least minio will not allow
         # listing a location that doesn't exist with our downscoped cred
@@ -609,11 +610,9 @@ def test_cannot_create_table_at_same_location(
 
     with pytest.raises(Exception) as e:
         spark.sql(
-            f"CREATE TABLE {namespace.spark_name}.my_table_custom_location (my_ints INT) USING iceberg LOCATION '{custom_location}'"
+            f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}'"
         )
-        assert (
-                "Unexpected files in location, tabular locations have to be empty" in str(e)
-        )
+    assert "Location is already taken by another table or view" in str(e.value)
 
     # Write / read data
     spark.sql(
@@ -653,11 +652,11 @@ def test_cannot_create_table_at_sub_location(
 
     with pytest.raises(Exception) as e:
         spark.sql(
-            f"CREATE TABLE {namespace.spark_name}.my_table_custom_location (my_ints INT) USING iceberg LOCATION '{custom_location}/sub_location'"
+            f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}/sub_location'"
         )
-        assert (
-                "Unexpected files in location, tabular locations have to be empty" in str(e)
-        )
+    assert "Location is already taken by another table or view" in str(
+        e.value
+    )
 
     # Write / read data
     spark.sql(
@@ -688,7 +687,7 @@ def test_old_metadata_files_are_deleted(
         tbl_name = "old_metadata_files_are_deleted_no_cleanup"
         spark.sql(
             f"""
-            CREATE TABLE {namespace.spark_name}.{tbl_name} (my_ints INT) USING iceberg 
+            CREATE TABLE {namespace.spark_name}.{tbl_name} (my_ints INT) USING iceberg
             TBLPROPERTIES ('write.metadata.previous-versions-max'='2')
             """
         )
@@ -696,7 +695,7 @@ def test_old_metadata_files_are_deleted(
         tbl_name = "old_metadata_files_are_deleted_cleanup"
         spark.sql(
             f"""
-            CREATE TABLE {namespace.spark_name}.{tbl_name} (my_ints INT) USING iceberg 
+            CREATE TABLE {namespace.spark_name}.{tbl_name} (my_ints INT) USING iceberg
             TBLPROPERTIES ('write.metadata.previous-versions-max'='2', 'write.metadata.delete-after-commit.enabled'='true')
             """
         )
@@ -731,3 +730,31 @@ def test_old_metadata_files_are_deleted(
             assert n_files == 5
         else:
             assert n_files == 3
+
+
+def test_hierarchical_namespaces(
+    spark,
+    namespace: conftest.Namespace,
+):
+    nested_namespace = [namespace.spark_name, "nest1", "nest2", "nest3", "nest4"]
+
+    for i in range(2, len(nested_namespace)):
+        this_namespace = nested_namespace[:i]
+        with pytest.raises(Exception) as e:
+            spark.sql(
+                f"CREATE TABLE {'.'.join(this_namespace[:i])}.my_table as SELECT 1 as a"
+            )
+        spark.sql("CREATE NAMESPACE " + ".".join(this_namespace))
+        spark.sql(
+            f"CREATE TABLE {'.'.join(this_namespace[:i])}.my_table as SELECT 1 as a"
+        )
+        spark.sql("SELECT 1")
+        df = spark.sql(
+            "SELECT * FROM " + ".".join(this_namespace) + ".my_table"
+        ).toPandas()
+        assert df["a"].tolist() == [1]
+
+    # Max depth exceeded
+    with pytest.raises(Exception) as e:
+        spark.sql(f"CREATE NAMESPACE {'.'.join(nested_namespace)}.nest5")
+    assert "exceeds maximum depth" in str(e.value)

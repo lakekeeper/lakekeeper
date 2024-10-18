@@ -331,18 +331,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix)?;
-        // ToDo: Remove workaround when hierarchical namespaces are supported.
-        // It is important for now to throw a 404 if a table cannot be found,
+        // It is important to throw a 404 if a table cannot be found,
         // because spark might check if `table`.`branch` exists, which should return 404.
         // Only then will it treat it as a branch.
-        // 404 is returned by the logic in the remainder of this function. Here, we only
-        // need to make sure that we don't fail prematurely on longer namespaces.
         match validate_table_or_view_ident(&table) {
             Ok(()) => {}
-            Err(e) => {
-                if e.error.r#type != *"NamespaceDepthExceeded" {
-                    return Err(e);
+            Err(mut e) => {
+                if e.error.r#type == *"NamespaceDepthExceeded" {
+                    e.error.code = StatusCode::NOT_FOUND.into();
                 }
+                return Err(e);
             }
         }
 
@@ -422,13 +420,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         } = remove_table(&table_id, &table, &mut metadatas)?;
         require_not_staged(&metadata_location)?;
 
-        let table_location = Location::from_str(table_metadata.location()).map_err(|e| {
-            ErrorModel::internal(
-                format!("Invalid table location in DB: {e}"),
-                "InvalidViewLocation",
-                Some(Box::new(e)),
-            )
-        })?;
+        let table_location =
+            parse_location(&table_metadata.location, StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // ToDo: This is a small inefficiency: We fetch the secret even if it might
         // not be required based on the `data_access` parameter.
@@ -550,13 +543,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &requirements,
             updates,
         )?;
-        let new_table_location = Location::from_str(new_metadata.location()).map_err(|e| {
-            ErrorModel::internal(
-                format!("Invalid new table location: {e}"),
-                "InvalidTableLocation",
-                Some(Box::new(e)),
-            )
-        })?;
+        let new_table_location =
+            parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
         let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
         let new_metadata_location = previous_table.storage_profile.default_metadata_location(
             &new_table_location,
@@ -1063,13 +1051,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     expired_metadata_logs.extend(this_expired);
                 }
                 let new_table_location =
-                    Location::from_str(new_metadata.location()).map_err(|e| {
-                        ErrorModel::internal(
-                            format!("Invalid new table location: {e}"),
-                            "InvalidTableLocation",
-                            Some(Box::new(e)),
-                        )
-                    })?;
+                    parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
                 let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
                 let new_metadata_location =
                     previous_table.storage_profile.default_metadata_location(
@@ -1229,6 +1211,18 @@ pub(crate) fn determine_table_ident(
     Ok(identifier.clone())
 }
 
+pub(super) fn parse_location(location: &str, code: StatusCode) -> Result<Location> {
+    Location::from_str(location)
+        .map_err(|e| {
+            ErrorModel::builder()
+                .code(code.into())
+                .message(format!("Invalid location: {e}"))
+                .r#type("InvalidTableLocation".to_string())
+                .build()
+        })
+        .map_err(Into::into)
+}
+
 pub(super) fn determine_tabular_location(
     namespace: &GetNamespaceResponse,
     request_table_location: Option<String>,
@@ -1236,15 +1230,8 @@ pub(super) fn determine_tabular_location(
     storage_profile: &StorageProfile,
 ) -> Result<Location> {
     let request_table_location = request_table_location
-        .map(|l| Location::from_str(&l))
-        .transpose()
-        .map_err(|e| {
-            ErrorModel::bad_request(
-                format!("Specified table location is invalid: {e}"),
-                "InvalidTableLocation",
-                Some(Box::new(e)),
-            )
-        })?;
+        .map(|l| parse_location(&l, StatusCode::BAD_REQUEST))
+        .transpose()?;
 
     let mut location = if let Some(location) = request_table_location {
         if !storage_profile.is_allowed_location(&location) {
