@@ -1,11 +1,11 @@
 # Lakekeeper Catalog for Apache Iceberg
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Unittests](https://github.com/hansetag/iceberg-catalog/actions/workflows/unittests.yml/badge.svg)](https://github.com/hansetag/iceberg-catalog/actions/workflows/unittests.yml)
-[![Spark Integration](https://github.com/hansetag/iceberg-catalog/actions/workflows/spark-integration.yml/badge.svg)](https://github.com/hansetag/iceberg-catalog/actions/workflows/spark-integration.yml)
-[![Pyiceberg Integration](https://github.com/hansetag/iceberg-catalog/actions/workflows/pyiceberg-integration.yml/badge.svg)](https://github.com/hansetag/iceberg-catalog/actions/workflows/pyiceberg-integration.yml)
-[![Trino Integration](https://github.com/hansetag/iceberg-catalog/actions/workflows/trino-integration.yml/badge.svg)](https://github.com/hansetag/iceberg-catalog/actions/workflows/trino-integration.yml)
-[![Starrocks Integration](https://github.com/hansetag/iceberg-catalog/actions/workflows/starrocks-integration.yml/badge.svg)](https://github.com/hansetag/iceberg-catalog/actions/workflows/starrocks-integration.yml)
+[![Unittests](https://github.com/lakekeeper/lakekeeper/actions/workflows/unittests.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/unittests.yml)
+[![Spark Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/spark-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/spark-integration.yml)
+[![Pyiceberg Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/pyiceberg-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/pyiceberg-integration.yml)
+[![Trino Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/trino-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/trino-integration.yml)
+[![Starrocks Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/tip-catalog)](https://artifacthub.io/packages/helm/lakekeeper/lakekeeper)
 [![Docker on quay](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://quay.io/repository/lakekeeper/catalog?tab=tags&filter_tag_name=like%3Av)
 [![Helm Chart](https://img.shields.io/badge/Helm-0F1689?style=for-the-badge&logo=Helm&labelColor=0F1689)](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper)
@@ -15,14 +15,28 @@ This is Lakekeeper: A Rust-native implementation of the [Apache Iceberg](https:/
 
 If you have questions, feature requests or just want a chat, we are hanging around in [Discord](https://discord.gg/jkAGG8p93B)!
 
-# Current Status
+![Lakekeeper Overview](assets/Lakekeeper-Overview.png "Title")
+
+# Next Steps
 The catalog is evolving quickly. Especially internal rust APIs are not stable and subject to change. External REST APIs are kept as stable as possible, especially the `/catalog` API is stable as of today.
 
-Our next milestones are:
-* Release 0.4.0 early October including anticipated features such as GCP support, soft-deletions, security improvements and caching
-* Release 0.5.0 end of October / early November including authorization, UI and various management APIs. From this release onwards, we also consider management APIs stable.
-* Following Release 0.5.0 we will focus on docs and simplify usability
+* **Release 0.5.0**: Our biggest release yet is coming early November. It includes **Fine Grained Access Control**, a first simple **UI** and much more.
+* **Release 0.6.0**: With Release 0.6.0 we focus on stabilizing some of our most recent features and significantly improve our **Docs**. Docusaurus is coming!
 
+# Quickstart
+
+A Docker Container is available on [quay.io](https://quay.io/repository/hansetag/iceberg-catalog?tab=info).
+We have prepared a self-contained docker-compose file to demonstrate the usage of `spark` with our catalog:
+
+```sh
+git clone https://github.com/lakekeeper/lakekeeper.git
+cd iceberg-catalog/examples/self-contained
+docker compose up
+```
+
+Then open your browser and head to `localhost:8888`.
+
+For more information on deployment, please check the [User Guide](USER_GUIDE.md).
 
 # Scope and Features
 
@@ -36,27 +50,12 @@ We have started this implementation because we were missing customizability, sup
 - **Multi-Tenant capable**: A single deployment of our catalog can serve multiple projects - all with a single entrypoint. All Iceberg and Warehouse configurations are completely separated between Warehouses.
 - **Written in Rust**: Single 30Mb all-in-one binary - no JVM or Python env required.
 - **Storage Access Management**: Built-in S3-Signing that enables support for self-hosted as well as AWS S3 WITHOUT sharing S3 credentials with clients. We are also working on `vended-credentials`!
-- **Well-Tested**: Integration-tested with `spark` and `pyiceberg` (support for S3 with this catalog from pyiceberg 0.7.0)
+- **Well-Tested**: Integration-tested with `spark`, `pyiceberg`, `trino` and `starrocks`.
 - **High Available & Horizontally Scalable**: There is no local state - the catalog can be scaled horizontally and updated without downtimes.
 - **Openid provider integration**: Use your own identity provider to secure access to the APIs, just set `ICEBERG_REST__OPENID_PROVIDER_URI` and you are good to go.
 - **Fine Grained Access (FGA) (Coming soon):** Simple Role-Based access control is not enough for many rapidly evolving Data & Analytics initiatives. We are leveraging [OpenFGA](https://openfga.dev/) based on googles [Zanzibar-Paper](https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/) to implement authorization. If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `AuthZHandler` trait.
 
 Please find following an overview of currently supported features. Please also check the Issues if you are missing something.
-
-# Quickstart
-
-A Docker Container is available on [quay.io](https://quay.io/repository/hansetag/iceberg-catalog?tab=info).
-We have prepared a self-contained docker-compose file to demonstrate the usage of `spark` with our catalog:
-
-```sh
-git clone https://github.com/hansetag/iceberg-catalog.git
-cd iceberg-catalog/examples/self-contained
-docker compose up
-```
-
-Then open your browser and head to `localhost:8888`.
-
-For more information on deployment, please check the [User Guide](USER_GUIDE.md).
 
 # Status
 

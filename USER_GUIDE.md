@@ -12,7 +12,7 @@ We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://
 
 ## Deployment Standalone
 
-For single node deployments, you can also download the Binary from [Github Releases](https://github.com/hansetag/iceberg-catalog/releases).
+For single node deployments, you can also download the Binary from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases).
 
 A basic configuration via environment variables would look something like this:
 

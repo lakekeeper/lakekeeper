@@ -8,8 +8,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-homepage = "https://github.com/hansetag/iceberg-catalog"
-repository = "https://github.com/hansetag/iceberg-catalog.git"
+homepage = "https://github.com/lakekeeper/lakekeeper"
+repository = "https://github.com/lakekeeper/lakekeeper.git"
 rust-version = "1.75.0"
 license = "Apache-2.0"
 
