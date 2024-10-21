@@ -4,7 +4,7 @@
     unreachable_pub,
     clippy::pedantic
 )]
-#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
 
 pub mod api;
