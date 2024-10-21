@@ -15,7 +15,7 @@ This is Lakekeeper: A Rust-native implementation of the [Apache Iceberg](https:/
 
 If you have questions, feature requests or just want a chat, we are hanging around in [Discord](https://discord.gg/jkAGG8p93B)!
 
-![Lakekeeper Overview](assets/Lakekeeper-Overview.png){: width="50%"}
+<img src="https://github.com/lakekeeper/lakekeeper/raw/ct/lakekeeper-readme/assets/Lakekeeper-Overview.png" width="50">
 
 # Next Steps
 The catalog is evolving quickly. Especially internal rust APIs are not stable and subject to change. External REST APIs are kept as stable as possible, especially the `/catalog` API is stable as of today.
