@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO project (project_name, project_id)\n        VALUES ($1, $2)\n        RETURNING project_id\n        ",
+  "query": "\n        INSERT INTO project (project_name, project_id)\n        VALUES ($1, $2)\n        ON CONFLICT DO NOTHING\n        RETURNING project_id\n        ",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "9f23e7ec362c786e9524941bf385fa4d940951bf20555d77e727b523074f33ae"
+  "hash": "28268ee66edc1f897450ec98ca58a34f70cabbf2aba1eb604c5005c2f6f1acf7"
 }

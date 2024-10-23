@@ -1,5 +1,5 @@
 -- Factors project into a separate table.
--- Previously projects where nameless and only existed as part of a warehouse.
+-- Previously projects were nameless and only existed as part of a warehouse.
 create table project
 (
     project_id uuid primary key,
