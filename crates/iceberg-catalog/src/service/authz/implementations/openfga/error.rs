@@ -28,12 +28,12 @@ pub enum OpenFGAError {
     ListStoresFailed(tonic::Status),
     #[error("Reading tuples failed")]
     ReadFailed {
-        read_request: ReadRequest,
+        read_request: Box<ReadRequest>,
         source: tonic::Status,
     },
     #[error("Authorization check failed")]
     CheckFailed {
-        check_request: CheckRequest,
+        check_request: Box<CheckRequest>,
         source: tonic::Status,
     },
     #[error("Store creation failed: {0}")]

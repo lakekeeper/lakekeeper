@@ -755,7 +755,7 @@ where
             .read(read_request.clone())
             .await
             .map_err(|e| OpenFGAError::ReadFailed {
-                read_request,
+                read_request: Box::new(read_request),
                 source: e,
             })
             .map(tonic::Response::into_inner)
@@ -786,7 +786,7 @@ where
             .check(check_request.clone())
             .await
             .map_err(|source| OpenFGAError::CheckFailed {
-                check_request,
+                check_request: Box::new(check_request),
                 source,
             })
             .map(|response| response.get_ref().allowed)

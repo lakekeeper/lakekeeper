@@ -200,7 +200,7 @@ where
                 .read(read_request.clone())
                 .await
                 .map_err(|e| OpenFGAError::ReadFailed {
-                    read_request: read_request.clone(),
+                    read_request: Box::new(read_request.clone()),
                     source: e,
                 })?
                 .into_inner();
