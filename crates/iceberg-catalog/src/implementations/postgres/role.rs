@@ -309,7 +309,7 @@ mod test {
         assert_eq!(role.description, Some("Role 1 description".to_string()));
         assert_eq!(role.project_id, project_id);
 
-        let updated_role = update_role(
+        let _updated_role = update_role(
             role_id,
             "Role 2",
             Some("Role 2 description"),
@@ -341,7 +341,7 @@ mod test {
 
         t.commit().await.unwrap();
 
-        let role = create_role(
+        let _role = create_role(
             role_id,
             project_id,
             role_name,

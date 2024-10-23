@@ -18,8 +18,7 @@ impl DBErrorHandler for sqlx::Error {
                         message,
                         "EntityAlreadyExists".to_string(),
                         Some(Box::new(self)),
-                    )
-                    .into();
+                    );
                 }
                 match db.code().as_deref().map(|s| &s[..2]) {
                     // https://www.postgresql.org/docs/current/errcodes-appendix.html
