@@ -186,7 +186,7 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-            self, name: str, project_id: uuid.UUID, storage_config: dict
+        self, name: str, project_id: uuid.UUID, storage_config: dict
     ) -> uuid.UUID:
         """Create a warehouse in this server"""
 
@@ -311,7 +311,7 @@ def warehouse(server: Server, storage_config, project) -> Warehouse:
 
 
 @pytest.fixture(scope="function")
-def namespace(warehouse: Warehouse):
+def namespace(warehouse: Warehouse) -> Namespace:
     catalog = warehouse.pyiceberg_catalog
     namespace = (f"namespace-{uuid.uuid4()}",)
     catalog.create_namespace(namespace)
