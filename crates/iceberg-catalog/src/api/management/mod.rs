@@ -16,8 +16,8 @@ pub mod v1 {
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
     use crate::service::{
-        authz::Authorizer, storage::S3Flavor, Actor, Catalog, RoleId, SecretStore, State,
-        TabularIdentUuid, UserId,
+        authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
+        SecretStore, State, TabularIdentUuid, UserId,
     };
     use crate::ProjectIdent;
     use axum::extract::{Path, Query, State as AxumState};
@@ -68,14 +68,13 @@ pub mod v1 {
             create_user,
             create_warehouse,
             deactivate_warehouse,
-            delete_project,
+            delete_default_project,
             delete_project_by_id,
             delete_role,
             delete_user,
             delete_warehouse,
-            get_my_user,
-            get_my_user,
-            get_project,
+            whoami,
+            get_default_project,
             get_project_by_id,
             get_role,
             get_server_info,
@@ -86,7 +85,7 @@ pub mod v1 {
             list_roles,
             list_user,
             list_warehouses,
-            rename_project,
+            rename_default_project,
             rename_project_by_id,
             rename_warehouse,
             search_user,
@@ -120,6 +119,7 @@ pub mod v1 {
             ListUsersResponse,
             ListWarehousesRequest,
             ListWarehousesResponse,
+            ProjectIdent,
             RenameProjectRequest,
             RenameWarehouseRequest,
             Role,
@@ -213,12 +213,9 @@ pub mod v1 {
     ) -> Result<(StatusCode, Json<User>)> {
         ApiServer::<C, A, S>::create_user(api_context, metadata, request)
             .await
-            .map(|r| {
-                if r.created {
-                    (StatusCode::CREATED, Json(r.user))
-                } else {
-                    (StatusCode::OK, Json(r.user))
-                }
+            .map(|u| match u {
+                CreateOrUpdateUserResponse::Created(user) => (StatusCode::CREATED, Json(user)),
+                CreateOrUpdateUserResponse::Updated(user) => (StatusCode::OK, Json(user)),
             })
     }
 
@@ -245,6 +242,7 @@ pub mod v1 {
         get,
         tag = "user",
         path = "/management/v1/user/{id}",
+        params(("id" = Uuid,)),
         responses(
             (status = 200, description = "User details", body = [User]),
         )
@@ -259,16 +257,16 @@ pub mod v1 {
             .map(|user| (StatusCode::OK, Json(user)))
     }
 
-    /// Get my user
+    /// Get the currently authenticated user
     #[utoipa::path(
         get,
         tag = "user",
-        path = "/management/v1/my-user",
+        path = "/management/v1/whoami",
         responses(
             (status = 200, description = "User details", body = [User]),
         )
     )]
-    async fn get_my_user<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn whoami<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<User>)> {
@@ -295,6 +293,7 @@ pub mod v1 {
         put,
         tag = "user",
         path = "/management/v1/user/{id}",
+        params(("id" = Uuid,)),
         request_body = UpdateUserRequest,
         responses(
             (status = 200, description = "User details updated successfully"),
@@ -335,6 +334,7 @@ pub mod v1 {
         delete,
         tag = "user",
         path = "/management/v1/user/{id}",
+        params(("id" = Uuid,)),
         responses(
             (status = 200, description = "User deleted successfully"),
         )
@@ -415,6 +415,7 @@ pub mod v1 {
         delete,
         tag = "role",
         path = "/management/v1/role/{id}",
+        params(("id" = Uuid,)),
         responses(
             (status = 200, description = "Role deleted successfully"),
         )
@@ -434,6 +435,7 @@ pub mod v1 {
         get,
         tag = "role",
         path = "/management/v1/role/{id}",
+        params(("id" = Uuid,)),
         responses(
             (status = 200, description = "Role details", body = [Role]),
         )
@@ -453,6 +455,7 @@ pub mod v1 {
         post,
         tag = "role",
         path = "/management/v1/role/{id}",
+        params(("id" = Uuid,)),
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = [Role]),
@@ -528,12 +531,12 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "project",
-        path = "/management/v1/project",
+        path = "/management/v1/default-project",
         responses(
             (status = 200, description = "Project details", body = [GetProjectResponse])
         )
     )]
-    async fn get_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn get_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
@@ -544,7 +547,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "project",
-        path = "/management/v1/project/by-id/{project_id}",
+        path = "/management/v1/project/{project_id}",
+        params(("project_id" = Uuid,)),
         responses(
             (status = 200, description = "Project details", body = [GetProjectResponse])
         )
@@ -561,12 +565,12 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "project",
-        path = "/management/v1/project",
+        path = "/management/v1/default-project",
         responses(
             (status = 200, description = "Project deleted successfully")
         )
     )]
-    async fn delete_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn delete_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<()> {
@@ -577,7 +581,8 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "project",
-        path = "/management/v1/project/by-id/{project_id}",
+        path = "/management/v1/project/{project_id}",
+        params(("project_id" = Uuid,)),
         responses(
             (status = 200, description = "Project deleted successfully")
         )
@@ -594,12 +599,12 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/project/rename",
+        path = "/management/v1/default-project/rename",
         responses(
             (status = 200, description = "Project renamed successfully")
         )
     )]
-    async fn rename_project<C: Catalog, A: Authorizer, S: SecretStore>(
+    async fn rename_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameProjectRequest>,
@@ -611,7 +616,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/project/by-id/{project_id}/rename",
+        path = "/management/v1/project/{project_id}/rename",
+        params(("project_id" = Uuid,)),
         responses(
             (status = 200, description = "Project renamed successfully")
         )
@@ -881,7 +887,7 @@ pub mod v1 {
                 )
                 .route("/search/role", post(search_role))
                 // User management
-                .route("/my-user", get(get_my_user).post(create_user))
+                .route("/whoami", get(whoami).post(create_user))
                 .route("/search/user", post(search_user))
                 .route(
                     "/user/:user_id",
@@ -891,17 +897,16 @@ pub mod v1 {
                 // Create a new project
                 .route(
                     "/project",
-                    post(create_project).get(get_project).delete(delete_project),
+                    post(create_project)
+                        .get(get_default_project)
+                        .delete(delete_default_project),
                 )
-                .route("/project/rename", post(rename_project))
+                .route("/project/rename", post(rename_default_project))
                 .route(
-                    "/project/by-id/:project_id",
+                    "/project/:project_id",
                     get(get_project_by_id).delete(delete_project_by_id),
                 )
-                .route(
-                    "/project/by-id/:project_id/rename",
-                    post(rename_project_by_id),
-                )
+                .route("/project/:project_id/rename", post(rename_project_by_id))
                 // Create a new warehouse
                 .route("/warehouse", post(create_warehouse))
                 // List all projects
