@@ -51,9 +51,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &CatalogWarehouseAction::CanListNamespaces,
             )
             .await?;
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
 
-        let mut t = if let Some(parent) = parent {
-            let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
             authorizer
                 .require_namespace_action(
@@ -63,9 +63,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     &CatalogNamespaceAction::CanListNamespaces,
                 )
                 .await?;
-            t
-        } else {
-            C::Transaction::begin_read(state.v1_state.catalog).await?
         };
 
         // ------------------- BUSINESS LOGIC -------------------

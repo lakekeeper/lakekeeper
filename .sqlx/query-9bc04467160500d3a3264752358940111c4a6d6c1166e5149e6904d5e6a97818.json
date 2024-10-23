@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            warehouse_id\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        AND status = 'active'\n        ",
+  "query": "\n            SELECT\n                warehouse_id\n            FROM warehouse\n            WHERE warehouse_name = $1 AND project_id = $2\n            AND status = 'active'\n            ",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "cd797439d72dc51010f127c1580e4cd065c34da9e29cae775635b1b715808d89"
+  "hash": "9bc04467160500d3a3264752358940111c4a6d6c1166e5149e6904d5e6a97818"
 }

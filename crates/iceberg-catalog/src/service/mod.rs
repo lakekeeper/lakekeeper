@@ -108,7 +108,17 @@ pub enum WarehouseStatus {
 }
 
 #[derive(
-    Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Copy,
+    utoipa::ToSchema,
 )]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
