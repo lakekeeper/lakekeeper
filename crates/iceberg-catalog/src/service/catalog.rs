@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
-    Self: Sized + Send + Sync + Unpin,
+    Self: Sized + Send + Sync,
 {
     type Transaction<'a>: Send + Sync + 'a
     where

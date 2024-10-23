@@ -276,6 +276,107 @@ mod test {
     }
 
     #[sqlx::test]
+    async fn test_rename_role(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = Uuid::now_v7().into();
+        let role_id = RoleId::default();
+        let role_name = "Role 1";
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresCatalog::create_project(
+            project_id,
+            format!("Project {project_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+
+        t.commit().await.unwrap();
+
+        let role = create_role(
+            role_id,
+            project_id,
+            role_name,
+            Some("Role 1 description"),
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(role.name, "Role 1");
+        assert_eq!(role.description, Some("Role 1 description".to_string()));
+        assert_eq!(role.project_id, project_id);
+
+        let updated_role = update_role(
+            role_id,
+            "Role 2",
+            Some("Role 2 description"),
+            &state.write_pool(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_rename_role_conflicts(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = Uuid::now_v7().into();
+        let role_id = RoleId::default();
+        let role_name = "Role 1";
+        let role_name_2 = "Role 2";
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresCatalog::create_project(
+            project_id,
+            format!("Project {project_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+
+        t.commit().await.unwrap();
+
+        let role = create_role(
+            role_id,
+            project_id,
+            role_name,
+            Some("Role 1 description"),
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        let role = create_role(
+            RoleId::default(),
+            project_id,
+            role_name_2,
+            Some("Role 2 description"),
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(role.name, "Role 2");
+        assert_eq!(role.description, Some("Role 2 description".to_string()));
+        assert_eq!(role.project_id, project_id);
+
+        let err = update_role(
+            role_id,
+            role_name_2,
+            Some("Role 2 description"),
+            &state.write_pool(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.code, 409);
+    }
+
+    #[sqlx::test]
     async fn test_list_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project1_id = Uuid::now_v7().into();
