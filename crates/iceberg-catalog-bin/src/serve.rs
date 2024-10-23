@@ -34,7 +34,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     let validation_data = PostgresCatalog::get_server_info(catalog_state.clone()).await?;
     match validation_data {
         StartupValidationData::NotBootstrapped => {
-            tracing::info!("The catalog is not bootstrapped. Bootstrapping sets the initial administrator. Please run open the Web-UI after startup or call the bootstrap endpoint directly.");
+            tracing::info!("The catalog is not bootstrapped. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly.");
         }
         StartupValidationData::Bootstrapped {
             server_id,
