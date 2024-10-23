@@ -12,12 +12,31 @@ Implementation of the Iceberg REST Catalog server.
 """
 
 [features]
-all = ["sqlx-postgres", "s3-signer", "router", "nats"]
+all = [
+  "sqlx-postgres",
+  "s3-signer",
+  "router",
+  "nats",
+  "kafka",
+  "kafka-ssl-vendored",
+  "kafka-gssapi-vendored",
+  "kafka-zstd",
+  "kafka-libz-static",
+]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
 s3-signer = ["dep:aws-sigv4", "dep:aws-credential-types"]
 router = ["dep:tower-http"]
 nats = ["dep:async-nats"]
+kafka = ["dep:rdkafka"]
+kafka-ssl = ["rdkafka/ssl"]
+kafka-ssl-vendored = ["rdkafka/ssl-vendored"]
+kafka-libz = ["rdkafka/libz"]
+kafka-libz-static = ["rdkafka/libz-static"]
+kafka-gssapi = ["rdkafka/gssapi"]
+kafka-gssapi-vendored = ["rdkafka/gssapi-vendored"]
+kafka-zstd = ["rdkafka/zstd"]
+kafka-zstd-pkg-config = ["rdkafka/zstd-pkg-config"]
 default = ["sqlx-postgres", "s3-signer", "router"]
 
 [dependencies]
@@ -59,6 +78,7 @@ maplit = { workspace = true }
 percent-encoding = { workspace = true }
 rand = "0.8.5"
 reqwest = { workspace = true }
+rdkafka = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
@@ -69,9 +89,9 @@ time = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, optional = true, features = [
-    "default",
-    "request-id",
-    "util",
+  "default",
+  "request-id",
+  "util",
 ] }
 tracing = { workspace = true }
 url = { workspace = true }
