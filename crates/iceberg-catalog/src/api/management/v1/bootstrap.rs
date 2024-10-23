@@ -96,6 +96,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         if let Some(principal) = principal {
             let acting_user_id = principal.user_id();
+
             let (name, user_type, email) =
                 if let (Some(name), Some(user_type)) = (user_name.clone(), user_type) {
                     (name, user_type, None)

@@ -260,7 +260,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         )
         .await?;
 
-        if !user.created && !update_if_exists {
+        if !matches!(user, CreateOrUpdateUserResponse::Created(_)) && !update_if_exists {
             t.rollback().await?;
             return Err(ErrorModel::conflict(
                 format!("User with id {id} already exists."),
@@ -376,7 +376,8 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             t.transaction(),
         )
         .await?;
-        if user.created {
+
+        if matches!(user, CreateOrUpdateUserResponse::Created(_)) {
             t.rollback().await?;
             Err(ErrorModel::not_found("User does not exist", "UserNotFound", None).into())
         } else {

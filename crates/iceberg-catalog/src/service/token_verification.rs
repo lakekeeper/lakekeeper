@@ -302,8 +302,6 @@ struct Claims {
     )]
     email: Option<String>,
     upn: Option<String>,
-    // #[serde(flatten)]
-    // other: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]

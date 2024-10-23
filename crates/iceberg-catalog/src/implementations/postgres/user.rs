@@ -199,9 +199,10 @@ pub(crate) async fn create_or_update_user<
         updated_at: user.updated_at,
     };
 
-    Ok(CreateOrUpdateUserResponse {
-        created,
-        user: User::from(user),
+    Ok(if created {
+        CreateOrUpdateUserResponse::Created(User::from(user))
+    } else {
+        CreateOrUpdateUserResponse::Updated(User::from(user))
     })
 }
 

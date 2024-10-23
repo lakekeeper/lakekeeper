@@ -17,19 +17,19 @@ pub(super) async fn get_warehouse_by_name(
     catalog_state: CatalogState,
 ) -> Result<Option<WarehouseIdent>> {
     let warehouse_id = sqlx::query_scalar!(
-            r#"
+        r#"
             SELECT
                 warehouse_id
             FROM warehouse
             WHERE warehouse_name = $1 AND project_id = $2
             AND status = 'active'
             "#,
-            warehouse_name.to_string(),
-            *project_id
-        )
-        .fetch_optional(&catalog_state.read_pool())
-        .await
-        .map_err(map_select_warehouse_err)?;
+        warehouse_name.to_string(),
+        *project_id
+    )
+    .fetch_optional(&catalog_state.read_pool())
+    .await
+    .map_err(map_select_warehouse_err)?;
 
     Ok(warehouse_id.map(Into::into))
 }
@@ -39,18 +39,18 @@ pub(super) async fn get_config_for_warehouse(
     catalog_state: CatalogState,
 ) -> Result<Option<CatalogConfig>> {
     let storage_profile = sqlx::query_scalar!(
-            r#"
+        r#"
             SELECT
                 storage_profile as "storage_profile: Json<StorageProfile>"
             FROM warehouse
             WHERE warehouse_id = $1
             AND status = 'active'
             "#,
-            *warehouse_id
-        )
-        .fetch_optional(&catalog_state.read_pool())
-        .await
-        .map_err(map_select_warehouse_err)?;
+        *warehouse_id
+    )
+    .fetch_optional(&catalog_state.read_pool())
+    .await
+    .map_err(map_select_warehouse_err)?;
 
     Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id)))
 }
@@ -147,14 +147,14 @@ pub(crate) async fn create_project<'a>(
     )
     .fetch_optional(&mut **transaction)
     .await
-        .map_err(|e| e.into_error_model("Error creating Project".into()))?
+    .map_err(|e| e.into_error_model("Error creating Project".into()))?
     else {
         return Err(ErrorModel::conflict(
             "Project with this id already exists",
             "ProjectIdAlreadyExists",
             None,
         )
-            .into());
+        .into());
     };
 
     Ok(())

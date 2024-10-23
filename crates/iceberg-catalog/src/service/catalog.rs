@@ -143,9 +143,9 @@ pub struct TableCreation<'c> {
 }
 
 #[derive(Debug, Clone)]
-pub struct CreateOrUpdateUserResponse {
-    pub user: User,
-    pub created: bool,
+pub enum CreateOrUpdateUserResponse {
+    Created(User),
+    Updated(User),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
