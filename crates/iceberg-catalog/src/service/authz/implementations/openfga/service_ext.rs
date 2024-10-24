@@ -229,14 +229,14 @@ mod test {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_rs::{CreateStoreRequest, TupleKey, WriteAuthorizationModelRequest};
-        use tonic::transport::Channel;
 
         use super::super::*;
+        use crate::service::authz::implementations::openfga::client::ClientConnection;
         use crate::service::authz::implementations::openfga::{
-            client::new_unauthenticated_client, ModelVersion, AUTH_CONFIG,
+            new_client_from_config, ModelVersion,
         };
 
-        async fn new_store(client: &mut OpenFgaServiceClient<Channel>) -> String {
+        async fn new_store(client: &mut OpenFgaServiceClient<ClientConnection>) -> String {
             let store_name = uuid::Uuid::now_v7().to_string();
             client
                 .create_store(CreateStoreRequest {
@@ -248,7 +248,7 @@ mod test {
         }
 
         async fn create_model(
-            client: &mut OpenFgaServiceClient<Channel>,
+            client: &mut OpenFgaServiceClient<ClientConnection>,
             store_id: &str,
         ) -> String {
             let test_model = ModelVersion::active().get_model();
@@ -268,7 +268,7 @@ mod test {
 
         #[tokio::test]
         async fn test_get_store_by_name() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+            let mut client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
@@ -298,7 +298,7 @@ mod test {
         #[tokio::test]
         async fn test_get_store_by_name_pagination() {
             // Create 201 stores
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+            let mut client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
@@ -318,7 +318,7 @@ mod test {
 
         #[tokio::test]
         async fn test_get_auth_model_id() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+            let mut client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
@@ -344,7 +344,7 @@ mod test {
 
         #[tokio::test]
         async fn test_get_auth_model_id_not_found() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+            let mut client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
@@ -367,7 +367,7 @@ mod test {
 
         #[tokio::test]
         async fn test_read_all_pages() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+            let mut client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
@@ -422,7 +422,7 @@ mod test {
 
         #[tokio::test]
         async fn test_max_tuples_per_write() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+            let mut client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 

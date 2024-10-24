@@ -17,10 +17,7 @@ use axum::Router;
 use futures::{pin_mut, StreamExt};
 use openfga_rs::open_fga_service_client::OpenFgaServiceClient;
 use openfga_rs::{
-    tonic::{
-        self,
-        codegen::{Body, Bytes, StdError},
-    },
+    tonic::{self},
     CheckRequest, CheckRequestTupleKey, ConsistencyPreference, ListObjectsRequest, ReadRequest,
     ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition, WriteRequest,
     WriteRequestDeletes, WriteRequestWrites,
@@ -39,16 +36,17 @@ mod relations;
 mod service_ext;
 
 use crate::api::ApiContext;
+use crate::service::authz::implementations::openfga::client::ClientConnection;
 use crate::service::authz::implementations::openfga::relations::OpenFgaRelation;
 use crate::service::authz::implementations::FgaType;
 use crate::service::authz::{CatalogRoleAction, CatalogUserAction, NamespaceParent};
 use crate::service::health::Health;
 use crate::service::{AuthDetails, Catalog, RoleId, SecretStore, State, UserId, ViewIdentUuid};
+pub(crate) use client::new_client_from_config;
 pub use client::{
     new_authorizer_from_config, BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer,
     UnauthenticatedOpenFGAAuthorizer,
 };
-pub(crate) use client::{new_client_from_config, Clients};
 use entities::OpenFgaEntity;
 pub use error::{OpenFGAError, OpenFGAResult};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
@@ -73,35 +71,15 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Clone, Debug)]
-pub struct OpenFGAAuthorizer<T>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
-    pub(crate) client: OpenFgaServiceClient<T>,
+pub struct OpenFGAAuthorizer {
+    pub(crate) client: OpenFgaServiceClient<ClientConnection>,
     pub(crate) store_id: String,
     pub(crate) authorization_model_id: String,
     pub(crate) health: Arc<RwLock<Vec<Health>>>,
 }
 
 #[async_trait::async_trait]
-impl<T> Authorizer for OpenFGAAuthorizer<T>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+impl Authorizer for OpenFGAAuthorizer {
     fn api_doc() -> utoipa::openapi::OpenApi {
         api::ApiDoc::openapi()
     }
@@ -680,16 +658,7 @@ where
     }
 }
 
-impl<T: Sync + Send + Clone> OpenFGAAuthorizer<T>
-where
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+impl OpenFGAAuthorizer {
     /// A convenience wrapper around write.
     /// All writes happen in a single transaction.
     /// At most 100 writes can be performed in a single transaction.
@@ -1121,18 +1090,17 @@ mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use super::super::*;
-        use crate::service::authz::implementations::openfga::client::{
-            new_authorizer, new_unauthenticated_client,
-        };
+        use crate::service::authz::implementations::openfga::client::new_authorizer;
         use crate::service::RoleId;
         use http::StatusCode;
 
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 
-        async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer<tonic::transport::Channel> {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
+        async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
+            let mut client = new_client_from_config()
                 .await
-                .unwrap();
+                .expect("Failed to create OpenFGA client");
+
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
             migrate(&mut client, Some(store_name.clone()))
                 .await

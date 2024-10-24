@@ -66,6 +66,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         // ------------------- BUSINESS LOGIC -------------------
+
         let list_namespaces = C::list_namespaces(warehouse_id, &query, t.transaction()).await?;
         // ToDo: Better pagination with non-empty pages
         let namespaces: Vec<_> =

@@ -100,11 +100,6 @@ impl OpenFGAError {
         Self::known_status(&status).unwrap_or(OpenFGAError::ListAuthenticationModelsFailed(status))
     }
 
-    #[must_use]
-    pub(crate) fn bearer_token(invalid: InvalidMetadataValue) -> Self {
-        OpenFGAError::InvalidBearerToken(invalid)
-    }
-
     pub(crate) fn write_authorization_model(status: tonic::Status) -> Self {
         Self::known_status(&status).unwrap_or(OpenFGAError::WriteAuthorizationModelFailed(status))
     }

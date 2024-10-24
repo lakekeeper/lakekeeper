@@ -26,15 +26,11 @@ use crate::service::{
     ViewIdentUuid,
 };
 use crate::{ProjectIdent, WarehouseIdent, CONFIG};
-use axum::body::Bytes;
 use axum::extract::{Path, Query, State as AxumState};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use http::StatusCode;
-use openfga_rs::tonic::codegen::{Body, StdError};
-use openfga_rs::{
-    tonic, CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
-};
+use openfga_rs::{CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use strum::IntoEnumIterator;
@@ -266,22 +262,12 @@ struct UpdateRoleAssignmentsRequest {
             (status = 200, body = [GetRoleAccessResponse]),
     )
 )]
-async fn get_role_access_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
     Path(role_id): Path<RoleId>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetRoleAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetRoleAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &role_id.to_openfga()).await?;
@@ -304,21 +290,11 @@ where
             (status = 200, description = "Server Access", body = [GetServerAccessResponse]),
     )
 )]
-async fn get_server_access<T, C: Catalog, S: SecretStore>(
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+async fn get_server_access<C: Catalog, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetServerAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations = get_allowed_actions(authorizer, metadata.actor(), &OPENFGA_SERVER).await?;
 
@@ -340,21 +316,11 @@ where
             (status = 200, description = "Server Relations", body = [GetProjectAccessResponse]),
     )
 )]
-async fn get_project_access<T, C: Catalog, S: SecretStore>(
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+async fn get_project_access<C: Catalog, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetProjectAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
@@ -382,22 +348,12 @@ where
             (status = 200, description = "Server Relations", body = [GetProjectAccessResponse]),
     )
 )]
-async fn get_project_access_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     Path(project_id): Path<ProjectIdent>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetProjectAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &project_id.to_openfga()).await?;
@@ -420,22 +376,12 @@ where
             (status = 200, body = [GetNamespaceAccessResponse]),
     )
 )]
-async fn get_warehouse_access_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseIdent>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetWarehouseAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetWarehouseAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &warehouse_id.to_openfga()).await?;
@@ -458,22 +404,12 @@ where
             (status = 200, description = "Server Relations", body = [GetNamespaceAccessResponse]),
     )
 )]
-async fn get_namespace_access_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     Path(namespace_id): Path<NamespaceIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetNamespaceAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetNamespaceAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &namespace_id.to_openfga()).await?;
@@ -496,22 +432,12 @@ where
             (status = 200, description = "Server Relations", body = [GetTableAccessResponse]),
     )
 )]
-async fn get_table_access_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     Path(table_id): Path<TableIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetTableAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &table_id.to_openfga()).await?;
@@ -534,22 +460,12 @@ where
             (status = 200, body = [GetViewAccessResponse]),
     )
 )]
-async fn get_view_access_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     Path(view_id): Path<ViewIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(_query): Query<GetAccessQuery>,
-) -> Result<(StatusCode, Json<GetViewAccessResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &view_id.to_openfga()).await?;
@@ -572,22 +488,12 @@ where
             (status = 200, body = [GetRoleAssignmentsResponse]),
     )
 )]
-async fn get_role_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_role_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(role_id): Path<RoleId>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetRoleAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetRoleAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetRoleAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -614,21 +520,11 @@ where
             (status = 200, body = [GetServerAssignmentsResponse]),
     )
 )]
-async fn get_server_assignments<T, C: Catalog, S: SecretStore>(
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+async fn get_server_assignments<C: Catalog, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetServerAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -655,21 +551,11 @@ where
             (status = 200, body = [GetProjectAssignmentsResponse]),
     )
 )]
-async fn get_project_assignments<T, C: Catalog, S: SecretStore>(
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+async fn get_project_assignments<C: Catalog, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetProjectAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
@@ -704,22 +590,12 @@ where
             (status = 200, body = [GetProjectAssignmentsResponse]),
     )
 )]
-async fn get_project_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(project_id): Path<ProjectIdent>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetProjectAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -749,22 +625,12 @@ where
             (status = 200, body = [GetWarehouseAssignmentsResponse]),
     )
 )]
-async fn get_warehouse_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseIdent>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetWarehouseAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetWarehouseAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetWarehouseAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = warehouse_id.to_openfga();
     authorizer
@@ -788,22 +654,12 @@ where
             (status = 200, body = [GetNamespaceAssignmentsResponse]),
     )
 )]
-async fn get_namespace_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(namespace_id): Path<NamespaceIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetNamespaceAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetNamespaceAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetNamespaceAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = namespace_id.to_openfga();
     authorizer
@@ -831,22 +687,12 @@ where
             (status = 200, body = [GetTableAssignmentsResponse]),
     )
 )]
-async fn get_table_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(table_id): Path<TableIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetTableAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = table_id.to_openfga();
     authorizer
@@ -870,22 +716,12 @@ where
             (status = 200, body = [GetViewAssignmentsResponse]),
     )
 )]
-async fn get_view_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(view_id): Path<ViewIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetViewAssignmentsQuery>,
-) -> Result<(StatusCode, Json<GetViewAssignmentsResponse>)>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<(StatusCode, Json<GetViewAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let object = view_id.to_openfga();
     authorizer
@@ -909,21 +745,11 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_server_assignments<T, C: Catalog, S: SecretStore>(
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+async fn update_server_assignments<C: Catalog, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateServerAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -947,21 +773,11 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_project_assignments<T, C: Catalog, S: SecretStore>(
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+async fn update_project_assignments<C: Catalog, S: SecretStore>(
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
@@ -990,22 +806,12 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_project_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(project_id): Path<ProjectIdent>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1029,22 +835,12 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_warehouse_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseIdent>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1068,22 +864,12 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_namespace_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(namespace_id): Path<NamespaceIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1107,22 +893,12 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_table_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(table_id): Path<TableIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateTableAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1146,22 +922,12 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_view_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(view_id): Path<ViewIdentUuid>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateViewAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1185,22 +951,12 @@ where
             (status = 200, description = "Permissions updated successfully"),
     )
 )]
-async fn update_role_assignments_by_id<T, C: Catalog, S: SecretStore>(
+async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     Path(role_id): Path<RoleId>,
-    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateRoleAssignmentsRequest>,
-) -> Result<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<()> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1290,18 +1046,8 @@ where
 )]
 pub(crate) struct ApiDoc;
 
-pub(super) fn new_v1_router<T, C: Catalog, S: SecretStore>(
-) -> Router<ApiContext<State<OpenFGAAuthorizer<T>, C, S>>>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
+) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
         .route(
             "/permissions/role/by-id/{role_id}/access",
@@ -1363,21 +1109,11 @@ where
         )
 }
 
-async fn get_relations<T, RA: Assignment>(
-    authorizer: OpenFGAAuthorizer<T>,
+async fn get_relations<RA: Assignment>(
+    authorizer: OpenFGAAuthorizer,
     query_relations: Option<Vec<RA::Relation>>,
     object: &str,
-) -> Result<Vec<RA>>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> Result<Vec<RA>> {
     let relations = query_relations.unwrap_or_else(|| RA::Relation::iter().collect());
 
     let relations = relations.iter().map(|relation| async {
@@ -1404,21 +1140,11 @@ where
     Ok(relations)
 }
 
-async fn get_allowed_actions<T, A: ReducedRelation + IntoEnumIterator>(
-    authorizer: OpenFGAAuthorizer<T>,
+async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
+    authorizer: OpenFGAAuthorizer,
     actor: &Actor,
     object: &str,
-) -> OpenFGAResult<Vec<A>>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> OpenFGAResult<Vec<A>> {
     // Fail fast
     if actor == &Actor::Anonymous {
         return Err(OpenFGAError::AuthenticationRequired);
@@ -1448,23 +1174,13 @@ where
     Ok(actions)
 }
 
-async fn checked_write<T, RA: Assignment>(
-    authorizer: OpenFGAAuthorizer<T>,
+async fn checked_write<RA: Assignment>(
+    authorizer: OpenFGAAuthorizer,
     actor: &Actor,
     writes: Vec<RA>,
     deletes: Vec<RA>,
     object: &str,
-) -> OpenFGAResult<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> OpenFGAResult<()> {
     // Fail fast
     if actor == &Actor::Anonymous {
         return Err(OpenFGAError::AuthenticationRequired);

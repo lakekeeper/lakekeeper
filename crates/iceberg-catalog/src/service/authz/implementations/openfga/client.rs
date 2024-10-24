@@ -5,69 +5,67 @@ use super::{
 };
 use crate::service::authz::implementations::openfga::migration::get_auth_model_id;
 use crate::{service::authz::implementations::Authorizers, OpenFGAAuth};
-use http::HeaderMap;
-use openfga_rs::{
-    authentication::{BearerTokenInterceptor, ClientCredentialInterceptor},
-    tonic::{
-        self,
-        codegen::{Body, Bytes, StdError},
-        service::interceptor::InterceptedService,
-        transport::{Channel, Endpoint},
-    },
-};
+use http::{HeaderMap, Request};
+use openfga_rs::tonic::body::BoxBody;
+use openfga_rs::tonic::transport::{Channel, Endpoint};
 use openfga_rs::{
     authentication::{ClientCredentials, RefreshConfiguration},
     open_fga_service_client::OpenFgaServiceClient,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, str::FromStr};
+use std::task::{Context, Poll};
 use tokio::sync::RwLock;
+use tower::ServiceBuilder;
 
-pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer<Channel>;
-pub type BearerOpenFGAAuthorizer =
-    OpenFGAAuthorizer<InterceptedService<Channel, BearerTokenInterceptor>>;
-pub type ClientCredentialsOpenFGAAuthorizer =
-    OpenFGAAuthorizer<InterceptedService<Channel, ClientCredentialInterceptor>>;
+pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
+pub type BearerOpenFGAAuthorizer = OpenFGAAuthorizer;
+pub type ClientCredentialsOpenFGAAuthorizer = OpenFGAAuthorizer;
 
-pub(crate) enum Clients {
-    Unauthenticated(OpenFgaServiceClient<Channel>),
-    Bearer(OpenFgaServiceClient<InterceptedService<Channel, BearerTokenInterceptor>>),
-    ClientCredentials(
-        OpenFgaServiceClient<InterceptedService<Channel, ClientCredentialInterceptor>>,
-    ),
-}
-
-pub(crate) async fn new_client_from_config() -> OpenFGAResult<Clients> {
+pub(crate) async fn new_client_from_config(
+) -> OpenFGAResult<openfga_rs::open_fga_service_client::OpenFgaServiceClient<ClientConnection>> {
     let endpoint = AUTH_CONFIG.endpoint.clone();
-    match &AUTH_CONFIG.auth {
-        OpenFGAAuth::Anonymous => Ok(Clients::Unauthenticated(
-            new_unauthenticated_client(endpoint).await?,
-        )),
-        OpenFGAAuth::ApiKey(api_key) => Ok(Clients::Bearer(
-            new_bearer_auth_client(endpoint, api_key).await?,
-        )),
+
+    let either_or_option = match &AUTH_CONFIG.auth {
+        OpenFGAAuth::Anonymous => None,
         OpenFGAAuth::ClientCredentials {
             client_id,
             client_secret,
             token_endpoint,
-        } => Ok(Clients::ClientCredentials(
-            new_client_credentials_client(
-                endpoint,
-                ClientCredentials {
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    token_endpoint: token_endpoint.clone(),
-                    extra_headers: HeaderMap::default(),
-                    extra_oauth_params: HashMap::default(),
-                },
-                RefreshConfiguration {
-                    max_retry: 10,
-                    retry_interval: std::time::Duration::from_millis(5),
-                },
-            )
-            .await?,
+        } => Some(tower::util::Either::Left(
+            openfga_rs::tonic::service::interceptor(
+                openfga_rs::authentication::ClientCredentialInterceptor::new(
+                    ClientCredentials {
+                        client_id: client_id.clone(),
+                        client_secret: client_secret.clone(),
+                        token_endpoint: token_endpoint.clone(),
+                        extra_headers: HeaderMap::default(),
+                        extra_oauth_params: HashMap::default(),
+                    },
+                    RefreshConfiguration {
+                        max_retry: 10,
+                        retry_interval: std::time::Duration::from_millis(5),
+                    },
+                ),
+            ),
         )),
-    }
+        OpenFGAAuth::ApiKey(k) => Some(tower::util::Either::Right(
+            openfga_rs::tonic::service::interceptor(
+                openfga_rs::authentication::BearerTokenInterceptor::new(k.as_str()).expect(
+                    "BearerTokenInterceptor::new failed. This should not happen as the key is a valid ASCII string",
+                ),
+            ),
+        )),
+    };
+
+    let auth_layer = tower::util::option_layer(either_or_option);
+    let c = ClientService::new(
+        ServiceBuilder::new()
+            .layer(auth_layer)
+            .service(Endpoint::new(endpoint.to_string())?.connect_lazy()),
+    );
+
+    Ok(OpenFgaServiceClient::new(c))
 }
 
 /// Create a new `OpenFGA` authorizer from the configuration.
@@ -77,35 +75,16 @@ pub(crate) async fn new_client_from_config() -> OpenFGAResult<Clients> {
 /// - Store (name) not found (from crate Config)
 /// - Active Authorization model not found
 pub async fn new_authorizer_from_config() -> OpenFGAResult<Authorizers> {
-    match new_client_from_config().await? {
-        Clients::Unauthenticated(client) => Ok(Authorizers::OpenFGAUnauthorized(
-            new_authorizer(client, None).await?,
-        )),
-        Clients::Bearer(client) => Ok(Authorizers::OpenFGABearer(
-            new_authorizer(client, None).await?,
-        )),
-        Clients::ClientCredentials(client) => Ok(Authorizers::OpenFGAClientCreds(
-            new_authorizer(client, None).await?,
-        )),
-    }
+    let client = new_client_from_config().await?;
+    Ok(Authorizers::OpenFGA(new_authorizer(client, None).await?))
 }
 
 /// Create a new `OpenFGA` authorizer with the given client.
 /// This must be run after migration.
-pub(crate) async fn new_authorizer<T>(
-    mut client: OpenFgaServiceClient<T>,
+pub(crate) async fn new_authorizer(
+    mut client: OpenFgaServiceClient<ClientConnection>,
     store_name: Option<String>,
-) -> OpenFGAResult<OpenFGAAuthorizer<T>>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> OpenFGAResult<OpenFGAAuthorizer> {
     let active_model_version = ModelVersion::active();
     let store_name = store_name.unwrap_or_else(|| AUTH_CONFIG.store_name.clone());
 
@@ -125,53 +104,49 @@ where
     })
 }
 
-/// Create a new `OpenFGA` client without authentication.
-///
-/// Public use intended for testing only.
-///
-/// # Errors
-/// - Connection to `OpenFGA` fails
-pub(crate) async fn new_unauthenticated_client(
-    endpoint: url::Url,
-) -> OpenFGAResult<OpenFgaServiceClient<Channel>> {
-    let client = OpenFgaServiceClient::connect(endpoint.to_string()).await?;
+pub(crate) type ClientConnection = ClientService<
+    tower::util::Either<
+        tower::util::Either<
+            openfga_rs::tonic::service::interceptor::InterceptedService<
+                Channel,
+                openfga_rs::authentication::ClientCredentialInterceptor,
+            >,
+            openfga_rs::tonic::service::interceptor::InterceptedService<
+                Channel,
+                openfga_rs::authentication::BearerTokenInterceptor,
+            >,
+        >,
+        Channel,
+    >,
+>;
 
-    Ok(client)
+#[derive(Clone, Debug)]
+pub(crate) struct ClientService<S> {
+    inner: S,
 }
 
-/// Create a new `OpenFGA` client with bearer token.
-///
-/// # Errors
-/// - Connection to `OpenFGA` fails
-async fn new_bearer_auth_client(
-    endpoint: url::Url,
-    token: &str,
-) -> OpenFGAResult<OpenFgaServiceClient<InterceptedService<Channel, BearerTokenInterceptor>>> {
-    let channel = new_channel(endpoint).await?;
-    let interceptor = BearerTokenInterceptor::new(token).map_err(OpenFGAError::bearer_token)?;
-    let client = OpenFgaServiceClient::with_interceptor(channel, interceptor);
-    Ok(client)
+impl<S> ClientService<S>
+where
+    S: tower::Service<Request<BoxBody>>,
+{
+    fn new(inner: S) -> Self {
+        Self { inner }
+    }
 }
 
-/// Create a new `OpenFGA` client with client credentials.
-///
-/// # Errors
-/// - Client credentials cannot be exchanged for a token
-/// - Connection to `OpenFGA` fails
-async fn new_client_credentials_client(
-    endpoint: url::Url,
-    credentials: ClientCredentials,
-    refresh_config: RefreshConfiguration,
-) -> OpenFGAResult<OpenFgaServiceClient<InterceptedService<Channel, ClientCredentialInterceptor>>> {
-    let channel = new_channel(endpoint).await?;
-    let interceptor = ClientCredentialInterceptor::new_initialized(credentials, refresh_config)?;
-    let client: OpenFgaServiceClient<InterceptedService<Channel, ClientCredentialInterceptor>> =
-        OpenFgaServiceClient::with_interceptor(channel, interceptor);
-    Ok(client)
-}
+impl<S> tower::Service<Request<BoxBody>> for ClientService<S>
+where
+    S: tower::Service<Request<BoxBody>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
 
-async fn new_channel(endpoint: url::Url) -> OpenFGAResult<Channel> {
-    let channel = Endpoint::from_str(endpoint.as_ref())?.connect().await?;
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
 
-    Ok(channel)
+    fn call(&mut self, req: Request<BoxBody>) -> Self::Future {
+        self.inner.call(req)
+    }
 }
