@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use uuid::Uuid;
 
-use super::TableIdentUuid;
+use super::{TableIdentUuid, ViewIdentUuid};
 
 #[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq)]
 pub enum TabularIdentUuid {
@@ -24,6 +24,12 @@ impl TabularIdentUuid {
 impl From<TableIdentUuid> for TabularIdentUuid {
     fn from(ident: TableIdentUuid) -> Self {
         TabularIdentUuid::Table(ident.0)
+    }
+}
+
+impl From<ViewIdentUuid> for TabularIdentUuid {
+    fn from(ident: ViewIdentUuid) -> Self {
+        TabularIdentUuid::View(ident.0)
     }
 }
 

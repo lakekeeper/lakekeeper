@@ -1,4 +1,4 @@
-use crate::service::token_verification::AuthDetails;
+use crate::service::token_verification::{Actor, AuthDetails};
 use axum::middleware::Next;
 use axum::response::Response;
 use http::HeaderMap;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     pub request_id: Uuid,
-    pub auth_details: Option<AuthDetails>,
+    pub auth_details: AuthDetails,
 }
 
 impl RequestMetadata {
@@ -21,8 +21,13 @@ impl RequestMetadata {
     pub fn new_random() -> Self {
         Self {
             request_id: Uuid::new_v4(),
-            auth_details: None,
+            auth_details: AuthDetails::Unauthenticated,
         }
+    }
+
+    #[must_use]
+    pub fn actor(&self) -> &Actor {
+        self.auth_details.actor()
     }
 }
 #[cfg(feature = "router")]
@@ -44,7 +49,7 @@ pub(crate) async fn create_request_metadata_with_trace_id_fn(
         .unwrap_or(Uuid::now_v7());
     request.extensions_mut().insert(RequestMetadata {
         request_id,
-        auth_details: None,
+        auth_details: AuthDetails::Unauthenticated,
     });
     next.run(request).await
 }

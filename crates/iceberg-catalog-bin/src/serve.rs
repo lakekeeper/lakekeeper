@@ -1,15 +1,19 @@
 use anyhow::{anyhow, Error};
 use iceberg_catalog::api::router::{new_full_router, serve as service_serve};
 use iceberg_catalog::implementations::postgres::{CatalogState, PostgresCatalog, ReadWrite};
-use iceberg_catalog::implementations::{AllowAllAuthState, AllowAllAuthZHandler};
+use iceberg_catalog::implementations::Secrets;
+use iceberg_catalog::service::authz::implementations::{
+    get_default_authorizer_from_config, Authorizers,
+};
+use iceberg_catalog::service::authz::Authorizer;
 use iceberg_catalog::service::contract_verification::ContractVerifiers;
 use iceberg_catalog::service::event_publisher::{
     CloudEventBackend, CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
     NatsBackend,
 };
 use iceberg_catalog::service::health::ServiceHealthProvider;
-use iceberg_catalog::service::secrets::Secrets;
 use iceberg_catalog::service::token_verification::Verifier;
+use iceberg_catalog::service::{Catalog, StartupValidationData};
 use iceberg_catalog::{SecretBackend, CONFIG};
 use reqwest::Url;
 
@@ -26,6 +30,30 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
         iceberg_catalog::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
 
     let catalog_state = CatalogState::from_pools(read_pool.clone(), write_pool.clone());
+
+    let validation_data = PostgresCatalog::get_server_info(catalog_state.clone()).await?;
+    match validation_data {
+        StartupValidationData::NotBootstrapped => {
+            tracing::info!("The catalog is not bootstrapped. Bootstrapping sets the initial administrator. Please open the Web-UI after startup or call the bootstrap endpoint directly.");
+        }
+        StartupValidationData::Bootstrapped {
+            server_id,
+            terms_accepted,
+        } => {
+            if !terms_accepted {
+                return Err(anyhow!(
+                    "The terms of service have not been accepted on bootstrap."
+                ));
+            }
+            if server_id != CONFIG.server_id {
+                return Err(anyhow!(
+                    "The server ID during bootstrap {} does not match the server ID in the configuration {}.", server_id, CONFIG.server_id
+                ));
+            }
+            tracing::info!("The catalog is bootstrapped. Server ID: {server_id}");
+        }
+    }
+
     let secrets_state: Secrets = match CONFIG.secret_backend {
         SecretBackend::KV2 => iceberg_catalog::implementations::kv2::SecretsState::from_config(
             CONFIG
@@ -43,13 +71,13 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
             .into()
         }
     };
-    let auth_state = AllowAllAuthState;
+    let authorizer = get_default_authorizer_from_config().await?;
 
     let health_provider = ServiceHealthProvider::new(
         vec![
             ("catalog", Arc::new(catalog_state.clone())),
             ("secrets", Arc::new(secrets_state.clone())),
-            ("auth", Arc::new(auth_state.clone())),
+            ("auth", Arc::new(authorizer.clone())),
         ],
         CONFIG.health_check_frequency_seconds,
         CONFIG.health_check_jitter_millis,
@@ -67,6 +95,47 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
         )?),
     );
 
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+
+    match authorizer {
+        Authorizers::AllowAll(a) => {
+            serve_inner(
+                a,
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await?
+        }
+        Authorizers::OpenFGA(a) => {
+            serve_inner(
+                a,
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await?
+        }
+    }
+
+    Ok(())
+}
+
+/// Helper function to remove redundant code from matching different implementations
+async fn serve_inner<A: Authorizer>(
+    authorizer: A,
+    catalog_state: CatalogState,
+    secrets_state: Secrets,
+    queues: TaskQueues,
+    health_provider: ServiceHealthProvider,
+    listener: tokio::net::TcpListener,
+) -> Result<(), anyhow::Error> {
+    let (tx, rx) = tokio::sync::mpsc::channel(1000);
+
     let mut cloud_event_sinks = vec![];
 
     if let Some(nat_addr) = &CONFIG.nats_address {
@@ -77,25 +146,13 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
         tracing::info!("Running without publisher.");
     };
 
-    let (tx, rx) = tokio::sync::mpsc::channel(1000);
-
-    let x = CloudEventsPublisherBackgroundTask {
+    let x: CloudEventsPublisherBackgroundTask = CloudEventsPublisherBackgroundTask {
         source: rx,
         sinks: cloud_event_sinks,
     };
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
-    let metrics_layer =
-        iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?;
-
-    let router = new_full_router::<
-        PostgresCatalog,
-        PostgresCatalog,
-        AllowAllAuthZHandler,
-        AllowAllAuthZHandler,
-        Secrets,
-    >(
-        auth_state,
+    let router = new_full_router::<PostgresCatalog, _, Secrets>(
+        authorizer.clone(),
         catalog_state.clone(),
         secrets_state.clone(),
         queues.clone(),
@@ -107,7 +164,8 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
             None
         },
         health_provider,
-        Some(metrics_layer),
+        CONFIG.allow_origin.as_deref(),
+        Some(iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?),
     );
 
     let publisher_handle = tokio::task::spawn(async move {
@@ -118,7 +176,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     });
 
     tokio::select!(
-        _ = queues.spawn_queues::<PostgresCatalog, _>(catalog_state, secrets_state) => tracing::error!("Tabular queue task failed"),
+        _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
     );
 

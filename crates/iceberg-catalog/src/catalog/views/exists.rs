@@ -1,15 +1,13 @@
 use crate::api::iceberg::v1::ViewParameters;
-use crate::api::ApiContext;
+use crate::api::{set_not_found_status_code, ApiContext};
 use crate::catalog::require_warehouse_id;
 use crate::catalog::tables::validate_table_or_view_ident;
 use crate::request_metadata::RequestMetadata;
-use crate::service::auth::AuthZHandler;
+use crate::service::authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction};
 use crate::service::Result;
-use crate::service::{Catalog, SecretStore, State};
-use http::StatusCode;
-use iceberg_ext::catalog::rest::ErrorModel;
+use crate::service::{Catalog, SecretStore, State, Transaction};
 
-pub(crate) async fn view_exists<C: Catalog, A: AuthZHandler, S: SecretStore>(
+pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
@@ -19,30 +17,28 @@ pub(crate) async fn view_exists<C: Catalog, A: AuthZHandler, S: SecretStore>(
     let warehouse_id = require_warehouse_id(prefix.clone())?;
     validate_table_or_view_ident(&view)?;
 
-    let view_id = C::view_ident_to_id(warehouse_id, &view, state.v1_state.catalog.clone())
-        .await
-        .transpose();
-
-    A::check_view_exists(
-        &request_metadata,
-        warehouse_id,
-        Some(&view.namespace),
-        view_id.as_ref().and_then(|x| x.as_ref().ok()),
-        state.v1_state.auth,
-    )
-    .await?;
-
     // ------------------- BUSINESS LOGIC -------------------
-    if view_id.transpose()?.is_some() {
-        Ok(())
-    } else {
-        Err(ErrorModel::builder()
-            .code(StatusCode::NOT_FOUND.into())
-            .message(format!("Table does not exist in warehouse {warehouse_id}"))
-            .r#type("TableNotFound".to_string())
-            .build()
-            .into())
-    }
+    let authorizer = state.v1_state.authz;
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            &CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+    let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+    let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // Can't fail before authz
+
+    authorizer
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view_id,
+            &CatalogViewAction::CanGetMetadata,
+        )
+        .await
+        .map_err(set_not_found_status_code)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -101,6 +97,6 @@ mod test {
         .await
         .unwrap_err();
 
-        assert_eq!(non_exist.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(non_exist.error.code, http::StatusCode::NOT_FOUND);
     }
 }

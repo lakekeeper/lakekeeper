@@ -1,12 +1,13 @@
 use crate::api::management::v1::{DeleteKind, TabularType};
 use crate::api::Result;
 use crate::service::task_queue::{Task, TaskQueue};
-use crate::service::{Catalog, TableIdentUuid, Transaction};
+use crate::service::{Catalog, TableIdentUuid, Transaction, ViewIdentUuid};
 use crate::WarehouseIdent;
 use std::sync::Arc;
 
 use crate::service::task_queue::tabular_purge_queue::{TabularPurgeInput, TabularPurgeQueue};
 
+use crate::service::authz::Authorizer;
 use std::time::Duration;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -19,10 +20,11 @@ pub type ExpirationQueue = Arc<
 >;
 
 // TODO: concurrent workers
-pub async fn tabular_expiration_task<C: Catalog>(
+pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
     fetcher: ExpirationQueue,
     cleaner: TabularPurgeQueue,
     catalog_state: C::State,
+    authorizer: A,
 ) {
     loop {
         tokio::time::sleep(fetcher.config().poll_interval).await;
@@ -51,10 +53,11 @@ pub async fn tabular_expiration_task<C: Catalog>(
             task = ?expiration.task,
         );
 
-        instrumented_expire::<C>(
+        instrumented_expire::<C, A>(
             fetcher.clone(),
             &cleaner,
             catalog_state.clone(),
+            authorizer.clone(),
             &expiration,
         )
         .instrument(span.or_current())
@@ -62,13 +65,14 @@ pub async fn tabular_expiration_task<C: Catalog>(
     }
 }
 
-async fn instrumented_expire<C: Catalog>(
+async fn instrumented_expire<C: Catalog, A: Authorizer>(
     fetcher: ExpirationQueue,
     cleaner: &TabularPurgeQueue,
     catalog_state: C::State,
+    authorizer: A,
     expiration: &TabularExpirationTask,
 ) {
-    match handle_table::<C>(catalog_state.clone(), cleaner, expiration).await {
+    match handle_table::<C, A>(catalog_state.clone(), authorizer, cleaner, expiration).await {
         Ok(()) => {
             fetcher.retrying_record_success(&expiration.task).await;
             tracing::info!("Successfully handled table expiration");
@@ -82,13 +86,15 @@ async fn instrumented_expire<C: Catalog>(
     };
 }
 
-async fn handle_table<C>(
+async fn handle_table<C, A>(
     catalog_state: C::State,
+    authorizer: A,
     delete_queue: &TabularPurgeQueue,
     expiration: &TabularExpirationTask,
 ) -> Result<()>
 where
     C: Catalog,
+    A: Authorizer,
 {
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
@@ -98,24 +104,29 @@ where
         })?;
 
     let tabular_location = match expiration.tabular_type {
-        TabularType::Table => C::drop_table(
-            TableIdentUuid::from(expiration.tabular_id),
-            trx.transaction(),
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to drop table: {:?}", e);
-            e
-        })?,
-        TabularType::View => C::drop_view(
-            TableIdentUuid::from(expiration.tabular_id),
-            trx.transaction(),
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to drop table: {:?}", e);
-            e
-        })?,
+        TabularType::Table => {
+            let table_id = TableIdentUuid::from(expiration.tabular_id);
+            let location = C::drop_table(table_id, trx.transaction())
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to drop table: {:?}", e);
+                    e
+                })?;
+
+            authorizer.delete_table(table_id).await?;
+            location
+        }
+        TabularType::View => {
+            let view_id = ViewIdentUuid::from(expiration.tabular_id);
+            let location = C::drop_view(view_id, trx.transaction())
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to drop table: {:?}", e);
+                    e
+                })?;
+            authorizer.delete_view(view_id).await?;
+            location
+        }
     };
 
     if matches!(expiration.deletion_kind, DeleteKind::Purge) {

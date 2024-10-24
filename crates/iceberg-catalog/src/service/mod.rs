@@ -1,26 +1,29 @@
-pub mod auth;
+pub mod authz;
 mod catalog;
-pub mod config;
 pub mod contract_verification;
 pub mod event_publisher;
 pub mod health;
 pub mod secrets;
 pub mod storage;
-pub mod tabular_idents;
+mod tabular_idents;
 pub mod task_queue;
 pub mod token_verification;
 
 pub use catalog::{
     Catalog, CommitTableResponse, CreateNamespaceRequest, CreateNamespaceResponse,
-    CreateTableRequest, CreateTableResponse, DeletionDetails, DropFlags, GetNamespaceResponse,
-    GetProjectResponse, GetStorageConfigResponse, GetTableMetadataResponse, GetWarehouseResponse,
-    ListFlags, ListNamespacesQuery, ListNamespacesResponse, LoadTableResponse, NamespaceIdent,
-    Result, TableCommit, TableCreation, TableIdent, Transaction, UpdateNamespacePropertiesRequest,
+    CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse, DeletionDetails,
+    DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
+    GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
+    ListNamespacesResponse, LoadTableResponse, NamespaceIdent, Result, StartupValidationData,
+    TableCommit, TableCreation, TableIdent, Transaction, UpdateNamespacePropertiesRequest,
     UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
 };
 use std::ops::Deref;
+pub(crate) use tabular_idents::TabularIdentBorrowed;
+pub use tabular_idents::{TabularIdentOwned, TabularIdentUuid};
+pub use token_verification::{Actor, AuthDetails, UserId};
 
-use self::auth::AuthZHandler;
+use self::authz::Authorizer;
 use crate::api::iceberg::v1::Prefix;
 use crate::api::ThreadSafe as ServiceState;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
@@ -29,41 +32,13 @@ use crate::service::event_publisher::CloudEventsPublisher;
 use crate::service::task_queue::TaskQueues;
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-#[async_trait::async_trait]
-pub trait NamespaceIdentExt
-where
-    Self: Sized,
-{
-    fn parent(&self) -> Option<NamespaceIdent>;
-}
-
-#[async_trait::async_trait]
-impl NamespaceIdentExt for NamespaceIdent {
-    fn parent(&self) -> Option<Self> {
-        let mut name = self.clone().inner();
-        // The last element is the namespace itself, everything before it the parent.
-        name.pop();
-
-        if name.is_empty() {
-            None
-        } else {
-            match NamespaceIdent::from_vec(name) {
-                Ok(ident) => Some(ident),
-                // This only fails if the vector is empty,
-                // in which case there is no parent, so return None
-                Err(_e) => None,
-            }
-        }
-    }
-}
-
 // ---------------- State ----------------
-
 #[derive(Clone, Debug)]
-pub struct State<A: AuthZHandler, C: Catalog, S: SecretStore> {
-    pub auth: A::State,
+pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
+    pub authz: A,
     pub catalog: C::State,
     pub secrets: S,
     pub publisher: CloudEventsPublisher,
@@ -71,14 +46,190 @@ pub struct State<A: AuthZHandler, C: Catalog, S: SecretStore> {
     pub queues: TaskQueues,
 }
 
-impl<A: AuthZHandler, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}
+impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", sqlx(transparent))]
+#[serde(transparent)]
+pub struct ViewIdentUuid(uuid::Uuid);
+
+impl From<uuid::Uuid> for ViewIdentUuid {
+    fn from(uuid: uuid::Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", sqlx(transparent))]
+#[serde(transparent)]
 pub struct NamespaceIdentUuid(uuid::Uuid);
 
-impl std::default::Default for NamespaceIdentUuid {
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", sqlx(transparent))]
+#[serde(transparent)]
+pub struct TableIdentUuid(uuid::Uuid);
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", sqlx(transparent))]
+#[serde(transparent)]
+pub struct WarehouseIdent(pub(crate) uuid::Uuid);
+
+/// Status of a warehouse
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    strum_macros::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx",
+    sqlx(type_name = "warehouse_status", rename_all = "kebab-case")
+)]
+pub enum WarehouseStatus {
+    /// The warehouse is active and can be used
+    Active,
+    /// The warehouse is inactive and cannot be used.
+    Inactive,
+}
+
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Copy,
+    utoipa::ToSchema,
+)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", sqlx(transparent))]
+#[serde(transparent)]
+pub struct ProjectIdent(uuid::Uuid);
+
+impl Default for ProjectIdent {
     fn default() -> Self {
         Self(uuid::Uuid::now_v7())
+    }
+}
+impl From<ProjectIdent> for uuid::Uuid {
+    fn from(ident: ProjectIdent) -> Self {
+        ident.0
+    }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[serde(transparent)]
+pub struct RoleId(uuid::Uuid);
+
+impl<'de> serde::Deserialize<'de> for RoleId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<RoleId, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        RoleId::from_str(&s).map_err(|e| serde::de::Error::custom(e.error.message))
+    }
+}
+
+impl RoleId {
+    #[must_use]
+    pub fn new(id: uuid::Uuid) -> Self {
+        Self(id)
+    }
+}
+
+impl Default for RoleId {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl FromStr for RoleId {
+    type Err = IcebergErrorResponse;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(RoleId(uuid::Uuid::from_str(s).map_err(|e| {
+            ErrorModel::builder()
+                .code(StatusCode::BAD_REQUEST.into())
+                .message("Provided role id is not a valid UUID".to_string())
+                .r#type("RoleIDIsNotUUID".to_string())
+                .source(Some(Box::new(e)))
+                .build()
+        })?))
+    }
+}
+
+impl std::fmt::Display for RoleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Deref for RoleId {
+    type Target = uuid::Uuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<RoleId> for uuid::Uuid {
+    fn from(ident: RoleId) -> Self {
+        ident.0
+    }
+}
+
+impl Deref for ViewIdentUuid {
+    type Target = uuid::Uuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Default for NamespaceIdentUuid {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl std::fmt::Display for ViewIdentUuid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for ViewIdentUuid {
+    type Err = IcebergErrorResponse;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(ViewIdentUuid(uuid::Uuid::from_str(s).map_err(|e| {
+            ErrorModel::builder()
+                .code(StatusCode::BAD_REQUEST.into())
+                .message("Provided view id is not a valid UUID".to_string())
+                .r#type("ViewIDIsNotUUID".to_string())
+                .source(Some(Box::new(e)))
+                .build()
+        })?))
     }
 }
 
@@ -119,10 +270,13 @@ impl From<uuid::Uuid> for NamespaceIdentUuid {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
-pub struct TableIdentUuid(uuid::Uuid);
+impl From<&uuid::Uuid> for NamespaceIdentUuid {
+    fn from(uuid: &uuid::Uuid) -> Self {
+        Self(*uuid)
+    }
+}
 
-impl std::default::Default for TableIdentUuid {
+impl Default for TableIdentUuid {
     fn default() -> Self {
         Self(uuid::Uuid::now_v7())
     }
@@ -170,11 +324,6 @@ impl From<TableIdentUuid> for uuid::Uuid {
 }
 
 // ---------------- Identifier ----------------
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
-#[cfg_attr(feature = "sqlx", sqlx(transparent))]
-// Is UUID here too strict?
-pub struct ProjectIdent(uuid::Uuid);
 
 impl Deref for ProjectIdent {
     type Target = uuid::Uuid;
@@ -204,40 +353,6 @@ impl FromStr for ProjectIdent {
         })?))
     }
 }
-
-/// Status of a warehouse
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    strum_macros::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    utoipa::ToSchema,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "sqlx",
-    sqlx(type_name = "warehouse_status", rename_all = "kebab-case")
-)]
-pub enum WarehouseStatus {
-    /// The warehouse is active and can be used
-    Active,
-    /// The warehouse is inactive and cannot be used.
-    Inactive,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
-#[cfg_attr(feature = "sqlx", sqlx(transparent))]
-pub struct WarehouseIdent(pub(crate) uuid::Uuid);
 
 impl WarehouseIdent {
     #[must_use]

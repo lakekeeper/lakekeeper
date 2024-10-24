@@ -1,7 +1,7 @@
 use crate::api::Result;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::view::{ViewFormatVersion, ViewRepresentationType};
-use crate::service::{TableIdentUuid, ViewMetadataWithLocation};
+use crate::service::{ViewIdentUuid, ViewMetadataWithLocation};
 use chrono::{DateTime, Utc};
 use iceberg::spec::{
     Schema, SqlViewRepresentation, ViewMetadata, ViewRepresentation, ViewRepresentations,
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub(crate) async fn load_view(
-    view_id: TableIdentUuid,
+    view_id: ViewIdentUuid,
     include_deleted: bool,
     conn: &mut PgConnection,
 ) -> Result<ViewMetadataWithLocation> {

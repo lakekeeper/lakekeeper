@@ -26,7 +26,6 @@ use url::{Host, Url};
 use veil::Redact;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[schema(rename_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
 pub struct AzdlsProfile {
     /// Name of the azdls filesystem, in blobstorage also known as container.
@@ -478,7 +477,6 @@ impl From<AzdlsLocation> for Location {
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
-#[schema(rename_all = "kebab-case")]
 pub enum AzCredential {
     #[serde(rename_all = "kebab-case")]
     ClientCredentials {

@@ -1,20 +1,24 @@
+use super::authz::TableUuid;
 use super::{
-    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, TableIdentUuid, WarehouseIdent,
-    WarehouseStatus,
+    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid, UserId,
+    ViewIdentUuid, WarehouseIdent, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
-    CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse,
-    NamespaceIdent, Result, TableIdent, UpdateNamespacePropertiesRequest,
-    UpdateNamespacePropertiesResponse,
+    CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
+    TableIdent, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
 use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
 use crate::service::health::HealthExt;
 use crate::SecretIdent;
 
+use crate::api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse};
+use crate::api::management::v1::user::{
+    ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType,
+};
 use crate::api::management::v1::warehouse::TabularDeleteProfile;
 use crate::service::tabular_idents::{TabularIdentOwned, TabularIdentUuid};
 use iceberg::spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec, ViewMetadata};
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::configs::Location;
 use std::collections::{HashMap, HashSet};
@@ -22,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 #[async_trait::async_trait]
 pub trait Transaction<D>
 where
-    Self: Sized + Send + Sync + Unpin,
+    Self: Sized + Send + Sync,
 {
     type Transaction<'a>: Send + Sync + 'a
     where
@@ -48,6 +52,12 @@ pub struct GetNamespaceResponse {
     pub properties: Option<std::collections::HashMap<String, String>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListNamespacesResponse {
+    pub next_page_token: Option<String>,
+    pub namespaces: HashMap<NamespaceIdentUuid, NamespaceIdent>,
+}
+
 #[derive(Debug)]
 pub struct CreateTableResponse {
     pub table_metadata: TableMetadata,
@@ -67,11 +77,18 @@ pub struct LoadTableResponse {
 pub struct GetTableMetadataResponse {
     pub table: TableIdent,
     pub table_id: TableIdentUuid,
+    pub namespace_id: NamespaceIdentUuid,
     pub warehouse_id: WarehouseIdent,
     pub location: String,
     pub metadata_location: Option<String>,
     pub storage_secret_ident: Option<SecretIdent>,
     pub storage_profile: StorageProfile,
+}
+
+impl TableUuid for GetTableMetadataResponse {
+    fn table_uuid(&self) -> TableIdentUuid {
+        self.table_id
+    }
 }
 
 #[derive(Debug)]
@@ -125,6 +142,25 @@ pub struct TableCreation<'c> {
     pub(crate) metadata_location: Option<&'c Location>,
 }
 
+#[derive(Debug, Clone)]
+pub enum CreateOrUpdateUserResponse {
+    Created(User),
+    Updated(User),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupValidationData {
+    /// Catalog is not bootstrapped
+    NotBootstrapped,
+    /// Catalog is bootstrapped
+    Bootstrapped {
+        /// Server ID of the catalog at the time of bootstrapping
+        server_id: uuid::Uuid,
+        /// Whether the terms have been accepted
+        terms_accepted: bool,
+    },
+}
+
 #[async_trait::async_trait]
 pub trait Catalog
 where
@@ -133,11 +169,76 @@ where
     type Transaction: Transaction<Self::State>;
     type State: Clone + Send + Sync + 'static + HealthExt;
 
+    /// Get data required for startup validations and server info endpoint
+    async fn get_server_info(
+        catalog_state: Self::State,
+    ) -> std::result::Result<StartupValidationData, ErrorModel>;
+
+    /// Bootstrap the catalog.
+    /// Use this hook to store the current `CONFIG.server_id`.
+    /// Must not update anything if the catalog is already bootstrapped.
+    /// If bootstrapped succeeded, return Ok(true).
+    /// If the catalog is already bootstrapped, return Ok(false).
+    async fn bootstrap<'a>(
+        terms_accepted: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<bool>;
+
+    // Should only return a warehouse if the warehouse is active.
+    async fn get_warehouse_by_name(
+        warehouse_name: &str,
+        project_id: ProjectIdent,
+        catalog_state: Self::State,
+    ) -> Result<Option<WarehouseIdent>>;
+
+    /// Wrapper around get_warehouse_by_name that returns
+    /// not found error if the warehouse does not exist.
+    async fn require_warehouse_by_name(
+        warehouse_name: &str,
+        project_id: ProjectIdent,
+        catalog_state: Self::State,
+    ) -> Result<WarehouseIdent> {
+        Self::get_warehouse_by_name(warehouse_name, project_id, catalog_state)
+            .await?
+            .ok_or(
+                ErrorModel::not_found(
+                    format!("Warehouse {warehouse_name} not found"),
+                    "WarehouseNotFound",
+                    None,
+                )
+                .into(),
+            )
+    }
+
+    // Should only return a warehouse if the warehouse is active.
+    async fn get_config_for_warehouse(
+        warehouse_id: WarehouseIdent,
+        catalog_state: Self::State,
+    ) -> Result<Option<CatalogConfig>>;
+
+    /// Wrapper around get_config_for_warehouse that returns
+    /// not found error if the warehouse does not exist.
+    async fn require_config_for_warehouse(
+        warehouse_id: WarehouseIdent,
+        catalog_state: Self::State,
+    ) -> Result<CatalogConfig> {
+        Self::get_config_for_warehouse(warehouse_id, catalog_state)
+            .await?
+            .ok_or(
+                ErrorModel::not_found(
+                    format!("Warehouse {warehouse_id} not found"),
+                    "WarehouseNotFound",
+                    None,
+                )
+                .into(),
+            )
+    }
+
     // Should only return namespaces if the warehouse is active.
-    async fn list_namespaces(
+    async fn list_namespaces<'a>(
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<ListNamespacesResponse>;
 
     async fn create_namespace<'a>(
@@ -150,7 +251,7 @@ where
     // Should only return a namespace if the warehouse is active.
     async fn get_namespace<'a>(
         warehouse_id: WarehouseIdent,
-        namespace: &NamespaceIdent,
+        namespace_id: NamespaceIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<GetNamespaceResponse>;
 
@@ -159,15 +260,15 @@ where
     ///
     /// We use this function also to handle the `namespace_exists` endpoint.
     /// Also return Ok(false) if the warehouse is not active.
-    async fn namespace_ident_to_id(
+    async fn namespace_to_id<'a>(
         warehouse_id: WarehouseIdent,
         namespace: &NamespaceIdent,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<NamespaceIdentUuid>>;
 
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
-        namespace: &NamespaceIdent,
+        namespace_id: NamespaceIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
 
@@ -177,7 +278,7 @@ where
     /// be persisted as-is in the catalog.
     async fn update_namespace_properties<'a>(
         warehouse_id: WarehouseIdent,
-        namespace: &NamespaceIdent,
+        namespace_id: NamespaceIdentUuid,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
@@ -187,11 +288,11 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<CreateTableResponse>;
 
-    async fn list_tables(
+    async fn list_tables<'a>(
         warehouse_id: WarehouseIdent,
         namespace: &NamespaceIdent,
         list_flags: ListFlags,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>>;
 
@@ -201,11 +302,11 @@ where
     ///
     /// We use this function also to handle the `table_exists` endpoint.
     /// Also return Ok(None) if the warehouse is not active.
-    async fn table_ident_to_id(
+    async fn table_to_id<'a>(
         warehouse_id: WarehouseIdent,
         table: &TableIdent,
         list_flags: ListFlags,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<TableIdentUuid>>;
 
     /// Same as `table_ident_to_id`, but for multiple tables.
@@ -229,20 +330,22 @@ where
     /// Get table metadata by table id.
     /// If include_staged is true, also return staged tables,
     /// i.e. tables with no metadata file yet.
+    /// Return Ok(None) if the table does not exist.
     async fn get_table_metadata_by_id(
         warehouse_id: WarehouseIdent,
         table: TableIdentUuid,
         list_flags: ListFlags,
         catalog_state: Self::State,
-    ) -> Result<GetTableMetadataResponse>;
+    ) -> Result<Option<GetTableMetadataResponse>>;
 
     /// Get table metadata by location.
+    /// Return Ok(None) if the table does not exist.
     async fn get_table_metadata_by_s3_location(
         warehouse_id: WarehouseIdent,
         location: &Location,
         list_flags: ListFlags,
         catalog_state: Self::State,
-    ) -> Result<GetTableMetadataResponse>;
+    ) -> Result<Option<GetTableMetadataResponse>>;
 
     /// Rename a table. Tables may be moved across namespaces.
     async fn rename_table<'a>(
@@ -276,6 +379,71 @@ where
         commits: impl IntoIterator<Item = TableCommit> + Send,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
+
+    // ---------------- Role Management API ----------------
+    async fn create_role<'a>(
+        role_id: RoleId,
+        project_id: ProjectIdent,
+        role_name: &str,
+        description: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Role>;
+
+    /// Return Ok(None) if the role does not exist.
+    async fn update_role<'a>(
+        role_id: RoleId,
+        role_name: &str,
+        description: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<Role>>;
+
+    async fn list_roles<'a>(
+        filter_project_id: Option<ProjectIdent>,
+        filter_role_id: Option<Vec<RoleId>>,
+        filter_name: Option<String>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesResponse>;
+
+    /// Return Ok(None) if the role does not exist.
+    async fn delete_role<'a>(
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<()>>;
+
+    async fn search_role(
+        search_term: &str,
+        catalog_state: Self::State,
+    ) -> Result<SearchRoleResponse>;
+
+    // ---------------- User Management API ----------------
+    async fn create_or_update_user<'a>(
+        user_id: &UserId,
+        name: &str,
+        // If None, set the email to None.
+        email: Option<&str>,
+        last_updated_with: UserLastUpdatedWith,
+        user_type: UserType,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<CreateOrUpdateUserResponse>;
+
+    async fn search_user(
+        search_term: &str,
+        catalog_state: Self::State,
+    ) -> Result<SearchUserResponse>;
+
+    /// Return Ok(vec[]) if the user does not exist.
+    async fn list_user(
+        filter_user_id: Option<Vec<UserId>>,
+        filter_name: Option<String>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListUsersResponse>;
+
+    async fn delete_user<'a>(
+        user_id: UserId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<()>>;
 
     // ---------------- Warehouse Management API ----------------
 
@@ -322,9 +490,6 @@ where
         // If None, return only active warehouses
         // If Some, return only warehouses with any of the statuses in the set
         include_inactive: Option<Vec<WarehouseStatus>>,
-        // If None, return all warehouses in the project
-        // If Some, return only the warehouses in the set
-        warehouse_id_filter: Option<&HashSet<WarehouseIdent>>,
         catalog_state: Self::State,
     ) -> Result<Vec<GetWarehouseResponse>>;
 
@@ -391,11 +556,11 @@ where
     ///
     /// We use this function also to handle the `view_exists` endpoint.
     /// Also return Ok(None) if the warehouse is not active.
-    async fn view_ident_to_id(
+    async fn view_to_id<'a>(
         warehouse_id: WarehouseIdent,
         view: &TableIdent,
-        catalog_state: Self::State,
-    ) -> Result<Option<TableIdentUuid>>;
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<ViewIdentUuid>>;
 
     async fn create_view<'a>(
         namespace_id: NamespaceIdentUuid,
@@ -407,22 +572,22 @@ where
     ) -> Result<()>;
 
     async fn load_view<'a>(
-        view_id: TableIdentUuid,
+        view_id: ViewIdentUuid,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<ViewMetadataWithLocation>;
 
-    async fn list_views(
+    async fn list_views<'a>(
         warehouse_id: WarehouseIdent,
         namespace: &NamespaceIdent,
         include_deleted: bool,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>>;
+    ) -> Result<PaginatedTabulars<ViewIdentUuid, TableIdent>>;
 
     async fn update_view_metadata(
         namespace_id: NamespaceIdentUuid,
-        view_id: TableIdentUuid,
+        view_id: ViewIdentUuid,
         view: &TableIdent,
         metadata_location: &Location,
         metadata: ViewMetadata,
@@ -430,14 +595,16 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
+    /// Returns location of the dropped view.
+    /// Used for cleanup
     async fn drop_view<'a>(
-        view_id: TableIdentUuid,
+        view_id: ViewIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
     async fn rename_view(
         warehouse_id: WarehouseIdent,
-        source_id: TableIdentUuid,
+        source_id: ViewIdentUuid,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,

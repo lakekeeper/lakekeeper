@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, name, name <-> $1 AS dist, user_type as \"user_type: DbUserType\"\n        FROM users\n        ORDER BY dist ASC\n        LIMIT 10\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "dist",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 3,
+        "name": "user_type: DbUserType",
+        "type_info": {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "ae1718e92e22af5c76344e94ac8fac3835574659cfdf0b12323acbbafff15b86"
+}

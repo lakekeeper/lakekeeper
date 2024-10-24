@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            id,\n            name,\n            last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\",\n            user_type as \"user_type: DbUserType\",\n            email,\n            created_at,\n            updated_at\n        FROM users\n        where (deleted_at is null)\n            AND ($1 OR name ILIKE ('%' || $2 || '%'))\n            AND ($3 OR id = any($4))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_updated_with: DbUserLastUpdatedWith",
+        "type_info": {
+          "Custom": {
+            "name": "user_last_updated_with",
+            "kind": {
+              "Enum": [
+                "create-endpoint",
+                "config-call-creation",
+                "update-endpoint"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "user_type: DbUserType",
+        "type_info": {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text",
+        "Bool",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "2f02c3bbb9a8e36baa265132152137b0d0afda7d5e396f211300dd6a31e76f1a"
+}

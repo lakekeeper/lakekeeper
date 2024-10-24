@@ -3,17 +3,19 @@ use crate::api::ApiContext;
 use crate::catalog::require_warehouse_id;
 use crate::catalog::tables::{maybe_body_to_json, validate_table_or_view_ident};
 use crate::request_metadata::RequestMetadata;
-use crate::service::auth::AuthZHandler;
+use crate::service::authz::{
+    Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,
+};
 use crate::service::contract_verification::ContractVerification;
 use crate::service::event_publisher::EventMetadata;
-use crate::service::tabular_idents::TabularIdentUuid;
 use crate::service::Result;
+use crate::service::TabularIdentUuid;
 use crate::service::{Catalog, SecretStore, State, Transaction};
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ErrorModel, RenameTableRequest};
+use iceberg_ext::catalog::rest::RenameTableRequest;
 use uuid::Uuid;
 
-pub(crate) async fn rename_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
+pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
     request: RenameTableRequest,
     state: ApiContext<State<A, C, S>>,
@@ -29,29 +31,40 @@ pub(crate) async fn rename_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
     validate_table_or_view_ident(destination)?;
 
     // ------------------- AUTHZ -------------------
-    let source_id = C::view_ident_to_id(
-        warehouse_id,
-        &request.source,
-        state.v1_state.catalog.clone(),
-    )
-    .await
-    // We can't fail before AuthZ.
-    .transpose();
+    let authorizer = state.v1_state.authz;
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            &CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
+    let source_id = C::view_to_id(warehouse_id, &request.source, t.transaction()).await; // We can't fail before AuthZ;
+    let source_id = authorizer
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            source_id,
+            &CatalogViewAction::CanRename,
+        )
+        .await
+        .map_err(|mut e| {
+            e.error.code = StatusCode::NOT_FOUND.into();
+            e
+        })?;
     // We need to be allowed to delete the old table and create the new one
-    let rename_check = A::check_rename_view(
-        &request_metadata,
-        warehouse_id,
-        source_id.as_ref().and_then(|id| id.as_ref().ok()),
-        state.v1_state.auth.clone(),
-    );
-    let create_check = A::check_create_view(
-        &request_metadata,
-        warehouse_id,
-        &destination.namespace,
-        state.v1_state.auth,
-    );
-    futures::try_join!(rename_check, create_check)?;
+    let namespace_id = C::namespace_to_id(warehouse_id, &source.namespace, t.transaction()).await; // We can't fail before AuthZ
+                                                                                                   // We need to be allowed to delete the old table and create the new one
+    authorizer
+        .require_namespace_action(
+            &request_metadata,
+            warehouse_id,
+            namespace_id,
+            &CatalogNamespaceAction::CanCreateTable,
+        )
+        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
     if source == destination {
@@ -59,23 +72,12 @@ pub(crate) async fn rename_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
     }
     let body = maybe_body_to_json(&request);
 
-    let source_id = source_id.transpose()?.ok_or_else(|| {
-        tracing::debug!("View does not exist.");
-        ErrorModel::builder()
-            .code(StatusCode::NOT_FOUND.into())
-            .message(format!("View does not exist in warehouse {warehouse_id}"))
-            .r#type("ViewNotFound".to_string())
-            .build()
-    })?;
-
-    let mut transaction = C::Transaction::begin_write(state.v1_state.catalog).await?;
-
     C::rename_view(
         warehouse_id,
         source_id,
         source,
         destination,
-        transaction.transaction(),
+        t.transaction(),
     )
     .await?;
 
@@ -86,7 +88,7 @@ pub(crate) async fn rename_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
         .await?
         .into_result()?;
 
-    transaction.commit().await?;
+    t.commit().await?;
 
     let _ = state
         .v1_state
@@ -191,6 +193,7 @@ mod test {
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
+                .1
                 .namespace;
 
         let view_name = "my-view";

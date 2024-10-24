@@ -291,6 +291,13 @@ pub struct DataAccess {
     pub remote_signing: bool,
 }
 
+impl DataAccess {
+    #[must_use]
+    pub fn requested(&self) -> bool {
+        self.vended_credentials || self.remote_signing
+    }
+}
+
 pub(crate) fn parse_data_access(headers: &HeaderMap) -> DataAccess {
     let header = headers
         .get_all(DATA_ACCESS_HEADER)

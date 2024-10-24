@@ -20,7 +20,6 @@ use veil::Redact;
 mod sts;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[schema(rename_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
 pub struct GcsProfile {
     /// Name of the GCS bucket
@@ -32,7 +31,6 @@ pub struct GcsProfile {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
-#[schema(rename_all = "kebab-case")]
 /// GCS Credentials
 ///
 /// Currently only supports Service Account Key
@@ -323,7 +321,6 @@ fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod test {
-
     use crate::service::storage::gcs::validate_bucket_name;
     use needs_env_var::needs_env_var;
 

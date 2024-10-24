@@ -5,8 +5,7 @@ on:
     branches:
       - main
   pull_request:
-    branches:
-      - main
+
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,8 +63,8 @@ jobs:
           docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_pyiceberg.sh"
 
         env:
-          ICEBERG_REST_TEST_SPARK_IMAGE: apache/spark:3.5.1-java17-python3
-          ICEBERG_REST_TEST_SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2

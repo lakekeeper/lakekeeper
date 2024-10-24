@@ -19,29 +19,29 @@ services:
       - iceberg_rest_tests
 
   spark:
-    image: ${ICEBERG_REST_TEST_SPARK_IMAGE}
+    image: ${LAKEKEEPER_TEST__SPARK_IMAGE}
     profiles:
       - spark
     user: root
     environment:
-      - ICEBERG_REST_TEST_S3_BUCKET=tests
-      - ICEBERG_REST_TEST_S3_ACCESS_KEY=minio-root-user
-      - ICEBERG_REST_TEST_S3_SECRET_KEY=minio-root-password
-      - ICEBERG_REST_TEST_S3_ENDPOINT=http://minio:9000
-      - ICEBERG_REST_TEST_S3_PATH_STYLE_ACCESS=1
-      - ICEBERG_REST_TEST_S3_REGION=local
-      - ICEBERG_REST_TEST_MANAGEMENT_URL=http://server:8080/management
-      - ICEBERG_REST_TEST_CATALOG_URL=http://server:8080/catalog
-      - ICEBERG_REST_TEST_OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
-      - ICEBERG_REST_TEST_OPENID_CLIENT_ID=iceberg-rest-test
-      - ICEBERG_REST_TEST_OPENID_CLIENT_SECRET=very-secret
-      - ICEBERG_REST_TEST_TRINO_URI=http://trino:8080
-      - ICEBERG_REST_TEST_STARROCKS_URI=starrocks://root@starrocks:9030
-      - ICEBERG_REST_TEST_AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
-      - ICEBERG_REST_TEST_AZURE_TENANT_ID=${AZURE_TENANT_ID}
-      - ICEBERG_REST_TEST_AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
-      - ICEBERG_REST_TEST_AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME}
-      - ICEBERG_REST_TEST_AZURE_STORAGE_FILESYSTEM=${AZURE_STORAGE_FILESYSTEM}
+      - LAKEKEEPER_TEST__S3_BUCKET=tests
+      - LAKEKEEPER_TEST__S3_ACCESS_KEY=minio-root-user
+      - LAKEKEEPER_TEST__S3_SECRET_KEY=minio-root-password
+      - LAKEKEEPER_TEST__S3_ENDPOINT=http://minio:9000
+      - LAKEKEEPER_TEST__S3_PATH_STYLE_ACCESS=1
+      - LAKEKEEPER_TEST__S3_REGION=local
+      - LAKEKEEPER_TEST__MANAGEMENT_URL=http://server:8080/management
+      - LAKEKEEPER_TEST__CATALOG_URL=http://server:8080/catalog
+      - LAKEKEEPER_TEST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
+      - LAKEKEEPER_TEST__OPENID_CLIENT_ID=iceberg-rest-test
+      - LAKEKEEPER_TEST__OPENID_CLIENT_SECRET=very-secret
+      - LAKEKEEPER_TEST__TRINO_URI=http://trino:8080
+      - LAKEKEEPER_TEST__STARROCKS_URI=starrocks://root@starrocks:9030
+      - LAKEKEEPER_TEST__AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - LAKEKEEPER_TEST__AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME}
+      - LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=${AZURE_STORAGE_FILESYSTEM}
     depends_on:
       server:
         condition: service_healthy
@@ -55,7 +55,7 @@ services:
       - iceberg_rest_tests
 
   migrate:
-    image: ${ICEBERG_REST_TEST_SERVER_IMAGE}
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
     environment:
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
@@ -70,7 +70,7 @@ services:
       - iceberg_rest_tests
 
   server:
-    image: ${ICEBERG_REST_TEST_SERVER_IMAGE}
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
     environment:
       - ICEBERG_REST__BASE_URI=http://server:8080
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
@@ -165,7 +165,7 @@ services:
     image: trinodb/trino:latest
     environment:
       - CATALOG_MANAGEMENT=dynamic
-      - ICEBERG_REST_TEST_CATALOG_URL=http://server:8080/catalog
+      - LAKEKEEPER_TEST__CATALOG_URL=http://server:8080/catalog
     healthcheck:
       test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
       interval: 2s

@@ -7,6 +7,8 @@ services:
     build:
       context: ../../
       dockerfile: docker/full.Dockerfile
+    environment:
+      - ICEBERG_REST__ALLOW_ORIGIN=http://localhost:3002
   migrate:
     image: localhost/iceberg-catalog-local:latest
     pull_policy: never
@@ -17,3 +19,13 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
+  ui:
+    build:
+      context: ../../ui/catalog
+      dockerfile: Dockerfile
+    ports:
+      - 3002:8080
+    environment:
+      - VITE_APP_ICEBERG_CATALOG_URL=http://localhost:8080
+    networks:
+      - iceberg_net

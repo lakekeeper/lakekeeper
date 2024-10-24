@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
-use iceberg_catalog::api::management::v1::ManagementApiDoc;
-use iceberg_catalog::CONFIG;
+use iceberg_catalog::api::management::v1::api_doc as v1_api_doc;
+use iceberg_catalog::service::authz::implementations::openfga::UnauthenticatedOpenFGAAuthorizer;
+use iceberg_catalog::service::authz::AllowAllAuthorizer;
+use iceberg_catalog::{AuthZBackend, CONFIG};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
@@ -111,6 +113,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Migrate {}) => {
             print_info();
+            println!("Migrating authorizer...");
+            iceberg_catalog::service::authz::implementations::migrate_default_authorizer().await?;
+            println!("Authorizer migration complete.");
+
             println!("Migrating database...");
             let write_pool = iceberg_catalog::implementations::postgres::get_writer_pool(
                 CONFIG
@@ -143,8 +149,11 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::ManagementOpenapi {}) => {
-            use utoipa::OpenApi;
-            println!("{}", ManagementApiDoc::openapi().to_yaml()?)
+            let doc = match CONFIG.authz_backend {
+                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(),
+                AuthZBackend::OpenFGA => v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(),
+            };
+            println!("{}", doc.to_yaml()?);
         }
         None => {
             // Error out if no subcommand is provided.
@@ -156,12 +165,12 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn print_info() {
-    let console_span = r" _      ___  _   _______ _   _______ _________________ 
-| |    / _ \| | / |  ___| | / |  ___|  ___| ___ | ___ \
-| |   / /_\ | |/ /| |__ | |/ /| |__ | |__ | |_/ | |_/ /
-| |   |  _  |    \|  __||    \|  __||  __||  __/|    / 
-| |___| | | | |\  | |___| |\  | |___| |___| |   | |\ \ 
-\_____\_| |_\_| \_\____/\_| \_\____/\____/\_|   \_| \_| 
+    let console_span = r"_      ___  _   _______ _   _______ ___________ _____ _____ 
+| |    / _ \| | / |  ___| | / |  ___|  ___| ___ |  ___| ___ \
+| |   / /_\ | |/ /| |__ | |/ /| |__ | |__ | |_/ | |__ | |_/ /
+| |   |  _  |    \|  __||    \|  __||  __||  __/|  __||    / 
+| |___| | | | |\  | |___| |\  | |___| |___| |   | |___| |\ \ 
+\_____\_| |_\_| \_\____/\_| \_\____/\____/\_|   \____/\_| \_| 
 ";
     let console_span = format!("{}\nLakekeeper Version: {}\n", console_span, VERSION);
     println!("{}", console_span);

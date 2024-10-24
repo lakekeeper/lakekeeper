@@ -93,9 +93,7 @@ impl<'de> Deserialize<'de> for NamespaceIdentUrl {
         let s = String::deserialize(deserializer)?;
         // Split on multipart \u001f
         Ok(NamespaceIdentUrl(
-            s.split('\u{1f}')
-                .map(std::string::ToString::to_string)
-                .collect(),
+            s.split('\u{1f}').map(ToString::to_string).collect(),
         ))
     }
 }
@@ -255,14 +253,16 @@ pub struct ListNamespacesQuery {
     pub parent: Option<NamespaceIdent>,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 pub struct PaginationQuery {
+    /// Next page token
     #[serde(skip_serializing_if = "PageToken::skip_serialize")]
+    #[param(value_type=String)]
     pub page_token: PageToken,
-    /// For servers that support pagination, this signals an upper bound of the number of results that a client will receive. For servers that do not support pagination, clients may receive results larger than the indicated `pageSize`.
-    #[serde(rename = "pageSize")]
+    /// Signals an upper bound of the number of results that a client will receive.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub page_size: Option<i32>,
 }
 
@@ -315,7 +315,7 @@ mod tests {
         #[derive(Debug, Clone)]
         struct ThisState;
 
-        impl crate::api::ThreadSafe for ThisState {}
+        impl ThreadSafe for ThisState {}
 
         // ToDo: Use Mock instead for impl. I couldn't get mockall to work though.
         #[async_trait]

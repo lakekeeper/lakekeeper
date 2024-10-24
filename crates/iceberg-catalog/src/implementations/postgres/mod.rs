@@ -1,10 +1,13 @@
+mod bootstrap;
 mod catalog;
 pub(crate) mod dbutils;
 pub(crate) mod namespace;
 mod pagination;
+pub(crate) mod role;
 pub(crate) mod secrets;
 pub(crate) mod tabular;
 pub mod task_queues;
+pub(crate) mod user;
 pub(crate) mod warehouse;
 
 use self::dbutils::DBErrorHandler;

@@ -32,21 +32,26 @@ pub mod v1 {
     };
     pub use crate::request_metadata::RequestMetadata;
 
-    // according to crates/iceberg-ext/src/catalog/rest/namespace.rs:115 this is what we should do..
-    pub const MAX_PAGE_SIZE: i64 = i64::MAX;
+    // according to crates/iceberg-ext/src/catalog/rest/namespace.rs:115 we should
+    // return everything - in order to block malicious requests, we still cap to 1000
+    pub const MAX_PAGE_SIZE: i64 = 1000;
 
     pub fn new_v1_full_router<
-        C: config::Service<S>,
-        #[cfg(feature = "s3-signer")] T: namespace::Service<S>
+        #[cfg(feature = "s3-signer")] T: config::Service<S>
+            + namespace::Service<S>
             + tables::Service<S>
             + metrics::Service<S>
             + s3_signer::Service<S>
             + views::Service<S>,
-        #[cfg(not(feature = "s3-signer"))] T: namespace::Service<S> + tables::Service<S> + metrics::Service<S> + views::Service<S>,
+        #[cfg(not(feature = "s3-signer"))] T: config::Service<S>
+            + namespace::Service<S>
+            + tables::Service<S>
+            + metrics::Service<S>
+            + views::Service<S>,
         S: ThreadSafe,
     >() -> Router<ApiContext<S>> {
         let router = Router::new()
-            .merge(config::router::<C, S>())
+            .merge(config::router::<T, S>())
             .merge(namespace::router::<T, S>())
             .merge(tables::router::<T, S>())
             .merge(views::router::<T, S>())

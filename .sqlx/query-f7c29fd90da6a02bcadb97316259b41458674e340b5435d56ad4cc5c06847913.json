@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO server (single_row, server_id, open_for_bootstrap, terms_accepted)\n        VALUES (true, $1, false, $2)\n        ON CONFLICT (single_row)\n        DO UPDATE SET terms_accepted = $2, open_for_bootstrap = false\n        WHERE server.open_for_bootstrap = true\n        returning server_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "server_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f7c29fd90da6a02bcadb97316259b41458674e340b5435d56ad4cc5c06847913"
+}

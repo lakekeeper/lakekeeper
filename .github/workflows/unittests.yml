@@ -5,8 +5,7 @@ on:
     branches:
       - main
   pull_request:
-    branches:
-      - main
+
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,10 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
       - name: Cargo sqlx-check
         run: |
           sudo apt-get install libpq-dev -y
-          cargo install --version=0.7.4 sqlx-cli --no-default-features --features postgres
+          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           cargo sqlx prepare --check --workspace -- --all-features 
 
   check-format:
@@ -51,11 +52,26 @@ jobs:
           components: clippy
         env:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
+          TEST_OPENFGA: 1
+          TEST_AZURE: 1
+          TEST_AWS: 1
+          TEST_GCS: 1
+          TEST_KV2: 1
+          TEST_MINIO: 1
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
 
       - name: Cargo clippy
         run: just check-clippy
-
-
+        env:
+          RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
+          TEST_OPENFGA: 1
+          TEST_AZURE: 1
+          TEST_AWS: 1
+          TEST_GCS: 1
+          TEST_KV2: 1
+          TEST_MINIO: 1
   test:
     runs-on: ubuntu-latest
     services:
@@ -71,7 +87,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
       postgres:
         image: postgres:16
         env:
@@ -109,10 +124,13 @@ jobs:
         env:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
 
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+
       - name: Migrate database
         run: |
           sudo apt-get install libpq-dev -y
-          cargo install --version=0.7.4 sqlx-cli --no-default-features --features postgres
+          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           cd crates/iceberg-catalog
           sqlx database create
           sqlx migrate run
@@ -134,22 +152,28 @@ jobs:
           vault policy write -address "${VAULT_ADDR}" app /tmp/app.hcl
           vault write -address "${VAULT_ADDR}" auth/userpass/users/test password=test policies=app
 
+      - name: Setup openfga
+        run: docker run -d -p 35081:8081 openfga/openfga:v1.6 run
+
       - name: Test
         run: cargo test --no-fail-fast --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           TEST_KV2: 1
-          ICEBERG_REST__KV2__URL: http://localhost:8200
-          ICEBERG_REST__KV2__USER: test
-          ICEBERG_REST__KV2__PASSWORD: test
-          ICEBERG_REST__KV2__SECRET_MOUNT: secret
+          LAKEKEEPER_TEST__KV2__URL: http://localhost:8200
+          LAKEKEEPER_TEST__KV2__USER: test
+          LAKEKEEPER_TEST__KV2__PASSWORD: test
+          LAKEKEEPER_TEST__KV2__SECRET_MOUNT: secret
           # minio test envs
           TEST_MINIO: 1
-          ICEBERG_REST_TEST_S3_BUCKET: tests
-          ICEBERG_REST_TEST_S3_REGION: local
-          ICEBERG_REST_TEST_S3_ACCESS_KEY: minio-root-user
-          ICEBERG_REST_TEST_S3_SECRET_KEY: minio-root-password
-          ICEBERG_REST_TEST_S3_ENDPOINT: http://localhost:9000
+          LAKEKEEPER_TEST__S3_BUCKET: tests
+          LAKEKEEPER_TEST__S3_REGION: local
+          LAKEKEEPER_TEST__S3_ACCESS_KEY: minio-root-user
+          LAKEKEEPER_TEST__S3_SECRET_KEY: minio-root-password
+          LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:9000
+
+          TEST_OPENFGA: 1
+          LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081
 
           TEST_AZURE: ${{ secrets.TEST_AZURE }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}

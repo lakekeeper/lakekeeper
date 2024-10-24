@@ -6,6 +6,7 @@ use std::vec;
 use crate::api::iceberg::types::Prefix;
 use crate::api::{ApiContext, Result};
 use crate::api::{ErrorModel, IcebergErrorResponse, S3SignRequest, S3SignResponse};
+use crate::service::authz::{CatalogTableAction, CatalogWarehouseAction};
 use aws_sigv4::http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4;
 use aws_sigv4::{self};
@@ -14,9 +15,8 @@ use super::super::CatalogServer;
 use super::error::SignError;
 use crate::catalog::require_warehouse_id;
 use crate::request_metadata::RequestMetadata;
-use crate::service::secrets::SecretStore;
 use crate::service::storage::{S3Location, S3Profile, StorageCredential};
-use crate::service::{auth::AuthZHandler, Catalog, ListFlags, State};
+use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State};
 use crate::service::{GetTableMetadataResponse, TableIdentUuid};
 use crate::WarehouseIdent;
 
@@ -34,7 +34,7 @@ const HEADERS_TO_SIGN: [&str; 7] = [
 ];
 
 #[async_trait::async_trait]
-impl<C: Catalog, A: AuthZHandler, S: SecretStore>
+impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::s3_signer::Service<State<A, C, S>> for CatalogServer<C, A, S>
 {
     #[allow(clippy::too_many_lines)]
@@ -47,6 +47,14 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<S3SignResponse> {
         let warehouse_id = require_warehouse_id(prefix.clone())?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
 
         let S3SignRequest {
             region: request_region,
@@ -68,10 +76,38 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         // We are looking for the path in the database, which allows us to also work with AuthN solutions
         // that do not support custom data in tokens. Perspectively, we should
         // try to get per-table signer.uri support in Spark.
-        let (table_id, table_metadata) = if let Ok(table_id) = require_table_id(table.clone()) {
-            (table_id, None)
+        let GetTableMetadataResponse {
+            table: _,
+            table_id,
+            namespace_id: _,
+            warehouse_id: _,
+            location,
+            metadata_location: _,
+            storage_secret_ident,
+            storage_profile,
+        } = if let Ok(table_id) = require_table_id(table.clone()) {
+            let metadata = C::get_table_metadata_by_id(
+                warehouse_id,
+                table_id,
+                ListFlags {
+                    include_staged,
+                    // we were able to resolve the table to id so we know the table is not deleted
+                    include_deleted: false,
+                    include_active: true,
+                },
+                state.v1_state.catalog,
+            )
+            .await;
+            authorizer
+                .require_table_action(
+                    &request_metadata,
+                    warehouse_id,
+                    metadata,
+                    &CatalogTableAction::CanGetMetadata,
+                )
+                .await?
         } else {
-            let table_metadata = C::get_table_metadata_by_s3_location(
+            let metadata = C::get_table_metadata_by_s3_location(
                 warehouse_id,
                 parsed_url.location.location(),
                 ListFlags {
@@ -84,17 +120,15 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
                 },
                 state.v1_state.catalog.clone(),
             )
-            .await
-            .map_err(|e| {
-                ErrorModel::builder()
-                    .code(http::StatusCode::UNAUTHORIZED.into())
-                    .message("Unauthorized".to_string())
-                    .r#type("InvalidLocation".to_string())
-                    .source(Some(Box::new(e.error)))
-                    .build()
-            })?;
-
-            (table_metadata.table_id, Some(table_metadata))
+            .await;
+            authorizer
+                .require_table_action(
+                    &request_metadata,
+                    warehouse_id,
+                    metadata,
+                    &CatalogTableAction::CanGetMetadata,
+                )
+                .await?
         };
 
         // First check - fail fast if requested table is not allowed.
@@ -104,35 +138,9 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
             &request_metadata,
             warehouse_id,
             table_id,
-            state.v1_state.auth,
+            authorizer,
         )
         .await?;
-
-        // Load table metadata if not already loaded
-        let GetTableMetadataResponse {
-            table: _,
-            table_id,
-            warehouse_id: _,
-            location,
-            metadata_location: _,
-            storage_secret_ident,
-            storage_profile,
-        } = if let Some(table_metadata) = table_metadata {
-            table_metadata
-        } else {
-            C::get_table_metadata_by_id(
-                warehouse_id,
-                table_id,
-                ListFlags {
-                    include_staged,
-                    // we were able to resolve the table to id so we know the table is not deleted
-                    include_deleted: false,
-                    include_active: true,
-                },
-                state.v1_state.catalog,
-            )
-            .await?
-        };
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -334,21 +342,35 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
     Ok(())
 }
 
-async fn validate_table_method<A: AuthZHandler>(
+async fn validate_table_method<A: Authorizer>(
     method: &http::Method,
     metadata: &RequestMetadata,
     warehouse_id: WarehouseIdent,
     table_id: TableIdentUuid,
-    auth_state: A::State,
+    authorizer: A,
 ) -> Result<()> {
     // First check - fail fast if requested table is not allowed.
     // We also need to check later if the path matches the table location.
     if WRITE_METHODS.contains(&method.as_str()) {
-        // We specify namespace as none for AuthZ check because we don't want to grant access to potentially
+        // We specify namespace as none for AuthZ check because we don't want to grant access to
         // locations not known to the catalog.
-        A::check_commit_table(metadata, warehouse_id, Some(table_id), None, auth_state).await?;
+        authorizer
+            .require_table_action(
+                metadata,
+                warehouse_id,
+                Ok(Some(table_id)),
+                &CatalogTableAction::CanWriteData,
+            )
+            .await?;
     } else if READ_METHODS.contains(&method.as_str()) {
-        A::check_load_table(metadata, warehouse_id, None, Some(table_id), auth_state).await?;
+        authorizer
+            .require_table_action(
+                metadata,
+                warehouse_id,
+                Ok(Some(table_id)),
+                &CatalogTableAction::CanReadData,
+            )
+            .await?;
     } else {
         return Err(ErrorModel::builder()
             .code(http::StatusCode::METHOD_NOT_ALLOWED.into())

@@ -41,6 +41,7 @@ serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"
 serde_json = { version = "^1.0", features = ["raw_value"] }
+serde-aux = "4.5.0"
 url = { version = "^2.5", features = ["serde"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 reqwest = { version = "^0.12", default-features = false, features = [
@@ -50,11 +51,13 @@ reqwest = { version = "^0.12", default-features = false, features = [
 iceberg = { git = "https://github.com/hansetag/iceberg-rust.git", rev = "2b6263a6c998df75444f7feb54bd37144354a071", features = [
     "storage-all",
 ] }
+openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "f0c61a5775e87c55d9d9d9268d6d837d621c5a3a" }
 typed-builder = "^0.20.0"
 strum_macros = "^0.26"
 axum = { version = "^0.7" }
 axum-prometheus = "0.7.0"
 axum-extra = { version = "0.9.3" }
+axum-macros = { version = "0.4.2" }
 async-trait = "^0.1"
 env_logger = "^0.11"
 itertools = "0.13.0"
@@ -79,7 +82,7 @@ lazy-regex = { version = "3.2.0", features = ["lite"] }
 lru = "0.12.4"
 percent-encoding = "2.3.1"
 strum = { version = "^0.26", features = ["derive"] }
-sqlx = { version = "^0.8.0", default-features = false, features = [
+sqlx = { version = "^0.8.2", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",
@@ -94,8 +97,8 @@ tokio = { version = "1", default-features = false, features = [
     "signal",
     "rt-multi-thread",
 ] }
-tower = { version = "^0.4" }
-tower-http = { version = "^0.5", features = [
+tower = { version = "^0.5" }
+tower-http = { version = "^0.6", features = [
     "catch-panic",
     "compression-full",
     "sensitive-headers",
@@ -105,6 +108,7 @@ tower-http = { version = "^0.5", features = [
 tracing = { version = "^0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 urlencoding = "^2.1"
+async-stream = "0.3.6"
 utoipa = { version = "4.2.3", features = [
     "axum_extras",
     "chrono",
@@ -116,3 +120,4 @@ veil = "0.1.7"
 paste = "1.0.15"
 heck = "0.5.0"
 time = "0.3.36"
+pretty_assertions = "~1.4"

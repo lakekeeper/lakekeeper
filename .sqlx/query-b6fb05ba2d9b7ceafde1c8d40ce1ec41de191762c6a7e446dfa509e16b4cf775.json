@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO users (id, name, email, last_updated_with, user_type)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (id)\n        DO UPDATE SET name = $2, email = $3, last_updated_with = $4, user_type = $5\n        returning (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\", user_type as \"user_type: DbUserType\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_updated_with: DbUserLastUpdatedWith",
+        "type_info": {
+          "Custom": {
+            "name": "user_last_updated_with",
+            "kind": {
+              "Enum": [
+                "create-endpoint",
+                "config-call-creation",
+                "update-endpoint"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "user_type: DbUserType",
+        "type_info": {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        {
+          "Custom": {
+            "name": "user_last_updated_with",
+            "kind": {
+              "Enum": [
+                "create-endpoint",
+                "config-call-creation",
+                "update-endpoint"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "b6fb05ba2d9b7ceafde1c8d40ce1ec41de191762c6a7e446dfa509e16b4cf775"
+}

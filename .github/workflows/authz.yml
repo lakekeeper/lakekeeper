@@ -1,0 +1,46 @@
+name: AuthZ Unittests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  openfga:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FGA CLI
+        run: |
+          wget https://github.com/openfga/cli/releases/download/v0.6.1/fga_0.6.1_linux_amd64.deb
+          sudo apt-get install -yqq ./fga_0.6.1_linux_amd64.deb
+
+      - name: Validate Collaboration Model
+        run: |
+          BASE_PATH=authz/openfga
+          LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1)
+          VALIDATION_OUTPUT=$(fga model validate --file $BASE_PATH/$LAST_VERSION/schema.fga)
+          echo $VALIDATION_OUTPUT | jq -e '.is_valid == true' > /dev/null || { echo "Validation failed"; exit 1; }
+
+      - name: Test Collaboration Model
+        run: |
+          BASE_PATH=authz/openfga
+          LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1)
+          fga model test --tests $BASE_PATH/$LAST_VERSION/store.fga.yaml
+
+      - name: Check json up-to-date
+        run: |
+          BASE_PATH=authz/openfga
+          LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1)
+          DESIRED_SCHEMA_JSON=$(fga model transform --file $BASE_PATH/$LAST_VERSION/schema.fga)
+          CURRENT_SCHEMA_JSON=$(cat $BASE_PATH/$LAST_VERSION/schema.json)
+          echo $DESIRED_SCHEMA_JSON | jq -e '. == '"$CURRENT_SCHEMA_JSON" > /dev/null || { echo "Schema json is not up-to-date"; exit 1; }

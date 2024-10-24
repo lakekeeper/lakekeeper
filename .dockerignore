@@ -3,3 +3,4 @@ target
 Dockerfile
 **/Dockerfile
 !target/release/iceberg-catalog
+**/ui

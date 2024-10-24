@@ -11,14 +11,15 @@ use crate::catalog::tables::{
 };
 use crate::catalog::views::{parse_view_location, validate_view_updates};
 use crate::request_metadata::RequestMetadata;
+use crate::service::authz::{CatalogViewAction, CatalogWarehouseAction};
 use crate::service::contract_verification::ContractVerification;
 use crate::service::event_publisher::EventMetadata;
 use crate::service::storage::{StorageLocations as _, StoragePermissions};
-use crate::service::tabular_idents::TabularIdentUuid;
 use crate::service::{
-    auth::AuthZHandler, secrets::SecretStore, Catalog, GetWarehouseResponse, State, TableIdentUuid,
-    Transaction, ViewMetadataWithLocation,
+    authz::Authorizer, secrets::SecretStore, Catalog, GetWarehouseResponse, State, Transaction,
+    ViewMetadataWithLocation,
 };
+use crate::service::{TabularIdentUuid, ViewIdentUuid};
 use http::StatusCode;
 use iceberg::spec::{AppendViewVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::rest::ViewUpdate;
@@ -28,7 +29,7 @@ use uuid::Uuid;
 /// Commit updates to a view
 // TODO: break up into smaller fns
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
+pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     request: CommitViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -48,45 +49,36 @@ pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
     validate_table_or_view_ident(&identifier)?;
 
     // ------------------- AUTHZ -------------------
-    let view_id = C::view_ident_to_id(warehouse_id, &identifier, state.v1_state.catalog.clone())
-        .await
-        // We can't fail before AuthZ.
-        .transpose();
+    let authorizer = state.v1_state.authz;
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            &CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+    let view_id = C::view_to_id(warehouse_id, &identifier, t.transaction()).await; // We can't fail before AuthZ;
 
-    A::check_commit_view(
-        &request_metadata,
-        warehouse_id,
-        view_id.as_ref().and_then(|id| id.as_ref().ok()),
-        Some(&identifier.namespace),
-        state.v1_state.auth,
-    )
-    .await?;
+    let view_id = authorizer
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view_id,
+            &CatalogViewAction::CanCommit,
+        )
+        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
     validate_view_updates(updates)?;
 
-    let namespace_id = C::namespace_ident_to_id(
-        warehouse_id,
-        &identifier.namespace,
-        state.v1_state.catalog.clone(),
-    )
-    .await?
-    .ok_or(ErrorModel::not_found(
-        "Namespace does not exist",
-        "NamespaceNotFound",
-        None,
-    ))?;
-
-    let view_id = view_id.transpose()?.ok_or_else(|| {
-        tracing::debug!("View does not exist.");
-        ErrorModel::not_found(
-            format!("View does not exist in warehouse {warehouse_id}"),
-            "ViewNotFound",
+    let namespace_id = C::namespace_to_id(warehouse_id, identifier.namespace(), t.transaction())
+        .await?
+        .ok_or(ErrorModel::not_found(
+            "Namespace does not exist",
+            "NamespaceNotFound",
             None,
-        )
-    })?;
-
-    let mut transaction = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        ))?;
 
     let GetWarehouseResponse {
         id: _,
@@ -96,7 +88,7 @@ pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
         storage_secret_id,
         status,
         tabular_delete_profile: _,
-    } = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
+    } = C::require_warehouse(warehouse_id, t.transaction()).await?;
     require_active_warehouse(status)?;
 
     check_asserts(requirements, view_id)?;
@@ -104,7 +96,7 @@ pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
     let ViewMetadataWithLocation {
         metadata_location: _,
         metadata: before_update_metadata,
-    } = C::load_view(view_id, false, transaction.transaction()).await?;
+    } = C::load_view(view_id, false, t.transaction()).await?;
     let view_location = parse_view_location(&before_update_metadata.location)?;
 
     state
@@ -132,7 +124,7 @@ pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
         &metadata_location,
         requested_update_metadata.clone(),
         &view_location,
-        transaction.transaction(),
+        t.transaction(),
     )
     .await?;
 
@@ -175,7 +167,7 @@ pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
             StoragePermissions::ReadWriteDelete,
         )
         .await?;
-    transaction.commit().await?;
+    t.commit().await?;
 
     let _ = state
         .v1_state
@@ -209,7 +201,7 @@ pub(crate) async fn commit_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
 
 fn check_asserts(
     requirements: &Option<Vec<ViewRequirement>>,
-    view_id: TableIdentUuid,
+    view_id: ViewIdentUuid,
 ) -> Result<()> {
     for assertion in requirements.as_deref().unwrap_or_default() {
         match assertion {

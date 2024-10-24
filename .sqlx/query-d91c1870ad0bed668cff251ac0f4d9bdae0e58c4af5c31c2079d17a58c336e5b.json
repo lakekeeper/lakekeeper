@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE namespace\n        SET namespace_properties = $1\n        WHERE warehouse_id = $2 AND namespace_id = $3\n        AND warehouse_id IN (\n            SELECT warehouse_id FROM warehouse WHERE status = 'active'\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d91c1870ad0bed668cff251ac0f4d9bdae0e58c4af5c31c2079d17a58c336e5b"
+}

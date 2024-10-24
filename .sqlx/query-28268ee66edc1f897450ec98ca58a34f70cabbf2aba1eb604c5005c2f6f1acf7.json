@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO project (project_name, project_id)\n        VALUES ($1, $2)\n        ON CONFLICT DO NOTHING\n        RETURNING project_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "28268ee66edc1f897450ec98ca58a34f70cabbf2aba1eb604c5005c2f6f1acf7"
+}

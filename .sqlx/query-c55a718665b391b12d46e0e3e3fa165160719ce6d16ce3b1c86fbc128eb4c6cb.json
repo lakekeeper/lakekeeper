@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            namespace_name as \"namespace_name: Vec<String>\",\n            n.namespace_id,\n            n.warehouse_id,\n            namespace_properties as \"properties: Json<Option<HashMap<String, String>>>\"\n        FROM namespace n\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        WHERE n.warehouse_id = $1 AND n.namespace_id = $2\n        AND w.status = 'active'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_name: Vec<String>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "properties: Json<Option<HashMap<String, String>>>",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c55a718665b391b12d46e0e3e3fa165160719ce6d16ce3b1c86fbc128eb4c6cb"
+}

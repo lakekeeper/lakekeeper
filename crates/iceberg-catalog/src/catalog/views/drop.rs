@@ -6,18 +6,17 @@ use crate::api::ApiContext;
 use crate::catalog::require_warehouse_id;
 use crate::catalog::tables::validate_table_or_view_ident;
 use crate::request_metadata::RequestMetadata;
-use crate::service::auth::AuthZHandler;
+use crate::service::authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction};
 use crate::service::contract_verification::ContractVerification;
 use crate::service::event_publisher::EventMetadata;
-use crate::service::tabular_idents::TabularIdentUuid;
 use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
 use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
-use crate::service::Result;
+use crate::service::TabularIdentUuid;
 use crate::service::{Catalog, SecretStore, State, Transaction};
-use iceberg_ext::catalog::rest::ErrorModel;
+use crate::service::{Result, ViewIdentUuid};
 use uuid::Uuid;
 
-pub(crate) async fn drop_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
+pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     DropParams { purge_requested }: DropParams,
     state: ApiContext<State<A, C, S>>,
@@ -29,34 +28,30 @@ pub(crate) async fn drop_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
     validate_table_or_view_ident(&view)?;
 
     // ------------------- AUTHZ -------------------
-    let view_id = C::view_ident_to_id(warehouse_id, &view, state.v1_state.catalog.clone())
-        .await
-        // We can't fail before AuthZ.
-        .transpose();
+    let authorizer = state.v1_state.authz;
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            &CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+    let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // Can't fail before authz
 
-    A::check_drop_view(
-        &request_metadata,
-        warehouse_id,
-        view_id.as_ref().and_then(|id| id.as_ref().ok()),
-        state.v1_state.auth,
-    )
-    .await?;
+    let view_id: ViewIdentUuid = authorizer
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view_id,
+            &CatalogViewAction::CanDrop,
+        )
+        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
     let purge_requested = purge_requested.unwrap_or(false);
 
-    let view_id = view_id.transpose()?.ok_or_else(|| {
-        tracing::debug!(?view, "View does not exist.");
-        ErrorModel::not_found(
-            format!("View does not exist in warehouse {warehouse_id}"),
-            "ViewNotFound",
-            None,
-        )
-    })?;
-
-    let mut transaction = C::Transaction::begin_write(state.v1_state.catalog).await?;
-
-    let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
+    let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
     state
         .v1_state
@@ -69,11 +64,11 @@ pub(crate) async fn drop_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
 
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
-            let location = C::drop_view(view_id, transaction.transaction()).await?;
+            let location = C::drop_view(view_id, t.transaction()).await?;
             // committing here means maybe dangling data if the queue fails
             // OTOH committing after queuing means we may end up with a view pointing to deleted files
             // I feel that some undeleted files are less bad than a view that cannot be loaded
-            transaction.commit().await?;
+            t.commit().await?;
 
             if purge_requested {
                 state
@@ -87,12 +82,13 @@ pub(crate) async fn drop_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
                         parent_id: None,
                     })
                     .await?;
+                tracing::debug!("Queued purge task for dropped view '{view_id}'.");
             }
+            authorizer.delete_view(view_id).await?;
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
-            C::mark_tabular_as_deleted(TabularIdentUuid::View(*view_id), transaction.transaction())
-                .await?;
-            transaction.commit().await?;
+            C::mark_tabular_as_deleted(TabularIdentUuid::View(*view_id), t.transaction()).await?;
+            t.commit().await?;
 
             state
                 .v1_state
@@ -105,6 +101,7 @@ pub(crate) async fn drop_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
                     expire_at: chrono::Utc::now() + expiration_seconds,
                 })
                 .await?;
+            tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
         }
     }
 

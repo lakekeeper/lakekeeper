@@ -1,45 +1,58 @@
 use super::{
+    bootstrap::{bootstrap, get_validation_data},
     namespace::{
-        create_namespace, drop_namespace, get_namespace, list_namespaces, namespace_ident_to_id,
+        create_namespace, drop_namespace, get_namespace, list_namespaces, namespace_to_id,
         update_namespace_properties,
     },
+    role::{create_role, delete_role, list_roles, update_role},
     tabular::table::{
         commit_table_transaction, create_table, drop_table, get_table_metadata_by_id,
         get_table_metadata_by_s3_location, list_tables, load_tables, rename_table,
         table_ident_to_id, table_idents_to_ids,
     },
     warehouse::{
-        create_project, create_warehouse, delete_project, delete_warehouse, get_project,
-        get_warehouse, list_projects, list_warehouses, rename_project, rename_warehouse,
-        set_warehouse_status, update_storage_profile,
+        create_project, create_warehouse, delete_project, delete_warehouse,
+        get_config_for_warehouse, get_project, get_warehouse, get_warehouse_by_name, list_projects,
+        list_warehouses, rename_project, rename_warehouse, set_warehouse_status,
+        update_storage_profile,
     },
     CatalogState, PostgresTransaction,
 };
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
-use crate::implementations::postgres::tabular::view::{
-    create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id,
+use crate::api::management::v1::user::{
+    ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType,
 };
+use crate::implementations::postgres::role::search_role;
 use crate::implementations::postgres::tabular::{list_tabulars, mark_tabular_as_deleted};
-use crate::service::tabular_idents::{TabularIdentOwned, TabularIdentUuid};
-use crate::service::{
-    CreateNamespaceRequest, CreateNamespaceResponse, DeletionDetails, GetProjectResponse,
-    GetWarehouseResponse, ListFlags, ListNamespacesQuery, ListNamespacesResponse, NamespaceIdent,
-    Result, TableCreation, TableIdent, WarehouseStatus,
+use crate::implementations::postgres::user::{
+    create_or_update_user, delete_user, list_users, search_user,
 };
+use crate::service::{
+    storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
+    CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
+    GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse, ListFlags,
+    ListNamespacesQuery, ListNamespacesResponse, LoadTableResponse, NamespaceIdent,
+    NamespaceIdentUuid, ProjectIdent, Result, RoleId, StartupValidationData, TableCreation,
+    TableIdent, TableIdentUuid, Transaction, UserId, WarehouseIdent, WarehouseStatus,
+};
+use crate::SecretIdent;
 use crate::{
     api::iceberg::v1::{PaginatedTabulars, PaginationQuery},
     service::TableCommit,
 };
 use crate::{
-    service::{
-        storage::StorageProfile, Catalog, CreateTableResponse, GetNamespaceResponse,
-        GetTableMetadataResponse, LoadTableResponse, NamespaceIdentUuid, ProjectIdent,
-        TableIdentUuid, Transaction, WarehouseIdent,
+    api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse},
+    service::ViewIdentUuid,
+};
+use crate::{api::management::v1::warehouse::TabularDeleteProfile, service::TabularIdentUuid};
+use crate::{
+    implementations::postgres::tabular::view::{
+        create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id,
     },
-    SecretIdent,
+    service::TabularIdentOwned,
 };
 use iceberg::spec::ViewMetadata;
-use iceberg_ext::configs::Location;
+use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::{catalog::rest::CatalogConfig, configs::Location};
 use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]
@@ -47,12 +60,149 @@ impl Catalog for super::PostgresCatalog {
     type Transaction = PostgresTransaction;
     type State = CatalogState;
 
-    async fn list_namespaces(
+    // ---------------- Bootstrap ----------------
+    async fn bootstrap<'a>(
+        terms_accepted: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<bool> {
+        bootstrap(terms_accepted, &mut **transaction).await
+    }
+
+    async fn get_server_info(
+        catalog_state: Self::State,
+    ) -> std::result::Result<StartupValidationData, ErrorModel> {
+        get_validation_data(&catalog_state.read_pool()).await
+    }
+
+    // ---------------- Role Management API ----------------
+    async fn create_role<'a>(
+        role_id: RoleId,
+        project_id: ProjectIdent,
+        role_name: &str,
+        description: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Role> {
+        create_role(
+            role_id,
+            project_id,
+            role_name,
+            description,
+            &mut **transaction,
+        )
+        .await
+    }
+
+    async fn update_role<'a>(
+        role_id: RoleId,
+        role_name: &str,
+        description: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<Role>> {
+        update_role(role_id, role_name, description, &mut **transaction).await
+    }
+
+    async fn search_role(
+        search_term: &str,
+        catalog_state: Self::State,
+    ) -> Result<SearchRoleResponse> {
+        search_role(search_term, &catalog_state.read_pool()).await
+    }
+
+    async fn list_roles<'a>(
+        filter_project_id: Option<ProjectIdent>,
+        filter_role_id: Option<Vec<RoleId>>,
+        filter_name: Option<String>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesResponse> {
+        list_roles(
+            filter_project_id,
+            filter_role_id,
+            filter_name,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn delete_role<'a>(
+        role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<()>> {
+        delete_role(role_id, &mut **transaction).await
+    }
+
+    // ---------------- User Management API ----------------
+    async fn create_or_update_user<'a>(
+        user_id: &UserId,
+        name: &str,
+        email: Option<&str>,
+        last_updated_with: UserLastUpdatedWith,
+        user_type: UserType,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<CreateOrUpdateUserResponse> {
+        create_or_update_user(
+            user_id,
+            name,
+            email,
+            last_updated_with,
+            user_type,
+            &mut **transaction,
+        )
+        .await
+    }
+
+    async fn search_user(
+        search_term: &str,
+        catalog_state: Self::State,
+    ) -> Result<SearchUserResponse> {
+        search_user(search_term, &catalog_state.read_pool()).await
+    }
+
+    /// Return Ok(vec[]) if the user does not exist.
+    async fn list_user(
+        filter_user_id: Option<Vec<UserId>>,
+        filter_name: Option<String>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListUsersResponse> {
+        list_users(
+            filter_user_id,
+            filter_name,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn delete_user<'a>(
+        user_id: UserId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<()>> {
+        delete_user(user_id, &mut **transaction).await
+    }
+
+    async fn get_warehouse_by_name(
+        warehouse_name: &str,
+        project_id: ProjectIdent,
+        catalog_state: CatalogState,
+    ) -> Result<Option<WarehouseIdent>> {
+        get_warehouse_by_name(warehouse_name, project_id, catalog_state).await
+    }
+
+    async fn get_config_for_warehouse(
+        warehouse_id: WarehouseIdent,
+        catalog_state: CatalogState,
+    ) -> Result<Option<CatalogConfig>> {
+        get_config_for_warehouse(warehouse_id, catalog_state).await
+    }
+
+    async fn list_namespaces<'a>(
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
-        catalog_state: CatalogState,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<ListNamespacesResponse> {
-        list_namespaces(warehouse_id, query, catalog_state).await
+        list_namespaces(warehouse_id, query, transaction).await
     }
 
     async fn create_namespace<'a>(
@@ -66,35 +216,35 @@ impl Catalog for super::PostgresCatalog {
 
     async fn get_namespace<'a>(
         warehouse_id: WarehouseIdent,
-        namespace: &NamespaceIdent,
+        namespace_id: NamespaceIdentUuid,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<GetNamespaceResponse> {
-        get_namespace(warehouse_id, namespace, transaction).await
+        get_namespace(warehouse_id, namespace_id, transaction).await
     }
 
-    async fn namespace_ident_to_id(
+    async fn namespace_to_id<'a>(
         warehouse_id: WarehouseIdent,
         namespace: &NamespaceIdent,
-        catalog_state: CatalogState,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<NamespaceIdentUuid>> {
-        namespace_ident_to_id(warehouse_id, namespace, catalog_state).await
+        namespace_to_id(warehouse_id, namespace, transaction).await
     }
 
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
-        namespace: &NamespaceIdent,
+        namespace_id: NamespaceIdentUuid,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
-        drop_namespace(warehouse_id, namespace, transaction).await
+        drop_namespace(warehouse_id, namespace_id, transaction).await
     }
 
     async fn update_namespace_properties<'a>(
         warehouse_id: WarehouseIdent,
-        namespace: &NamespaceIdent,
+        namespace_id: NamespaceIdentUuid,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
-        update_namespace_properties(warehouse_id, namespace, properties, transaction).await
+        update_namespace_properties(warehouse_id, namespace_id, properties, transaction).await
     }
 
     async fn create_table<'a>(
@@ -104,36 +254,36 @@ impl Catalog for super::PostgresCatalog {
         create_table(table_creation, transaction).await
     }
 
-    async fn list_tables(
+    async fn list_tables<'a>(
         warehouse_id: WarehouseIdent,
         namespace: &NamespaceIdent,
-        list_flags: crate::service::ListFlags,
-        catalog_state: CatalogState,
+        list_flags: ListFlags,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>> {
         list_tables(
             warehouse_id,
             namespace,
             list_flags,
-            catalog_state,
+            &mut **transaction,
             pagination_query,
         )
         .await
     }
 
-    async fn table_ident_to_id(
+    async fn table_to_id<'a>(
         warehouse_id: WarehouseIdent,
         table: &TableIdent,
-        list_flags: crate::service::ListFlags,
-        catalog_state: Self::State,
+        list_flags: ListFlags,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<TableIdentUuid>> {
-        table_ident_to_id(warehouse_id, table, list_flags, &catalog_state.read_pool()).await
+        table_ident_to_id(warehouse_id, table, list_flags, &mut **transaction).await
     }
 
     async fn table_idents_to_ids(
         warehouse_id: WarehouseIdent,
         tables: HashSet<&TableIdent>,
-        list_flags: crate::service::ListFlags,
+        list_flags: ListFlags,
         catalog_state: Self::State,
     ) -> Result<HashMap<TableIdent, Option<TableIdentUuid>>> {
         table_idents_to_ids(warehouse_id, tables, list_flags, &catalog_state.read_pool()).await
@@ -152,18 +302,18 @@ impl Catalog for super::PostgresCatalog {
     async fn get_table_metadata_by_id(
         warehouse_id: WarehouseIdent,
         table: TableIdentUuid,
-        list_flags: crate::service::ListFlags,
+        list_flags: ListFlags,
         catalog_state: Self::State,
-    ) -> Result<GetTableMetadataResponse> {
+    ) -> Result<Option<GetTableMetadataResponse>> {
         get_table_metadata_by_id(warehouse_id, table, list_flags, catalog_state).await
     }
 
     async fn get_table_metadata_by_s3_location(
         warehouse_id: WarehouseIdent,
         location: &Location,
-        list_flags: crate::service::ListFlags,
+        list_flags: ListFlags,
         catalog_state: Self::State,
-    ) -> Result<GetTableMetadataResponse> {
+    ) -> Result<Option<GetTableMetadataResponse>> {
         get_table_metadata_by_s3_location(warehouse_id, location, list_flags, catalog_state).await
     }
 
@@ -261,16 +411,9 @@ impl Catalog for super::PostgresCatalog {
     async fn list_warehouses(
         project_id: ProjectIdent,
         include_inactive: Option<Vec<WarehouseStatus>>,
-        warehouse_id_filter: Option<&HashSet<WarehouseIdent>>,
         catalog_state: Self::State,
     ) -> Result<Vec<GetWarehouseResponse>> {
-        list_warehouses(
-            project_id,
-            include_inactive,
-            warehouse_id_filter,
-            catalog_state,
-        )
-        .await
+        list_warehouses(project_id, include_inactive, catalog_state).await
     }
 
     async fn get_warehouse<'a>(
@@ -318,12 +461,12 @@ impl Catalog for super::PostgresCatalog {
         .await
     }
 
-    async fn view_ident_to_id(
+    async fn view_to_id<'a>(
         warehouse_id: WarehouseIdent,
         view: &TableIdent,
-        catalog_state: Self::State,
-    ) -> Result<Option<TableIdentUuid>> {
-        view_ident_to_id(warehouse_id, view, false, &catalog_state.read_pool()).await
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<ViewIdentUuid>> {
+        view_ident_to_id(warehouse_id, view, false, &mut **transaction).await
     }
 
     async fn create_view<'a>(
@@ -346,25 +489,25 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn load_view<'a>(
-        view_id: TableIdentUuid,
+        view_id: ViewIdentUuid,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<crate::implementations::postgres::tabular::view::ViewMetadataWithLocation> {
         load_view(view_id, include_deleted, &mut *transaction).await
     }
 
-    async fn list_views(
+    async fn list_views<'a>(
         warehouse_id: WarehouseIdent,
         namespace: &NamespaceIdent,
         include_deleted: bool,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedTabulars<ViewIdentUuid, TableIdent>> {
         list_views(
             warehouse_id,
             namespace,
             include_deleted,
-            catalog_state,
+            &mut **transaction,
             pagination_query,
         )
         .await
@@ -372,7 +515,7 @@ impl Catalog for super::PostgresCatalog {
 
     async fn update_view_metadata(
         namespace_id: NamespaceIdentUuid,
-        view_id: TableIdentUuid,
+        view_id: ViewIdentUuid,
         view: &TableIdent,
         metadata_location: &Location,
         metadata: ViewMetadata,
@@ -392,15 +535,15 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn drop_view<'a>(
-        table_id: TableIdentUuid,
+        view_id: ViewIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String> {
-        drop_view(table_id, transaction).await
+        drop_view(view_id, transaction).await
     }
 
     async fn rename_view(
         warehouse_id: WarehouseIdent,
-        source_id: TableIdentUuid,
+        source_id: ViewIdentUuid,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,

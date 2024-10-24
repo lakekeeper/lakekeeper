@@ -1,3 +1,4 @@
+{"timestamp":"2024-10-23T11:10:36.805951Z","level":"WARN","message":"THIS IS UNSAFE! Using default encryption key for secrets in postgres, please set a proper key using ICEBERG_REST__PG_ENCRYPTION_KEY environment variable.","target":"iceberg_catalog::config","filename":"crates/iceberg-catalog/src/config.rs","line_number":55}
 openapi: 3.0.3
 info:
   title: iceberg-catalog
@@ -7,24 +8,82 @@ info:
     name: Apache-2.0
   version: 0.4.0
 paths:
-  /management/v1/project:
-    get:
+  /management/v1/bootstrap:
+    post:
       tags:
-      - management
-      summary: List all projects the requesting user has access to
-      operationId: list_projects
+      - server
+      summary: Creates the user in the catalog if it does not exist.
+      description: |-
+        If the user exists, it updates the users' metadata from the token.
+        The token sent to this endpoint should have "profile" and "email" scopes.
+      operationId: bootstrap
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
+        required: true
       responses:
         '200':
-          description: List of projects
+          description: Server bootstrapped successfully
+  /management/v1/default-project:
+    get:
+      tags:
+      - project
+      summary: Get the default project
+      operationId: get_default_project
+      responses:
+        '200':
+          description: Project details
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ListProjectsResponse'
+                  $ref: '#/components/schemas/GetProjectResponse'
+    delete:
+      tags:
+      - project
+      summary: Delete the default project
+      operationId: delete_default_project
+      responses:
+        '200':
+          description: Project deleted successfully
+  /management/v1/default-project/rename:
     post:
       tags:
-      - management
+      - project
+      summary: Rename the default project
+      operationId: rename_default_project
+      requestBody:
+        description: ''
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameProjectRequest'
+        required: true
+      responses:
+        '200':
+          description: Project renamed successfully
+  /management/v1/info:
+    get:
+      tags:
+      - server
+      summary: Get information about the server
+      operationId: get_server_info
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServerInfo'
+  /management/v1/project:
+    post:
+      tags:
+      - project
       summary: Create a new project
       operationId: create_project
       requestBody:
@@ -42,13 +101,28 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ProjectResponse'
+                  $ref: '#/components/schemas/CreateProjectResponse'
+  /management/v1/project-list:
+    get:
+      tags:
+      - project
+      summary: List all projects the requesting user has access to
+      operationId: list_projects
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ListProjectsResponse'
   /management/v1/project/{project_id}:
     get:
       tags:
-      - management
-      summary: Get a Project by ID
-      operationId: get_project
+      - project
+      summary: Get a specific project by id
+      operationId: get_project_by_id
       parameters:
       - name: project_id
         in: path
@@ -67,10 +141,9 @@ paths:
                   $ref: '#/components/schemas/GetProjectResponse'
     delete:
       tags:
-      - management
-      summary: Delete a project by ID
-      description: No warehouses must be present in the project to delete it.
-      operationId: delete_project
+      - project
+      summary: Delete the default project
+      operationId: delete_project_by_id
       parameters:
       - name: project_id
         in: path
@@ -84,9 +157,9 @@ paths:
   /management/v1/project/{project_id}/rename:
     post:
       tags:
-      - management
-      summary: Rename a project
-      operationId: rename_project
+      - project
+      summary: Rename project by id
+      operationId: rename_project_by_id
       parameters:
       - name: project_id
         in: path
@@ -104,17 +177,305 @@ paths:
       responses:
         '200':
           description: Project renamed successfully
+  /management/v1/role:
+    get:
+      tags:
+      - role
+      summary: List roles in a project
+      operationId: list_roles
+      parameters:
+      - name: name
+        in: query
+        description: Search for a specific role name
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: pageToken
+        in: query
+        description: Next page token
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: pageSize
+        in: query
+        description: |-
+          Signals an upper bound of the number of results that a client will receive.
+          Default: 100
+        required: false
+        schema:
+          type: integer
+          format: int32
+      - name: projectId
+        in: query
+        description: |-
+          Project ID from which roles should be listed
+          Only required if the project ID cannot be inferred from the
+          users token and no default project is set.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ListRolesResponse'
+    post:
+      tags:
+      - role
+      summary: Create a new role
+      operationId: create_role
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+        required: true
+      responses:
+        '201':
+          description: Role successfully created
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+  /management/v1/role/{id}:
+    get:
+      tags:
+      - role
+      summary: Get a role
+      operationId: get_role
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Role details
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+    post:
+      tags:
+      - role
+      summary: Update a role
+      operationId: update_role
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+        required: true
+      responses:
+        '200':
+          description: Role updated successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+    delete:
+      tags:
+      - role
+      summary: Delete role
+      description: All permissions of the role are permanently removed.
+      operationId: delete_role
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Role deleted successfully
+  /management/v1/search/user:
+    post:
+      tags:
+      - user
+      summary: Search for users (Fuzzy)
+      operationId: search_user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchUserRequest'
+        required: true
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SearchUserResponse'
+  /management/v1/user:
+    get:
+      tags:
+      - user
+      summary: List users
+      operationId: list_user
+      parameters:
+      - name: name
+        in: query
+        description: Search for a specific username
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: pageToken
+        in: query
+        description: Next page token
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: pageSize
+        in: query
+        description: |-
+          Signals an upper bound of the number of results that a client will receive.
+          Default: 100
+        required: false
+        schema:
+          type: integer
+          format: int32
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ListUsersResponse'
+  /management/v1/user/from-token:
+    post:
+      tags:
+      - user
+      summary: Creates the user in the catalog if it does not exist.
+      description: |-
+        If the user exists, it updates the users' metadata from the token.
+        The token sent to this endpoint should have "profile" and "email" scopes.
+      operationId: create_user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+        required: true
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+  /management/v1/user/{id}:
+    get:
+      tags:
+      - user
+      summary: Get a user by ID
+      operationId: get_user
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+    put:
+      tags:
+      - user
+      summary: Update details of a user. Replaces the current details with the new details.
+      description: If a field is not provided, it is set to `None`.
+      operationId: update_user
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+        required: true
+      responses:
+        '200':
+          description: User details updated successfully
+    delete:
+      tags:
+      - user
+      summary: Delete user
+      description: |-
+        All permissions of the user are permanently removed and need to be re-added
+        if the user is re-registered.
+      operationId: delete_user
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: User deleted successfully
   /management/v1/warehouse:
     get:
       tags:
-      - management
+      - warehouse
       summary: List all warehouses in a project
       description: |-
         By default, this endpoint does not return deactivated warehouses.
         To include deactivated warehouses, set the `include_deactivated` query parameter to `true`.
       operationId: list_warehouses
       parameters:
-      - name: warehouse-status
+      - name: warehouseStatus
         in: query
         description: |-
           Optional filter to return only warehouses
@@ -126,7 +487,7 @@ paths:
           items:
             $ref: '#/components/schemas/WarehouseStatus'
           nullable: true
-      - name: project-id
+      - name: projectId
         in: query
         description: |-
           The project ID to list warehouses for.
@@ -147,7 +508,7 @@ paths:
                   $ref: '#/components/schemas/ListWarehousesResponse'
     post:
       tags:
-      - management
+      - warehouse
       summary: Create a new warehouse.
       description: |-
         Create a new warehouse in the given project. The project
@@ -172,7 +533,7 @@ paths:
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
-      - management
+      - warehouse
       summary: Get a warehouse by ID
       operationId: get_warehouse
       parameters:
@@ -193,7 +554,7 @@ paths:
                   $ref: '#/components/schemas/GetWarehouseResponse'
     delete:
       tags:
-      - management
+      - warehouse
       summary: Delete a warehouse by ID
       operationId: delete_warehouse
       parameters:
@@ -209,7 +570,7 @@ paths:
   /management/v1/warehouse/{warehouse_id}/activate:
     post:
       tags:
-      - management
+      - warehouse
       summary: Activate a warehouse
       operationId: activate_warehouse
       parameters:
@@ -225,7 +586,7 @@ paths:
   /management/v1/warehouse/{warehouse_id}/deactivate:
     post:
       tags:
-      - management
+      - warehouse
       summary: Deactivate a warehouse
       operationId: deactivate_warehouse
       parameters:
@@ -241,11 +602,25 @@ paths:
   /management/v1/warehouse/{warehouse_id}/deleted_tabulars:
     get:
       tags:
-      - management
+      - warehouse
       summary: List soft-deleted tabulars
       description: List all soft-deleted tabulars in the warehouse that are visible to you.
       operationId: list_deleted_tabulars
       parameters:
+      - name: pageToken
+        in: query
+        description: Next page token
+        required: false
+        schema:
+          type: string
+      - name: pageSize
+        in: query
+        description: Signals an upper bound of the number of results that a client will receive.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          nullable: true
       - name: warehouse_id
         in: path
         required: true
@@ -264,7 +639,7 @@ paths:
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
-      - management
+      - warehouse
       summary: Rename a warehouse
       operationId: rename_warehouse
       parameters:
@@ -286,8 +661,8 @@ paths:
   /management/v1/warehouse/{warehouse_id}/storage:
     post:
       tags:
-      - management
-      summary: Update the storage profile of a warehouse
+      - warehouse
+      summary: Update the storage profile of a warehouse including its storage credential.
       operationId: update_storage_profile
       parameters:
       - name: warehouse_id
@@ -308,8 +683,9 @@ paths:
   /management/v1/warehouse/{warehouse_id}/storage-credential:
     post:
       tags:
-      - management
-      summary: Update the storage credential of a warehouse
+      - warehouse
+      summary: Update the storage credential of a warehouse. The storage profile is not modified.
+      description: This can be used to update credentials before expiration.
       operationId: update_storage_credential
       parameters:
       - name: warehouse_id
@@ -327,6 +703,21 @@ paths:
       responses:
         '200':
           description: Storage credential updated successfully
+  /management/v1/whoami:
+    get:
+      tags:
+      - user
+      summary: Get the currently authenticated user
+      operationId: whoami
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
 components:
   schemas:
     AzCredential:
@@ -383,6 +774,31 @@ components:
           description: 'The validity of the sas token in seconds. Default: 3600.'
           nullable: true
           minimum: 0
+    BootstrapRequest:
+      type: object
+      required:
+      - accept-terms-of-use
+      properties:
+        accept-terms-of-use:
+          type: boolean
+          description: Set to true if you accept LAKEKEEPER terms of use.
+        user-email:
+          type: string
+          description: |-
+            Email of the user performing bootstrap. Optional. If not provided
+            the server will try to parse the email from the provided token.
+          nullable: true
+        user-name:
+          type: string
+          description: |-
+            Name of the user performing bootstrap. Optional. If not provided
+            the server will try to parse the name from the provided token.
+            The initial user will become the global admin.
+          nullable: true
+        user-type:
+          allOf:
+          - $ref: '#/components/schemas/UserType'
+          nullable: true
     CreateProjectRequest:
       type: object
       required:
@@ -407,11 +823,60 @@ components:
           type: string
           format: uuid
           description: ID of the created project.
+    CreateRoleRequest:
+      type: object
+      required:
+      - name
+      properties:
+        description:
+          type: string
+          description: Description of the role
+          nullable: true
+        name:
+          type: string
+          description: Name of the role to create
+        project-id:
+          type: string
+          format: uuid
+          description: |-
+            Project ID in which the role is created.
+            Only required if the project ID cannot be inferred and no default project is set.
+    CreateUserRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          description: |-
+            Email of the user. If id is not specified, the email is extracted
+            from the provided token.
+          nullable: true
+        id:
+          type: string
+          description: |-
+            Subject id of the user - allows user provisioning.
+            The id must be identical to the subject in JWT tokens.
+            To create users in self-service manner, do not set the id.
+            The id is then extracted from the passed JWT token.
+          nullable: true
+        name:
+          type: string
+          description: |-
+            Name of the user. If id is not specified, the name is extracted
+            from the provided token.
+          nullable: true
+        update-if-exists:
+          type: boolean
+          description: |-
+            Update the user if it already exists
+            Default: false
+        user-type:
+          allOf:
+          - $ref: '#/components/schemas/UserType'
+          nullable: true
     CreateWarehouseRequest:
       type: object
       required:
       - warehouse-name
-      - project-id
       - storage-profile
       properties:
         delete-profile:
@@ -419,7 +884,10 @@ components:
         project-id:
           type: string
           format: uuid
-          description: Project ID in which to create the warehouse.
+          description: |-
+            Project ID in which to create the warehouse.
+            If no default project is set for this server, this field is required.
+          nullable: true
         storage-credential:
           allOf:
           - $ref: '#/components/schemas/StorageCredential'
@@ -430,7 +898,7 @@ components:
           type: string
           description: |-
             Name of the warehouse to create. Must be unique
-            within a project.
+            within a project and may not contain "/"
     CreateWarehouseResponse:
       type: object
       required:
@@ -580,14 +1048,14 @@ components:
     GetProjectResponse:
       type: object
       required:
-      - project_id
-      - project_name
+      - project-id
+      - project-name
       properties:
-        project_id:
+        project-id:
           type: string
           format: uuid
           description: ID of the project.
-        project_name:
+        project-name:
           type: string
           description: Name of the project
     GetWarehouseResponse:
@@ -638,17 +1106,38 @@ components:
           items:
             $ref: '#/components/schemas/GetProjectResponse'
           description: List of projects
+    ListRolesResponse:
+      type: object
+      required:
+      - roles
+      properties:
+        next_page_token:
+          type: string
+          nullable: true
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+    ListUsersResponse:
+      type: object
+      required:
+      - users
+      properties:
+        next_page_token:
+          type: string
+          nullable: true
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
     ListWarehousesRequest:
       type: object
       properties:
-        project-id:
-          type: string
-          format: uuid
-          description: |-
-            The project ID to list warehouses for.
-            Setting a warehouse is required.
+        projectId:
+          allOf:
+          - $ref: '#/components/schemas/ProjectIdent'
           nullable: true
-        warehouse-status:
+        warehouseStatus:
           type: array
           items:
             $ref: '#/components/schemas/WarehouseStatus'
@@ -667,6 +1156,21 @@ components:
           items:
             $ref: '#/components/schemas/GetWarehouseResponse'
           description: List of warehouses in the project.
+    RenameProjectRequest:
+      type: object
+      required:
+      - new-name
+      properties:
+        new-name:
+          type: string
+          description: New name for the project.
+        project-id:
+          type: string
+          format: uuid
+          description: |-
+            Optional project ID.
+            Only required if the project ID cannot be inferred and no default project is set.
+          nullable: true
     RenameWarehouseRequest:
       type: object
       required:
@@ -675,6 +1179,38 @@ components:
         new-name:
           type: string
           description: New name for the warehouse.
+    Role:
+      type: object
+      required:
+      - id
+      - name
+      - project-id
+      - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the role was created
+        description:
+          type: string
+          description: Description of the role
+          nullable: true
+        id:
+          type: string
+          format: uuid
+          description: Globally unique id of this role
+        name:
+          type: string
+          description: Name of the role
+        project-id:
+          type: string
+          format: uuid
+          description: Project ID in which the role is created.
+        updated-at:
+          type: string
+          format: date-time
+          description: Timestamp when the role was last updated
+          nullable: true
     S3Credential:
       oneOf:
       - type: object
@@ -744,6 +1280,88 @@ components:
           type: string
           description: Optional role ARN to assume for sts vended-credentials
           nullable: true
+    SearchRoleRequest:
+      type: object
+      required:
+      - search
+      properties:
+        project-id:
+          allOf:
+          - $ref: '#/components/schemas/ProjectIdent'
+          nullable: true
+        search:
+          type: string
+          description: |-
+            Search string for fuzzy search.
+            Length is truncated to 64 characters.
+    SearchRoleResponse:
+      type: object
+      required:
+      - roles
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+          description: List of users matching the search criteria
+    SearchUser:
+      type: object
+      required:
+      - name
+      - id
+      - user-type
+      properties:
+        id:
+          type: string
+          description: ID of the user
+        name:
+          type: string
+          description: Name of the user
+        user-type:
+          $ref: '#/components/schemas/UserType'
+    SearchUserRequest:
+      type: object
+      required:
+      - search
+      properties:
+        search:
+          type: string
+          description: |-
+            Search string for fuzzy search.
+            Length is truncated to 64 characters.
+    SearchUserResponse:
+      type: object
+      description: Search result for users
+      required:
+      - users
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchUser'
+          description: List of users matching the search criteria
+    ServerInfo:
+      type: object
+      required:
+      - version
+      - bootstrapped
+      - server-id
+      - default-project-id
+      properties:
+        bootstrapped:
+          type: boolean
+          description: Whether the catalog has been bootstrapped.
+        default-project-id:
+          type: string
+          format: uuid
+          description: Default Project ID. Null if not set
+        server-id:
+          type: string
+          format: uuid
+          description: ID of the server.
+        version:
+          type: string
+          description: Version of the server.
     StorageCredential:
       oneOf:
       - allOf:
@@ -843,6 +1461,31 @@ components:
       enum:
       - table
       - view
+    UpdateRoleRequest:
+      type: object
+      required:
+      - name
+      properties:
+        description:
+          type: string
+          description: Description of the role. If not set, the description will be removed.
+          nullable: true
+        name:
+          type: string
+          description: Name of the role to create
+    UpdateUserRequest:
+      type: object
+      required:
+      - name
+      - user_type
+      properties:
+        email:
+          type: string
+          nullable: true
+        name:
+          type: string
+        user_type:
+          $ref: '#/components/schemas/UserType'
     UpdateWarehouseCredentialRequest:
       type: object
       properties:
@@ -861,6 +1504,52 @@ components:
           nullable: true
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
+    User:
+      type: object
+      description: User of the catalog
+      required:
+      - name
+      - id
+      - user-type
+      - last-updated-with
+      - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was created
+        email:
+          type: string
+          description: Email of the user
+          nullable: true
+        id:
+          type: string
+          description: The user's ID
+        last-updated-with:
+          $ref: '#/components/schemas/UserLastUpdatedWith'
+        name:
+          type: string
+          description: Name of the user
+        updated-at:
+          type: string
+          format: date-time
+          description: Timestamp when the user was last updated
+          nullable: true
+        user-type:
+          $ref: '#/components/schemas/UserType'
+    UserLastUpdatedWith:
+      type: string
+      description: How the user was last updated
+      enum:
+      - create-endpoint
+      - config-call-creation
+      - update-endpoint
+    UserType:
+      type: string
+      description: Type of a User
+      enum:
+      - human
+      - application
     WarehouseStatus:
       type: string
       description: Status of a warehouse
@@ -868,6 +1557,14 @@ components:
       - active
       - inactive
 tags:
-- name: management
-  description: Warehouse management operations
+- name: server
+  description: Manage Server
+- name: project
+  description: Manage Projects
+- name: warehouse
+  description: Manage Warehouses
+- name: user
+  description: Manage Users
+- name: role
+  description: Manage Roles
 

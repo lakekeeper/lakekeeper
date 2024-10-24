@@ -105,11 +105,11 @@ export AWS_S3_STS_ROLE_ARN=arn:aws:iam::123456789012:role/role-name
 
 # the values below should work with the default minio in our docker-compose
 export TEST_MINIO=1
-export ICEBERG_REST_TEST_S3_BUCKET=tests
-export ICEBERG_REST_TEST_S3_REGION=local
-export ICEBERG_REST_TEST_S3_ACCESS_KEY=minio-root-user
-export ICEBERG_REST_TEST_S3_SECRET_KEY=minio-root-password
-export ICEBERG_REST_TEST_S3_ENDPOINT=http://localhost:9000
+export LAKEKEEPER_TEST__S3_BUCKET=tests
+export LAKEKEEPER_TEST__S3_REGION=local
+export LAKEKEEPER_TEST__S3_ACCESS_KEY=minio-root-user
+export LAKEKEEPER_TEST__S3_SECRET_KEY=minio-root-password
+export LAKEKEEPER_TEST__S3_ENDPOINT=http://localhost:9000
 ```
 
 You may then run a test via:

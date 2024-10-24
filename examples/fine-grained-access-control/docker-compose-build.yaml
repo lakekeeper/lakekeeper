@@ -1,0 +1,34 @@
+# Builds the docker image locally instead of pulling the latest tag from quay.io.
+# Use by running the following command from the root folder:
+# docker compose -f docker-compose.yaml -f docker-compose-build.yaml up --build -d
+services:
+  server:
+    image: localhost/iceberg-catalog-local:latest
+    build:
+      context: ../../
+      dockerfile: docker/full.Dockerfile
+    environment:
+      - ICEBERG_REST__ALLOW_ORIGIN=http://localhost:3002
+  migrate:
+    image: localhost/iceberg-catalog-local:latest
+    pull_policy: never
+  db:
+    ports:
+      - "2345:5432"
+  minio:
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+  openfga-db:
+    ports:
+      - "2346:5432"
+  ui:
+    build:
+      context: ../../ui/catalog
+      dockerfile: Dockerfile
+    ports:
+      - 3002:8080
+    environment:
+      - VITE_APP_ICEBERG_CATALOG_URL=http://localhost:8080
+    networks:
+      - iceberg_net

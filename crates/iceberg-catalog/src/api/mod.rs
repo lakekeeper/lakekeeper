@@ -16,7 +16,7 @@ pub struct ApiContext<S: ThreadSafe> {
 
 pub type Result<T, E = IcebergErrorResponse> = std::result::Result<T, E>;
 
-/// This function will wait for a signal to shutdown the service.
+/// This function will wait for a signal to shut down the service.
 /// It will wait for either a Ctrl+C signal or a SIGTERM signal.
 ///
 /// # Panics
@@ -45,4 +45,12 @@ pub async fn shutdown_signal() {
         () = ctrl_c => {},
         () = terminate => {},
     }
+}
+
+pub(crate) fn set_not_found_status_code(
+    e: impl Into<IcebergErrorResponse>,
+) -> IcebergErrorResponse {
+    let mut e = e.into();
+    e.error.code = http::StatusCode::NOT_FOUND.into();
+    e
 }

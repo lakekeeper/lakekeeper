@@ -12,8 +12,8 @@ use iceberg_ext::NamespaceIdent;
 use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery, MAX_PAGE_SIZE};
 
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::tabular_idents::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
 use crate::service::DeletionDetails;
+use crate::service::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
 use iceberg_ext::configs::Location;
 use sqlx::postgres::PgArguments;
 use sqlx::{Arguments, Execute, FromRow, Postgres, QueryBuilder};
@@ -35,7 +35,7 @@ pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
     warehouse_id: WarehouseIdent,
     table: &TabularIdentBorrowed<'a>,
     list_flags: crate::service::ListFlags,
-    catalog_state: E,
+    transaction: E,
 ) -> Result<Option<TabularIdentUuid>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
@@ -63,7 +63,7 @@ where
         list_flags.include_deleted,
         list_flags.include_staged
     )
-    .fetch_one(catalog_state)
+    .fetch_one(transaction)
     .await
     .map(|r| {
         Some(match r.typ {

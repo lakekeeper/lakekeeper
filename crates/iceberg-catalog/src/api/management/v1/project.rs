@@ -5,14 +5,22 @@ pub use crate::service::storage::{
     AzCredential, AzdlsProfile, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
+use serde::{Deserialize, Serialize};
 
+use crate::api::management::v1::role::require_project_id;
+use crate::service::authz::{CatalogProjectAction, CatalogServerAction};
 pub use crate::service::WarehouseStatus;
-use crate::service::{auth::AuthZHandler, secrets::SecretStore, Catalog, State, Transaction};
+use crate::service::{
+    authz::{Authorizer, ListProjectsResponse as AuthZListProjectsResponse},
+    secrets::SecretStore,
+    Catalog, State, Transaction,
+};
 use crate::ProjectIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use utoipa::ToSchema;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct GetProjectResponse {
     /// ID of the project.
     pub project_id: uuid::Uuid,
@@ -20,21 +28,26 @@ pub struct GetProjectResponse {
     pub project_name: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
+    /// Optional project ID.
+    /// Only required if the project ID cannot be inferred and no default project is set.
+    #[serde(default)]
+    #[schema(value_type = Option::<uuid::Uuid>)]
+    pub project_id: Option<ProjectIdent>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct ListProjectsResponse {
     /// List of projects
     pub projects: Vec<GetProjectResponse>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectRequest {
     /// Name of the project to create.
@@ -44,7 +57,7 @@ pub struct CreateProjectRequest {
     pub project_id: Option<uuid::Uuid>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectResponse {
     /// ID of the created project.
@@ -63,17 +76,20 @@ impl axum::response::IntoResponse for GetProjectResponse {
     }
 }
 
-impl<C: Catalog, A: AuthZHandler, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
+impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub(super) trait Service<C: Catalog, A: AuthZHandler, S: SecretStore> {
+pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     async fn create_project(
         request: CreateProjectRequest,
         context: ApiContext<State<A, C, S>>,
-        _request_metadata: RequestMetadata,
+        request_metadata: RequestMetadata,
     ) -> Result<CreateProjectResponse> {
         // ------------------- AuthZ -------------------
-        // Todo: AuthZ
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_server_action(&request_metadata, &CatalogServerAction::CanCreateProject)
+            .await?;
 
         // ------------------- Business Logic -------------------
         let CreateProjectRequest {
@@ -84,6 +100,9 @@ pub(super) trait Service<C: Catalog, A: AuthZHandler, S: SecretStore> {
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let project_id: ProjectIdent = project_id.unwrap_or(uuid::Uuid::now_v7()).into();
         C::create_project(project_id, project_name, t.transaction()).await?;
+        authorizer
+            .create_project(&request_metadata, project_id)
+            .await?;
         t.commit().await?;
 
         Ok(CreateProjectResponse {
@@ -92,60 +111,87 @@ pub(super) trait Service<C: Catalog, A: AuthZHandler, S: SecretStore> {
     }
 
     async fn rename_project(
-        warehouse_id: ProjectIdent,
+        project_ident: Option<ProjectIdent>,
         request: RenameProjectRequest,
         context: ApiContext<State<A, C, S>>,
-        _request_metadata: RequestMetadata,
+        request_metadata: RequestMetadata,
     ) -> Result<()> {
+        let project_id = require_project_id(project_ident, &request_metadata)?;
         // ------------------- AuthZ -------------------
-        // ToDo AuthZ
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                project_id,
+                &CatalogProjectAction::CanRename,
+            )
+            .await?;
 
         // ------------------- Business Logic -------------------
         validate_project_name(&request.new_name)?;
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        C::rename_project(warehouse_id, &request.new_name, transaction.transaction()).await?;
+        C::rename_project(project_id, &request.new_name, transaction.transaction()).await?;
         transaction.commit().await?;
 
         Ok(())
     }
 
     async fn get_project(
-        project_id: uuid::Uuid,
+        project_ident: Option<ProjectIdent>,
         context: ApiContext<State<A, C, S>>,
-        _request_metadata: RequestMetadata,
+        request_metadata: RequestMetadata,
     ) -> Result<GetProjectResponse> {
+        let project_id = require_project_id(project_ident, &request_metadata)?;
         // ------------------- AuthZ -------------------
-        // Todo: AuthZ
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                project_id,
+                &CatalogProjectAction::CanGetMetadata,
+            )
+            .await?;
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let project = C::get_project(project_id.into(), t.transaction())
-            .await?
-            .ok_or(ErrorModel::not_found(
-                format!("Project with id {project_id} not found."),
-                "ProjectNotFound",
-                None,
-            ))?;
+        let project =
+            C::get_project(project_id, t.transaction())
+                .await?
+                .ok_or(ErrorModel::not_found(
+                    format!("Project with id {project_id} not found."),
+                    "ProjectNotFound",
+                    None,
+                ))?;
 
         Ok(GetProjectResponse {
-            project_id,
+            project_id: *project_id,
             project_name: project.name,
         })
     }
 
     async fn delete_project(
-        project_id: uuid::Uuid,
+        project_ident: Option<ProjectIdent>,
         context: ApiContext<State<A, C, S>>,
-        _request_metadata: RequestMetadata,
+        request_metadata: RequestMetadata,
     ) -> Result<()> {
+        let project_id = require_project_id(project_ident, &request_metadata)?;
         // ------------------- AuthZ -------------------
-        // Todo: AuthZ
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_project_action(
+                &request_metadata,
+                project_id,
+                &CatalogProjectAction::CanDelete,
+            )
+            .await?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
-        C::delete_project(project_id.into(), transaction.transaction()).await?;
-
+        C::delete_project(project_id, transaction.transaction()).await?;
+        authorizer
+            .delete_project(&request_metadata, project_id)
+            .await?;
         transaction.commit().await?;
 
         Ok(())
@@ -156,18 +202,21 @@ pub(super) trait Service<C: Catalog, A: AuthZHandler, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<ListProjectsResponse> {
         // ------------------- AuthZ -------------------
-        let projects = A::check_list_projects(&request_metadata, context.v1_state.auth).await?;
+        let authorizer = context.v1_state.authz;
+        let projects = authorizer.list_projects(&request_metadata).await?;
 
         // ------------------- Business Logic -------------------
-
-        let projects = C::list_projects(projects, context.v1_state.catalog).await?;
-
+        let project_id_filter = match projects {
+            AuthZListProjectsResponse::All => None,
+            AuthZListProjectsResponse::Projects(projects) => Some(projects),
+        };
+        let projects = C::list_projects(project_id_filter, context.v1_state.catalog).await?;
         Ok(ListProjectsResponse {
             projects: projects
                 .into_iter()
-                .map(|r| GetProjectResponse {
-                    project_id: *r.project_id,
-                    project_name: r.name,
+                .map(|project| GetProjectResponse {
+                    project_id: *project.project_id,
+                    project_name: project.name,
                 })
                 .collect(),
         })

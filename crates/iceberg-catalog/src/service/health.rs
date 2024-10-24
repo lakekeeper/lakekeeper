@@ -27,7 +27,7 @@ pub trait HealthExt: Send + Sync + 'static {
     }
 }
 
-#[derive(Clone, Debug, Copy, strum::Display, Deserialize, Serialize)]
+#[derive(Clone, Debug, Copy, PartialEq, strum::Display, Deserialize, Serialize)]
 pub enum HealthStatus {
     #[serde(rename = "ok")]
     Healthy,

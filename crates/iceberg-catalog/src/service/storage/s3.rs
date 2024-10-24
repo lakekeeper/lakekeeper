@@ -19,7 +19,6 @@ use veil::Redact;
 use super::StorageType;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[schema(rename_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
 pub struct S3Profile {
     /// Name of the S3 bucket
@@ -53,7 +52,6 @@ pub struct S3Profile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
-#[schema(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum S3Flavor {
     #[default]
@@ -63,7 +61,6 @@ pub enum S3Flavor {
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
-#[schema(rename_all = "kebab-case")]
 pub enum S3Credential {
     #[serde(rename_all = "kebab-case")]
     AccessKey {
@@ -867,11 +864,11 @@ mod test {
 
         #[tokio::test]
         async fn test_can_validate() {
-            let bucket = std::env::var("ICEBERG_REST_TEST_S3_BUCKET").unwrap();
-            let region = std::env::var("ICEBERG_REST_TEST_S3_REGION").unwrap_or("local".into());
-            let aws_access_key_id = std::env::var("ICEBERG_REST_TEST_S3_ACCESS_KEY").unwrap();
-            let aws_secret_access_key = std::env::var("ICEBERG_REST_TEST_S3_SECRET_KEY").unwrap();
-            let endpoint = std::env::var("ICEBERG_REST_TEST_S3_ENDPOINT").unwrap();
+            let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
+            let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
+            let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
+            let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
+            let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
 
             let cred: StorageCredential = S3Credential::AccessKey {
                 aws_access_key_id,

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE users\n        SET deleted_at = now(),\n            name = 'Deleted User',\n            email = null\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f99df4a161a2e3e67a264fcf3db10b44b603f90d2294440da078ca0ec539e4e"
+}

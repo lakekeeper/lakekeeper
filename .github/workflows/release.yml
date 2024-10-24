@@ -3,10 +3,10 @@ name: 🚀 Release
 on:
   push:
     branches:
-    - main
+      - main
   pull_request:
     paths:
-    - '.github/workflows/release.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 env:
@@ -61,39 +61,38 @@ jobs:
     strategy:
       matrix:
         include:
-        - target: x86_64-unknown-linux-gnu
-          os: ubuntu-latest
-          name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
-          cross: false
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
+            cross: false
 
-        - target: x86_64-unknown-linux-musl
-          os: ubuntu-latest
-          name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
-          cross: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
+            cross: true
 
-        - target: aarch64-unknown-linux-musl
-          os: ubuntu-latest
-          name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
-          cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
+            cross: true
 
-        # Currently disabled due to https://github.com/actions/runner-images/issues/9460
-        # Which prevents us from launching postgres via docker / colima
-        # - target: aarch64-apple-darwin
-        #   os: macos-14
-        #   name: iceberg-catalog-aarch64-apple-darwin.tar.gz
-        #   cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            name: iceberg-catalog-aarch64-apple-darwin.tar.gz
+            cross: false
 
-        - target: x86_64-pc-windows-msvc
-          os: windows-latest
-          name: iceberg-catalog-x86_64-pc-windows-msvc.zip
-          rustflags: -C target-feature=+crt-static
-          cross: false
-
-        - target: aarch64-pc-windows-msvc
-          os: windows-latest
-          name: iceberg-catalog-aarch64-pc-windows-msvc.zip
-          rustflags: -C target-feature=+crt-static
-          cross: false
+    #          - target: x86_64-pc-windows-msvc
+    #            os: windows-latest
+    #            name: iceberg-catalog-x86_64-pc-windows-msvc.zip
+    #            rustflags: -C target-feature=+crt-static
+    #            # Windows with cross is extremely slow
+    #            cross: false
+    #
+    #          - target: aarch64-pc-windows-msvc
+    #            os: windows-latest
+    #            name: iceberg-catalog-aarch64-pc-windows-msvc.zip
+    #            rustflags: -C target-feature=+crt-static
+    #            cross: false
 
     runs-on: ${{ matrix.os }}
     continue-on-error: true
@@ -109,26 +108,19 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache: false
-      
-      # - name: Setup docker (missing on MacOS)
-      #   if: matrix.os == 'macos-14'
-      #   run: |
-      #     brew install docker
-      #     # Docker on macOS misses daemon due to licensing, so install colima as runtime
-      #     brew install colima
-      #     colima start
-
-      - name: Run postgres
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          docker run -d --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres -p 5432:5432 postgres:16
-          docker ps -a
 
       - name: Install cross
         if: matrix.cross == true
         uses: taiki-e/install-action@v2
         with:
           tool: cross
+
+      #      - name: Setup cmake
+      #        # C Toolchain for windows for protoc compilation
+      #        if: matrix.os == 'windows-latest'
+      #        uses: jwlawson/actions-setup-cmake@v2
+      #        with:
+      #          cmake-version: '3.16'
 
       - name: Build [Cargo]
         if: matrix.cross == false
@@ -138,12 +130,12 @@ jobs:
         if: matrix.cross == true
         run: cross build --all-features --release --locked --target ${{ matrix.target }}
 
-      - name: Prepare artifacts [Windows]
-        if: matrix.os == 'windows-latest'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../${{ matrix.name }} iceberg-catalog.exe
-          cd -
+      #      - name: Prepare artifacts [Windows]
+      #        if: matrix.os == 'windows-latest'
+      #        run: |
+      #          cd target/${{ matrix.target }}/release
+      #          7z a ../../../${{ matrix.name }} iceberg-catalog.exe
+      #          cd -
 
       - name: Prepare artifacts [-nix]
         if: matrix.os != 'windows-latest'
@@ -161,7 +153,7 @@ jobs:
   build-docker:
     name: Build Docker
     runs-on: ubuntu-latest
-    needs: 
+    needs:
       - build-binary
       - release_please
     services:
@@ -222,15 +214,14 @@ jobs:
             --build-arg "BIN=bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz/iceberg-catalog" .
           docker save -o /tmp/docker-iceberg-catalog-arm64.tar localhost/iceberg-catalog-local:arm64
 
-
       - name: Test Docker (arm64)
         run: |
           cd tests
           docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
           docker compose down
         env:
-          ICEBERG_REST_TEST_SERVER_IMAGE: localhost/iceberg-catalog-local:arm64
-          ICEBERG_REST_TEST_SPARK_IMAGE: apache/spark:3.5.1-java17-python3
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:arm64
+          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -246,8 +237,8 @@ jobs:
           cd tests
           docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
         env:
-          ICEBERG_REST_TEST_SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
-          ICEBERG_REST_TEST_SPARK_IMAGE: apache/spark:3.5.1-java17-python3
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -430,7 +421,7 @@ jobs:
           docker manifest rm quay.io/hansetag/tip-catalog:latest || true
           docker manifest create quay.io/hansetag/tip-catalog:latest quay.io/hansetag/tip-catalog:latest-amd64 quay.io/hansetag/tip-catalog:latest-arm64
           docker manifest push quay.io/hansetag/tip-catalog:latest
-        
+
   publish-container-lakekeeper:
     name: Publish Container (Lakekeeper)
     runs-on: ubuntu-latest

@@ -4,8 +4,10 @@ use crate::api::iceberg::v1::{
     ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters, Prefix, Result,
     UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
+use crate::api::set_not_found_status_code;
 use crate::request_metadata::RequestMetadata;
-use crate::service::{auth::AuthZHandler, secrets::SecretStore, Catalog, State, Transaction as _};
+use crate::service::authz::{CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent};
+use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, State, Transaction as _};
 use crate::service::{GetWarehouseResponse, NamespaceIdentUuid};
 use crate::CONFIG;
 use http::StatusCode;
@@ -19,9 +21,10 @@ pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
 // If this is increased, we need to modify namespace creation and deletion
 // to take care of the hierarchical structure.
 pub const MAX_NAMESPACE_DEPTH: i32 = 1;
+pub const NAMESPACE_ID_PROPERTY: &str = "namespace_id";
 
 #[async_trait::async_trait]
-impl<C: Catalog, A: AuthZHandler, S: SecretStore>
+impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::namespace::Service<State<A, C, S>> for CatalogServer<C, A, S>
 {
     async fn list_namespaces(
@@ -40,16 +43,50 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         parent.as_ref().map(validate_namespace_ident).transpose()?;
 
         // ------------------- AUTHZ -------------------
-        A::check_list_namespace(
-            &request_metadata,
-            warehouse_id,
-            query.parent.as_ref(),
-            state.v1_state.auth,
-        )
-        .await?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanListNamespaces,
+            )
+            .await?;
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+
+        if let Some(parent) = parent {
+            let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
+            authorizer
+                .require_namespace_action(
+                    &request_metadata,
+                    warehouse_id,
+                    namespace_id,
+                    &CatalogNamespaceAction::CanListNamespaces,
+                )
+                .await?;
+        };
 
         // ------------------- BUSINESS LOGIC -------------------
-        C::list_namespaces(warehouse_id, &query, state.v1_state.catalog).await
+
+        let list_namespaces = C::list_namespaces(warehouse_id, &query, t.transaction()).await?;
+        // ToDo: Better pagination with non-empty pages
+        let namespaces: Vec<_> =
+            futures::future::try_join_all(list_namespaces.namespaces.iter().map(|n| {
+                authorizer.is_allowed_namespace_action(
+                    &request_metadata,
+                    warehouse_id,
+                    *n.0,
+                    &CatalogNamespaceAction::CanGetMetadata,
+                )
+            }))
+            .await?
+            .into_iter()
+            .zip(list_namespaces.namespaces.into_iter())
+            .filter_map(|(allowed, namespace)| if allowed { Some(namespace.1) } else { None })
+            .collect();
+        Ok(ListNamespacesResponse {
+            namespaces,
+            next_page_token: list_namespaces.next_page_token,
+        })
     }
 
     async fn create_namespace(
@@ -85,29 +122,37 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         }
 
         // ------------------- AUTHZ -------------------
-        A::check_create_namespace(
-            &request_metadata,
-            warehouse_id,
-            request.namespace.parent().as_ref(),
-            state.v1_state.auth,
-        )
-        .await?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanCreateNamespace,
+            )
+            .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let namespace_id = NamespaceIdentUuid::default();
-        // Set location if not specified - validate location if specified
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
+        // Set location if not specified - validate location if specified
         set_namespace_location_property(&mut namespace_props, &warehouse, namespace_id)?;
 
         let mut request = request;
         request.properties = Some(namespace_props.into());
 
         let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        authorizer
+            .create_namespace(
+                &request_metadata,
+                namespace_id,
+                NamespaceParent::Warehouse(warehouse_id),
+            )
+            .await?;
         t.commit().await?;
         Ok(r)
     }
@@ -123,17 +168,34 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         validate_namespace_ident(&parameters.namespace)?;
 
         // ------------------- AUTHZ -------------------
-        A::check_load_namespace_metadata(
-            &request_metadata,
-            warehouse_id,
-            &parameters.namespace,
-            state.v1_state.auth,
-        )
-        .await?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
+
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let namespace_id =
+            C::namespace_to_id(warehouse_id, &parameters.namespace, t.transaction()).await; // Cannot fail before authz
+
+        let namespace_id = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                namespace_id,
+                &CatalogNamespaceAction::CanGetMetadata,
+            )
+            .await
+            .map_err(set_not_found_status_code)?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let r = C::get_namespace(warehouse_id, &parameters.namespace, t.transaction()).await?;
+        let mut r = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
+        r.properties
+            .as_mut()
+            .map(|p| p.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string()));
         t.commit().await?;
         Ok(GetNamespaceResponse {
             properties: r.properties,
@@ -152,31 +214,29 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         validate_namespace_ident(&parameters.namespace)?;
 
         //  ------------------- AUTHZ -------------------
-        A::check_namespace_exists(
-            &request_metadata,
-            warehouse_id,
-            &parameters.namespace,
-            state.v1_state.auth,
-        )
-        .await?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
-        if C::namespace_ident_to_id(warehouse_id, &parameters.namespace, state.v1_state.catalog)
-            .await?
-            .is_some()
-        {
-            Ok(())
-        } else {
-            Err(ErrorModel::builder()
-                .code(StatusCode::NOT_FOUND.into())
-                .message(format!(
-                    "Namespace '{}' not found.",
-                    parameters.namespace.to_url_string()
-                ))
-                .r#type("NoSuchNamespaceException".to_string())
-                .build()
-                .into())
-        }
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let namespace_id =
+            C::namespace_to_id(warehouse_id, &parameters.namespace, t.transaction()).await; // Cannot fail before authz
+        authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                namespace_id,
+                &CatalogNamespaceAction::CanGetMetadata,
+            )
+            .await
+            .map_err(set_not_found_status_code)?;
+        Ok(())
     }
 
     /// Drop a namespace from the catalog. Namespace must be empty.
@@ -202,19 +262,34 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         }
 
         //  ------------------- AUTHZ -------------------
-        A::check_drop_namespace(
-            &request_metadata,
-            warehouse_id,
-            &parameters.namespace,
-            state.v1_state.auth,
-        )
-        .await?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let namespace_id =
+            C::namespace_to_id(warehouse_id, &parameters.namespace, t.transaction()).await; // Cannot fail before authz
+
+        let namespace_id = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                namespace_id,
+                &CatalogNamespaceAction::CanDelete,
+            )
+            .await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let r = C::drop_namespace(warehouse_id, &parameters.namespace, t.transaction()).await?;
+        C::drop_namespace(warehouse_id, namespace_id, t.transaction()).await?;
+        authorizer
+            .delete_namespace(&request_metadata, namespace_id)
+            .await?;
         t.commit().await?;
-        Ok(r)
+        Ok(())
     }
 
     /// Set or remove properties on a namespace
@@ -241,27 +316,34 @@ impl<C: Catalog, A: AuthZHandler, S: SecretStore>
         let updates = NamespaceProperties::try_from_maybe_props(updates.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         //  ------------------- AUTHZ -------------------
-        A::check_update_namespace_properties(
-            &request_metadata,
-            warehouse_id,
-            &parameters.namespace,
-            state.v1_state.auth,
-        )
-        .await?;
+        let authorizer = state.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let namespace_id =
+            C::namespace_to_id(warehouse_id, &parameters.namespace, t.transaction()).await; // Cannot fail before authz
+
+        let namespace_id = authorizer
+            .require_namespace_action(
+                &request_metadata,
+                warehouse_id,
+                namespace_id,
+                &CatalogNamespaceAction::CanUpdateProperties,
+            )
+            .await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let previous_properties =
-            C::get_namespace(warehouse_id, &parameters.namespace, t.transaction()).await?;
+            C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let (new_properties, r) =
             update_namespace_properties(previous_properties.properties, updates, removals);
-        C::update_namespace_properties(
-            warehouse_id,
-            &parameters.namespace,
-            new_properties,
-            t.transaction(),
-        )
-        .await?;
+        C::update_namespace_properties(warehouse_id, namespace_id, new_properties, t.transaction())
+            .await?;
         t.commit().await?;
         Ok(r)
     }
@@ -397,6 +479,9 @@ fn update_namespace_properties(
             changes_updated.push(key);
         }
     }
+
+    // Remove managed property namespace_id
+    properties.remove(NAMESPACE_ID_PROPERTY);
 
     (
         properties,

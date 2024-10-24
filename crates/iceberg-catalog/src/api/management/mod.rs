@@ -1,25 +1,44 @@
 pub mod v1 {
+    pub mod bootstrap;
     pub mod project;
+    pub mod role;
+    pub mod user;
     pub mod warehouse;
+
     use axum::{Extension, Json, Router};
     use utoipa::OpenApi;
 
     use crate::api::{ApiContext, Result};
     use crate::request_metadata::RequestMetadata;
-    use crate::service::auth::AuthZHandler;
     use std::marker::PhantomData;
 
     use crate::api::iceberg::v1::PaginationQuery;
 
-    use crate::service::tabular_idents::TabularIdentUuid;
-    use crate::service::{storage::S3Flavor, Catalog, SecretStore, State};
+    use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
+    use crate::service::{
+        authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
+        SecretStore, State, TabularIdentUuid, UserId,
+    };
+    use crate::ProjectIdent;
     use axum::extract::{Path, Query, State as AxumState};
+    use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
+    use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
+    use http::StatusCode;
+    use iceberg_ext::catalog::rest::ErrorModel;
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
     };
+    use role::{
+        CreateRoleRequest, ListRolesQuery, ListRolesResponse, Role, SearchRoleRequest,
+        SearchRoleResponse, Service as _, UpdateRoleRequest,
+    };
     use serde::Serialize;
+    use user::{
+        CreateUserRequest, SearchUser, SearchUserRequest, SearchUserResponse, Service as _,
+        UpdateUserRequest, User, UserLastUpdatedWith, UserType,
+    };
     use warehouse::{
         AzCredential, AzdlsProfile, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
         GcsProfile, GcsServiceKey, GetWarehouseResponse, ListWarehousesRequest,
@@ -28,33 +47,63 @@ pub mod v1 {
         UpdateWarehouseStorageRequest, WarehouseStatus,
     };
 
+    pub(crate) fn default_page_size() -> i32 {
+        100
+    }
+
     #[derive(Debug, OpenApi)]
     #[openapi(
         tags(
-            (name = "management", description = "Warehouse management operations")
+            (name = "server", description = "Manage Server"),
+            (name = "project", description = "Manage Projects"),
+            (name = "warehouse", description = "Manage Warehouses"),
+            (name = "user", description = "Manage Users"),
+            (name = "role", description = "Manage Roles")
         ),
         paths(
             activate_warehouse,
+            bootstrap,
             create_project,
+            create_role,
+            create_user,
             create_warehouse,
             deactivate_warehouse,
-            delete_project,
+            delete_default_project,
+            delete_project_by_id,
+            delete_role,
+            delete_user,
             delete_warehouse,
-            get_project,
+            whoami,
+            get_default_project,
+            get_project_by_id,
+            get_role,
+            get_server_info,
+            get_user,
             get_warehouse,
             list_deleted_tabulars,
             list_projects,
+            list_roles,
+            list_user,
             list_warehouses,
-            rename_project,
+            rename_default_project,
+            rename_project_by_id,
             rename_warehouse,
+            search_user,
+            update_role,
             update_storage_credential,
             update_storage_profile,
+            update_user,
         ),
         components(schemas(
             AzCredential,
             AzdlsProfile,
+            BootstrapRequest,
             CreateProjectRequest,
             CreateProjectResponse,
+            CreateRoleRequest,
+            CreateRoleRequest,
+            CreateRoleRequest,
+            CreateUserRequest,
             CreateWarehouseRequest,
             CreateWarehouseResponse,
             DeleteKind,
@@ -62,33 +111,365 @@ pub mod v1 {
             GcsCredential,
             GcsProfile,
             GcsServiceKey,
+            GetProjectResponse,
             GetWarehouseResponse,
             ListDeletedTabularsResponse,
             ListProjectsResponse,
+            ListRolesResponse,
+            ListUsersResponse,
             ListWarehousesRequest,
             ListWarehousesResponse,
-            GetProjectResponse,
+            ProjectIdent,
+            RenameProjectRequest,
             RenameWarehouseRequest,
+            Role,
             S3Credential,
             S3Flavor,
             S3Profile,
+            SearchRoleRequest,
+            SearchRoleResponse,
+            SearchUser,
+            SearchUserRequest,
+            SearchUserResponse,
+            ServerInfo,
             StorageCredential,
             StorageProfile,
             TabularDeleteProfile,
             TabularType,
+            UpdateRoleRequest,
+            UpdateUserRequest,
             UpdateWarehouseCredentialRequest,
             UpdateWarehouseStorageRequest,
+            User,
+            UserLastUpdatedWith,
+            UserType,
             WarehouseStatus,
         ))
     )]
-    pub struct ManagementApiDoc;
+    struct ManagementApiDoc;
 
     #[derive(Clone, Debug)]
-
-    pub struct ApiServer<C: Catalog, A: AuthZHandler, S: SecretStore> {
+    pub struct ApiServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
         auth_handler: PhantomData<A>,
         config_server: PhantomData<C>,
         secret_store: PhantomData<S>,
+    }
+
+    /// Get information about the server
+    #[utoipa::path(
+        get,
+        tag = "server",
+        path = "/management/v1/info",
+        responses(
+            (status = 200, description = "User details", body = [ServerInfo]),
+        )
+    )]
+    async fn get_server_info<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<ServerInfo>)> {
+        ApiServer::<C, A, S>::server_info(api_context, metadata)
+            .await
+            .map(|user| (StatusCode::OK, Json(user)))
+    }
+
+    /// Creates the user in the catalog if it does not exist.
+    /// If the user exists, it updates the users' metadata from the token.
+    /// The token sent to this endpoint should have "profile" and "email" scopes.
+    #[utoipa::path(
+        post,
+        tag = "server",
+        path = "/management/v1/bootstrap",
+        request_body = BootstrapRequest,
+        responses(
+            (status = 200, description = "Server bootstrapped successfully"),
+        )
+    )]
+    async fn bootstrap<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<BootstrapRequest>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::bootstrap(api_context, metadata, request).await
+    }
+
+    /// Creates the user in the catalog if it does not exist.
+    /// If the user exists, it updates the users' metadata from the token.
+    /// The token sent to this endpoint should have "profile" and "email" scopes.
+    #[utoipa::path(
+        post,
+        tag = "user",
+        path = "/management/v1/user/from-token",
+        request_body = CreateUserRequest,
+        responses(
+            (status = 200, description = "User updated", body = [User]),
+            (status = 201, description = "User created", body = [User]),
+        )
+    )]
+    async fn create_user<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<CreateUserRequest>,
+    ) -> Result<(StatusCode, Json<User>)> {
+        ApiServer::<C, A, S>::create_user(api_context, metadata, request)
+            .await
+            .map(|u| match u {
+                CreateOrUpdateUserResponse::Created(user) => (StatusCode::CREATED, Json(user)),
+                CreateOrUpdateUserResponse::Updated(user) => (StatusCode::OK, Json(user)),
+            })
+    }
+
+    /// Search for users (Fuzzy)
+    #[utoipa::path(
+        post,
+        tag = "user",
+        path = "/management/v1/search/user",
+        request_body = SearchUserRequest,
+        responses(
+            (status = 200, description = "List of users", body = [SearchUserResponse]),
+        )
+    )]
+    async fn search_user<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SearchUserRequest>,
+    ) -> Result<SearchUserResponse> {
+        ApiServer::<C, A, S>::search_user(api_context, metadata, request).await
+    }
+
+    /// Get a user by ID
+    #[utoipa::path(
+        get,
+        tag = "user",
+        path = "/management/v1/user/{id}",
+        params(("id" = Uuid,)),
+        responses(
+            (status = 200, description = "User details", body = [User]),
+        )
+    )]
+    async fn get_user<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<User>)> {
+        ApiServer::<C, A, S>::get_user(api_context, metadata, id)
+            .await
+            .map(|user| (StatusCode::OK, Json(user)))
+    }
+
+    /// Get the currently authenticated user
+    #[utoipa::path(
+        get,
+        tag = "user",
+        path = "/management/v1/whoami",
+        responses(
+            (status = 200, description = "User details", body = [User]),
+        )
+    )]
+    async fn whoami<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<User>)> {
+        let id = match metadata.actor() {
+            Actor::Role { principal, .. } | Actor::Principal(principal) => principal.clone(),
+            Actor::Anonymous => {
+                return Err(ErrorModel::unauthorized(
+                    "No token provided",
+                    "GetMyUserWithoutToken",
+                    None,
+                )
+                .into())
+            }
+        };
+
+        ApiServer::<C, A, S>::get_user(api_context, metadata, id)
+            .await
+            .map(|user| (StatusCode::OK, Json(user)))
+    }
+
+    /// Update details of a user. Replaces the current details with the new details.
+    /// If a field is not provided, it is set to `None`.
+    #[utoipa::path(
+        put,
+        tag = "user",
+        path = "/management/v1/user/{id}",
+        params(("id" = Uuid,)),
+        request_body = UpdateUserRequest,
+        responses(
+            (status = 200, description = "User details updated successfully"),
+        )
+    )]
+    async fn update_user<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateUserRequest>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::update_user(api_context, metadata, id, request).await
+    }
+
+    /// List users
+    #[utoipa::path(
+        get,
+        tag = "user",
+        path = "/management/v1/user",
+        params(ListUsersQuery),
+        responses(
+            (status = 200, description = "List of users", body = [ListUsersResponse]),
+        )
+    )]
+    async fn list_user<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListUsersQuery>,
+    ) -> Result<ListUsersResponse> {
+        ApiServer::<C, A, S>::list_user(api_context, metadata, query).await
+    }
+
+    /// Delete user
+    ///
+    /// All permissions of the user are permanently removed and need to be re-added
+    /// if the user is re-registered.
+    #[utoipa::path(
+        delete,
+        tag = "user",
+        path = "/management/v1/user/{id}",
+        params(("id" = Uuid,)),
+        responses(
+            (status = 200, description = "User deleted successfully"),
+        )
+    )]
+    async fn delete_user<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Response {
+        (
+            StatusCode::OK,
+            Json(ApiServer::<C, A, S>::delete_user(api_context, metadata, id).await),
+        )
+            .into_response()
+    }
+
+    /// Create a new role
+    #[utoipa::path(
+        post,
+        tag = "role",
+        path = "/management/v1/role",
+        request_body = CreateRoleRequest,
+        responses(
+            (status = 201, description = "Role successfully created", body = [Role]),
+        )
+    )]
+    async fn create_role<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<CreateRoleRequest>,
+    ) -> Response {
+        match ApiServer::<C, A, S>::create_role(request, api_context, metadata).await {
+            Ok(role) => (StatusCode::CREATED, Json(role)).into_response(),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// Search for roles (Fuzzy)
+    #[utoipa::path(
+        post,
+        tag = "role",
+        path = "/management/v1/search/role",
+        request_body = SearchRoleRequest,
+        responses(
+            (status = 200, description = "List of users", body = [SearchRoleResponse]),
+        )
+    )]
+    async fn search_role<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SearchRoleRequest>,
+    ) -> Result<SearchRoleResponse> {
+        ApiServer::<C, A, S>::search_role(api_context, metadata, request).await
+    }
+
+    /// List roles in a project
+    #[utoipa::path(
+        get,
+        tag = "role",
+        path = "/management/v1/role",
+        params(ListRolesQuery),
+        responses(
+            (status = 200, description = "List of roles", body = [ListRolesResponse]),
+        )
+    )]
+    async fn list_roles<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Query(query): Query<ListRolesQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListRolesResponse> {
+        ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await
+    }
+
+    /// Delete role
+    ///
+    /// All permissions of the role are permanently removed.
+    #[utoipa::path(
+        delete,
+        tag = "role",
+        path = "/management/v1/role/{id}",
+        params(("id" = Uuid,)),
+        responses(
+            (status = 200, description = "Role deleted successfully"),
+        )
+    )]
+    async fn delete_role<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_role(api_context, metadata, id)
+            .await
+            .map(|()| (StatusCode::OK, ()))
+    }
+
+    /// Get a role
+    #[utoipa::path(
+        get,
+        tag = "role",
+        path = "/management/v1/role/{id}",
+        params(("id" = Uuid,)),
+        responses(
+            (status = 200, description = "Role details", body = [Role]),
+        )
+    )]
+    async fn get_role<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<Role>)> {
+        ApiServer::<C, A, S>::get_role(api_context, metadata, id)
+            .await
+            .map(|role| (StatusCode::OK, Json(role)))
+    }
+
+    /// Update a role
+    #[utoipa::path(
+        post,
+        tag = "role",
+        path = "/management/v1/role/{id}",
+        params(("id" = Uuid,)),
+        request_body = UpdateRoleRequest,
+        responses(
+            (status = 200, description = "Role updated successfully", body = [Role]),
+        )
+    )]
+    async fn update_role<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateRoleRequest>,
+    ) -> Result<(StatusCode, Json<Role>)> {
+        ApiServer::<C, A, S>::update_role(api_context, metadata, id, request)
+            .await
+            .map(|role| (StatusCode::OK, Json(role)))
     }
 
     /// Create a new warehouse.
@@ -98,14 +479,14 @@ pub mod v1 {
     /// The storage configuration is validated by this method.
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse",
         request_body = CreateWarehouseRequest,
         responses(
             (status = 201, description = "Warehouse created successfully", body = [CreateWarehouseResponse]),
         )
     )]
-    async fn create_warehouse<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn create_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateWarehouseRequest>,
@@ -116,13 +497,13 @@ pub mod v1 {
     /// List all projects the requesting user has access to
     #[utoipa::path(
         get,
-        tag = "management",
-        path = "/management/v1/project",
+        tag = "project",
+        path = "/management/v1/project-list",
         responses(
             (status = 200, description = "List of projects", body = [ListProjectsResponse])
         )
     )]
-    async fn list_projects<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn list_projects<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<ListProjectsResponse> {
@@ -132,13 +513,13 @@ pub mod v1 {
     /// Create a new project
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "project",
         path = "/management/v1/project",
         responses(
-            (status = 201, description = "Project created successfully", body = [ProjectResponse])
+            (status = 201, description = "Project created successfully", body = [CreateProjectResponse])
         )
     )]
-    async fn create_project<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn create_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateProjectRequest>,
@@ -146,59 +527,108 @@ pub mod v1 {
         ApiServer::<C, A, S>::create_project(request, api_context, metadata).await
     }
 
-    /// Get a Project by ID
+    /// Get the default project
     #[utoipa::path(
         get,
-        tag = "management",
-        path = "/management/v1/project/{project_id}",
+        tag = "project",
+        path = "/management/v1/default-project",
         responses(
             (status = 200, description = "Project details", body = [GetProjectResponse])
         )
     )]
-    async fn get_project<C: Catalog, A: AuthZHandler, S: SecretStore>(
-        Path(project_id): Path<uuid::Uuid>,
+    async fn get_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<GetProjectResponse> {
-        ApiServer::<C, A, S>::get_project(project_id, api_context, metadata).await
+        ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 
-    /// Delete a project by ID
-    ///
-    /// No warehouses must be present in the project to delete it.
+    /// Get a specific project by id
+    #[utoipa::path(
+        get,
+        tag = "project",
+        path = "/management/v1/project/{project_id}",
+        params(("project_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Project details", body = [GetProjectResponse])
+        )
+    )]
+    async fn get_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(project_id): Path<ProjectIdent>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<GetProjectResponse> {
+        ApiServer::<C, A, S>::get_project(Some(project_id), api_context, metadata).await
+    }
+
+    /// Delete the default project
     #[utoipa::path(
         delete,
-        tag = "management",
-        path = "/management/v1/project/{project_id}",
+        tag = "project",
+        path = "/management/v1/default-project",
         responses(
             (status = 200, description = "Project deleted successfully")
         )
     )]
-    async fn delete_project<C: Catalog, A: AuthZHandler, S: SecretStore>(
-        Path(project_id): Path<uuid::Uuid>,
+    async fn delete_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<()> {
-        ApiServer::<C, A, S>::delete_project(project_id, api_context, metadata).await
+        ApiServer::<C, A, S>::delete_project(None, api_context, metadata).await
     }
 
-    /// Rename a project
+    /// Delete the default project
+    #[utoipa::path(
+        delete,
+        tag = "project",
+        path = "/management/v1/project/{project_id}",
+        params(("project_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Project deleted successfully")
+        )
+    )]
+    async fn delete_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(project_id): Path<ProjectIdent>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::delete_project(Some(project_id), api_context, metadata).await
+    }
+
+    /// Rename the default project
     #[utoipa::path(
         post,
-        tag = "management",
-        path = "/management/v1/project/{project_id}/rename",
+        tag = "project",
+        path = "/management/v1/default-project/rename",
         responses(
             (status = 200, description = "Project renamed successfully")
         )
     )]
-    async fn rename_project<C: Catalog, A: AuthZHandler, S: SecretStore>(
-        Path(project_id): Path<uuid::Uuid>,
+    async fn rename_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<RenameProjectRequest>,
     ) -> Result<()> {
-        ApiServer::<C, A, S>::rename_project(project_id.into(), request, api_context, metadata)
-            .await
+        ApiServer::<C, A, S>::rename_project(None, request, api_context, metadata).await
+    }
+
+    /// Rename project by id
+    #[utoipa::path(
+        post,
+        tag = "project",
+        path = "/management/v1/project/{project_id}/rename",
+        params(("project_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Project renamed successfully")
+        )
+    )]
+    async fn rename_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
+        Path(project_id): Path<ProjectIdent>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<RenameProjectRequest>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::rename_project(Some(project_id), request, api_context, metadata).await
     }
 
     /// List all warehouses in a project
@@ -207,14 +637,14 @@ pub mod v1 {
     /// To include deactivated warehouses, set the `include_deactivated` query parameter to `true`.
     #[utoipa::path(
         get,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse",
         params(ListWarehousesRequest),
         responses(
             (status = 200, description = "List of warehouses", body = [ListWarehousesResponse])
         )
     )]
-    async fn list_warehouses<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn list_warehouses<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Query(request): Query<ListWarehousesRequest>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -225,13 +655,13 @@ pub mod v1 {
     /// Get a warehouse by ID
     #[utoipa::path(
         get,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}",
         responses(
             (status = 200, description = "Warehouse details", body = [GetWarehouseResponse])
         )
     )]
-    async fn get_warehouse<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn get_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -242,13 +672,13 @@ pub mod v1 {
     /// Delete a warehouse by ID
     #[utoipa::path(
         delete,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}",
         responses(
             (status = 200, description = "Warehouse deleted successfully")
         )
     )]
-    async fn delete_warehouse<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn delete_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -259,14 +689,14 @@ pub mod v1 {
     /// Rename a warehouse
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/rename",
         request_body = RenameWarehouseRequest,
         responses(
             (status = 200, description = "Warehouse renamed successfully")
         )
     )]
-    async fn rename_warehouse<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn rename_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -279,13 +709,13 @@ pub mod v1 {
     /// Deactivate a warehouse
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deactivate",
         responses(
             (status = 200, description = "Warehouse deactivated successfully")
         )
     )]
-    async fn deactivate_warehouse<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn deactivate_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -296,13 +726,13 @@ pub mod v1 {
     /// Activate a warehouse
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/activate",
         responses(
             (status = 200, description = "Warehouse activated successfully")
         )
     )]
-    async fn activate_warehouse<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn activate_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -310,17 +740,17 @@ pub mod v1 {
         ApiServer::<C, A, S>::activate_warehouse(warehouse_id.into(), api_context, metadata).await
     }
 
-    /// Update the storage profile of a warehouse
+    /// Update the storage profile of a warehouse including its storage credential.
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/storage",
         request_body = UpdateWarehouseStorageRequest,
         responses(
             (status = 200, description = "Storage profile updated successfully")
         )
     )]
-    async fn update_storage_profile<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn update_storage_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
@@ -330,24 +760,30 @@ pub mod v1 {
             .await
     }
 
-    /// Update the storage credential of a warehouse
+    /// Update the storage credential of a warehouse. The storage profile is not modified.
+    /// This can be used to update credentials before expiration.
     #[utoipa::path(
         post,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/storage-credential",
         request_body = UpdateWarehouseCredentialRequest,
         responses(
             (status = 200, description = "Storage credential updated successfully")
         )
     )]
-    async fn update_storage_credential<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn update_storage_credential<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateWarehouseCredentialRequest>,
     ) -> Result<()> {
-        ApiServer::<C, A, S>::update_credential(warehouse_id.into(), request, api_context, metadata)
-            .await
+        ApiServer::<C, A, S>::update_storage_credential(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
     }
 
     /// List soft-deleted tabulars
@@ -355,13 +791,14 @@ pub mod v1 {
     /// List all soft-deleted tabulars in the warehouse that are visible to you.
     #[utoipa::path(
         get,
-        tag = "management",
+        tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars",
+        params(PaginationQuery),
         responses(
             (status = 200, description = "List of soft-deleted tabulars", body = [ListDeletedTabularsResponse])
         )
     )]
-    async fn list_deleted_tabulars<C: Catalog, A: AuthZHandler, S: SecretStore>(
+    async fn list_deleted_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         Query(pagination): Query<PaginationQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -405,14 +842,6 @@ pub mod v1 {
         pub expiration_date: chrono::DateTime<chrono::Utc>,
     }
 
-    /// Type of tabular
-    #[derive(Debug, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum TabularType {
-        Table,
-        View,
-    }
-
     impl From<TabularIdentUuid> for TabularType {
         fn from(ident: TabularIdentUuid) -> Self {
             match ident {
@@ -422,6 +851,14 @@ pub mod v1 {
         }
     }
 
+    /// Type of tabular
+    #[derive(Debug, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum TabularType {
+        Table,
+        View,
+    }
+
     #[derive(Debug, Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq)]
     #[serde(rename_all = "kebab-case")]
     pub enum DeleteKind {
@@ -429,20 +866,51 @@ pub mod v1 {
         Purge,
     }
 
-    impl<C: Catalog, A: AuthZHandler, S: SecretStore> ApiServer<C, A, S> {
-        pub fn new_v1_router() -> Router<ApiContext<State<A, C, S>>> {
+    #[must_use]
+    pub fn api_doc<A: Authorizer>() -> utoipa::openapi::OpenApi {
+        let mut doc = ManagementApiDoc::openapi();
+        doc.merge(A::api_doc());
+        doc
+    }
+
+    impl<C: Catalog, A: Authorizer, S: SecretStore> ApiServer<C, A, S> {
+        pub fn new_v1_router(authorizer: &A) -> Router<ApiContext<State<A, C, S>>> {
             Router::new()
+                // Server
+                .route("/info", get(get_server_info))
+                .route("/bootstrap", post(bootstrap))
+                // Role management
+                .route("/role", get(list_roles).post(create_role))
+                .route(
+                    "/role/:id",
+                    get(get_role).post(update_role).delete(delete_role),
+                )
+                .route("/search/role", post(search_role))
+                // User management
+                .route("/whoami", get(whoami).post(create_user))
+                .route("/search/user", post(search_user))
+                .route(
+                    "/user/:user_id",
+                    get(get_user).put(update_user).delete(delete_user),
+                )
+                .route("/user", get(list_user))
                 // Create a new project
-                .route("/project", post(create_project))
+                .route(
+                    "/project",
+                    post(create_project)
+                        .get(get_default_project)
+                        .delete(delete_default_project),
+                )
+                .route("/project/rename", post(rename_default_project))
                 .route(
                     "/project/:project_id",
-                    get(get_project).delete(delete_project),
+                    get(get_project_by_id).delete(delete_project_by_id),
                 )
-                .route("/project/:project_id/rename", post(rename_project))
+                .route("/project/:project_id/rename", post(rename_project_by_id))
                 // Create a new warehouse
                 .route("/warehouse", post(create_warehouse))
                 // List all projects
-                .route("/project", get(list_projects))
+                .route("/project-list", get(list_projects))
                 .route(
                     "/warehouse",
                     // List all warehouses within a project
@@ -479,6 +947,7 @@ pub mod v1 {
                     "/warehouse/:warehouse_id/deleted_tabulars",
                     get(list_deleted_tabulars),
                 )
+                .merge(authorizer.new_router())
         }
     }
 }

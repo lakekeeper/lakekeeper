@@ -10,12 +10,12 @@ use crate::catalog::tables::{
 use crate::catalog::views::validate_view_properties;
 use crate::catalog::{maybe_get_secret, require_warehouse_id};
 use crate::request_metadata::RequestMetadata;
-use crate::service::auth::AuthZHandler;
+use crate::service::authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction};
 use crate::service::event_publisher::EventMetadata;
 use crate::service::storage::{StorageLocations as _, StoragePermissions};
-use crate::service::tabular_idents::TabularIdentUuid;
-use crate::service::Result;
+use crate::service::TabularIdentUuid;
 use crate::service::{Catalog, SecretStore, State, Transaction};
+use crate::service::{Result, ViewIdentUuid};
 use iceberg::spec::ViewMetadataBuilder;
 use iceberg::{TableIdent, ViewCreation};
 use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
@@ -24,7 +24,7 @@ use uuid::Uuid;
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
 /// Create a view in the given namespace
-pub(crate) async fn create_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
+pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -49,26 +49,27 @@ pub(crate) async fn create_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
     }
 
     // ------------------- AUTHZ -------------------
-    A::check_create_view(
-        &request_metadata,
-        warehouse_id,
-        &namespace,
-        state.v1_state.auth.clone(),
-    )
-    .await?;
+    let authorizer = &state.v1_state.authz;
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            &CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+    let namespace_id = C::namespace_to_id(warehouse_id, &namespace, t.transaction()).await; // Cannot fail before authz;
+    let namespace_id = authorizer
+        .require_namespace_action(
+            &request_metadata,
+            warehouse_id,
+            namespace_id,
+            &CatalogNamespaceAction::CanCreateView,
+        )
+        .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let namespace_id =
-        C::namespace_ident_to_id(warehouse_id, &namespace, state.v1_state.catalog.clone())
-            .await?
-            .ok_or(ErrorModel::not_found(
-                "Namespace does not exist",
-                "NamespaceNotFound",
-                None,
-            ))?;
-
-    let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-    let namespace = C::get_namespace(warehouse_id, &namespace, t.transaction()).await?;
+    let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
     let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
@@ -146,8 +147,15 @@ pub(crate) async fn create_view<C: Catalog, A: AuthZHandler, S: SecretStore>(
             &data_access,
             storage_secret.as_ref(),
             &view_location,
-            // TODO: This should be a permission based on authz
-            StoragePermissions::ReadWriteDelete,
+            StoragePermissions::Read,
+        )
+        .await?;
+
+    authorizer
+        .create_view(
+            &request_metadata,
+            ViewIdentUuid::from(metadata.view_uuid),
+            namespace_id,
         )
         .await?;
 
@@ -188,7 +196,7 @@ pub(crate) mod test {
 
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::secrets::SecretsState;
-    use crate::implementations::AllowAllAuthZHandler;
+    use crate::service::authz::AllowAllAuthorizer;
     use iceberg::NamespaceIdent;
     use serde_json::json;
     use sqlx::PgPool;
@@ -196,7 +204,7 @@ pub(crate) mod test {
     pub(crate) async fn create_view(
         api_context: ApiContext<
             State<
-                AllowAllAuthZHandler,
+                AllowAllAuthorizer,
                 crate::implementations::postgres::PostgresCatalog,
                 SecretsState,
             >,
@@ -263,6 +271,7 @@ pub(crate) mod test {
         let new_ns =
             initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
                 .await
+                .1
                 .namespace;
 
         let _view = create_view(api_context, new_ns, rq, Some(whi.to_string()))

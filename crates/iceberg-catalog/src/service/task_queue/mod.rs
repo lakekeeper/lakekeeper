@@ -10,6 +10,8 @@ use std::str::FromStr;
 use std::time::Duration;
 use uuid::Uuid;
 
+use super::authz::Authorizer;
+
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 
@@ -47,20 +49,23 @@ impl TaskQueues {
         self.tabular_purge.enqueue(task).await
     }
 
-    pub async fn spawn_queues<C, S>(
+    pub async fn spawn_queues<C, S, A>(
         &self,
         catalog_state: C::State,
         secret_store: S,
+        authorizer: A,
     ) -> Result<(), anyhow::Error>
     where
         C: Catalog,
         S: SecretStore,
+        A: Authorizer,
     {
         let expiration_queue_handler =
-            tokio::task::spawn(tabular_expiration_queue::tabular_expiration_task::<C>(
+            tokio::task::spawn(tabular_expiration_queue::tabular_expiration_task::<C, A>(
                 self.tabular_expiration.clone(),
                 self.tabular_purge.clone(),
                 catalog_state.clone(),
+                authorizer.clone(),
             ));
 
         let purge_queue_handler = tokio::task::spawn(tabular_purge_queue::purge_task::<C, S>(
@@ -229,6 +234,7 @@ mod test {
         use crate::implementations::postgres::tabular::table::tests::initialize_table;
         use crate::implementations::postgres::warehouse::test::initialize_warehouse;
         use crate::implementations::postgres::{CatalogState, PostgresCatalog};
+        use crate::service::authz::AllowAllAuthorizer;
         use crate::service::storage::{
             S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
         };
@@ -241,11 +247,11 @@ mod test {
         #[cfg(feature = "sqlx-postgres")]
         #[sqlx::test]
         async fn test_queue_expiration_queue_task(pool: PgPool) {
-            let bucket = std::env::var("ICEBERG_REST_TEST_S3_BUCKET").unwrap();
-            let region = std::env::var("ICEBERG_REST_TEST_S3_REGION").unwrap_or("local".into());
-            let aws_access_key_id = std::env::var("ICEBERG_REST_TEST_S3_ACCESS_KEY").unwrap();
-            let aws_secret_access_key = std::env::var("ICEBERG_REST_TEST_S3_SECRET_KEY").unwrap();
-            let endpoint = std::env::var("ICEBERG_REST_TEST_S3_ENDPOINT").unwrap();
+            let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
+            let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
+            let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
+            let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
+            let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
 
             let config = TaskQueueConfig {
                 max_retries: 5,
@@ -279,8 +285,11 @@ mod test {
             let cloned = queues.clone();
             let cat = catalog_state.clone();
             let sec = secrets.clone();
+            let auth = AllowAllAuthorizer;
             let _queues_task = tokio::task::spawn(async move {
-                cloned.spawn_queues::<PostgresCatalog, _>(cat, sec).await
+                cloned
+                    .spawn_queues::<PostgresCatalog, _, _>(cat, sec, auth)
+                    .await
             });
 
             let cred: StorageCredential = S3Credential::AccessKey {

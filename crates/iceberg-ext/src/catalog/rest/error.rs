@@ -1,9 +1,9 @@
-use std::error::Error as StdError;
-use std::fmt::{Display, Formatter};
 // macro to implement IntoResponse
 use http::StatusCode;
 pub use iceberg::Error;
 use serde::{Deserialize, Serialize};
+use std::error::Error as StdError;
+use std::fmt::{Display, Formatter};
 
 #[cfg(feature = "axum")]
 macro_rules! impl_into_response {
@@ -178,6 +178,14 @@ impl ErrorModel {
         )
     }
 
+    pub fn unauthorized(
+        message: impl Into<String>,
+        r#type: impl Into<String>,
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        Self::new(message, r#type, StatusCode::UNAUTHORIZED.as_u16(), source)
+    }
+
     pub fn forbidden(
         message: impl Into<String>,
         r#type: impl Into<String>,
@@ -214,8 +222,8 @@ impl ErrorModel {
     }
 
     #[must_use]
-    pub fn append_details(mut self, details: &[String]) -> Self {
-        self.stack.extend_from_slice(details);
+    pub fn append_details(mut self, details: impl IntoIterator<Item = String>) -> Self {
+        self.stack.extend(details);
         self
     }
 
