@@ -32,7 +32,7 @@ We have prepared a self-contained docker-compose file to demonstrate the usage o
 
 ```sh
 git clone https://github.com/lakekeeper/lakekeeper.git
-cd iceberg-catalog/examples/self-contained
+cd lakekeeper/examples/self-contained
 docker compose up
 ```
 
