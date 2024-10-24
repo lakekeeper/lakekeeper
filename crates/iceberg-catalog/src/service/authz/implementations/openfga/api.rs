@@ -256,7 +256,7 @@ struct UpdateRoleAssignmentsRequest {
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/role/by-id/{role_id}/access",
+    path = "/management/v1/permissions/role/{role_id}/access",
     params(GetAccessQuery),
     responses(
             (status = 200, body = [GetRoleAccessResponse]),
@@ -342,7 +342,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/project/by-id/{project_id}/access",
+    path = "/management/v1/permissions/project/{project_id}/access",
     params(GetAccessQuery),
     responses(
             (status = 200, description = "Server Relations", body = [GetProjectAccessResponse]),
@@ -370,7 +370,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/warehouse/by-id/{warehouse_id}/access",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/access",
     params(GetAccessQuery),
     responses(
             (status = 200, body = [GetNamespaceAccessResponse]),
@@ -398,7 +398,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/namespace/by-id/{namespace_id}/access",
+    path = "/management/v1/permissions/namespace/{namespace_id}/access",
     params(GetAccessQuery),
     responses(
             (status = 200, description = "Server Relations", body = [GetNamespaceAccessResponse]),
@@ -426,7 +426,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/by-id/{table_id}/access",
+    path = "/management/v1/permissions/table/{table_id}/access",
     params(GetAccessQuery),
     responses(
             (status = 200, description = "Server Relations", body = [GetTableAccessResponse]),
@@ -454,7 +454,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/view/by-id/{view_id}/access",
+    path = "/management/v1/permissions/view/{view_id}/access",
     params(GetAccessQuery),
     responses(
             (status = 200, body = [GetViewAccessResponse]),
@@ -482,7 +482,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/role/by-id/{role_id}/assignments",
+    path = "/management/v1/permissions/role/{role_id}/assignments",
     params(GetProjectAssignmentsQuery),
     responses(
             (status = 200, body = [GetRoleAssignmentsResponse]),
@@ -584,7 +584,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/project/by-id/{project_id}/assignments",
+    path = "/management/v1/permissions/project/{project_id}/assignments",
     params(GetProjectAssignmentsQuery),
     responses(
             (status = 200, body = [GetProjectAssignmentsResponse]),
@@ -619,7 +619,7 @@ async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/warehouse/by-id/{warehouse_id}/assignments",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     params(GetWarehouseAssignmentsQuery),
     responses(
             (status = 200, body = [GetWarehouseAssignmentsResponse]),
@@ -648,7 +648,7 @@ async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/namespace/by-id/{namespace_id}/assignments",
+    path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     params(GetNamespaceAssignmentsQuery),
     responses(
             (status = 200, body = [GetNamespaceAssignmentsResponse]),
@@ -681,7 +681,7 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/by-id/{namespace_id}/assignments",
+    path = "/management/v1/permissions/table/{namespace_id}/assignments",
     params(GetTableAssignmentsQuery),
     responses(
             (status = 200, body = [GetTableAssignmentsResponse]),
@@ -710,7 +710,7 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/by-id/{namespace_id}/assignments",
+    path = "/management/v1/permissions/table/{namespace_id}/assignments",
     params(GetViewAssignmentsQuery),
     responses(
             (status = 200, body = [GetViewAssignmentsResponse]),
@@ -800,7 +800,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/project/by-id/{project_id}/assignments",
+    path = "/management/v1/permissions/project/{project_id}/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     responses(
             (status = 200, description = "Permissions updated successfully"),
@@ -829,7 +829,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/warehouse/by-id/{warehouse_id}/assignments",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     request_body = UpdateWarehouseAssignmentsRequest,
     responses(
             (status = 200, description = "Permissions updated successfully"),
@@ -858,7 +858,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/namespace/by-id/{namespace_id}/assignments",
+    path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     request_body = UpdateNamespaceAssignmentsRequest,
     responses(
             (status = 200, description = "Permissions updated successfully"),
@@ -887,7 +887,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/table/by-id/{table_id}/assignments",
+    path = "/management/v1/permissions/table/{table_id}/assignments",
     request_body = UpdateTableAssignmentsRequest,
     responses(
             (status = 200, description = "Permissions updated successfully"),
@@ -916,7 +916,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/view/by-id/{view_id}/assignments",
+    path = "/management/v1/permissions/view/{view_id}/assignments",
     request_body = UpdateViewAssignmentsRequest,
     responses(
             (status = 200, description = "Permissions updated successfully"),
@@ -945,7 +945,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/role/by-id/{role_id}/assignments",
+    path = "/management/v1/permissions/role/{role_id}/assignments",
     request_body = UpdateRoleAssignmentsRequest,
     responses(
             (status = 200, description = "Permissions updated successfully"),
@@ -1050,33 +1050,33 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
 ) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
         .route(
-            "/permissions/role/by-id/{role_id}/access",
+            "/permissions/role/{role_id}/access",
             get(get_role_access_by_id),
         )
         .route("/permissions/server/access", get(get_server_access))
         .route("/permissions/project/access", get(get_project_access))
         .route(
-            "/permissions/warehouse/by-id/{warehouse_id}/access",
+            "/permissions/warehouse/{warehouse_id}/access",
             get(get_warehouse_access_by_id),
         )
         .route(
-            "/permissions/project/by-id/{project_id}/access",
+            "/permissions/project/{project_id}/access",
             get(get_project_access_by_id),
         )
         .route(
-            "/permissions/namespace/by-id/{namespace_id}/access",
+            "/permissions/namespace/{namespace_id}/access",
             get(get_namespace_access_by_id),
         )
         .route(
-            "/permissions/table/by-id/{table_id}/access",
+            "/permissions/table/{table_id}/access",
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/view/by-id/{table_id}/access",
+            "/permissions/view/{table_id}/access",
             get(get_view_access_by_id),
         )
         .route(
-            "/permissions/role/by-id/{role_id}/assignments",
+            "/permissions/role/{role_id}/assignments",
             get(get_role_assignments_by_id).post(update_role_assignments_by_id),
         )
         .route(
@@ -1088,23 +1088,23 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_project_assignments).post(update_project_assignments),
         )
         .route(
-            "/permissions/project/by-id/{project_id}/assignments",
+            "/permissions/project/{project_id}/assignments",
             get(get_project_assignments_by_id).post(update_project_assignments_by_id),
         )
         .route(
-            "/permissions/warehouse/by-id/{warehouse_id}/assignments",
+            "/permissions/warehouse/{warehouse_id}/assignments",
             get(get_warehouse_assignments_by_id).post(update_warehouse_assignments_by_id),
         )
         .route(
-            "/permissions/namespace/by-id/{namespace_id}/assignments",
+            "/permissions/namespace/{namespace_id}/assignments",
             get(get_namespace_assignments_by_id).post(update_namespace_assignments_by_id),
         )
         .route(
-            "/permissions/table/by-id/{table_id}/assignments",
+            "/permissions/table/{table_id}/assignments",
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/view/by-id/{table_id}/assignments",
+            "/permissions/view/{table_id}/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
         )
 }
