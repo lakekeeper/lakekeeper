@@ -1,25 +1,11 @@
 use async_trait::async_trait;
-use openfga_rs::tonic::{
-    self,
-    codegen::{Body, Bytes, StdError},
-};
 use openfga_rs::{CheckRequest, CheckRequestTupleKey, ConsistencyPreference};
 
 use super::OpenFGAAuthorizer;
 use crate::service::health::{Health, HealthExt, HealthStatus};
 
 #[async_trait]
-impl<T> HealthExt for OpenFGAAuthorizer<T>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<axum::body::Bytes, openfga_rs::tonic::Status>,
-    >>::Future: Send,
-{
+impl HealthExt for OpenFGAAuthorizer {
     async fn health(&self) -> Vec<Health> {
         self.health.read().await.clone()
     }
@@ -64,15 +50,13 @@ mod tests {
     mod openfga {
         use super::super::*;
         use crate::service::authz::implementations::openfga::{
-            client::{new_authorizer, new_unauthenticated_client},
-            migrate, AUTH_CONFIG,
+            client::new_authorizer, migrate, new_client_from_config,
         };
 
         #[tokio::test]
         async fn test_health() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
-                .await
-                .unwrap();
+            let mut client = new_client_from_config().await.unwrap();
+
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
             migrate(&mut client, Some(store_name.clone()))
                 .await

@@ -1,14 +1,9 @@
 use super::{ClientHelper, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use crate::service::authz::implementations::openfga::client::ClientConnection;
 use crate::service::authz::implementations::openfga::ModelVersion;
 use crate::service::authz::implementations::FgaType;
 use openfga_rs::open_fga_service_client::OpenFgaServiceClient;
-use openfga_rs::{
-    tonic::{
-        self,
-        codegen::{Body, Bytes, StdError},
-    },
-    ReadRequestTupleKey, Tuple, TupleKey, WriteRequest, WriteRequestWrites,
-};
+use openfga_rs::{ReadRequestTupleKey, Tuple, TupleKey, WriteRequest, WriteRequestWrites};
 use std::collections::{HashMap, HashSet};
 
 const AUTH_MODEL_ID_TYPE: &FgaType = &FgaType::AuthModelId;
@@ -29,20 +24,10 @@ const MODEL_VERSION_EXISTS_RELATION: &str = "exists";
 /// - Failed to read existing models
 /// - Failed to write new model
 /// - Failed to write new version tuples
-pub(crate) async fn migrate<T>(
-    client: &mut OpenFgaServiceClient<T>,
+pub(crate) async fn migrate(
+    client: &mut OpenFgaServiceClient<ClientConnection>,
     store_name: Option<String>,
-) -> OpenFGAResult<()>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> OpenFGAResult<()> {
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
     let store = client.get_or_create_store(&store_name).await?;
     let active_model = ModelVersion::active();
@@ -117,21 +102,11 @@ where
     }
 }
 
-pub(crate) async fn get_auth_model_id<T>(
-    client: &mut OpenFgaServiceClient<T>,
+pub(crate) async fn get_auth_model_id(
+    client: &mut OpenFgaServiceClient<ClientConnection>,
     store_id: String,
     model_version: ModelVersion,
-) -> OpenFGAResult<String>
-where
-    T: Clone + Sync + Send + 'static,
-    T: tonic::client::GrpcService<tonic::body::BoxBody>,
-    T::Error: Into<StdError>,
-    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<
-        http_body_util::combinators::UnsyncBoxBody<Bytes, tonic::Status>,
-    >>::Future: Send,
-{
+) -> OpenFGAResult<String> {
     let active_int = model_version.as_monotonic_int();
     let applied_models = parse_applied_model_versions(
         client
@@ -239,18 +214,16 @@ fn parse_applied_model_versions(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::client::{new_authorizer, new_unauthenticated_client};
+    use super::super::client::new_authorizer;
     use super::super::OpenFGAAuthorizer;
     use super::*;
+    use crate::service::authz::implementations::openfga::client::ClientConnection;
+    use crate::service::authz::implementations::openfga::new_client_from_config;
     use needs_env_var::needs_env_var;
 
-    pub(crate) async fn authorizer_for_empty_store() -> (
-        OpenFgaServiceClient<tonic::transport::Channel>,
-        OpenFGAAuthorizer<tonic::transport::Channel>,
-    ) {
-        let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
-            .await
-            .unwrap();
+    pub(crate) async fn authorizer_for_empty_store(
+    ) -> (OpenFgaServiceClient<ClientConnection>, OpenFGAAuthorizer) {
+        let mut client = new_client_from_config().await.unwrap();
 
         let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
         migrate(&mut client, Some(store_name.clone()))
@@ -308,13 +281,11 @@ pub(crate) mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use super::super::*;
-        use crate::service::authz::implementations::openfga::client::new_unauthenticated_client;
+        use crate::service::authz::implementations::openfga::new_client_from_config;
 
         #[tokio::test]
         async fn test_migrate() {
-            let mut client = new_unauthenticated_client(AUTH_CONFIG.endpoint.clone())
-                .await
-                .unwrap();
+            let mut client = new_client_from_config().await.unwrap();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
             migrate(&mut client, Some(store_name.clone()))
                 .await

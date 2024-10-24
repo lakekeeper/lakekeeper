@@ -32,19 +32,10 @@ pub async fn migrate_default_authorizer() -> std::result::Result<(), ErrorModel>
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => Ok(()),
         AuthZBackend::OpenFGA => {
-            let client = openfga::new_client_from_config().await?;
+            let mut client = openfga::new_client_from_config().await?;
             let store_name = None;
-            match client {
-                openfga::Clients::Unauthenticated(mut client) => {
-                    Ok(openfga::migrate(&mut client, store_name).await?)
-                }
-                openfga::Clients::Bearer(mut client) => {
-                    Ok(openfga::migrate(&mut client, store_name).await?)
-                }
-                openfga::Clients::ClientCredentials(mut client) => {
-                    Ok(openfga::migrate(&mut client, store_name).await?)
-                }
-            }
+            openfga::migrate(&mut client, store_name).await?;
+            Ok(())
         }
     }
 }
@@ -69,9 +60,7 @@ pub enum FgaType {
 #[derive(Debug, Clone)]
 pub enum Authorizers {
     AllowAll(allow_all::AllowAllAuthorizer),
-    OpenFGAUnauthorized(openfga::UnauthenticatedOpenFGAAuthorizer),
-    OpenFGABearer(openfga::BearerOpenFGAAuthorizer),
-    OpenFGAClientCreds(openfga::ClientCredentialsOpenFGAAuthorizer),
+    OpenFGA(openfga::OpenFGAAuthorizer),
 }
 
 impl From<allow_all::AllowAllAuthorizer> for Authorizers {
@@ -80,41 +69,19 @@ impl From<allow_all::AllowAllAuthorizer> for Authorizers {
     }
 }
 
-impl From<openfga::UnauthenticatedOpenFGAAuthorizer> for Authorizers {
-    fn from(authorizer: openfga::UnauthenticatedOpenFGAAuthorizer) -> Self {
-        Self::OpenFGAUnauthorized(authorizer)
-    }
-}
-
-impl From<openfga::BearerOpenFGAAuthorizer> for Authorizers {
-    fn from(authorizer: openfga::BearerOpenFGAAuthorizer) -> Self {
-        Self::OpenFGABearer(authorizer)
-    }
-}
-
-impl From<openfga::ClientCredentialsOpenFGAAuthorizer> for Authorizers {
-    fn from(authorizer: openfga::ClientCredentialsOpenFGAAuthorizer) -> Self {
-        Self::OpenFGAClientCreds(authorizer)
-    }
-}
-
 #[async_trait::async_trait]
 impl HealthExt for Authorizers {
     async fn health(&self) -> Vec<Health> {
         match self {
             Self::AllowAll(authorizer) => authorizer.health().await,
-            Self::OpenFGAUnauthorized(authorizer) => authorizer.health().await,
-            Self::OpenFGABearer(authorizer) => authorizer.health().await,
-            Self::OpenFGAClientCreds(authorizer) => authorizer.health().await,
+            Self::OpenFGA(authorizer) => authorizer.health().await,
         }
     }
 
     async fn update_health(&self) {
         match self {
             Self::AllowAll(authorizer) => authorizer.update_health().await,
-            Self::OpenFGAUnauthorized(authorizer) => authorizer.update_health().await,
-            Self::OpenFGABearer(authorizer) => authorizer.update_health().await,
-            Self::OpenFGAClientCreds(authorizer) => authorizer.update_health().await,
+            Self::OpenFGA(authorizer) => authorizer.update_health().await,
         }
     }
 }

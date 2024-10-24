@@ -109,29 +109,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
             )
             .await?
         }
-        Authorizers::OpenFGAUnauthorized(a) => {
-            serve_inner(
-                a,
-                catalog_state,
-                secrets_state,
-                queues,
-                health_provider,
-                listener,
-            )
-            .await?
-        }
-        Authorizers::OpenFGABearer(a) => {
-            serve_inner(
-                a,
-                catalog_state,
-                secrets_state,
-                queues,
-                health_provider,
-                listener,
-            )
-            .await?
-        }
-        Authorizers::OpenFGAClientCreds(a) => {
+        Authorizers::OpenFGA(a) => {
             serve_inner(
                 a,
                 catalog_state,
