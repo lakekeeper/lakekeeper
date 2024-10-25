@@ -76,7 +76,8 @@ jobs:
       - name: Test Examples
         run: |
           cd examples/self-contained
-          sed -i 'sXquay.io/lakekeeper/catalog:latest/Xlocalhost/iceberg-catalog-local:amd64Xg' docker-compose.yaml
+          sed -i 's/quay.io\/lakekeeper\/catalog:latest/localhost\/iceberg-catalog-local:amd64/g' docker-compose.yaml
+          cat docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
       - name: Dump docker logs on failure
         if: failure()

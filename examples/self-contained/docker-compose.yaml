@@ -4,6 +4,8 @@ services:
     depends_on:
       server:
         condition: service_healthy
+      initialwarehouse:
+        condition: service_completed_successfully
     command: start-notebook.sh --NotebookApp.token=''
     volumes:
       - ./notebooks:/home/jovyan/examples/
