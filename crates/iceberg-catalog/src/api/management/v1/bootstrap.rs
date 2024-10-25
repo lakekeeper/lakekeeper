@@ -5,11 +5,18 @@ use crate::service::authz::Authorizer;
 use crate::service::{
     Actor, AuthDetails, Catalog, Result, SecretStore, StartupValidationData, State, Transaction,
 };
-use crate::{ProjectIdent, CONFIG};
+use crate::{config, ProjectIdent, CONFIG};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
 use super::user::{UserLastUpdatedWith, UserType};
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthZBackend {
+    AllowAll,
+    OpenFGA,
+}
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -43,6 +50,8 @@ pub struct ServerInfo {
     /// Default Project ID. Null if not set
     #[schema(value_type = uuid::Uuid)]
     pub default_project_id: Option<ProjectIdent>,
+    /// AuthZ backend in use.
+    pub authz_backend: AuthZBackend,
 }
 
 impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -149,6 +158,10 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             bootstrapped: server_data != StartupValidationData::NotBootstrapped,
             server_id: CONFIG.server_id,
             default_project_id: CONFIG.default_project_id,
+            authz_backend: match CONFIG.authz_backend {
+                config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
+                config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
+            },
         })
     }
 }

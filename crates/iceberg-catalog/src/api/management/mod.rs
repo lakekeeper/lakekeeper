@@ -23,7 +23,7 @@ pub mod v1 {
     use axum::extract::{Path, Query, State as AxumState};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
-    use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
+    use bootstrap::{AuthZBackend, BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     use project::{
@@ -95,6 +95,7 @@ pub mod v1 {
             update_user,
         ),
         components(schemas(
+            AuthZBackend,
             AzCredential,
             AzdlsProfile,
             BootstrapRequest,
