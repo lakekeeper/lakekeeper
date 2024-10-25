@@ -13,6 +13,7 @@ use azure_storage::shared_access_signature::SasToken;
 use azure_storage::StorageCredentials;
 use futures::StreamExt;
 
+use azure_core::TransportOptions;
 use iceberg::io::AzdlsConfigKeys;
 use iceberg_ext::configs::{
     table::{custom, TableProperties},
@@ -21,7 +22,7 @@ use iceberg_ext::configs::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use url::{Host, Url};
 use veil::Redact;
 
@@ -48,6 +49,8 @@ const DEFAULT_HOST: &str = "dfs.core.windows.net";
 lazy_static::lazy_static! {
     static ref DEFAULT_AUTHORITY_HOST: Url = Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL");
 }
+
+static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 impl AzdlsProfile {
     /// Validate the Azure storage profile.
@@ -155,9 +158,9 @@ impl AzdlsProfile {
             tenant_id,
             client_secret,
         } = creds;
-        let http_client = azure_core::new_http_client();
+        let http_client = STS_CLIENT.get_or_init(reqwest::Client::new).clone();
         let token = azure_identity::ClientSecretCredential::new(
-            http_client,
+            Arc::new(http_client),
             self.authority_host
                 .clone()
                 .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
@@ -171,6 +174,7 @@ impl AzdlsProfile {
         let sas = self
             .get_sas_token(table_location, cred, permissions)
             .await?;
+
         config.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
             value: sas,
@@ -186,7 +190,8 @@ impl AzdlsProfile {
         &self,
         credential: Option<&AzCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("azdls");
+        let mut builder = iceberg::io::FileIOBuilder::new("azdls")
+            .with_client(STS_CLIENT.get_or_init(reqwest::Client::new).clone());
 
         builder = builder
             .with_prop(
@@ -231,8 +236,15 @@ impl AzdlsProfile {
         cred: StorageCredentials,
         permissions: StoragePermissions,
     ) -> Result<String, CredentialsError> {
-        let client =
-            azure_storage_blobs::prelude::BlobServiceClient::new(self.account_name.as_str(), cred);
+        let client = azure_storage_blobs::prelude::BlobServiceClient::builder(
+            self.account_name.as_str(),
+            cred,
+        )
+        .transport(TransportOptions::new(Arc::new(
+            STS_CLIENT.get_or_init(reqwest::Client::new).clone(),
+        )))
+        .blob_service_client();
+
         let start = time::OffsetDateTime::now_utc();
         let max_validity_seconds = i64::MAX;
         let sas_token_validity_seconds = self.sas_token_validity_seconds.unwrap_or(3600);
@@ -548,10 +560,15 @@ pub(super) async fn validate_vended_credentials(
         reason: "Error creating azure sas token.".to_string(),
         source: Some(Box::new(e)),
     })?;
-    let client = azure_storage_blobs::prelude::BlobServiceClient::new(
+    let client = azure_storage_blobs::prelude::BlobServiceClient::builder(
         table_location.account_name.as_str(),
         cred,
-    );
+    )
+    .transport(TransportOptions::new(Arc::new(
+        STS_CLIENT.get_or_init(reqwest::Client::new).clone(),
+    )))
+    .blob_service_client();
+
     let container = client.container_client(table_location.filesystem.as_str());
     let blob_client = container.blob_client(reduce_scheme_string(&file_location.to_string(), true));
     blob_client
