@@ -75,17 +75,8 @@ jobs:
 
       - name: Test Examples
         run: |
-          cd examples/self-contained &&
-          sed -i 'sXquay.io/lakekeeper/catalog:latest/Xlocalhost/iceberg-catalog-local:amd64Xg' docker-compose.yaml &&
-#          docker compose up -d &&
-#          # retry 10 times with 1 second sleep if server becomes healthy
-#            for i in {1..10}; do
-#                docker inspect --format='{{json .State.Health.Status}}' examples-server-1 | grep healthy && break || sleep 1;
-#            done
-#          # retry 10 times with 1 second sleep if initialproject exits with 0
-#            for i in {1..10}; do
-#                docker inspect --format='{{json .State.ExitCode}}' examples-initialproject-1 | grep 0 && break || sleep 1;
-#            done
+          cd examples/self-contained
+          sed -i 'sXquay.io/lakekeeper/catalog:latest/Xlocalhost/iceberg-catalog-local:amd64Xg' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
       - name: Dump docker logs on failure
         if: failure()
