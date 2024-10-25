@@ -50,7 +50,7 @@ pub struct ServerInfo {
     /// Default Project ID. Null if not set
     #[schema(value_type = uuid::Uuid)]
     pub default_project_id: Option<ProjectIdent>,
-    /// AuthZ backend in use.
+    /// `AuthZ`` backend in use.
     pub authz_backend: AuthZBackend,
 }
 
