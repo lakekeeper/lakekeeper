@@ -27,10 +27,13 @@ use crate::service::{
 };
 use crate::{ProjectIdent, WarehouseIdent, CONFIG};
 use axum::extract::{Path, Query, State as AxumState};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use http::StatusCode;
-use openfga_rs::{CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition};
+use openfga_rs::{
+    CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, TupleKey,
+    TupleKeyWithoutCondition,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use strum::IntoEnumIterator;
@@ -252,6 +255,24 @@ struct UpdateRoleAssignmentsRequest {
     deletes: Vec<RoleAssignment>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+struct GetWarehouseResponse {
+    managed_access: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+struct GetNamespaceResponse {
+    managed_access: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+struct SetManagedAccessRequest {
+    managed_access: bool,
+}
+
 /// Get my access to the default project
 #[utoipa::path(
     get,
@@ -373,7 +394,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/warehouse/{warehouse_id}/access",
     params(GetAccessQuery),
     responses(
-            (status = 200, body = [GetNamespaceAccessResponse]),
+            (status = 200, body = [GetWarehouseAccessResponse]),
     )
 )]
 async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
@@ -391,6 +412,126 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         Json(GetWarehouseAccessResponse {
             allowed_actions: relations,
         }),
+    ))
+}
+
+/// Get Authorization properties of a warehouse
+#[utoipa::path(
+    get,
+    tag = "permissions",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}",
+    responses(
+            (status = 200, body = [GetWarehouseResponse]),
+    )
+)]
+async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
+    Path(warehouse_id): Path<WarehouseIdent>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+) -> Result<(StatusCode, Json<GetWarehouseResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    authorizer
+        .require_action(
+            &metadata,
+            AllWarehouseRelation::CanGetMetadata,
+            &warehouse_id.to_openfga(),
+        )
+        .await?;
+
+    let managed_access = get_managed_access(authorizer, &warehouse_id).await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetWarehouseResponse { managed_access }),
+    ))
+}
+
+/// Set managed access property of a warehouse
+#[utoipa::path(
+    post,
+    tag = "permissions",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/managed-access",
+    responses(
+            (status = 200, body = [()]),
+    )
+)]
+async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
+    Path(warehouse_id): Path<WarehouseIdent>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Json(request): Json<SetManagedAccessRequest>,
+) -> Result<StatusCode> {
+    let authorizer = api_context.v1_state.authz;
+    authorizer
+        .require_action(
+            &metadata,
+            AllWarehouseRelation::CanSetManagedAccess,
+            &warehouse_id.to_openfga(),
+        )
+        .await?;
+
+    set_managed_access(authorizer, &warehouse_id, request.managed_access).await?;
+
+    Ok(StatusCode::OK)
+}
+
+/// Set managed access property of a namespace
+#[utoipa::path(
+    post,
+    tag = "permissions",
+    path = "/management/v1/permissions/namespace/{namespace_id}/managed-access",
+    responses(
+            (status = 200, body = [()]),
+    )
+)]
+async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
+    Path(namespace_id): Path<NamespaceIdentUuid>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Json(request): Json<SetManagedAccessRequest>,
+) -> Result<StatusCode> {
+    let authorizer = api_context.v1_state.authz;
+    authorizer
+        .require_action(
+            &metadata,
+            AllNamespaceRelations::CanSetManagedAccess,
+            &namespace_id.to_openfga(),
+        )
+        .await?;
+
+    set_managed_access(authorizer, &namespace_id, request.managed_access).await?;
+
+    Ok(StatusCode::OK)
+}
+
+/// Get Authorization properties of a namespace
+#[utoipa::path(
+    get,
+    tag = "permissions",
+    path = "/management/v1/permissions/namespace/{namespace_id}",
+    responses(
+            (status = 200, body = [GetNamespaceResponse]),
+    )
+)]
+async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
+    Path(namespace_id): Path<NamespaceIdentUuid>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+) -> Result<(StatusCode, Json<GetNamespaceResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+    authorizer
+        .require_action(
+            &metadata,
+            AllNamespaceRelations::CanGetMetadata,
+            &namespace_id.to_openfga(),
+        )
+        .await?;
+
+    let managed_access = get_managed_access(authorizer, &namespace_id).await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(GetNamespaceResponse { managed_access }),
     ))
 }
 
@@ -978,10 +1119,11 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     paths(
         get_namespace_access_by_id,
         get_namespace_assignments_by_id,
-        get_project_access,
+        get_namespace_by_id,
         get_project_access_by_id,
-        get_project_assignments,
+        get_project_access,
         get_project_assignments_by_id,
+        get_project_assignments,
         get_role_access_by_id,
         get_role_assignments_by_id,
         get_server_access,
@@ -992,9 +1134,12 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         get_view_assignments_by_id,
         get_warehouse_access_by_id,
         get_warehouse_assignments_by_id,
+        get_warehouse_by_id,
+        set_namespace_managed_access,
+        set_warehouse_managed_access,
         update_namespace_assignments_by_id,
-        update_project_assignments,
         update_project_assignments_by_id,
+        update_project_assignments,
         update_role_assignments_by_id,
         update_server_assignments,
         update_table_assignments_by_id,
@@ -1004,6 +1149,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     components(schemas(
         GetNamespaceAccessResponse,
         GetNamespaceAssignmentsResponse,
+        GetNamespaceResponse,
         GetProjectAccessResponse,
         GetProjectAssignmentsResponse,
         GetRoleAccessResponse,
@@ -1015,6 +1161,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         GetViewAssignmentsResponse,
         GetWarehouseAccessResponse,
         GetWarehouseAssignmentsResponse,
+        GetWarehouseResponse,
         NamespaceAction,
         NamespaceAssignment,
         NamespaceRelation,
@@ -1025,6 +1172,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         ServerAction,
         ServerAssignment,
         ServerRelation,
+        SetManagedAccessRequest,
         TableAction,
         TableAssignment,
         TableRelation,
@@ -1060,12 +1208,28 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_warehouse_access_by_id),
         )
         .route(
+            "/permissions/warehouse/{warehouse_id}",
+            get(get_warehouse_by_id),
+        )
+        .route(
+            "/permissions/warehouse/{warehouse_id}/managed-access",
+            post(set_warehouse_managed_access),
+        )
+        .route(
             "/permissions/project/{project_id}/access",
             get(get_project_access_by_id),
         )
         .route(
             "/permissions/namespace/{namespace_id}/access",
             get(get_namespace_access_by_id),
+        )
+        .route(
+            "/permissions/namespace/{namespace_id}",
+            get(get_namespace_by_id),
+        )
+        .route(
+            "/permissions/namespace/{namespace_id}/managed-access",
+            post(set_namespace_managed_access),
         )
         .route(
             "/permissions/table/{table_id}/access",
@@ -1244,9 +1408,83 @@ async fn checked_write<RA: Assignment>(
     authorizer.write(Some(writes), Some(deletes)).await
 }
 
+async fn get_managed_access<T: OpenFgaEntity>(
+    authorizer: OpenFGAAuthorizer,
+    entity: &T,
+) -> OpenFGAResult<bool> {
+    let tuples = authorizer
+        .read(
+            2,
+            ReadRequestTupleKey {
+                user: String::new(),
+                relation: AllNamespaceRelations::ManagedAccess.to_string(),
+                object: entity.to_openfga(),
+            },
+            None,
+            ConsistencyPreference::MinimizeLatency,
+        )
+        .await?;
+
+    Ok(!tuples.tuples.is_empty())
+}
+
+async fn set_managed_access<T: OpenFgaEntity>(
+    authorizer: OpenFGAAuthorizer,
+    entity: &T,
+    managed: bool,
+) -> OpenFGAResult<()> {
+    let has_managed_access = get_managed_access(authorizer.clone(), entity).await?;
+    if managed == has_managed_access {
+        return Ok(());
+    }
+
+    let tuples = vec![
+        TupleKey {
+            user: "user:*".to_string(),
+            relation: AllNamespaceRelations::ManagedAccess.to_string(),
+            object: entity.to_openfga(),
+            condition: None,
+        },
+        TupleKey {
+            user: "role:*".to_string(),
+            relation: AllNamespaceRelations::ManagedAccess.to_string(),
+            object: entity.to_openfga(),
+            condition: None,
+        },
+    ];
+
+    if managed {
+        authorizer.write(Some(tuples), None).await?;
+    } else {
+        let tuples_without_condition = tuples
+            .into_iter()
+            .map(|t| TupleKeyWithoutCondition {
+                user: t.user,
+                relation: t.relation,
+                object: t.object,
+            })
+            .collect();
+        authorizer
+            .write(None, Some(tuples_without_condition))
+            .await?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use needs_env_var::needs_env_var;
+
+    #[test]
+    fn test_namespace_manage_access_is_equal_to_warehouse_manage_access() {
+        // Required for set_managed_access / get_managed_access
+        assert_eq!(
+            AllNamespaceRelations::ManagedAccess.to_string(),
+            AllWarehouseRelation::_ManagedAccess.to_string()
+        );
+    }
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
@@ -1358,6 +1596,72 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_set_namespace_managed_access() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let namespace_id = NamespaceIdentUuid::from(uuid::Uuid::now_v7());
+            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+                .await
+                .unwrap();
+            assert!(!managed);
+
+            set_managed_access(authorizer.clone(), &namespace_id, false)
+                .await
+                .unwrap();
+
+            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+                .await
+                .unwrap();
+            assert!(!managed);
+
+            set_managed_access(authorizer.clone(), &namespace_id, true)
+                .await
+                .unwrap();
+
+            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+                .await
+                .unwrap();
+            assert!(managed);
+
+            set_managed_access(authorizer.clone(), &namespace_id, true)
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_warehouse_managed_access() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let warehouse_id = WarehouseIdent::from(uuid::Uuid::now_v7());
+            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+                .await
+                .unwrap();
+            assert!(!managed);
+
+            set_managed_access(authorizer.clone(), &warehouse_id, false)
+                .await
+                .unwrap();
+
+            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+                .await
+                .unwrap();
+            assert!(!managed);
+
+            set_managed_access(authorizer.clone(), &warehouse_id, true)
+                .await
+                .unwrap();
+
+            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+                .await
+                .unwrap();
+            assert!(managed);
+
+            set_managed_access(authorizer.clone(), &warehouse_id, true)
+                .await
+                .unwrap();
         }
     }
 }

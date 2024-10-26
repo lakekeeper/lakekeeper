@@ -22,6 +22,7 @@ pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
 // to take care of the hierarchical structure.
 pub const MAX_NAMESPACE_DEPTH: i32 = 5;
 pub const NAMESPACE_ID_PROPERTY: &str = "namespace_id";
+pub(crate) const MANAGED_ACCESS_PROPERTY: &str = "managed_access";
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
@@ -448,6 +449,7 @@ pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()>
 
 fn remove_managed_namespace_properties(namespace_props: &mut NamespaceProperties) {
     namespace_props.remove_untyped(NAMESPACE_ID_PROPERTY);
+    namespace_props.remove_untyped(MANAGED_ACCESS_PROPERTY);
 }
 
 fn set_namespace_location_property(

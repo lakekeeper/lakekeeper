@@ -150,6 +150,7 @@ type warehouse
     define can_grant_pass_grants: manage_grants
     define can_grant_manage_grants: manage_grants
     define can_change_ownership: manage_grants
+    define can_set_managed_access: manage_grants
 
 type namespace
   relations
@@ -190,6 +191,7 @@ type namespace
     define can_grant_pass_grants: manage_grants
     define can_grant_manage_grants: manage_grants
     define can_change_ownership: manage_grants
+    define can_set_managed_access: manage_grants
 
 type table
   relations
