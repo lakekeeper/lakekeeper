@@ -15,7 +15,7 @@ pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, Transaction,
 };
-use crate::{ProjectIdent, WarehouseIdent, CONFIG};
+use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -175,7 +175,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         } = request;
         let project_id = project_id
             .map(ProjectIdent::from)
-            .or(CONFIG.default_project_id)
+            .or(*DEFAULT_PROJECT_ID)
             .ok_or(ErrorModel::bad_request(
                 "project_id must be specified",
                 "CreateWarehouseProjectIdMissing",
