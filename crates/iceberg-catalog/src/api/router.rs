@@ -21,6 +21,14 @@ use tower_http::{
     ServiceBuilderExt,
 };
 
+lazy_static::lazy_static! {
+    static ref ICEBERG_OPENAPI_SPEC_YAML: serde_json::Value = {
+        let mut yaml_str = include_str!("../../../../openapi/rest-catalog-open-api.yaml").to_string();
+        yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
+        serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+    };
+}
+
 #[allow(clippy::module_name_repetitions, clippy::too_many_arguments)]
 pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     authorizer: A,
@@ -60,7 +68,11 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         )
         .merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-                .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>()),
+                .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>())
+                .external_url_unchecked(
+                    "/api-docs/catalog/v1/openapi.json",
+                    ICEBERG_OPENAPI_SPEC_YAML.clone(),
+                ),
         )
         .layer(axum::middleware::from_fn(
             crate::request_metadata::create_request_metadata_with_trace_id_fn,
@@ -110,4 +122,12 @@ pub async fn serve(listener: tokio::net::TcpListener, router: Router) -> anyhow:
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|e| anyhow::anyhow!(e).context("error running HTTP server"))
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_openapi_spec_can_be_parsed() {
+        let _ = super::ICEBERG_OPENAPI_SPEC_YAML.clone();
+    }
 }
