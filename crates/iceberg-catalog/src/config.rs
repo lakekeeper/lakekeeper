@@ -22,6 +22,9 @@ lazy_static::lazy_static! {
     pub static ref CONFIG: DynAppConfig = {
         get_config()
     };
+    pub static ref DEFAULT_PROJECT_ID: Option<ProjectIdent> = {
+        CONFIG.enable_default_project.then_some(uuid::Uuid::nil().into())
+    };
 }
 
 fn get_config() -> DynAppConfig {
@@ -69,10 +72,8 @@ pub struct DynAppConfig {
     pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
-    /// The default Project ID to use. We recommend setting this
-    /// only for singe-project deployments. A single project
-    /// can still contain multiple warehouses.
-    pub default_project_id: Option<ProjectIdent>,
+    /// If true (default), the NIL uuid is used as default project id.
+    pub enable_default_project: bool,
     /// Template to obtain the "prefix" for a warehouse,
     /// may contain `{warehouse_id}` placeholder.
     ///
@@ -287,7 +288,7 @@ impl Default for DynAppConfig {
         Self {
             base_uri: "https://localhost:8080".parse().expect("Valid URL"),
             metrics_port: 9000,
-            default_project_id: None,
+            enable_default_project: true,
             prefix_template: "{warehouse_id}".to_string(),
             allow_origin: None,
             reserved_namespaces: ReservedNamespaces(HashSet::from([

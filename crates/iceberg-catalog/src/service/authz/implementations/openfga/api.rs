@@ -25,7 +25,7 @@ use crate::service::{
     Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
     ViewIdentUuid,
 };
-use crate::{ProjectIdent, WarehouseIdent, CONFIG};
+use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
@@ -325,7 +325,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
     let project_id = metadata
         .auth_details
         .project_id()
-        .or(CONFIG.default_project_id)
+        .or(*DEFAULT_PROJECT_ID)
         .ok_or(OpenFGAError::NoProjectId)?;
     let relations =
         get_allowed_actions(authorizer, metadata.actor(), &project_id.to_openfga()).await?;
@@ -560,7 +560,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
     let project_id = metadata
         .auth_details
         .project_id()
-        .or(CONFIG.default_project_id)
+        .or(*DEFAULT_PROJECT_ID)
         .ok_or(OpenFGAError::NoProjectId)?;
     authorizer
         .require_action(
@@ -782,7 +782,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     let project_id = metadata
         .auth_details
         .project_id()
-        .or(CONFIG.default_project_id)
+        .or(*DEFAULT_PROJECT_ID)
         .ok_or(OpenFGAError::NoProjectId)?;
     checked_write(
         authorizer,

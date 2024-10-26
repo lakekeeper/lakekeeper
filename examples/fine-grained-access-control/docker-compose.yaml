@@ -39,7 +39,6 @@ services:
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
-      - LAKEKEEPER__DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000
       - LAKEKEEPER__AUTHZ_BACKEND=openfga
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - LAKEKEEPER__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg

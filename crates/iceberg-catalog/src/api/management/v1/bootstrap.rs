@@ -5,7 +5,7 @@ use crate::service::authz::Authorizer;
 use crate::service::{
     Actor, AuthDetails, Catalog, Result, SecretStore, StartupValidationData, State, Transaction,
 };
-use crate::{config, ProjectIdent, CONFIG};
+use crate::{config, ProjectIdent, CONFIG, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
@@ -157,7 +157,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             version,
             bootstrapped: server_data != StartupValidationData::NotBootstrapped,
             server_id: CONFIG.server_id,
-            default_project_id: CONFIG.default_project_id,
+            default_project_id: *DEFAULT_PROJECT_ID,
             authz_backend: match CONFIG.authz_backend {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
                 config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
