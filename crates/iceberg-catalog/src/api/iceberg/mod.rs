@@ -17,7 +17,7 @@ pub mod v1 {
     pub use iceberg_ext::catalog::{NamespaceIdent, TableIdent};
 
     pub use self::namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery};
-    pub use self::tables::{DataAccess, TableParameters};
+    pub use self::tables::{DataAccess, ListTablesQuery, TableParameters};
     pub use self::views::ViewParameters;
     pub use crate::api::iceberg::types::*;
 

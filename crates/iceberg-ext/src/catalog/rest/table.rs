@@ -50,6 +50,9 @@ pub struct ListTablesResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page_token: Option<String>,
     pub identifiers: Vec<TableIdent>,
+    /// Lakekeeper IDs of the tables.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_uuids: Option<Vec<uuid::Uuid>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 use crate::api::iceberg::types::{DropParams, Prefix};
-use crate::api::iceberg::v1::namespace::{NamespaceIdentUrl, NamespaceParameters, PaginationQuery};
+use crate::api::iceberg::v1::namespace::{NamespaceIdentUrl, NamespaceParameters};
 use crate::api::{
     ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
     CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
@@ -13,6 +13,32 @@ use axum::{async_trait, Extension, Json, Router};
 use http::{HeaderMap, StatusCode};
 use iceberg::TableIdent;
 
+use super::{PageToken, PaginationQuery};
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTablesQuery {
+    #[serde(skip_serializing_if = "PageToken::skip_serialize")]
+    pub page_token: PageToken,
+    /// For servers that support pagination, this signals an upper bound of the number of results that a client will receive. For servers that do not support pagination, clients may receive results larger than the indicated `pageSize`.
+    #[serde(rename = "pageSize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<i32>,
+    /// Flag to indicate if the response should include UUIDs for tables.
+    /// Default is false.
+    #[serde(default)]
+    pub return_uuids: bool,
+}
+
+impl From<ListTablesQuery> for PaginationQuery {
+    fn from(query: ListTablesQuery) -> Self {
+        PaginationQuery {
+            page_token: query.page_token,
+            page_size: query.page_size,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>
 where
@@ -21,7 +47,7 @@ where
     /// List all table identifiers underneath a given namespace
     async fn list_tables(
         parameters: NamespaceParameters,
-        query: PaginationQuery,
+        query: ListTablesQuery,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<ListTablesResponse>;
@@ -100,7 +126,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
             // Create a table in the given namespace
             get(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
-                 Query(query): Query<PaginationQuery>,
+                 Query(query): Query<ListTablesQuery>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>| {
                     I::list_tables(

@@ -1,5 +1,5 @@
 use crate::api::iceberg::types::{DropParams, Prefix};
-use crate::api::iceberg::v1::namespace::{NamespaceIdentUrl, NamespaceParameters, PaginationQuery};
+use crate::api::iceberg::v1::namespace::{NamespaceIdentUrl, NamespaceParameters};
 use crate::api::iceberg::v1::DataAccess;
 use crate::api::{
     ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
@@ -18,6 +18,8 @@ use axum::{
 use http::{HeaderMap, StatusCode};
 use iceberg::TableIdent;
 
+use super::ListTablesQuery;
+
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>
 where
@@ -26,7 +28,7 @@ where
     /// List all views underneath a given namespace
     async fn list_views(
         parameters: NamespaceParameters,
-        query: PaginationQuery,
+        query: ListTablesQuery,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<ListTablesResponse>;
@@ -89,7 +91,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
             "/:prefix/namespaces/:namespace/views",
             get(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
-                 Query(query): Query<PaginationQuery>,
+                 Query(query): Query<ListTablesQuery>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>| {
                     {

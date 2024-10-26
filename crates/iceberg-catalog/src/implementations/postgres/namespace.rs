@@ -66,6 +66,7 @@ pub(crate) async fn list_namespaces(
         page_token,
         page_size,
         parent,
+        return_uuids: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ListNamespacesResponse> {
@@ -481,6 +482,7 @@ pub(crate) mod tests {
                 page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
                 page_size: None,
                 parent: None,
+                return_uuids: false,
             },
             transaction.transaction(),
         )
@@ -571,6 +573,7 @@ pub(crate) mod tests {
                 page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
                 page_size: Some(1),
                 parent: None,
+                return_uuids: false,
             },
             t.transaction(),
         )
@@ -599,6 +602,7 @@ pub(crate) mod tests {
                 ),
                 page_size: Some(2),
                 parent: None,
+                return_uuids: false,
             },
             t.transaction(),
         )
@@ -628,6 +632,7 @@ pub(crate) mod tests {
                 ),
                 page_size: Some(3),
                 parent: None,
+                return_uuids: false,
             },
             t.transaction(),
         )

@@ -1,4 +1,5 @@
 use super::{require_warehouse_id, CatalogServer};
+use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
     ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters, Prefix, Result,
@@ -39,6 +40,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             page_token: _,
             page_size: _,
             parent,
+            return_uuids,
         } = &query;
         parent.as_ref().map(validate_namespace_ident).transpose()?;
 
@@ -69,7 +71,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let list_namespaces = C::list_namespaces(warehouse_id, &query, t.transaction()).await?;
         // ToDo: Better pagination with non-empty pages
-        let namespaces: Vec<_> =
+        let (namespace_uuids, namespaces): (Vec<_>, Vec<_>) =
             futures::future::try_join_all(list_namespaces.namespaces.iter().map(|n| {
                 authorizer.is_allowed_namespace_action(
                     &request_metadata,
@@ -81,11 +83,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?
             .into_iter()
             .zip(list_namespaces.namespaces.into_iter())
-            .filter_map(|(allowed, namespace)| if allowed { Some(namespace.1) } else { None })
+            .filter_map(|(allowed, namespace)| allowed.then_some((*namespace.0, namespace.1)))
             .collect();
         Ok(ListNamespacesResponse {
             namespaces,
             next_page_token: list_namespaces.next_page_token,
+            namespace_uuids: (*return_uuids).then_some(namespace_uuids),
         })
     }
 
@@ -189,9 +192,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     /// Return all stored metadata properties for a given namespace
     async fn load_namespace_metadata(
         parameters: NamespaceParameters,
+        query: GetNamespacePropertiesQuery,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetNamespaceResponse> {
+        let GetNamespacePropertiesQuery { return_uuid } = query;
         // ------------------- VALIDATIONS -------------------
         let warehouse_id = require_warehouse_id(parameters.prefix)?;
         validate_namespace_ident(&parameters.namespace)?;
@@ -229,6 +234,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         Ok(GetNamespaceResponse {
             properties: r.properties,
             namespace: r.namespace,
+            namespace_uuid: return_uuid.then_some(*namespace_id),
         })
     }
 
