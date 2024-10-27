@@ -1,84 +1,84 @@
-# name: Examples Test [auth]
+name: Examples Test [auth]
 
-# on:
-#   push:
-#     branches:
-#       - main
-#   pull_request:
+on:
+  push:
+    branches:
+      - main
+  pull_request:
 
 
-# env:
-#   CARGO_TERM_COLOR: always
+env:
+  CARGO_TERM_COLOR: always
 
-# concurrency:
-#   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-#   cancel-in-progress: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
-# jobs:
-#   docker:
-#     runs-on: ubuntu-24.04
-#     services:
-#       postgres:
-#         image: postgres:16
-#         env:
-#           POSTGRES_USER: postgres
-#           POSTGRES_PASSWORD: postgres
-#           POSTGRES_DB: postgres
-#         options: >-
-#           --health-cmd pg_isready
-#           --health-interval 10s
-#           --health-timeout 5s
-#           --health-retries 5
-#         ports:
-#           - 5432:5432
-#     steps:
-#       - uses: actions/checkout@v4
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
 
-#       - name: Set up QEMU
-#         uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-#       - name: Docker info
-#         run: docker info
+      - name: Docker info
+        run: docker info
 
-#       - name: Build Docker image (amd64)
-#         run: |
-#           DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
-#           -f docker/full.Dockerfile .
-#           #            --add-host=host.docker.internal:host-gateway \
-#           #            --build-arg DATABASE_URL=postgres://postgres:postgres@host.docker.internal:5432/postgres .
-#           docker save -o /tmp/iceberg-catalog-amd64.tar localhost/iceberg-catalog-local:amd64
+      - name: Build Docker image (amd64)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
+          -f docker/full.Dockerfile .
+          #            --add-host=host.docker.internal:host-gateway \
+          #            --build-arg DATABASE_URL=postgres://postgres:postgres@host.docker.internal:5432/postgres .
+          docker save -o /tmp/iceberg-catalog-amd64.tar localhost/iceberg-catalog-local:amd64
 
-#       - name: Save Docker
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: iceberg-catalog-image
-#           path: /tmp/*.tar
+      - name: Save Docker
+        uses: actions/upload-artifact@v4
+        with:
+          name: iceberg-catalog-image
+          path: /tmp/*.tar
 
-#   test-examples:
-#     needs: docker
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
+  test-examples:
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-#       - name: Restore binary
-#         uses: actions/download-artifact@v4
-#         with:
-#           name: iceberg-catalog-image
-#           path: artifacts
+      - name: Restore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iceberg-catalog-image
+          path: artifacts
 
-#       - name: Display structure of downloaded files
-#         run: ls -Rlh artifacts
+      - name: Display structure of downloaded files
+        run: ls -Rlh artifacts
 
-#       - name: Restore Docker image
-#         run: |
-#           docker load -i artifacts/iceberg-catalog-amd64.tar
+      - name: Restore Docker image
+        run: |
+          docker load -i artifacts/iceberg-catalog-amd64.tar
 
-#       - name: Test Examples
-#         run: |
-#           cd examples/fine-grained-access-control
-#           sed -i 's/quay.io\/lakekeeper\/catalog:latest/localhost\/iceberg-catalog-local:amd64/g' docker-compose.yaml
-#           cat docker-compose.yaml
-#           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Manual-Bootstrap.ipynb"
-#       - name: Dump docker logs on failure
-#         if: failure()
-#         uses: jwalton/gh-docker-logs@v2
+      - name: Test Examples
+        run: |
+          cd examples/fine-grained-access-control
+          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Manual-Bootstrap.ipynb"
+        env:
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
