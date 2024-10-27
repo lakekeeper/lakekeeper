@@ -56,11 +56,36 @@ services:
     networks:
       iceberg_net:
 
+  bootstrap:
+    image: curlimages/curl
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - -w
+      - "%{http_code}"
+      - "-X"
+      - "POST"
+      - "-v"
+      - "http://server:8080/management/v1/bootstrap"
+      - "-H"
+      - "Content-Type: application/json"
+      - "--data"
+      - '{"accept-terms-of-use": true}'
+      - "-o"
+      - "/dev/null"
+      - "--fail-with-body"
+    networks:
+      iceberg_net:
+
   initialwarehouse:
     image: curlimages/curl
     depends_on:
       server:
         condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
     restart: "no"
     command:
       - -w
