@@ -116,6 +116,12 @@ pub struct RenameWarehouseRequest {
 
 #[derive(Debug, Clone, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
+pub struct UpdateWarehouseDeleteProfileRequest {
+    pub delete_profile: TabularDeleteProfile,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
@@ -348,6 +354,35 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
 
+        transaction.commit().await?;
+
+        Ok(())
+    }
+
+    async fn update_warehouse_delete_profile(
+        warehouse_id: WarehouseIdent,
+        request: UpdateWarehouseDeleteProfileRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanModifySoftDeletion,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        C::set_warehouse_deletion_profile(
+            warehouse_id,
+            &request.delete_profile,
+            transaction.transaction(),
+        )
+        .await?;
         transaction.commit().await?;
 
         Ok(())

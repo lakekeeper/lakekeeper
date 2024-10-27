@@ -1091,6 +1091,28 @@ paths:
       responses:
         '200':
           description: Warehouse deactivated successfully
+  /management/v1/warehouse/{warehouse_id}/delete-profile:
+    post:
+      tags:
+      - warehouse
+      summary: Update the Deletion Profile (soft-delete) of a warehouse.
+      operationId: update_warehouse_delete_profile
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseDeleteProfileRequest'
+        required: true
+      responses:
+        '200':
+          description: Deletion Profile updated successfully
   /management/v1/warehouse/{warehouse_id}/deleted_tabulars:
     get:
       tags:
@@ -2579,6 +2601,13 @@ components:
           allOf:
           - $ref: '#/components/schemas/StorageCredential'
           nullable: true
+    UpdateWarehouseDeleteProfileRequest:
+      type: object
+      required:
+      - delete-profile
+      properties:
+        delete-profile:
+          $ref: '#/components/schemas/TabularDeleteProfile'
     UpdateWarehouseStorageRequest:
       type: object
       required:
