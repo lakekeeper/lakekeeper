@@ -73,6 +73,9 @@ jobs:
         run: |
           docker load -i artifacts/iceberg-catalog-amd64.tar
 
+      - name: List docker images
+        run: docker image ls
+
       - name: Test Examples
         run: |
           cd examples/self-contained
