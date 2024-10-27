@@ -87,7 +87,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer.can_bootstrap(&request_metadata).await?;
 
         // ------------------- Business Logic -------------------
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         let success = C::bootstrap(request.accept_terms_of_use, t.transaction()).await?;
         if !success {
             return Err(ErrorModel::bad_request(
@@ -129,7 +129,27 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }
 
         authorizer.bootstrap(&request_metadata).await?;
-        t.commit().await
+        t.commit().await?;
+
+        // If default project is is specified, and the project does not exist, create it
+        if let Some(default_project_id) = *DEFAULT_PROJECT_ID {
+            let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+            let p = C::get_project(default_project_id, t.transaction()).await?;
+            if p.is_none() {
+                C::create_project(
+                    default_project_id,
+                    "Default Project".to_string(),
+                    t.transaction(),
+                )
+                .await?;
+                authorizer
+                    .create_project(&request_metadata, default_project_id)
+                    .await?;
+                t.commit().await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn server_info(

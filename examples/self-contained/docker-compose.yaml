@@ -56,38 +56,11 @@ services:
     networks:
       iceberg_net:
 
-  initialproject:
-    image: curlimages/curl
-    depends_on:
-      server:
-        condition: service_healthy
-    restart: "no"
-    command:
-      - -w
-      - "%{http_code}"
-      - "-X"
-      - "POST"
-      - "-v"
-      - "http://server:8080/management/v1/project"
-      - "-H"
-      - "Content-Type: application/json"
-      - "--data"
-      - "@create-default-project.json"
-      - "-o"
-      - "/dev/null"
-      - "--fail-with-body"
-    volumes:
-      - ./create-default-project.json:/home/curl_user/create-default-project.json
-    networks:
-      iceberg_net:
-
   initialwarehouse:
     image: curlimages/curl
     depends_on:
       server:
         condition: service_healthy
-      initialproject:
-        condition: service_completed_successfully
     restart: "no"
     command:
       - -w
