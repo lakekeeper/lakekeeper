@@ -81,7 +81,7 @@ jobs:
           cd examples/self-contained
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2

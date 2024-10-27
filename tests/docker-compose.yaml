@@ -73,6 +73,7 @@ services:
 
   server:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
+    pull_policy: always
     environment:
       - ICEBERG_REST__BASE_URI=http://server:8080
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
