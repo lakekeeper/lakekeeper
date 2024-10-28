@@ -166,6 +166,10 @@ Following options are global and apply to all warehouses:
 | `ICEBERG_REST__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` is chosen, you need to provide additional parameters found under []() Default: `postgres`, one-of: [`postgres`, `kv2`]                                                                     |
 | `ICEBERG_DEFAULT_TABULAR_EXPIRATION_DELAY_SECONDS` | `86400`                                | Time after which a tabular, i.e. View or Table which has been dropped is going to be deleted. Default: `86400` \[7 days\]                                                                                                      |
 
+### Self-signed certificates in dependencies (e.g. minio)
+
+You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
+
 ### Task queues
 
 Currently, the catalog uses two task queues, one to ultimately delete soft-deleted tabulars and another to purge tabulars which have been deleted with the `purgeRequested=True` query parameter. The task queues are configured as follows:
