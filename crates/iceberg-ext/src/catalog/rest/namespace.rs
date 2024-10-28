@@ -89,6 +89,10 @@ pub struct UpdateNamespacePropertiesResponse {
 pub struct GetNamespaceResponse {
     /// Reference to one or more levels of a namespace
     pub namespace: NamespaceIdent,
+    /// Lakekeeper ID of this namespace.
+    /// The Lakekeeper ID persists even if the Namespace is renamed / moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace_uuid: Option<uuid::Uuid>,
     /// Properties stored on the namespace, if supported by the server.
     /// If the server does not support namespace properties, it should return
     /// null for this field. If namespace properties are supported, but none are
@@ -116,6 +120,11 @@ pub struct ListNamespacesResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page_token: Option<String>,
     pub namespaces: Vec<NamespaceIdent>,
+    /// Lakekeeper IDs of the namespaces.
+    /// The Lakekeeper ID persists even if the Namespace is renamed / moved.
+    /// The order of the IDs in this list corresponds to the order of the namespaces in the `namespaces` field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace_uuids: Option<Vec<uuid::Uuid>>,
 }
 
 #[cfg(feature = "axum")]

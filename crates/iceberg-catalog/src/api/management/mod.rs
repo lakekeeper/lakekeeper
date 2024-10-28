@@ -44,7 +44,7 @@ pub mod v1 {
         GcsProfile, GcsServiceKey, GetWarehouseResponse, ListWarehousesRequest,
         ListWarehousesResponse, RenameWarehouseRequest, S3Credential, S3Profile, Service as _,
         StorageCredential, StorageProfile, TabularDeleteProfile, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseStorageRequest, WarehouseStatus,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest, WarehouseStatus,
     };
 
     pub(crate) fn default_page_size() -> i32 {
@@ -73,7 +73,6 @@ pub mod v1 {
             delete_role,
             delete_user,
             delete_warehouse,
-            whoami,
             get_default_project,
             get_project_by_id,
             get_role,
@@ -93,6 +92,8 @@ pub mod v1 {
             update_storage_credential,
             update_storage_profile,
             update_user,
+            update_warehouse_delete_profile,
+            whoami,
         ),
         components(schemas(
             AuthZBackend,
@@ -107,8 +108,8 @@ pub mod v1 {
             CreateUserRequest,
             CreateWarehouseRequest,
             CreateWarehouseResponse,
-            DeleteKind,
             DeletedTabularResponse,
+            DeleteKind,
             GcsCredential,
             GcsProfile,
             GcsServiceKey,
@@ -140,6 +141,7 @@ pub mod v1 {
             UpdateRoleRequest,
             UpdateUserRequest,
             UpdateWarehouseCredentialRequest,
+            UpdateWarehouseDeleteProfileRequest,
             UpdateWarehouseStorageRequest,
             User,
             UserLastUpdatedWith,
@@ -707,6 +709,31 @@ pub mod v1 {
             .await
     }
 
+    /// Update the Deletion Profile (soft-delete) of a warehouse.
+    #[utoipa::path(
+            post,
+            tag = "warehouse",
+            path = "/management/v1/warehouse/{warehouse_id}/delete-profile",
+            request_body = UpdateWarehouseDeleteProfileRequest,
+            responses(
+                (status = 200, description = "Deletion Profile updated successfully")
+            )
+        )]
+    async fn update_warehouse_delete_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateWarehouseDeleteProfileRequest>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::update_warehouse_delete_profile(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Deactivate a warehouse
     #[utoipa::path(
         post,
@@ -947,6 +974,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/:warehouse_id/deleted_tabulars",
                     get(list_deleted_tabulars),
+                )
+                .route(
+                    "/warehouse/:warehouse_id/delete-profile",
+                    post(update_warehouse_delete_profile),
                 )
                 .merge(authorizer.new_router())
         }

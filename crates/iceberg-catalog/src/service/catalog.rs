@@ -529,6 +529,13 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
 
+    /// Set warehouse deletion profile
+    async fn set_warehouse_deletion_profile<'a>(
+        warehouse_id: WarehouseIdent,
+        deletion_profile: &TabularDeleteProfile,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<()>;
+
     /// Rename a project.
     async fn rename_project<'a>(
         project_id: ProjectIdent,

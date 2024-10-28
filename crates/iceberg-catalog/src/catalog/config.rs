@@ -7,7 +7,7 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
 use crate::service::{authz::Authorizer, Catalog, ProjectIdent, State};
 use crate::service::{AuthDetails, SecretStore, Transaction};
-use crate::CONFIG;
+use crate::{CONFIG, DEFAULT_PROJECT_ID};
 use std::str::FromStr;
 
 use super::CatalogServer;
@@ -32,7 +32,7 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
             let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
             let project_id = project_from_arg
                 .or(*project_id_from_auth)
-                .or(CONFIG.default_project_id)
+                .or(*DEFAULT_PROJECT_ID)
                 .ok_or_else(|| {
                     // ToDo Christian: Split Project into separate endpoint, Use name
                     ErrorModel::bad_request(

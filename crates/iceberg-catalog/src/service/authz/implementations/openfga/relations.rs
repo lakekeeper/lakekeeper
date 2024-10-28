@@ -604,6 +604,7 @@ pub(super) enum WarehouseRelation {
     CanGetMetadata,
     CanGetConfig,
     CanListNamespaces,
+    CanModifySoftDeletion,
     CanUse,
     CanIncludeInList,
     CanDeactivate,
@@ -618,6 +619,7 @@ pub(super) enum WarehouseRelation {
     CanGrantPassGrants,
     CanGrantManageGrants,
     CanChangeOwnership,
+    CanSetManagedAccess,
 }
 
 impl OpenFgaRelation for WarehouseRelation {}
@@ -818,6 +820,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::CanGetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::CanGetConfig => WarehouseRelation::CanGetConfig,
             CatalogWarehouseAction::CanListNamespaces => WarehouseRelation::CanListNamespaces,
+            CatalogWarehouseAction::CanModifySoftDeletion => {
+                WarehouseRelation::CanModifySoftDeletion
+            }
             CatalogWarehouseAction::CanUse => WarehouseRelation::CanUse,
             CatalogWarehouseAction::CanIncludeInList => WarehouseRelation::CanIncludeInList,
             CatalogWarehouseAction::CanDeactivate => WarehouseRelation::CanDeactivate,
@@ -837,7 +842,7 @@ pub(super) enum NamespaceRelation {
     Parent,
     Child,
     // -- Managed relations --
-    _ManagedAccess,
+    ManagedAccess,
     // -- Direct relations --
     Ownership,
     PassGrants,
@@ -865,6 +870,7 @@ pub(super) enum NamespaceRelation {
     CanGrantPassGrants,
     CanGrantManageGrants,
     CanChangeOwnership,
+    CanSetManagedAccess,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}

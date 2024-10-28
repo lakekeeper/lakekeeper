@@ -13,8 +13,8 @@ use super::{
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse,
         get_config_for_warehouse, get_project, get_warehouse, get_warehouse_by_name, list_projects,
-        list_warehouses, rename_project, rename_warehouse, set_warehouse_status,
-        update_storage_profile,
+        list_warehouses, rename_project, rename_warehouse, set_warehouse_deletion_profile,
+        set_warehouse_status, update_storage_profile,
     },
     CatalogState, PostgresTransaction,
 };
@@ -436,6 +436,14 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
         rename_warehouse(warehouse_id, new_name, transaction).await
+    }
+
+    async fn set_warehouse_deletion_profile<'a>(
+        warehouse_id: WarehouseIdent,
+        deletion_profile: &TabularDeleteProfile,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<()> {
+        set_warehouse_deletion_profile(warehouse_id, deletion_profile, &mut **transaction).await
     }
 
     async fn set_warehouse_status<'a>(

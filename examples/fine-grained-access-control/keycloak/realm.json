@@ -871,6 +871,7 @@
       "optionalClientScopes": [
         "address",
         "phone",
+        "openid",
         "offline_access",
         "microprofile-jwt",
         "iceberg-catalog"
@@ -1516,6 +1517,18 @@
           }
         }
       ]
+    },
+    {
+      "id": "d8649d7f-d5ca-48b5-9c21-422cbb1ab03e",
+      "name": "openid",
+      "description": "",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "true",
+        "gui.order": "",
+        "consent.screen.text": ""
+      }
     },
     {
       "id": "d6293541-1d78-44b8-9f39-9685cea2ea02",

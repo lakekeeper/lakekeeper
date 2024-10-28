@@ -1,4 +1,4 @@
-use crate::api::iceberg::v1::{NamespaceParameters, PaginationQuery};
+use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters};
 use crate::api::ApiContext;
 use crate::api::Result;
 use crate::catalog::namespace::validate_namespace_ident;
@@ -12,10 +12,11 @@ use iceberg_ext::catalog::rest::ListTablesResponse;
 
 pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
-    pagination_query: PaginationQuery,
+    query: ListTablesQuery,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<ListTablesResponse> {
+    let return_uuids = query.return_uuids;
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = parameters;
     let warehouse_id = require_warehouse_id(prefix)?;
@@ -49,28 +50,30 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         &namespace,
         false,
         t.transaction(),
-        pagination_query,
+        query.into(),
     )
     .await?;
 
     // ToDo: Better pagination with non-empty pages
     let next_page_token = views.next_page_token;
-    let identifiers = futures::future::try_join_all(views.tabulars.iter().map(|t| {
-        authorizer.is_allowed_view_action(
-            &request_metadata,
-            warehouse_id,
-            *t.0,
-            &CatalogViewAction::CanIncludeInList,
-        )
-    }))
-    .await?
-    .into_iter()
-    .zip(views.tabulars.into_iter())
-    .filter_map(|(allowed, table)| if allowed { Some(table.1) } else { None })
-    .collect();
+    let (view_uuids, identifiers): (Vec<_>, Vec<_>) =
+        futures::future::try_join_all(views.tabulars.iter().map(|t| {
+            authorizer.is_allowed_view_action(
+                &request_metadata,
+                warehouse_id,
+                *t.0,
+                &CatalogViewAction::CanIncludeInList,
+            )
+        }))
+        .await?
+        .into_iter()
+        .zip(views.tabulars.into_iter())
+        .filter_map(|(allowed, table)| allowed.then_some((*table.0, table.1)))
+        .collect();
 
     Ok(ListTablesResponse {
         next_page_token,
         identifiers,
+        table_uuids: return_uuids.then_some(view_uuids),
     })
 }

@@ -46,7 +46,15 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
-        tower_http::cors::CorsLayer::new().allow_origin(AllowOrigin::list(origins.iter().cloned()))
+        let allowed_origin = if origins
+            .iter()
+            .any(|origin| origin == HeaderValue::from_static("*"))
+        {
+            AllowOrigin::any()
+        } else {
+            AllowOrigin::list(origins.iter().cloned())
+        };
+        tower_http::cors::CorsLayer::new().allow_origin(allowed_origin)
     }));
     let maybe_auth_layer = option_layer(token_verifier.map(|o| {
         axum::middleware::from_fn_with_state(

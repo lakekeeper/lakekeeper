@@ -10,8 +10,8 @@ use super::tables::validate_table_properties;
 use super::CatalogServer;
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{
-    ApiContext, CommitViewRequest, CreateViewRequest, DataAccess, ListTablesResponse,
-    LoadViewResult, NamespaceParameters, PaginationQuery, Prefix, RenameTableRequest, Result,
+    ApiContext, CommitViewRequest, CreateViewRequest, DataAccess, ListTablesQuery,
+    ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RenameTableRequest, Result,
     ViewParameters,
 };
 use crate::request_metadata::RequestMetadata;
@@ -28,7 +28,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     /// List all view identifiers underneath a given namespace
     async fn list_views(
         parameters: NamespaceParameters,
-        query: PaginationQuery,
+        query: ListTablesQuery,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ListTablesResponse> {

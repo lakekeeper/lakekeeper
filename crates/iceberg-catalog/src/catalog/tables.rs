@@ -10,8 +10,8 @@ use super::{
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{
     ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
-    CreateTableRequest, DataAccess, ErrorModel, ListTablesResponse, LoadTableResult,
-    NamespaceParameters, PaginationQuery, Prefix, RegisterTableRequest, RenameTableRequest, Result,
+    CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
+    LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest, RenameTableRequest, Result,
     TableIdent, TableParameters,
 };
 use crate::api::management::v1::warehouse::TabularDeleteProfile;
@@ -55,10 +55,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     /// List all table identifiers underneath a given namespace
     async fn list_tables(
         parameters: NamespaceParameters,
-        pagination_query: PaginationQuery,
+        query: ListTablesQuery,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ListTablesResponse> {
+        let return_uuids = query.return_uuids;
         // ------------------- VALIDATIONS -------------------
         let NamespaceParameters { namespace, prefix } = parameters;
         let warehouse_id = require_warehouse_id(prefix)?;
@@ -100,29 +101,31 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 include_deleted,
             },
             t.transaction(),
-            pagination_query,
+            query.into(),
         )
         .await?;
 
         // ToDo: Better pagination with non-empty pages
         let next_page_token = tables.next_page_token;
-        let identifiers = futures::future::try_join_all(tables.tabulars.iter().map(|t| {
-            authorizer.is_allowed_table_action(
-                &request_metadata,
-                warehouse_id,
-                *t.0,
-                &CatalogTableAction::CanIncludeInList,
-            )
-        }))
-        .await?
-        .into_iter()
-        .zip(tables.tabulars.into_iter())
-        .filter_map(|(allowed, table)| if allowed { Some(table.1) } else { None })
-        .collect();
+        let (table_uuids, identifiers): (Vec<_>, Vec<_>) =
+            futures::future::try_join_all(tables.tabulars.iter().map(|t| {
+                authorizer.is_allowed_table_action(
+                    &request_metadata,
+                    warehouse_id,
+                    *t.0,
+                    &CatalogTableAction::CanIncludeInList,
+                )
+            }))
+            .await?
+            .into_iter()
+            .zip(tables.tabulars.into_iter())
+            .filter_map(|(allowed, table)| allowed.then_some((*table.0, table.1)))
+            .collect();
 
         Ok(ListTablesResponse {
             next_page_token,
             identifiers,
+            table_uuids: return_uuids.then_some(table_uuids),
         })
     }
 

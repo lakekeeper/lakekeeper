@@ -34,6 +34,43 @@ pub(super) async fn get_warehouse_by_name(
     Ok(warehouse_id.map(Into::into))
 }
 
+pub(super) async fn set_warehouse_deletion_profile<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    warehouse_id: WarehouseIdent,
+    deletion_profile: &TabularDeleteProfile,
+    connection: E,
+) -> Result<()> {
+    let num_secs = deletion_profile
+        .expiration_seconds()
+        .map(|dur| dur.num_seconds());
+    let prof = DbTabularDeleteProfile::from(*deletion_profile);
+
+    let row_count = sqlx::query!(
+        r#"
+            UPDATE warehouse
+            SET tabular_expiration_seconds = $1, tabular_delete_mode = $2
+            WHERE warehouse_id = $3
+            AND status = 'active'
+            "#,
+        num_secs,
+        prof as _,
+        *warehouse_id
+    )
+    .execute(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error setting warehouse deletion profile".into()))?
+    .rows_affected();
+
+    if row_count == 0 {
+        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
+    }
+
+    Ok(())
+}
+
 pub(super) async fn get_config_for_warehouse(
     warehouse_id: WarehouseIdent,
     catalog_state: CatalogState,

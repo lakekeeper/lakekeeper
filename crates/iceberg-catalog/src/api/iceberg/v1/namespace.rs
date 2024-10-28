@@ -43,6 +43,7 @@ where
     /// Return all stored metadata properties for a given namespace
     async fn load_namespace_metadata(
         parameters: NamespaceParameters,
+        query: GetNamespacePropertiesQuery,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<GetNamespaceResponse>;
@@ -163,6 +164,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
             // Load the metadata properties for a namespace
             get(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
+                 Query(query): Query<GetNamespacePropertiesQuery>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>| {
                     I::load_namespace_metadata(
@@ -170,6 +172,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                             prefix: Some(prefix),
                             namespace: namespace.into(),
                         },
+                        query,
                         api_context,
                         metadata,
                     )
@@ -251,6 +254,19 @@ pub struct ListNamespacesQuery {
         deserialize_with = "deserialize_namespace_ident_from_url"
     )]
     pub parent: Option<NamespaceIdent>,
+    /// Flag to indicate if the response should include UUIDs for namespaces.
+    /// Default is false.
+    #[serde(default)]
+    pub return_uuids: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNamespacePropertiesQuery {
+    /// Flag to indicate if the response should include the UUID for the namespace.
+    /// Default is false.
+    #[serde(default)]
+    pub return_uuid: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, utoipa::IntoParams)]
@@ -352,6 +368,7 @@ mod tests {
             /// Return all stored metadata properties for a given namespace
             async fn load_namespace_metadata(
                 _parameters: NamespaceParameters,
+                _query: GetNamespacePropertiesQuery,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> Result<GetNamespaceResponse> {
@@ -446,6 +463,7 @@ mod tests {
             /// Return all stored metadata properties for a given namespace
             async fn load_namespace_metadata(
                 parameters: NamespaceParameters,
+                _query: GetNamespacePropertiesQuery,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> Result<GetNamespaceResponse> {
