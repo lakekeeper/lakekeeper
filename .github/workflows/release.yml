@@ -13,7 +13,7 @@ env:
   RUST_BACKTRACE: short
   RUSTUP_MAX_RETRIES: 10
   # Publish the build output as CI artifact to inspect
-  preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'hansetag/iceberg-catalog' }}
+  preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'lakekeeper/lakekeeper' }}
 
 permissions:
   contents: write
@@ -24,7 +24,7 @@ jobs:
   release_please:
     name: Release Please
     runs-on: ubuntu-latest
-    if: github.repository == 'hansetag/iceberg-catalog'
+    if: github.repository == 'lakekeeper/lakekeeper'
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       tag_name: ${{ steps.release.outputs['crates/iceberg-catalog--tag_name'] }}
@@ -356,7 +356,7 @@ jobs:
         uses: actions/download-artifact@v4
 
       - name: Publish Release
-        run: gh release edit ${{ needs.release_please.outputs.tag_name }} --draft=false --repo=hansetag/iceberg-catalog
+        run: gh release edit ${{ needs.release_please.outputs.tag_name }} --draft=false --repo=lakekeeper/lakekeeper
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

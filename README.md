@@ -27,7 +27,7 @@ The catalog is evolving quickly. Especially internal rust APIs are not stable an
 
 # Quickstart
 
-A Docker Container is available on [quay.io](https://quay.io/repository/hansetag/iceberg-catalog?tab=info).
+A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/lakekeeper?tab=info).
 We have prepared a self-contained docker-compose file to demonstrate the usage of `spark` with our catalog:
 
 ```sh
