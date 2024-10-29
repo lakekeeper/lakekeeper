@@ -268,7 +268,6 @@ where
     let tabulars = list_tabulars(
         warehouse_id,
         Some(namespace),
-        None,
         list_flags,
         transaction,
         Some(TabularType::Table),

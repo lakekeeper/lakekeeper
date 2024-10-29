@@ -41,11 +41,10 @@ pub mod v1 {
     };
     use warehouse::{
         AzCredential, AzdlsProfile, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
-        GcsProfile, GcsServiceKey, GetWarehouseResponse, ListDeletedTabularsQuery,
-        ListWarehousesRequest, ListWarehousesResponse, RenameWarehouseRequest, S3Credential,
-        S3Profile, Service as _, StorageCredential, StorageProfile, TabularDeleteProfile,
-        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
-        UpdateWarehouseStorageRequest, WarehouseStatus,
+        GcsProfile, GcsServiceKey, GetWarehouseResponse, ListWarehousesRequest,
+        ListWarehousesResponse, RenameWarehouseRequest, S3Credential, S3Profile, Service as _,
+        StorageCredential, StorageProfile, TabularDeleteProfile, UpdateWarehouseCredentialRequest,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest, WarehouseStatus,
     };
 
     pub(crate) fn default_page_size() -> i32 {
@@ -822,14 +821,14 @@ pub mod v1 {
         get,
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars",
-        params(ListDeletedTabularsQuery),
+        params(PaginationQuery),
         responses(
             (status = 200, description = "List of soft-deleted tabulars", body = [ListDeletedTabularsResponse])
         )
     )]
     async fn list_deleted_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
-        Query(query): Query<ListDeletedTabularsQuery>,
+        Query(pagination): Query<PaginationQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<Json<ListDeletedTabularsResponse>> {
@@ -837,7 +836,7 @@ pub mod v1 {
             metadata,
             warehouse_id.into(),
             api_context,
-            query,
+            pagination,
         )
         .await
         .map(Json)

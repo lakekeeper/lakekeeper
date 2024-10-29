@@ -7,10 +7,9 @@ pub use crate::service::storage::{
     StorageCredential, StorageProfile,
 };
 
-use crate::api::iceberg::v1::{PageToken, PaginatedTabulars, PaginationQuery};
-use crate::service::NamespaceIdentUuid;
+use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
 
-use super::{default_page_size, TabularType};
+use super::TabularType;
 use crate::api::management::v1::role::require_project_id;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
@@ -20,35 +19,6 @@ use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
 use utoipa::ToSchema;
-
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListDeletedTabularsQuery {
-    /// Filter by Namespace ID
-    #[serde(default)]
-    #[param(value_type=uuid::Uuid)]
-    pub namespace_id: Option<NamespaceIdentUuid>,
-    /// Next page token
-    #[serde(default)]
-    pub page_token: Option<String>,
-    /// Signals an upper bound of the number of results that a client will receive.
-    /// Default: 100
-    #[serde(default = "default_page_size")]
-    pub page_size: i32,
-}
-
-impl ListDeletedTabularsQuery {
-    #[must_use]
-    pub fn pagination_query(&self) -> PaginationQuery {
-        PaginationQuery {
-            page_token: self
-                .page_token
-                .clone()
-                .map_or(PageToken::Empty, PageToken::Present),
-            page_size: Some(self.page_size),
-        }
-    }
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -622,7 +592,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         warehouse_id: WarehouseIdent,
         context: ApiContext<State<A, C, S>>,
-        query: ListDeletedTabularsQuery,
+        pagination_query: PaginationQuery,
     ) -> Result<ListDeletedTabularsResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -635,14 +605,11 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let pagination_query = query.pagination_query();
-        let namespace_id = query.namespace_id;
         let PaginatedTabulars {
             tabulars,
             next_page_token,
         } = C::list_tabulars(
             warehouse_id,
-            namespace_id,
             ListFlags::only_deleted(),
             context.v1_state.catalog,
             pagination_query,
