@@ -24,7 +24,7 @@ pub enum OpenFGAError {
     InvalidBearerToken(InvalidMetadataValue),
     #[error("Listing authentication models failed")]
     ListAuthenticationModelsFailed(tonic::Status),
-    #[error("OpenFGA Erorr: Listing stores failed")]
+    #[error("OpenFGA Error: Listing stores failed")]
     ListStoresFailed(tonic::Status),
     #[error("Reading tuples failed")]
     ReadFailed {

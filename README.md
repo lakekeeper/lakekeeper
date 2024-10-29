@@ -27,12 +27,12 @@ The catalog is evolving quickly. Especially internal rust APIs are not stable an
 
 # Quickstart
 
-A Docker Container is available on [quay.io](https://quay.io/repository/hansetag/iceberg-catalog?tab=info).
+A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/lakekeeper?tab=info).
 We have prepared a self-contained docker-compose file to demonstrate the usage of `spark` with our catalog:
 
 ```sh
 git clone https://github.com/lakekeeper/lakekeeper.git
-cd iceberg-catalog/examples/self-contained
+cd lakekeeper/examples/self-contained
 docker compose up
 ```
 
@@ -164,6 +164,10 @@ Following options are global and apply to all warehouses:
 | `LAKEKEEPER__LISTEN_PORT`                          | `8080`                     | Port the server listens on. Default: `8080`                                                                                                                                                                                                                               |
 | `LAKEKEEPER__SECRET_BACKEND`                       | `postgres`                 | The secret backend to use. If `kv2` is chosen, you need to provide additional parameters found under []() Default: `postgres`, one-of: [`postgres`, `kv2`]                                                                                                                |
 | `ICEBERG_DEFAULT_TABULAR_EXPIRATION_DELAY_SECONDS` | `86400`                    | Time after which a tabular, i.e. View or Table which has been dropped is going to be deleted. Default: `86400` \[7 days\]                                                                                                                                                 |
+
+### Self-signed certificates in dependencies (e.g. minio)
+
+You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
 
 ### Task queues
 

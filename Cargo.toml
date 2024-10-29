@@ -47,8 +47,9 @@ uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 reqwest = { version = "^0.12", default-features = false, features = [
     "json",
     "rustls-tls",
+    "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/hansetag/iceberg-rust.git", rev = "2b6263a6c998df75444f7feb54bd37144354a071", features = [
+iceberg = { git = "https://github.com/hansetag/iceberg-rust.git", rev = "acdfca1dd68e2f7bb38afd64f77648102d135d4f", features = [
     "storage-all",
 ] }
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "f0c61a5775e87c55d9d9d9268d6d837d621c5a3a" }
