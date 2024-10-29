@@ -561,6 +561,7 @@ impl Catalog for super::PostgresCatalog {
 
     async fn list_tabulars(
         warehouse_id: WarehouseIdent,
+        namespace_id: Option<NamespaceIdentUuid>,
         list_flags: ListFlags,
         catalog_state: CatalogState,
         pagination_query: PaginationQuery,
@@ -569,6 +570,7 @@ impl Catalog for super::PostgresCatalog {
         list_tabulars(
             warehouse_id,
             None,
+            namespace_id,
             list_flags,
             &catalog_state.read_pool(),
             None,
