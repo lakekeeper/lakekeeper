@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            t.tabular_id,\n            t.name as \"tabular_name\",\n            namespace_name,\n            t.typ as \"typ: TabularType\",\n            t.created_at,\n            t.deleted_at,\n            tt.suspend_until as \"cleanup_at?\",\n            tt.task_id as \"cleanup_task_id?\"\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        LEFT JOIN tabular_expirations te ON t.tabular_id = te.tabular_id\n        LEFT JOIN task tt ON te.task_id = tt.task_id\n        WHERE n.warehouse_id = $1\n            AND (namespace_name = $2 OR $2 IS NULL)\n            AND w.status = 'active'\n            AND (t.typ = $3 OR $3 IS NULL)\n            -- active tables are tables that are not staged and not deleted\n            AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)\n            AND (t.deleted_at IS NULL OR $5)\n            AND (t.metadata_location IS NOT NULL OR $6)\n            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))\n            ORDER BY t.created_at, t.tabular_id ASC\n            LIMIT $9\n        ",
+  "query": "\n        SELECT\n            t.tabular_id,\n            t.name as \"tabular_name\",\n            namespace_name,\n            t.typ as \"typ: TabularType\",\n            t.created_at,\n            t.deleted_at,\n            tt.suspend_until as \"cleanup_at?\",\n            tt.task_id as \"cleanup_task_id?\"\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        LEFT JOIN tabular_expirations te ON t.tabular_id = te.tabular_id\n        LEFT JOIN task tt ON te.task_id = tt.task_id\n        WHERE n.warehouse_id = $1\n            AND (namespace_name = $2 OR $2 IS NULL)\n            AND (n.namespace_id = $10 OR $10 IS NULL)\n            AND w.status = 'active'\n            AND (t.typ = $3 OR $3 IS NULL)\n            -- active tables are tables that are not staged and not deleted\n            AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)\n            AND (t.deleted_at IS NULL OR $5)\n            AND (t.metadata_location IS NOT NULL OR $6)\n            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))\n            ORDER BY t.created_at, t.tabular_id ASC\n            LIMIT $9\n        ",
   "describe": {
     "columns": [
       {
@@ -74,7 +74,8 @@
         "Bool",
         "Timestamptz",
         "Uuid",
-        "Int8"
+        "Int8",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -88,5 +89,5 @@
       false
     ]
   },
-  "hash": "c89340da17342e92cff20202f4396e3894a3336826ec67a20665786cf637d896"
+  "hash": "50123fd1feff2915933406a57da8f109b9023c0545773485f12d1d4186401aed"
 }
