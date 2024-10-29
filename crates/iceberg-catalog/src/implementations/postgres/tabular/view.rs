@@ -450,6 +450,7 @@ where
     let page = list_tabulars(
         warehouse_id,
         Some(namespace),
+        None,
         ListFlags {
             include_deleted,
             include_staged: false,
