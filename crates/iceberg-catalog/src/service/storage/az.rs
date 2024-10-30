@@ -491,6 +491,7 @@ impl From<AzdlsLocation> for Location {
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum AzCredential {
     #[serde(rename_all = "kebab-case")]
+    #[schema(title = "AzCredentialClientCredentials")]
     ClientCredentials {
         client_id: String,
         tenant_id: String,

@@ -41,3 +41,6 @@ update-openfga:
 
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run management-openapi > openapi/management-open-api.yaml
+
+generate-management-client:
+    TS_POST_PROCESS_FILE="prettier --write" npx @openapitools/openapi-generator-cli generate --enable-post-process-file -i openapi/management-open-api.yaml -g typescript-node -o ui/catalog/src/gen/

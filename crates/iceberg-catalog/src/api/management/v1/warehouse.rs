@@ -42,8 +42,9 @@ pub struct CreateWarehouseRequest {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TabularDeleteProfile {
+    #[schema(title = "TabularDeleteProfileHard")]
     Hard {},
-
+    #[schema(title = "TabularDeleteProfileSoft")]
     Soft {
         #[serde(
             deserialize_with = "crate::config::seconds_to_duration",

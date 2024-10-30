@@ -46,8 +46,10 @@ pub(super) trait GrantableRelation: ReducedRelation {
 #[serde(rename_all = "kebab-case")]
 pub(super) enum UserOrRole {
     #[schema(value_type = uuid::Uuid)]
+    #[schema(title = "UserOrRoleUser")]
     User(UserId),
     #[schema(value_type = uuid::Uuid)]
+    #[schema(title = "UserOrRoleRole")]
     Role(RoleId),
 }
 
@@ -128,7 +130,9 @@ pub(super) enum APIRoleRelation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum RoleAssignment {
+    #[schema(title = "RoleAssignmentAssignee")]
     Assignee(UserOrRole),
+    #[schema(title = "RoleAssignmentOwnership")]
     Ownership(UserOrRole),
 }
 
@@ -252,6 +256,7 @@ pub(super) enum APIServerRelation {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ServerAssignment {
+    #[schema(title = "ServerAssignmentGlobalAdmin")]
     GlobalAdmin(UserOrRole),
 }
 
@@ -402,22 +407,30 @@ pub(super) enum APIProjectRelation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ProjectAssignment {
+    #[schema(title = "ProjectAssignmentProjectAdmin")]
     ProjectAdmin(UserOrRole),
+    #[schema(title = "ProjectAssignmentSecurityAdmin")]
     SecurityAdmin(UserOrRole),
+    #[schema(title = "ProjectAssignmentWarehouseAdmin")]
     WarehouseAdmin(UserOrRole),
+    #[schema(title = "ProjectAssignmentRoleCreator")]
     RoleCreator(UserOrRole),
+    #[schema(title = "ProjectAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "ProjectAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "ProjectAssignmentCreate")]
     Create {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "ProjectAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
@@ -640,27 +653,34 @@ pub(super) enum APIWarehouseRelation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum WarehouseAssignment {
+    #[schema(title = "WarehouseAssignmentOwnership")]
     Ownership(UserOrRole),
+    #[schema(title = "WarehouseAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "WarehouseAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "WarehouseAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "WarehouseAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "WarehouseAssignmentCreate")]
     Create {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "WarehouseAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
@@ -891,27 +911,34 @@ pub(super) enum APINamespaceRelation {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum NamespaceAssignment {
+    #[schema(title = "NamespaceAssignmentOwnership")]
     Ownership(UserOrRole),
+    #[schema(title = "NamespaceAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "NamespaceAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "NamespaceAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "NamespaceAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "NamespaceAssignmentCreate")]
     Create {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "NamespaceAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
@@ -1105,23 +1132,29 @@ pub(super) enum APITableRelation {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum TableAssignment {
+    #[schema(title = "TableAssignmentOwnership")]
     Ownership(UserOrRole),
+    #[schema(title = "TableAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "TableAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "TableAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "TableAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "TableAssignmentCreate")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
@@ -1303,19 +1336,24 @@ pub(super) enum APIViewRelation {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ViewAssignment {
+    #[schema(title = "ViewAssignmentOwnership")]
     Ownership(UserOrRole),
+    #[schema(title = "ViewAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "ViewAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "ViewAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,
     },
+    #[schema(title = "ViewAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
         role: RoleId,

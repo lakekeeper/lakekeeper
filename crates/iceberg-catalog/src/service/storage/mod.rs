@@ -29,13 +29,16 @@ use serde::{Deserialize, Serialize};
 pub enum StorageProfile {
     /// Azure storage profile
     #[serde(rename = "azdls")]
+    #[schema(title = "StorageProfileAzdls")]
     Azdls(AzdlsProfile),
     /// S3 storage profile
     #[serde(rename = "s3")]
+    #[schema(title = "StorageProfileS3")]
     S3(S3Profile),
     #[cfg(test)]
     Test(TestProfile),
     #[serde(rename = "gcs")]
+    #[schema(title = "StorageProfileGcs")]
     Gcs(GcsProfile),
 }
 
@@ -486,6 +489,7 @@ pub enum StorageCredential {
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "s3")]
+    #[schema(title = "StorageCredentialS3")]
     S3(S3Credential),
     /// Credentials for Az storage
     ///
@@ -502,6 +506,7 @@ pub enum StorageCredential {
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "az")]
+    #[schema(title = "StorageCredentialAz")]
     Az(AzCredential),
     /// Credentials for GCS storage
     ///
@@ -530,6 +535,7 @@ pub enum StorageCredential {
     ///
 
     #[serde(rename = "gcs")]
+    #[schema(title = "StorageCredentialGcs")]
     Gcs(GcsCredential),
 }
 

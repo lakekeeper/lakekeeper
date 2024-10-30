@@ -278,7 +278,10 @@ struct SetManagedAccessRequest {
     get,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
-    params(GetAccessQuery),
+    params(
+        GetAccessQuery,
+        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+    ),
     responses(
             (status = 200, body = [GetRoleAccessResponse]),
     )
@@ -364,7 +367,10 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/project/{project_id}/access",
-    params(GetAccessQuery),
+    params(
+        GetAccessQuery,
+        ("project_id" = uuid::Uuid, Path, description = "Project ID"),
+    ),
     responses(
             (status = 200, description = "Server Relations", body = [GetProjectAccessResponse]),
     )
@@ -392,7 +398,10 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/access",
-    params(GetAccessQuery),
+    params(
+        GetAccessQuery,
+        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+    ),
     responses(
             (status = 200, body = [GetWarehouseAccessResponse]),
     )
@@ -420,6 +429,9 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}",
+    params(
+        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+    ),
     responses(
             (status = 200, body = [GetWarehouseResponse]),
     )
@@ -451,6 +463,9 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/managed-access",
+    params(
+        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+    ),
     responses(
             (status = 200, body = [()]),
     )
@@ -480,6 +495,9 @@ async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
     post,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/managed-access",
+    params(
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+    ),
     responses(
             (status = 200, body = [()]),
     )
@@ -509,6 +527,9 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}",
+    params(
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+    ),
     responses(
             (status = 200, body = [GetNamespaceResponse]),
     )
@@ -540,7 +561,10 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/access",
-    params(GetAccessQuery),
+    params(
+        GetAccessQuery,
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID")
+    ),
     responses(
             (status = 200, description = "Server Relations", body = [GetNamespaceAccessResponse]),
     )
@@ -568,7 +592,10 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/table/{table_id}/access",
-    params(GetAccessQuery),
+    params(
+        GetAccessQuery,
+        ("table_id" = uuid::Uuid, Path, description = "Table ID")
+    ),
     responses(
             (status = 200, description = "Server Relations", body = [GetTableAccessResponse]),
     )
@@ -596,7 +623,10 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/view/{view_id}/access",
-    params(GetAccessQuery),
+    params(
+        GetAccessQuery,
+        ("view_id" = uuid::Uuid, Path, description = "View ID")
+    ),
     responses(
             (status = 200, body = [GetViewAccessResponse]),
     )
@@ -624,7 +654,10 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/assignments",
-    params(GetProjectAssignmentsQuery),
+    params(
+        GetProjectAssignmentsQuery,
+        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+    ),
     responses(
             (status = 200, body = [GetRoleAssignmentsResponse]),
     )
@@ -726,7 +759,10 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/project/{project_id}/assignments",
-    params(GetProjectAssignmentsQuery),
+    params(
+        GetProjectAssignmentsQuery,
+        ("project_id" = uuid::Uuid, Path, description = "Project ID"),
+    ),
     responses(
             (status = 200, body = [GetProjectAssignmentsResponse]),
     )
@@ -761,7 +797,10 @@ async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
-    params(GetWarehouseAssignmentsQuery),
+    params(
+        GetWarehouseAssignmentsQuery,
+        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+    ),
     responses(
             (status = 200, body = [GetWarehouseAssignmentsResponse]),
     )
@@ -790,7 +829,10 @@ async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
-    params(GetNamespaceAssignmentsQuery),
+    params(
+        GetNamespaceAssignmentsQuery,
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+    ),
     responses(
             (status = 200, body = [GetNamespaceAssignmentsResponse]),
     )
@@ -823,7 +865,10 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/table/{namespace_id}/assignments",
-    params(GetTableAssignmentsQuery),
+    params(
+        GetTableAssignmentsQuery,
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+    ),
     responses(
             (status = 200, body = [GetTableAssignmentsResponse]),
     )
@@ -852,7 +897,10 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/table/{namespace_id}/assignments",
-    params(GetViewAssignmentsQuery),
+    params(
+        GetViewAssignmentsQuery,
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+    ),
     responses(
             (status = 200, body = [GetViewAssignmentsResponse]),
     )
@@ -943,6 +991,9 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/project/{project_id}/assignments",
     request_body = UpdateProjectAssignmentsRequest,
+    params(
+        ("project_id" = uuid::Uuid, Path, description = "Project ID"),
+    ),
     responses(
             (status = 200, description = "Permissions updated successfully"),
     )
@@ -972,6 +1023,9 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     request_body = UpdateWarehouseAssignmentsRequest,
+    params(
+        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+    ),
     responses(
             (status = 200, description = "Permissions updated successfully"),
     )
@@ -1001,6 +1055,9 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     request_body = UpdateNamespaceAssignmentsRequest,
+    params(
+        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+    ),
     responses(
             (status = 200, description = "Permissions updated successfully"),
     )
@@ -1030,6 +1087,9 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/table/{table_id}/assignments",
     request_body = UpdateTableAssignmentsRequest,
+    params(
+        ("table_id" = uuid::Uuid, Path, description = "Table ID"),
+    ),
     responses(
             (status = 200, description = "Permissions updated successfully"),
     )
@@ -1059,6 +1119,9 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/view/{view_id}/assignments",
     request_body = UpdateViewAssignmentsRequest,
+    params(
+        ("view_id" = uuid::Uuid, Path, description = "View ID"),
+    ),
     responses(
             (status = 200, description = "Permissions updated successfully"),
     )
@@ -1088,6 +1151,9 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/assignments",
     request_body = UpdateRoleAssignmentsRequest,
+    params(
+        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+    ),
     responses(
             (status = 200, description = "Permissions updated successfully"),
     )
@@ -1113,6 +1179,17 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
 
 #[derive(Debug, OpenApi)]
 #[openapi(
+    servers(
+        (
+            url = "{scheme}://{host}/{basePath}",
+            description = "Lakekeeper Management API",
+            variables(
+                ("scheme" = (default = "https", description = "The scheme of the URI, either http or https")),
+                ("host" = (default = "localhost", description = "The host address for the specified server")),
+                ("basePath" = (default = "", description = "Optional prefix to be appended to all routes"))
+            )
+        )
+    ),
     tags(
         (name = "permissions", description = "Manage Permissions"),
     ),
@@ -1153,6 +1230,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         GetProjectAccessResponse,
         GetProjectAssignmentsResponse,
         GetRoleAccessResponse,
+        GetRoleAssignmentsResponse,
         GetServerAccessResponse,
         GetServerAssignmentsResponse,
         GetTableAccessResponse,
@@ -1169,6 +1247,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         ProjectAssignment,
         ProjectRelation,
         RoleAction,
+        RoleAssignment,
         ServerAction,
         ServerAssignment,
         ServerRelation,
