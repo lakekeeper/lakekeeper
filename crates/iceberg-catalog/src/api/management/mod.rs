@@ -6,6 +6,7 @@ pub mod v1 {
     pub mod warehouse;
 
     use axum::{Extension, Json, Router};
+    use utoipa::openapi::security::SecurityScheme;
     use utoipa::OpenApi;
 
     use crate::api::{ApiContext, Result};
@@ -59,6 +60,9 @@ pub mod v1 {
             (name = "warehouse", description = "Manage Warehouses"),
             (name = "user", description = "Manage Users"),
             (name = "role", description = "Manage Roles")
+        ),
+        security(
+            ("bearerAuth" = [])
         ),
         paths(
             activate_warehouse,
@@ -147,9 +151,27 @@ pub mod v1 {
             UserLastUpdatedWith,
             UserType,
             WarehouseStatus,
-        ))
+        )),
+        modifiers(&SecurityAddon)
     )]
     struct ManagementApiDoc;
+
+    struct SecurityAddon;
+
+    impl utoipa::Modify for SecurityAddon {
+        fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+            let components = openapi.components.as_mut().unwrap(); // we can unwrap safely since there already is components registered.
+            components.add_security_scheme(
+                "api_key",
+                SecurityScheme::Http(
+                    utoipa::openapi::security::HttpBuilder::new()
+                        .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            )
+        }
+    }
 
     #[derive(Clone, Debug)]
     pub struct ApiServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {

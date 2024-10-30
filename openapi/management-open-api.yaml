@@ -3141,6 +3141,13 @@ components:
       enum:
       - active
       - inactive
+  securitySchemes:
+    api_key:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+- bearerAuth: []
 tags:
 - name: server
   description: Manage Server
