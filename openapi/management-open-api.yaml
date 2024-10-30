@@ -3142,7 +3142,7 @@ components:
       - active
       - inactive
   securitySchemes:
-    api_key:
+    bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
