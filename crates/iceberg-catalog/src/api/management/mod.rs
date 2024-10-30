@@ -169,7 +169,7 @@ pub mod v1 {
                         .bearer_format("JWT")
                         .build(),
                 ),
-            )
+            );
         }
     }
 
