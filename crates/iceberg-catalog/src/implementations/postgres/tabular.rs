@@ -399,13 +399,22 @@ where
     .await
     .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
 
-    let next_page_token = tables.last().map(|r| {
-        PaginateToken::V1(V1PaginateToken {
-            created_at: r.created_at,
-            id: r.tabular_id,
+    let next_page_tokens: Vec<(_, String)> = tables
+        .iter()
+        .map(|r| {
+            (
+                match r.typ {
+                    TabularType::Table => TabularIdentUuid::Table(r.tabular_id),
+                    TabularType::View => TabularIdentUuid::View(r.tabular_id),
+                },
+                PaginateToken::V1(V1PaginateToken {
+                    created_at: r.created_at,
+                    id: r.tabular_id,
+                })
+                .to_string(),
+            )
         })
-        .to_string()
-    });
+        .collect();
 
     let mut tabulars = HashMap::new();
     for table in tables {
@@ -455,7 +464,7 @@ where
 
     Ok(PaginatedTabulars {
         tabulars,
-        next_page_token,
+        next_page_tokens,
     })
 }
 

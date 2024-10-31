@@ -622,7 +622,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 async move {
                     let PaginatedTabulars {
                         tabulars,
-                        next_page_token,
+                        next_page_tokens: next_page_token,
                     } = C::list_tabulars(
                         warehouse_id,
                         ListFlags::only_deleted(),

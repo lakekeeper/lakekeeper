@@ -74,7 +74,7 @@ pub mod v1 {
         Z: Debug,
     {
         pub tabulars: HashMap<T, Z>,
-        pub next_page_token: Option<String>,
+        pub next_page_tokens: Vec<(T, String)>,
     }
 
     impl<T, Z> PaginatedTabulars<T, Z>

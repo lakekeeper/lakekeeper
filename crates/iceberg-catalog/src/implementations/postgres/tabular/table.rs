@@ -19,6 +19,7 @@ use crate::implementations::postgres::tabular::{
     create_tabular, drop_tabular, list_tabulars, try_parse_namespace_ident, CreateTabular,
     TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
 };
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use iceberg_ext::configs::Location;
 use sqlx::types::Json;
 use std::default::Default;
@@ -288,7 +289,18 @@ where
         .collect::<Result<HashMap<TableIdentUuid, TableIdent>, ErrorModel>>()?;
     Ok(PaginatedTabulars {
         tabulars: tables,
-        next_page_token: tabulars.next_page_token,
+        next_page_tokens: tabulars
+            .next_page_tokens
+            .into_iter()
+            .map(|(k, v)| match k {
+                TabularIdentUuid::Table(t) => Ok((TableIdentUuid::from(t), v)),
+                TabularIdentUuid::View(_) => Err(ErrorModel::internal(
+                    "DB returned a view when filtering for tables.",
+                    "InternalDatabaseError",
+                    None,
+                )),
+            })
+            .collect::<Result<Vec<(TableIdentUuid, String)>, ErrorModel>>()?,
     })
 }
 
@@ -1296,7 +1308,9 @@ pub(crate) mod tests {
             },
             &state.read_pool(),
             PaginationQuery {
-                page_token: PageToken::Present(tables.next_page_token.unwrap()),
+                page_token: PageToken::Present(
+                    tables.next_page_tokens.last().unwrap().1.to_string(),
+                ),
                 page_size: Some(2),
             },
         )
@@ -1315,14 +1329,16 @@ pub(crate) mod tests {
             },
             &state.read_pool(),
             PaginationQuery {
-                page_token: PageToken::Present(tables.next_page_token.unwrap()),
+                page_token: PageToken::Present(
+                    tables.next_page_tokens.last().unwrap().1.to_string(),
+                ),
                 page_size: Some(2),
             },
         )
         .await
         .unwrap();
         assert_eq!(tables.len(), 0);
-        assert!(tables.next_page_token.is_none());
+        assert!(tables.next_page_tokens.is_empty());
     }
 
     #[sqlx::test]

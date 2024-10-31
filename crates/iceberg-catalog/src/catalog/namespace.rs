@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer};
+use super::{require_warehouse_id, CatalogServer, Page};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -14,7 +14,6 @@ use crate::{catalog, CONFIG};
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use iceberg_ext::configs::namespace::NamespaceProperties;
 use iceberg_ext::configs::{ConfigProperty as _, Location};
 use std::collections::HashMap;
@@ -72,11 +71,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         // ------------------- BUSINESS LOGIC -------------------
-        let (idents, ids, next_page_token) = catalog::fetch_until_full_page::<_, _, _, _, C>(
+        let (idents, ids, next_page_token) = catalog::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token.clone(),
             |ps, page_token, trx| {
                 let parent = parent.clone();
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
                 async move {
                     let query = ListNamespacesQuery {
                         page_size: Some(ps),
@@ -85,23 +86,29 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         return_uuids: true,
                     };
 
+                    // list_namespaces gives us a HashMap<Id, Ident> and a Vec<(Id, Token)>, in order
+                    // to do sane pagination, we need to rely on the order of the Vec<(Id, Token)> to
+                    // return the correct next page token which is why we do these unholy things here.
                     let list_namespaces =
                         C::list_namespaces(warehouse_id, &query, trx.transaction()).await?;
+                    let next_token = list_namespaces.next_page_tokens;
+                    let mut ns = list_namespaces.namespaces;
 
-                    let (ids, idents) = list_namespaces
-                        .namespaces
-                        .into_iter()
-                        .unzip::<_, _, Vec<_>, Vec<_>>();
-                    Ok((idents, ids, list_namespaces.next_page_token))
-                }
-                .boxed()
-            },
-            |fetched_t, fetched_t2| {
-                let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
-                async move {
-                    let (next_namespaces, next_uuids): (Vec<_>, Vec<_>) =
-                        futures::future::try_join_all(fetched_t2.iter().map(|n| {
+                    let (mut ids, mut idents, mut next_tokens) = (
+                        Vec::with_capacity(ns.len()),
+                        Vec::with_capacity(ns.len()),
+                        Vec::with_capacity(ns.len()),
+                    );
+                    for (id, token) in next_token.into_iter() {
+                        let ident = ns.remove(&id).ok_or(ErrorModel::internal("", "", None))?;
+                        ids.push(id);
+                        idents.push(ident);
+                        next_tokens.push(token);
+                    }
+                    let before_filter_len = ids.len();
+
+                    let (next_namespaces_uuids, next_page_tokens): (Vec<_>, Vec<_>) =
+                        futures::future::try_join_all(ids.iter().map(|n| {
                             authorizer.is_allowed_namespace_action(
                                 &request_metadata,
                                 warehouse_id,
@@ -111,14 +118,25 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         }))
                         .await?
                         .into_iter()
-                        .zip(fetched_t.into_iter().zip(fetched_t2.into_iter()))
-                        .filter_map(|(allowed, namespace)| {
-                            allowed.then_some((namespace.0, namespace.1))
+                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(next_tokens.into_iter())
+                        .filter_map(|((allowed, namespace), token)| {
+                            allowed.then_some(((namespace.0, namespace.1), token))
                         })
                         .unzip();
-
-                    Ok::<_, IcebergErrorResponse>((next_namespaces, next_uuids))
+                    let (next_namespaces, next_uuids) = next_namespaces_uuids.into_iter().unzip();
+                    let p = if before_filter_len == next_namespaces.len() {
+                        if before_filter_len == ps.try_into().expect("we sanitize page size") {
+                            Page::Full
+                        } else {
+                            Page::Partial
+                        }
+                    } else {
+                        Page::AuthFiltered
+                    };
+                    Ok((next_namespaces, next_uuids, next_page_tokens, p))
                 }
+                .boxed()
             },
             &mut t,
         )

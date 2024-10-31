@@ -55,7 +55,7 @@ pub struct GetNamespaceResponse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListNamespacesResponse {
-    pub next_page_token: Option<String>,
+    pub next_page_tokens: Vec<(NamespaceIdentUuid, String)>,
     pub namespaces: HashMap<NamespaceIdentUuid, NamespaceIdent>,
 }
 

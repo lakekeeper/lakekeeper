@@ -22,7 +22,6 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use std::collections::HashMap;
-use std::future::Future;
 use std::marker::PhantomData;
 
 pub trait CommonMetadata {
@@ -76,88 +75,70 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 }
 
 pub const DEFAULT_PAGE_SIZE: i64 = 100;
+pub enum Page {
+    Full,
+    Partial,
+    AuthFiltered,
+}
 
-// Helper fn that fetches data using `fetch_fn` and then filters the data using `filter_fn` until
-// a full page is fetched. The `fetch_fn` is commonly a closure that fetches data from the catalog,
-// `filter_fn` is a closure that filters the data based on some criteria, usually authz.
-pub(crate) async fn fetch_until_full_page<
-    'b,
-    'd: 'b,
-    Entity,
-    EntityId,
-    FetchFun,
-    FilteredFuture,
-    C: Catalog,
->(
+pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun, C: Catalog>(
     page_size: Option<i64>,
     page_token: PageToken,
     mut fetch_fn: FetchFun,
-    mut filter_fn: impl FnMut(Vec<Entity>, Vec<EntityId>) -> FilteredFuture,
     transaction: &'d mut C::Transaction,
 ) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
 where
-    FetchFun: for<'c> FnMut(
-        i64,
-        Option<String>,
-        &'c mut C::Transaction,
-    )
-        -> BoxFuture<'c, Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>>,
-    FilteredFuture: Future<Output = Result<(Vec<Entity>, Vec<EntityId>)>>,
+    FetchFun:
+        for<'c> FnMut(
+            i64,
+            Option<String>,
+            &'c mut C::Transaction,
+        )
+            -> BoxFuture<'c, Result<(Vec<Entity>, Vec<EntityId>, Vec<String>, Page)>>,
 {
     let page_size = page_size
         .unwrap_or(DEFAULT_PAGE_SIZE)
         .clamp(1, MAX_PAGE_SIZE);
     let page_as_usize: usize = page_size.try_into().expect("1, 1000 is a valid usize");
-    let usize_page_size = page_size.try_into().map_err(|e| {
-        ErrorModel::internal(
-            format!(
-                "Encountered an impossible error: page size is larger than '{}' after clamping it to '1, {MAX_PAGE_SIZE}'",
-                usize::MAX
-            ),
-            "InternalServerError",
-            Some(Box::new(e)),
-        )
-    })?;
+
     let page_token = page_token.as_option().map(ToString::to_string);
-    let (fetched_entities, fetched_entity_ids, mut next_page) =
+    let (mut fetched_entities, mut fetched_entity_ids, mut next_page, filtered) =
         fetch_fn(page_size, page_token, transaction).await?;
-    let fetched_len = fetched_entities.len();
-    let (mut entities, mut entity_ids) = filter_fn(fetched_entities, fetched_entity_ids).await?;
-    if entities.len() == fetched_len {
-        return Ok((
-            entities,
-            entity_ids,
-            if fetched_len == page_as_usize {
-                next_page
-            } else {
-                None
-            },
-        ));
-    }
-    while entities.len() < usize_page_size {
-        let (more_entities, more_ids, more_page_token) = fetch_fn(
-            (usize_page_size - entities.len()).try_into().map_err(|e| {
-                ErrorModel::internal(
-                    "Failed to convert usize to i64",
-                    "InternalServerError",
-                    Some(Box::new(e)),
-                )
-            })?,
-            next_page.clone(),
-            transaction,
-        )
-        .await?;
-        if more_entities.is_empty() {
-            next_page = None;
-            break;
+
+    match filtered {
+        Page::AuthFiltered => {}
+        Page::Full => {
+            return Ok((
+                fetched_entities,
+                fetched_entity_ids,
+                next_page.last().cloned(),
+            ));
         }
-        next_page = more_page_token;
-        let (more_entities, more_ids) = filter_fn(more_entities, more_ids).await?;
-        entities.extend(more_entities);
-        entity_ids.extend(more_ids);
+        Page::Partial => {
+            return Ok((fetched_entities, fetched_entity_ids, None));
+        }
     }
 
-    Ok((entities, entity_ids, next_page))
+    while fetched_entities.len() < page_as_usize {
+        let (more_entities, more_ids, more_page_tokens, page) =
+            fetch_fn(DEFAULT_PAGE_SIZE, next_page.last().cloned(), transaction).await?;
+        if matches!(page, Page::Partial) {
+            next_page = vec![];
+            break;
+        }
+        next_page = more_page_tokens;
+
+        let remaining = page_as_usize - more_entities.len();
+        next_page = next_page.into_iter().take(remaining).collect();
+        fetched_entities.extend(more_entities.into_iter().take(remaining));
+        fetched_entity_ids.extend(more_ids.into_iter().take(remaining));
+    }
+
+    Ok((
+        fetched_entities,
+        fetched_entity_ids,
+        next_page.last().cloned(),
+    ))
 }
 
 #[cfg(test)]

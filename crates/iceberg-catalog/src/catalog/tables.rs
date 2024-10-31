@@ -124,7 +124,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                             .tabulars
                             .into_iter()
                             .unzip::<_, _, Vec<_>, Vec<_>>();
-                        Ok((idents, ids, list_tables.next_page_token))
+                        Ok((idents, ids, list_tables.next_page_tokens))
                     }
                     .boxed()
                 },

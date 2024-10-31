@@ -13,6 +13,7 @@ use crate::implementations::postgres::tabular::{
     self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
     TabularIdentUuid, TabularType,
 };
+use crate::service::TableIdentUuid;
 pub(crate) use crate::service::ViewMetadataWithLocation;
 use chrono::{DateTime, Utc};
 use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
@@ -460,7 +461,7 @@ where
         paginate_query,
     )
     .await?;
-    let next_page_token = page.next_page_token;
+    let next_page_token = page.next_page_tokens;
     let views = page
         .tabulars
         .into_iter()
@@ -476,7 +477,17 @@ where
         .collect::<Result<HashMap<ViewIdentUuid, TableIdent>>>();
     Ok(PaginatedTabulars {
         tabulars: views?,
-        next_page_token,
+        next_page_tokens: next_page_token
+            .into_iter()
+            .map(|(k, v)| match k {
+                TabularIdentUuid::Table(k) => Err(ErrorModel::internal(
+                    "DB returned a view when filtering for tables.",
+                    "InternalDatabaseError",
+                    None,
+                )),
+                TabularIdentUuid::View(_) => Ok((ViewIdentUuid::from(*k), v)),
+            })
+            .collect::<Result<Vec<(ViewIdentUuid, String)>, ErrorModel>>()?,
     })
 }
 

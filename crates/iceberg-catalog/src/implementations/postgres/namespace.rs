@@ -156,13 +156,19 @@ pub(crate) async fn list_namespaces(
         .collect()
     };
 
-    let next_page_token = namespaces.last().map(|(id, _, ts)| {
-        PaginateToken::V1(V1PaginateToken {
-            id: *id,
-            created_at: *ts,
+    let next_page_tokens = namespaces
+        .iter()
+        .map(|(id, _, ts)| {
+            (
+                (*id).into(),
+                PaginateToken::V1(V1PaginateToken {
+                    id: *id,
+                    created_at: *ts,
+                })
+                .to_string(),
+            )
         })
-        .to_string()
-    });
+        .collect();
 
     // Convert Vec<Vec<String>> to Vec<NamespaceIdent>
     let namespaces = namespaces
@@ -182,7 +188,7 @@ pub(crate) async fn list_namespaces(
         .collect::<Result<HashMap<_, _>>>()?;
 
     Ok(ListNamespacesResponse {
-        next_page_token,
+        next_page_tokens,
         namespaces,
     })
 }
@@ -564,7 +570,7 @@ pub(crate) mod tests {
 
         let ListNamespacesResponse {
             namespaces,
-            next_page_token,
+            next_page_tokens,
         } = PostgresCatalog::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
@@ -590,11 +596,11 @@ pub(crate) mod tests {
 
         let ListNamespacesResponse {
             namespaces,
-            next_page_token,
+            next_page_tokens: next_page_token,
         } = PostgresCatalog::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
-                page_token: next_page_token.map_or(
+                page_token: next_page_tokens.last().cloned().map_or(
                     crate::api::iceberg::v1::PageToken::Empty,
                     crate::api::iceberg::v1::PageToken::Present,
                 ),
@@ -608,7 +614,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(namespaces.len(), 2);
-        assert!(next_page_token.is_some());
+        assert!(!next_page_token.is_empty());
         assert_eq!(
             namespaces,
             HashMap::from_iter(vec![
@@ -620,11 +626,11 @@ pub(crate) mod tests {
         // last page is empty
         let ListNamespacesResponse {
             namespaces,
-            next_page_token,
+            next_page_tokens: next_page_token,
         } = PostgresCatalog::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
-                page_token: next_page_token.map_or(
+                page_token: next_page_token.last().cloned().map_or(
                     crate::api::iceberg::v1::PageToken::Empty,
                     crate::api::iceberg::v1::PageToken::Present,
                 ),
@@ -637,7 +643,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        assert_eq!(next_page_token, None);
+        assert_eq!(next_page_token.last(), None);
         assert_eq!(namespaces, HashMap::new());
     }
 
