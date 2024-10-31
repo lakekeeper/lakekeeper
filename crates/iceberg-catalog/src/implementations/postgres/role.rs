@@ -1,6 +1,7 @@
-use crate::api::iceberg::v1::PaginationQuery;
+use crate::api::iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE};
 use crate::api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse};
 use crate::implementations::postgres::dbutils::DBErrorHandler;
+use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::{Result, RoleId};
 use crate::ProjectIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -144,13 +145,30 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     filter_project_id: Option<ProjectIdent>,
     filter_role_id: Option<Vec<RoleId>>,
     filter_name: Option<String>,
-    _pagination: PaginationQuery,
+    PaginationQuery {
+        page_size,
+        page_token,
+    }: PaginationQuery,
     connection: E,
 ) -> Result<ListRolesResponse> {
-    // TODO: impl pagination
+    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
     let filter_name = filter_name.unwrap_or_default();
 
-    let roles = sqlx::query_as!(
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::try_from)
+        .transpose()?;
+
+    let (token_ts, token_id) = token
+        .as_ref()
+        .map(
+            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
+                (created_at, id)
+            },
+        )
+        .unzip();
+
+    let roles: Vec<Role> = sqlx::query_as!(
         RoleRow,
         r#"
         SELECT
@@ -160,10 +178,14 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             project_id,
             created_at,
             updated_at
-        FROM role
+        FROM role r
         WHERE ($1 OR project_id = $2)
             AND ($3 OR id = any($4))
             AND ($5 OR name ILIKE ('%' || $6 || '%'))
+            --- PAGINATION
+            AND ((r.created_at > $7 OR $7 IS NULL) OR (r.created_at = $7 AND r.id > $8))
+        ORDER BY r.created_at, r.id ASC
+        LIMIT $9
         "#,
         filter_project_id.is_none(),
         uuid::Uuid::from(filter_project_id.unwrap_or_default()),
@@ -174,7 +196,10 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             .map(|id| Uuid::from(id))
             .collect::<Vec<uuid::Uuid>>() as Vec<Uuid>,
         filter_name.is_empty(),
-        filter_name.to_string()
+        filter_name.to_string(),
+        token_ts,
+        token_id,
+        page_size,
     )
     .fetch_all(connection)
     .await
@@ -183,9 +208,17 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     .map(Role::from)
     .collect();
 
+    let next_page_token = roles.last().map(|r| {
+        PaginateToken::V1(V1PaginateToken::<Uuid> {
+            created_at: r.created_at,
+            id: r.id.into(),
+        })
+        .to_string()
+    });
+
     Ok(ListRolesResponse {
         roles,
-        next_page_token: None,
+        next_page_token,
     })
 }
 
@@ -491,6 +524,104 @@ mod test {
 
         assert_eq!(roles.roles.len(), 1);
         assert_eq!(roles.roles[0].id, role1_id);
+    }
+
+    #[sqlx::test]
+    async fn test_paginate_roles(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project1_id = Uuid::now_v7().into();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        PostgresCatalog::create_project(
+            project1_id,
+            format!("Project {project1_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+
+        t.commit().await.unwrap();
+
+        for i in 0..10 {
+            create_role(
+                RoleId::default(),
+                project1_id,
+                &format!("Role-{i}"),
+                Some(&format!("Role-{i} description")),
+                &state.write_pool(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let roles = list_roles(
+            None,
+            None,
+            None,
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(roles.roles.len(), 10);
+
+        let roles = list_roles(
+            None,
+            None,
+            None,
+            PaginationQuery {
+                page_size: Some(5),
+                page_token: PageToken::Empty,
+            },
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(roles.roles.len(), 5);
+
+        for (idx, r) in roles.roles.iter().enumerate() {
+            assert_eq!(r.name, format!("Role-{idx}"));
+        }
+
+        let roles = list_roles(
+            None,
+            None,
+            None,
+            PaginationQuery {
+                page_size: Some(5),
+                page_token: roles.next_page_token.into(),
+            },
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(roles.roles.len(), 5);
+        for (idx, r) in roles.roles.iter().enumerate() {
+            assert_eq!(r.name, format!("Role-{}", idx + 5));
+        }
+
+        let roles = list_roles(
+            None,
+            None,
+            None,
+            PaginationQuery {
+                page_size: Some(5),
+                page_token: roles.next_page_token.into(),
+            },
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(roles.roles.len(), 0);
+        assert!(roles.next_page_token.is_none());
     }
 
     #[sqlx::test]

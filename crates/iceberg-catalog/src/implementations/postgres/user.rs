@@ -1,8 +1,9 @@
 use super::dbutils::DBErrorHandler;
-use crate::api::iceberg::v1::PaginationQuery;
+use crate::api::iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE};
 use crate::api::management::v1::user::{
     ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
 };
+use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::{CreateOrUpdateUserResponse, Result, UserId};
 use itertools::Itertools;
 
@@ -83,13 +84,26 @@ impl From<UserRow> for User {
 pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     filter_user_id: Option<Vec<UserId>>,
     filter_name: Option<String>,
-    _pagination: PaginationQuery,
+    PaginationQuery {
+        page_token,
+        page_size,
+    }: PaginationQuery,
     connection: E,
 ) -> Result<ListUsersResponse> {
-    // TODO: impl pagination
+    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
     let filter_name = filter_name.unwrap_or_default();
 
-    let users = sqlx::query_as!(
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::try_from)
+        .transpose()?;
+
+    let (token_ts, token_id): (_, Option<&String>) = token
+        .as_ref()
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
+    let users: Vec<User> = sqlx::query_as!(
         UserRow,
         r#"
         SELECT
@@ -100,10 +114,14 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             email,
             created_at,
             updated_at
-        FROM users
+        FROM users u
         where (deleted_at is null)
             AND ($1 OR name ILIKE ('%' || $2 || '%'))
             AND ($3 OR id = any($4))
+            --- PAGINATION
+            AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))
+        ORDER BY u.created_at, u.id ASC
+        LIMIT $7
         "#,
         filter_name.is_empty(),
         filter_name.to_string(),
@@ -113,6 +131,9 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             .into_iter()
             .map_into()
             .collect::<Vec<String>>() as Vec<String>,
+        token_ts,
+        token_id,
+        page_size,
     )
     .fetch_all(connection)
     .await
@@ -121,9 +142,17 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     .map(User::from)
     .collect();
 
+    let next_page_token = users.last().map(|u| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: u.created_at,
+            id: u.id.clone(),
+        })
+        .to_string()
+    });
+
     Ok(ListUsersResponse {
         users,
-        next_page_token: None,
+        next_page_token,
     })
 }
 
@@ -376,5 +405,95 @@ mod test {
             .await
             .unwrap();
         assert_eq!(result, None);
+    }
+
+    #[sqlx::test]
+    async fn test_paginate_user(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        for i in 0..10 {
+            let user_id = UserId::new(&format!("test_user_{i}")).unwrap();
+            let user_name = &format!("test user {i}");
+
+            create_or_update_user(
+                &user_id,
+                user_name,
+                None,
+                UserLastUpdatedWith::ConfigCallCreation,
+                UserType::Application,
+                &state.read_write.write_pool,
+            )
+            .await
+            .unwrap();
+        }
+        let users = list_users(
+            None,
+            None,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+            },
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(users.users.len(), 10);
+
+        let users = list_users(
+            None,
+            None,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(5),
+            },
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(users.users.len(), 5);
+
+        for (uidx, u) in users.users.iter().enumerate() {
+            let user_id = UserId::new(&format!("test_user_{uidx}")).unwrap();
+            let user_name = format!("test user {uidx}");
+            assert_eq!(u.id, user_id.inner());
+            assert_eq!(u.name, user_name);
+        }
+
+        let users = list_users(
+            None,
+            None,
+            PaginationQuery {
+                page_token: users.next_page_token.into(),
+                page_size: Some(5),
+            },
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(users.users.len(), 5);
+
+        for (uidx, u) in users.users.iter().enumerate() {
+            let uidx = uidx + 5;
+            let user_id = UserId::new(&format!("test_user_{uidx}")).unwrap();
+            let user_name = format!("test user {uidx}");
+            assert_eq!(u.id, user_id.inner());
+            assert_eq!(u.name, user_name);
+        }
+
+        // last page is empty
+        let users = list_users(
+            None,
+            None,
+            PaginationQuery {
+                page_token: users.next_page_token.into(),
+                page_size: Some(5),
+            },
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(users.users.len(), 0);
+        assert!(users.next_page_token.is_none());
     }
 }

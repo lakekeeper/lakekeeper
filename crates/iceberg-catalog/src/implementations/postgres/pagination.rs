@@ -1,20 +1,22 @@
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use std::fmt::Display;
-use uuid::Uuid;
 
 #[derive(Debug)]
-pub(crate) enum PaginateToken {
-    V1(V1PaginateToken),
+pub(crate) enum PaginateToken<T> {
+    V1(V1PaginateToken<T>),
 }
 
 #[derive(Debug)]
-pub(crate) struct V1PaginateToken {
+pub(crate) struct V1PaginateToken<T> {
     pub(crate) created_at: chrono::DateTime<Utc>,
-    pub(crate) id: Uuid,
+    pub(crate) id: T,
 }
 
-impl Display for PaginateToken {
+impl<T> Display for PaginateToken<T>
+where
+    T: Display,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
             PaginateToken::V1(V1PaginateToken { created_at, id }) => {
@@ -25,7 +27,11 @@ impl Display for PaginateToken {
     }
 }
 
-impl TryFrom<&str> for PaginateToken {
+impl<T, Z> TryFrom<&str> for PaginateToken<T>
+where
+    T: for<'a> TryFrom<&'a str, Error = Z> + Display,
+    Z: std::error::Error + Send + Sync + 'static,
+{
     type Error = ErrorModel;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
@@ -38,7 +44,7 @@ impl TryFrom<&str> for PaginateToken {
                         ts.parse().map_err(|e| parse_error(Some(Box::new(e))))?,
                     )
                     .ok_or(parse_error(None))?;
-                    let id = Uuid::parse_str(id).map_err(|e| parse_error(Some(Box::new(e))))?;
+                    let id = id.try_into().map_err(|e| parse_error(Some(Box::new(e))))?;
                     Ok(PaginateToken::V1(V1PaginateToken { created_at, id }))
                 }
                 _ => Err(parse_error(None)),

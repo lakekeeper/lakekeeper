@@ -354,7 +354,11 @@ where
 
     let (token_ts, token_id) = token
         .as_ref()
-        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .map(
+            |PaginateToken::V1(V1PaginateToken { created_at, id }): &PaginateToken<Uuid>| {
+                (created_at, id)
+            },
+        )
         .unzip();
 
     let tables = sqlx::query!(
