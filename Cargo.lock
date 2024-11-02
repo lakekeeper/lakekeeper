@@ -1068,7 +1068,7 @@ dependencies = [
  "pin-project",
  "quick-xml 0.31.0",
  "rand 0.8.5",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "rustc_version",
  "serde",
  "serde_json",
@@ -2446,7 +2446,7 @@ dependencies = [
  "google-cloud-token",
  "home",
  "jsonwebtoken",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "serde",
  "serde_json",
  "thiserror",
@@ -2462,7 +2462,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04f945a208886a13d07636f38fb978da371d0abc3e34bad338124b9f8c135a8f"
 dependencies = [
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "thiserror",
  "tokio",
 ]
@@ -2927,7 +2927,7 @@ dependencies = [
  "parquet",
  "paste",
  "rand 0.8.5",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "rust_decimal",
  "serde",
  "serde_bytes",
@@ -2988,7 +2988,7 @@ dependencies = [
  "percent-encoding",
  "pretty_assertions",
  "rand 0.8.5",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "serde",
  "serde-aux",
  "serde_json",
@@ -3023,7 +3023,7 @@ dependencies = [
  "axum",
  "clap",
  "iceberg-catalog",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "tokio",
  "tower-http 0.6.1",
  "tracing",
@@ -3044,7 +3044,7 @@ dependencies = [
  "lazy_static",
  "log",
  "paste",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3209,7 +3209,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "jsonwebtoken",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "serde",
  "serde_json",
  "thiserror",
@@ -3823,7 +3823,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml 0.36.1",
  "reqsign",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "serde",
  "serde_json",
  "tokio",
@@ -3842,7 +3842,7 @@ dependencies = [
  "prost-wkt",
  "prost-wkt-build",
  "prost-wkt-types",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "serde",
  "serde_json",
  "thiserror",
@@ -4666,7 +4666,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml 0.36.1",
  "rand 0.8.5",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "rsa",
  "rust-ini",
  "serde",
@@ -4719,9 +4719,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.8"
+version = "0.12.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f713147fbe92361e52392c73b8c9e48c04c6625bce969ef54dc901e58e042a7b"
+checksum = "a77c62af46e79de0a562e1a9849205ffcb7fc1238876e9bd743357570e04046f"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6616,7 +6616,7 @@ dependencies = [
  "axum",
  "mime_guess",
  "regex",
- "reqwest 0.12.8",
+ "reqwest 0.12.9",
  "rust-embed",
  "serde",
  "serde_json",
