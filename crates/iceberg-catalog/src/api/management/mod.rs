@@ -224,7 +224,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "user",
-        path = "/management/v1/user/from-token",
+        path = "/management/v1/user",
         request_body = CreateUserRequest,
         responses(
             (status = 200, description = "User updated", body = [User]),
@@ -937,13 +937,13 @@ pub mod v1 {
                 )
                 .route("/search/role", post(search_role))
                 // User management
-                .route("/whoami", get(whoami).post(create_user))
+                .route("/whoami", get(whoami))
                 .route("/search/user", post(search_user))
                 .route(
                     "/user/:user_id",
                     get(get_user).put(update_user).delete(delete_user),
                 )
-                .route("/user", get(list_user))
+                .route("/user", get(list_user).post(create_user))
                 // Create a new project
                 .route(
                     "/project",

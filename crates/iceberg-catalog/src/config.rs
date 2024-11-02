@@ -355,6 +355,10 @@ impl DynAppConfig {
     pub fn tabular_expiration_delay(&self) -> chrono::Duration {
         self.default_tabular_expiration_delay_seconds
     }
+
+    pub fn authn_enabled(&self) -> bool {
+        self.openid_provider_uri.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

@@ -56,6 +56,7 @@ pub struct Principal {
     application_id: Option<String>,
     issuer: String,
     email: Option<String>,
+    idtyp: Option<String>,
 }
 
 impl Principal {
@@ -64,21 +65,43 @@ impl Principal {
     /// # Errors
     /// - name, display name and email are all missing
     pub fn get_name_and_type(&self) -> Result<(&str, UserType)> {
-        if let Some(app_id) = self.app_id() {
-            return Ok((self.display_name().unwrap_or(app_id), UserType::Application));
-        }
-
         let human_name = self.display_name().or(self.email());
-        if let Some(name) = human_name {
-            return Ok((name, UserType::Human));
+        let human_result = human_name
+            .ok_or(
+                ErrorModel::bad_request(
+                    "Cannot register principal as no name could be determined",
+                    "InvalidAccessTokenClaims",
+                    None,
+                )
+                .into(),
+            )
+            .map(|name| (name, UserType::Human));
+        let app_name = self.display_name().or(self.app_id());
+        let app_result = app_name
+            .ok_or(
+                ErrorModel::bad_request(
+                    "Cannot register principal as no name could be determined",
+                    "InvalidAccessTokenClaims",
+                    None,
+                )
+                .into(),
+            )
+            .map(|name| (name, UserType::Application));
+
+        // Best indicator: Type has been explicitly set
+        if let Some(idtyp) = self.idtyp.as_deref() {
+            if idtyp.to_lowercase() == "app" {
+                return app_result;
+            } else if idtyp.to_lowercase() == "user" {
+                return human_result;
+            }
         }
 
-        Err(ErrorModel::bad_request(
-            "Cannot register principal as no name could be determined",
-            "InvalidAccessTokenClaims",
-            None,
-        )
-        .into())
+        if self.app_id().is_some() {
+            return app_result;
+        }
+
+        human_result
     }
 }
 
@@ -101,8 +124,10 @@ impl AuthDetails {
                 });
 
         let preferred_username = claims
+            .name
+            .clone()
             // Keycloak
-            .preferred_username
+            .or(claims.preferred_username)
             // Azure
             .or(claims.app_displayname)
             // Humans
@@ -110,8 +135,7 @@ impl AuthDetails {
 
         let email = claims.email.or(claims.upn);
         let application_id = claims
-            .azp
-            .or(claims.appid)
+            .appid
             .or(claims.app_id)
             .or(claims.application_id)
             .or(claims.client_id);
@@ -124,6 +148,7 @@ impl AuthDetails {
             issuer: claims.iss,
             email,
             application_id,
+            idtyp: claims.idtyp,
         };
 
         Ok(Self::Principal(principal))
@@ -266,11 +291,12 @@ struct Claims {
     // exp: usize,
     // iat: usize,
     oid: Option<String>,
-    azp: Option<String>,
+    _azp: Option<String>,
     appid: Option<String>,
     app_id: Option<String>,
     application_id: Option<String>,
     client_id: Option<String>,
+    idtyp: Option<String>,
     name: Option<String>,
     #[serde(alias = "given_name", alias = "given-name", alias = "givenName")]
     given_name: Option<String>,
@@ -530,5 +556,206 @@ mod test {
             "exp": 9022
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn test_machine_discovery_entra() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+                    "aio": "k2BgYGiZGnb+zdtzaReDdlQfWjHBAgA=",
+                    "app_displayname": "ht-testing-lakekeeper-oauth",
+                    "appid": "d53edae2-1b58-4c56-a243-xxxxxxxxxxxx",
+                    "appidacr": "1",
+                    "aud": "00000003-0000-0000-c000-000000000000",
+                    "exp": 1_730_052_519,
+                    "iat": 1_730_048_619,
+                    "idp": "https://sts.windows.net/00000003-1234-0000-c000-000000000000/",
+                    "idtyp": "app",
+                    "iss": "https://sts.windows.net/00000003-1234-0000-c000-000000000000/",
+                    "nbf": 1_730_048_619,
+                    "oid": "f621fc83-4ec9-4bf8-bc8d-xxxxxxxxxxxx",
+                    "rh": "0.AU8A4hqJeoi7wkGOJROkB9ygQAMAAAAAAAAAwAAAAAAAAABPAAA.",
+                    "sub": "f621fc83-4ec9-4bf8-bc8d-xxxxxxxxxxxx",
+                    "tenant_region_scope": "EU",
+                    "tid": "00000003-1234-0000-c000-000000000000",
+                    "uti": "mBOqwjvzLUqboKm591ccAA",
+                    "ver": "1.0",
+                    "wids": ["0997a1d0-0d1d-4acb-b408-xxxxxxxxxxxx"],
+                    "xms_idrel": "7 24",
+                    "xms_tcdt": 1_638_946_153,
+                    "xms_tdbr": "EU"
+        }))
+        .unwrap();
+
+        let auth_details = super::AuthDetails::try_from_jwt_claims(claims).unwrap();
+        let principal = match auth_details {
+            super::AuthDetails::Principal(principal) => principal,
+            super::AuthDetails::Unauthenticated => panic!("Expected principal"),
+        };
+        let (name, user_type) = principal.get_name_and_type().unwrap();
+        assert_eq!(name, "ht-testing-lakekeeper-oauth");
+        assert_eq!(user_type, super::UserType::Application);
+    }
+
+    #[test]
+    fn test_human_discovery_entra() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+            "acct": 0,
+            "acr": "1",
+            "aio": "AVQAq/8YAAAAkP/tBF3Bd+1dl8nN3d7MY7maGp32OtfupUwxJPaOxxkEiLSzd1yMjh/2AZIg0NB97mxp1+Q0ZfCQVCjKyUINhp2XYMuKtQSy3FC3WiM4aFM=",
+            "amr": ["pwd", "mfa"],
+            "app_displayname": "ht-testing-lakekeeper-oauth",
+            "appid": "d53edae2-1b58-4c56-a243-xxxxxxxxxxxx",
+            "appidacr": "0",
+            "aud": "00000003-0000-0000-c000-000000000000",
+            "exp": 1_730_054_207,
+            "family_name": "Frost",
+            "given_name": "Jack",
+            "iat": 1_730_049_088,
+            "idtyp": "user",
+            "ipaddr": "12.206.221.219",
+            "iss": "https://sts.windows.net/00000003-1234-0000-c000-000000000000/",
+            "name": "Jack Frost",
+            "nbf": 1_730_049_088,
+            "oid": "eb54b4f5-0d20-46eb-b703-b1c910262e89",
+            "platf": "14",
+            "puid": "100320025A52FAC4",
+            "rh": "0.AU8A4hqJeoi7wkGOJROkB9ygQAMAAAAAAAAAwAAAAAAAAABPAJo.",
+            "scp": "openid profile User.Read email",
+            "signin_state": ["kmsi"],
+            "sub": "SFUpMUKjypW6q3w3Vc9u8N3LNAGlZmIrmGdvQVN53AI",
+            "tenant_region_scope": "EU",
+            "tid": "00000003-1234-0000-c000-000000000000",
+            "unique_name": "jack@example.com",
+            "upn": "jack@example.com",
+            "uti": "FXRr3wnAA0e8YADs1adQAA",
+            "ver": "1.0",
+            "wids": ["62e90394-69f5-4237-9190-xxxxxxxxxxxx",
+                    "b79fbf4d-3ef9-4689-8143-xxxxxxxxxxxx"],
+            "xms_idrel": "1 8",
+            "xms_st": {"sub": "VZ5XLBqhasu6qISBjalO9e45lQjr_EyLLtKzCFcWw-8"},
+            "xms_tcdt": 1_638_946_153,
+            "xms_tdbr": "EU"
+        })).unwrap();
+
+        let auth_details = super::AuthDetails::try_from_jwt_claims(claims).unwrap();
+        let principal = match auth_details {
+            super::AuthDetails::Principal(principal) => principal,
+            super::AuthDetails::Unauthenticated => panic!("Expected principal"),
+        };
+        let (name, user_type) = principal.get_name_and_type().unwrap();
+        assert_eq!(name, "Jack Frost");
+        assert_eq!(user_type, super::UserType::Human);
+        assert_eq!(principal.email(), Some("jack@example.com"));
+    }
+
+    #[test]
+    fn test_human_discovery_keycloak() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+          "exp": 1_729_990_458,
+          "iat": 1_729_990_158,
+          "jti": "97cdc5d9-8717-4826-a425-30c6682342b4",
+          "iss": "http://localhost:30080/realms/iceberg",
+          "aud": "account",
+          "sub": "f1616ed0-18d8-48ea-9fb3-832f42db0b1b",
+          "typ": "Bearer",
+          "azp": "iceberg-catalog",
+          "sid": "6f2ca33d-2513-43fe-ab53-4a945c78a66d",
+          "acr": "1",
+          "allowed-origins": [
+            "*"
+          ],
+          "realm_access": {
+            "roles": [
+              "offline_access",
+              "uma_authorization",
+              "default-roles-iceberg"
+            ]
+          },
+          "resource_access": {
+            "account": {
+              "roles": [
+                "manage-account",
+                "manage-account-links",
+                "view-profile"
+              ]
+            }
+          },
+          "scope": "openid email profile",
+          "email_verified": true,
+          "name": "Peter Cold",
+          "preferred_username": "peter",
+          "given_name": "Peter",
+          "family_name": "Cold",
+          "email": "peter@example.com"
+        }))
+        .unwrap();
+
+        let auth_details = super::AuthDetails::try_from_jwt_claims(claims).unwrap();
+        let principal = match auth_details {
+            super::AuthDetails::Principal(principal) => principal,
+            super::AuthDetails::Unauthenticated => panic!("Expected principal"),
+        };
+        let (name, user_type) = principal.get_name_and_type().unwrap();
+        assert_eq!(name, "Peter Cold");
+        assert_eq!(user_type, super::UserType::Human);
+        assert_eq!(principal.email(), Some("peter@example.com"));
+    }
+
+    #[test]
+    fn test_machine_discovery_keycloak() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+          "exp": 1_730_050_563,
+          "iat": 1_730_050_563,
+          "jti": "b1e96701-b718-4714-88a2-d25d985c38ed",
+          "iss": "http://keycloak:8080/realms/iceberg",
+          "aud": [
+            "iceberg-catalog",
+            "account"
+          ],
+          "sub": "b6cc7aa0-1af0-460e-9174-e05c881fb6d4",
+          "typ": "Bearer",
+          "azp": "iceberg-machine-client",
+          "acr": "1",
+          "allowed-origins": [
+            "/*"
+          ],
+          "realm_access": {
+            "roles": [
+              "offline_access",
+              "uma_authorization",
+              "default-roles-iceberg"
+            ]
+          },
+          "resource_access": {
+            "iceberg-machine-client": {
+              "roles": [
+                "uma_protection"
+              ]
+            },
+            "account": {
+              "roles": [
+                "manage-account",
+                "manage-account-links",
+                "view-profile"
+              ]
+            }
+          },
+          "scope": "email profile",
+          "clientHost": "10.89.0.2",
+          "email_verified": false,
+          "preferred_username": "service-account-iceberg-machine-client",
+          "clientAddress": "10.89.0.2",
+          "client_id": "iceberg-machine-client"
+        }))
+        .unwrap();
+
+        let auth_details = super::AuthDetails::try_from_jwt_claims(claims).unwrap();
+        let principal = match auth_details {
+            super::AuthDetails::Principal(principal) => principal,
+            super::AuthDetails::Unauthenticated => panic!("Expected principal"),
+        };
+        let (name, user_type) = principal.get_name_and_type().unwrap();
+        assert_eq!(name, "service-account-iceberg-machine-client");
+        assert_eq!(user_type, super::UserType::Application);
     }
 }

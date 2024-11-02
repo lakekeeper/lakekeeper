@@ -1033,7 +1033,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ListUsersResponse'
-  /management/v1/user/from-token:
     post:
       tags:
       - user
@@ -1408,7 +1407,7 @@ components:
       type: string
       enum:
       - allow-all
-      - open-f-g-a
+      - openfga
     AzCredential:
       oneOf:
       - type: object

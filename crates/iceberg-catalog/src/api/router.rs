@@ -12,7 +12,7 @@ use axum::response::IntoResponse;
 use axum::{routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
 use axum_prometheus::PrometheusMetricLayer;
-use http::HeaderValue;
+use http::{header, HeaderValue, Method};
 use tower::ServiceBuilder;
 use tower_http::cors::AllowOrigin;
 use tower_http::{
@@ -54,7 +54,22 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         } else {
             AllowOrigin::list(origins.iter().cloned())
         };
-        tower_http::cors::CorsLayer::new().allow_origin(allowed_origin)
+        tower_http::cors::CorsLayer::new()
+            .allow_origin(allowed_origin)
+            .allow_headers(vec![
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
+                header::USER_AGENT,
+            ])
+            .allow_methods(vec![
+                Method::GET,
+                Method::HEAD,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
     }));
     let maybe_auth_layer = option_layer(token_verifier.map(|o| {
         axum::middleware::from_fn_with_state(
