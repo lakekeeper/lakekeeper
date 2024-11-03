@@ -11,7 +11,7 @@ use crate::catalog::compression_codec::CompressionCodec;
 use crate::catalog::io::list_location;
 use crate::service::tabular_idents::TabularIdentUuid;
 use crate::WarehouseIdent;
-pub use az::{AzCredential, AzdlsLocation, AzdlsProfile};
+pub use az::{AdlsLocation, AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
 use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, UpdateError};
 use futures::StreamExt;
@@ -28,9 +28,9 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum StorageProfile {
     /// Azure storage profile
-    #[serde(rename = "azdls")]
-    #[schema(title = "StorageProfileAzdls")]
-    Azdls(AzdlsProfile),
+    #[serde(rename = "adls", alias = "azdls")]
+    #[schema(title = "StorageProfileAdls")]
+    Adls(AdlsProfile),
     /// S3 storage profile
     #[serde(rename = "s3")]
     #[schema(title = "StorageProfileS3")]
@@ -47,8 +47,8 @@ pub enum StorageProfile {
 pub enum StorageType {
     #[strum(serialize = "s3")]
     S3,
-    #[strum(serialize = "azdls")]
-    Azdls,
+    #[strum(serialize = "adls")]
+    Adls,
     #[cfg(test)]
     #[strum(serialize = "test")]
     Test,
@@ -76,7 +76,7 @@ impl StorageProfile {
                     defaults: HashMap::default(),
                 }
             }
-            StorageProfile::Azdls(prof) => prof.generate_catalog_config(warehouse_id),
+            StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
         }
     }
@@ -92,7 +92,7 @@ impl StorageProfile {
             (StorageProfile::S3(this_profile), StorageProfile::S3(other_profile)) => {
                 this_profile.can_be_updated_with(other_profile)
             }
-            (StorageProfile::Azdls(this_profile), StorageProfile::Azdls(other_profile)) => {
+            (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
                 this_profile.can_be_updated_with(other_profile)
             }
             #[cfg(test)]
@@ -122,7 +122,7 @@ impl StorageProfile {
                     .map(Into::into)
                     .as_ref(),
             ),
-            StorageProfile::Azdls(prof) => prof.file_io(secret.map(|s| s.try_to_az()).transpose()?),
+            StorageProfile::Adls(prof) => prof.file_io(secret.map(|s| s.try_to_az()).transpose()?),
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
             StorageProfile::Gcs(prof) => {
@@ -138,7 +138,7 @@ impl StorageProfile {
     pub fn base_location(&self) -> Result<Location, ValidationError> {
         match self {
             StorageProfile::S3(profile) => profile.base_location().map(Into::into),
-            StorageProfile::Azdls(profile) => profile.base_location(),
+            StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
             StorageProfile::Test(_) => std::str::FromStr::from_str("file://tmp/").map_err(|_| {
@@ -173,7 +173,7 @@ impl StorageProfile {
             StorageProfile::S3(_) => StorageType::S3,
             #[cfg(test)]
             StorageProfile::Test(_) => StorageType::Test,
-            StorageProfile::Azdls(_) => StorageType::Azdls,
+            StorageProfile::Adls(_) => StorageType::Adls,
             StorageProfile::Gcs(_) => StorageType::Gcs,
         }
     }
@@ -200,7 +200,7 @@ impl StorageProfile {
                     )
                     .await
             }
-            StorageProfile::Azdls(profile) => {
+            StorageProfile::Adls(profile) => {
                 profile
                     .generate_table_config(
                         data_access,
@@ -243,7 +243,7 @@ impl StorageProfile {
         // ------------- Profile specific validations -------------
         match self {
             StorageProfile::S3(profile) => profile.normalize(),
-            StorageProfile::Azdls(prof) => prof.normalize(),
+            StorageProfile::Adls(prof) => prof.normalize(),
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(()),
             StorageProfile::Gcs(profile) => profile.normalize(),
@@ -277,7 +277,7 @@ impl StorageProfile {
         // Test vended-credentials access
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
-            StorageProfile::Azdls(_) => true,
+            StorageProfile::Adls(_) => true,
             StorageProfile::Gcs(_) => true,
             #[cfg(test)]
             StorageProfile::Test(_) => false,
@@ -301,7 +301,7 @@ impl StorageProfile {
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
-                StorageProfile::Azdls(_) => {
+                StorageProfile::Adls(_) => {
                     az::validate_vended_credentials(&tbl_config, &test_location, self).await?;
                 }
                 #[cfg(test)]
@@ -408,12 +408,12 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the profile is not an Az profile.
-    pub fn try_into_az(self) -> Result<AzdlsProfile, ConversionError> {
+    pub fn try_into_az(self) -> Result<AdlsProfile, ConversionError> {
         match self {
-            Self::Azdls(profile) => Ok(profile),
+            Self::Adls(profile) => Ok(profile),
             _ => Err(ConversionError {
                 is: self.storage_type(),
-                to: StorageType::Azdls,
+                to: StorageType::Adls,
             }),
         }
     }
@@ -466,7 +466,7 @@ pub trait StorageLocations {
 
 impl StorageLocations for StorageProfile {}
 impl StorageLocations for S3Profile {}
-impl StorageLocations for AzdlsProfile {}
+impl StorageLocations for AdlsProfile {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestProfile;
@@ -546,7 +546,7 @@ impl StorageCredential {
     pub fn storage_type(&self) -> StorageType {
         match self {
             StorageCredential::S3(_) => StorageType::S3,
-            StorageCredential::Az(_) => StorageType::Azdls,
+            StorageCredential::Az(_) => StorageType::Adls,
             StorageCredential::Gcs(_) => StorageType::Gcs,
         }
     }
@@ -575,7 +575,7 @@ impl StorageCredential {
             Self::Az(profile) => Ok(profile),
             _ => Err(ConversionError {
                 is: self.storage_type(),
-                to: StorageType::Azdls,
+                to: StorageType::Adls,
             }
             .into()),
         }
@@ -915,7 +915,7 @@ mod tests {
             .await
             .unwrap();
         let (downscoped1, downscoped2) = match profile {
-            StorageProfile::Test(_) | StorageProfile::Azdls(_) => {
+            StorageProfile::Test(_) | StorageProfile::Adls(_) => {
                 unimplemented!("Not supported")
             }
             StorageProfile::S3(_) => {

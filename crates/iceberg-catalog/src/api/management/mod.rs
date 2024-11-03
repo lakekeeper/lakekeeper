@@ -41,7 +41,7 @@ pub mod v1 {
         UpdateUserRequest, User, UserLastUpdatedWith, UserType,
     };
     use warehouse::{
-        AzCredential, AzdlsProfile, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
+        AdlsProfile, AzCredential, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
         GcsProfile, GcsServiceKey, GetWarehouseResponse, ListWarehousesRequest,
         ListWarehousesResponse, RenameWarehouseRequest, S3Credential, S3Profile, Service as _,
         StorageCredential, StorageProfile, TabularDeleteProfile, UpdateWarehouseCredentialRequest,
@@ -102,7 +102,7 @@ pub mod v1 {
         components(schemas(
             AuthZBackend,
             AzCredential,
-            AzdlsProfile,
+            AdlsProfile,
             BootstrapRequest,
             CreateProjectRequest,
             CreateProjectResponse,
