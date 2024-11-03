@@ -283,7 +283,7 @@ struct SetManagedAccessRequest {
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
     responses(
-            (status = 200, body = [GetRoleAccessResponse]),
+            (status = 200, body = GetRoleAccessResponse),
     )
 )]
 async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
@@ -311,7 +311,7 @@ async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/server/access",
     params(GetAccessQuery),
     responses(
-            (status = 200, description = "Server Access", body = [GetServerAccessResponse]),
+            (status = 200, description = "Server Access", body = GetServerAccessResponse),
     )
 )]
 async fn get_server_access<C: Catalog, S: SecretStore>(
@@ -337,7 +337,7 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/access",
     params(GetAccessQuery),
     responses(
-            (status = 200, description = "Server Relations", body = [GetProjectAccessResponse]),
+            (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
 )]
 async fn get_project_access<C: Catalog, S: SecretStore>(
@@ -372,7 +372,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
         ("project_id" = uuid::Uuid, Path, description = "Project ID"),
     ),
     responses(
-            (status = 200, description = "Server Relations", body = [GetProjectAccessResponse]),
+            (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
     )
 )]
 async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
@@ -403,7 +403,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = [GetWarehouseAccessResponse]),
+            (status = 200, body = GetWarehouseAccessResponse),
     )
 )]
 async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
@@ -433,7 +433,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = [GetWarehouseResponse]),
+            (status = 200, body = GetWarehouseResponse),
     )
 )]
 async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
@@ -467,7 +467,7 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = [()]),
+            (status = 200),
     )
 )]
 async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
@@ -499,7 +499,7 @@ async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = [()]),
+            (status = 200),
     )
 )]
 async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
@@ -531,7 +531,7 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = [GetNamespaceResponse]),
+            (status = 200, body = GetNamespaceResponse),
     )
 )]
 async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
@@ -566,7 +566,7 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID")
     ),
     responses(
-            (status = 200, description = "Server Relations", body = [GetNamespaceAccessResponse]),
+            (status = 200, description = "Server Relations", body = GetNamespaceAccessResponse),
     )
 )]
 async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
@@ -597,7 +597,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
         ("table_id" = uuid::Uuid, Path, description = "Table ID")
     ),
     responses(
-            (status = 200, description = "Server Relations", body = [GetTableAccessResponse]),
+            (status = 200, description = "Server Relations", body = GetTableAccessResponse),
     )
 )]
 async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
@@ -628,7 +628,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
         ("view_id" = uuid::Uuid, Path, description = "View ID")
     ),
     responses(
-            (status = 200, body = [GetViewAccessResponse]),
+            (status = 200, body = GetViewAccessResponse),
     )
 )]
 async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
@@ -659,7 +659,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
     responses(
-            (status = 200, body = [GetRoleAssignmentsResponse]),
+            (status = 200, body = GetRoleAssignmentsResponse),
     )
 )]
 async fn get_role_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -691,7 +691,7 @@ async fn get_role_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/server/assignments",
     params(GetServerAssignmentsQuery),
     responses(
-            (status = 200, body = [GetServerAssignmentsResponse]),
+            (status = 200, body = GetServerAssignmentsResponse),
     )
 )]
 async fn get_server_assignments<C: Catalog, S: SecretStore>(
@@ -722,7 +722,7 @@ async fn get_server_assignments<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/assignments",
     params(GetProjectAssignmentsQuery),
     responses(
-            (status = 200, body = [GetProjectAssignmentsResponse]),
+            (status = 200, body = GetProjectAssignmentsResponse),
     )
 )]
 async fn get_project_assignments<C: Catalog, S: SecretStore>(
@@ -764,7 +764,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
         ("project_id" = uuid::Uuid, Path, description = "Project ID"),
     ),
     responses(
-            (status = 200, body = [GetProjectAssignmentsResponse]),
+            (status = 200, body = GetProjectAssignmentsResponse),
     )
 )]
 async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -802,7 +802,7 @@ async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = [GetWarehouseAssignmentsResponse]),
+            (status = 200, body = GetWarehouseAssignmentsResponse),
     )
 )]
 async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -834,7 +834,7 @@ async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = [GetNamespaceAssignmentsResponse]),
+            (status = 200, body = GetNamespaceAssignmentsResponse),
     )
 )]
 async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -870,7 +870,7 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = [GetTableAssignmentsResponse]),
+            (status = 200, body = GetTableAssignmentsResponse),
     )
 )]
 async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -902,7 +902,7 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = [GetViewAssignmentsResponse]),
+            (status = 200, body = GetViewAssignmentsResponse),
     )
 )]
 async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
