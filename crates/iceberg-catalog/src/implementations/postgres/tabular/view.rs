@@ -13,7 +13,6 @@ use crate::implementations::postgres::tabular::{
     self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
     TabularIdentUuid, TabularType,
 };
-use crate::service::TableIdentUuid;
 pub(crate) use crate::service::ViewMetadataWithLocation;
 use chrono::{DateTime, Utc};
 use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
@@ -461,34 +460,19 @@ where
         paginate_query,
     )
     .await?;
-    let next_page_token = page.next_page_tokens;
-    let views = page
-        .tabulars
-        .into_iter()
-        .map(|(k, (v, _))| match k {
-            TabularIdentUuid::Table(_) => Err(ErrorModel::builder()
-                .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-                .message("DB returned a table when filtering for tables.".to_string())
-                .r#type("InternalDatabaseError".to_string())
-                .build()
-                .into()),
-            TabularIdentUuid::View(t) => Ok((ViewIdentUuid::from(t), v.into_inner())),
-        })
-        .collect::<Result<HashMap<ViewIdentUuid, TableIdent>>>();
-    Ok(PaginatedMapping {
-        tabulars: views?,
-        next_page_tokens: next_page_token
-            .into_iter()
-            .map(|(k, v)| match k {
-                TabularIdentUuid::Table(k) => Err(ErrorModel::internal(
-                    "DB returned a view when filtering for tables.",
-                    "InternalDatabaseError",
-                    None,
-                )),
-                TabularIdentUuid::View(_) => Ok((ViewIdentUuid::from(*k), v)),
-            })
-            .collect::<Result<Vec<(ViewIdentUuid, String)>, ErrorModel>>()?,
-    })
+    let views = page.map::<ViewIdentUuid, TableIdent>(
+        |k| match k {
+            TabularIdentUuid::Table(_) => Err(ErrorModel::internal(
+                "DB returned a table when filtering for views.",
+                "InternalDatabaseError",
+                None,
+            )
+            .into()),
+            TabularIdentUuid::View(t) => Ok(t.into()),
+        },
+        |(v, _)| Ok(v.into_inner()),
+    )?;
+    Ok(views)
 }
 
 async fn insert_representation(

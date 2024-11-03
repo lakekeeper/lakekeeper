@@ -1,7 +1,7 @@
 use super::commit_tables::apply_commit;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer,
+    require_warehouse_id, CatalogServer, Page,
 };
 use futures::FutureExt;
 use std::collections::{HashMap, HashSet};
@@ -40,9 +40,9 @@ use iceberg::spec::{
     MetadataLog, TableMetadataBuildResult, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
 };
 use iceberg::{NamespaceIdent, TableUpdate};
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use iceberg_ext::configs::namespace::NamespaceProperties;
 use iceberg_ext::configs::Location;
+use itertools::Itertools;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -96,11 +96,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let include_active = true;
 
         let (identifiers, table_uuids, next_page_token) =
-            catalog::fetch_until_full_page::<_, _, _, _, C>(
+            catalog::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
                 |ps, page_token, trx| {
                     let namespace = namespace.clone();
+                    let authorizer = authorizer.clone();
+                    let request_metadata = request_metadata.clone();
                     async move {
                         let query = PaginationQuery {
                             page_size: Some(ps),
@@ -120,20 +122,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         )
                         .await?;
 
-                        let (ids, idents) = list_tables
-                            .tabulars
-                            .into_iter()
-                            .unzip::<_, _, Vec<_>, Vec<_>>();
-                        Ok((idents, ids, list_tables.next_page_tokens))
-                    }
-                    .boxed()
-                },
-                |fetched_t, fetched_t2| {
-                    let authorizer = authorizer.clone();
-                    let request_metadata = request_metadata.clone();
-                    async move {
-                        let (next_tables, next_uuids): (Vec<_>, Vec<_>) =
-                            futures::future::try_join_all(fetched_t2.iter().map(|n| {
+                        let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                            list_tables.into_iter_with_page_tokens().multiunzip();
+                        let before_filter_len = ids.len();
+                        let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                            futures::future::try_join_all(ids.iter().map(|n| {
                                 authorizer.is_allowed_table_action(
                                     &request_metadata,
                                     warehouse_id,
@@ -143,12 +136,26 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                             }))
                             .await?
                             .into_iter()
-                            .zip(fetched_t.into_iter().zip(fetched_t2.into_iter()))
-                            .filter_map(|(allowed, table)| allowed.then_some((table.0, table.1)))
-                            .unzip();
-
-                        Ok::<_, IcebergErrorResponse>((next_tables, next_uuids))
+                            .zip(idents.into_iter().zip(ids.into_iter()))
+                            .zip(tokens.into_iter())
+                            .filter_map(|((allowed, namespace), token)| {
+                                allowed.then_some((namespace.0, namespace.1, token))
+                            })
+                            .multiunzip();
+                        let p = if before_filter_len == next_idents.len() {
+                            if before_filter_len
+                                == usize::try_from(ps).expect("we sanitize page size")
+                            {
+                                Page::Full
+                            } else {
+                                Page::Partial
+                            }
+                        } else {
+                            Page::AuthFiltered
+                        };
+                        Ok((next_idents, next_uuids, next_page_tokens, p))
                     }
+                    .boxed()
                 },
                 &mut t,
             )

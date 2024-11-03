@@ -399,24 +399,7 @@ where
     .await
     .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
 
-    let next_page_tokens: Vec<(_, String)> = tables
-        .iter()
-        .map(|r| {
-            (
-                match r.typ {
-                    TabularType::Table => TabularIdentUuid::Table(r.tabular_id),
-                    TabularType::View => TabularIdentUuid::View(r.tabular_id),
-                },
-                PaginateToken::V1(V1PaginateToken {
-                    created_at: r.created_at,
-                    id: r.tabular_id,
-                })
-                .to_string(),
-            )
-        })
-        .collect();
-
-    let mut tabulars = HashMap::new();
+    let mut tabulars = PaginatedMapping::with_capacity(tables.len());
     for table in tables {
         let namespace = try_parse_namespace_ident(table.namespace_name)?;
         let name = table.tabular_name;
@@ -448,6 +431,11 @@ where
                         TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
                     ),
+                    PaginateToken::V1(V1PaginateToken {
+                        created_at: table.created_at,
+                        id: table.tabular_id,
+                    })
+                    .to_string(),
                 );
             }
             TabularType::View => {
@@ -457,15 +445,17 @@ where
                         TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
                     ),
+                    PaginateToken::V1(V1PaginateToken {
+                        created_at: table.created_at,
+                        id: table.tabular_id,
+                    })
+                    .to_string(),
                 );
             }
         };
     }
 
-    Ok(PaginatedMapping {
-        tabulars,
-        next_page_tokens,
-    })
+    Ok(tabulars)
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.

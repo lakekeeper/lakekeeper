@@ -16,7 +16,7 @@ use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::configs::namespace::NamespaceProperties;
 use iceberg_ext::configs::{ConfigProperty as _, Location};
-use itertools::{Itertools, MultiUnzip};
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::ops::Deref;
 
@@ -115,7 +115,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         })
                         .multiunzip();
                     let p = if before_filter_len == next_namespaces.len() {
-                        if before_filter_len == ps.try_into().expect("we sanitize page size") {
+                        if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
+                        {
                             Page::Full
                         } else {
                             Page::Partial

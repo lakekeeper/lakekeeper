@@ -3,6 +3,7 @@ pub mod types;
 pub mod v1 {
     use crate::api::ThreadSafe;
     use axum::Router;
+    use itertools::Itertools;
     use std::collections::HashMap;
     use std::fmt::Debug;
 
@@ -80,15 +81,18 @@ pub mod v1 {
 
     impl<T, Z> PaginatedMapping<T, Z>
     where
-        T: std::hash::Hash + Eq + Debug,
-        Z: Debug,
+        T: std::hash::Hash + Eq + Debug + Clone + 'static,
+        Z: Debug + 'static,
     {
         #[must_use]
-        pub fn map<NewKey: std::hash::Hash + Eq + Debug + Clone, NEW_VAL: Debug>(
-            mut self,
+        pub fn map<
+            NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
+            NewVal: Debug + 'static,
+        >(
+            self,
             key_map: impl Fn(T) -> Result<NewKey>,
-            value_map: impl Fn(Z) -> Result<NEW_VAL>,
-        ) -> Result<PaginatedMapping<NewKey, NEW_VAL>> {
+            value_map: impl Fn(Z) -> Result<NewVal>,
+        ) -> Result<PaginatedMapping<NewKey, NewVal>> {
             let mut new_mapping = PaginatedMapping::with_capacity(self.len());
             for (key, value, token) in self.into_iter_with_page_tokens() {
                 let k = key_map(key)?;
@@ -116,7 +120,18 @@ pub mod v1 {
 
         #[must_use]
         pub fn insert(&mut self, key: T, value: Z, next_page_token: String) {
-            self.entities.insert(key.clone(), value);
+            // TODO: should this become a result instead of a silent overwrite?
+            if let Some(_) = self.entities.insert(key.clone(), value) {
+                let position = self
+                    .ordering
+                    .iter()
+                    .find_position(|item| **item == key)
+                    .map(|(idx, _)| idx);
+                position.map(|idx| {
+                    self.ordering.remove(idx);
+                    self.next_page_tokens.remove(idx);
+                });
+            };
             self.ordering.push(key);
             self.next_page_tokens.push(next_page_token);
         }
@@ -141,40 +156,38 @@ pub mod v1 {
                 .zip(self.next_page_tokens.into_iter())
                 // we can unwrap here since the only way of adding items is via insert which ensures that every
                 // entry in self.ordering is also a key into self.tabulars.
-                .map(|(key, next_p)| {
-                    (
-                        key,
-                        self.entities
-                            .remove(&key)
-                            .expect("keys have to be in tabulars if they are in self.ordering"),
-                        next_p,
-                    )
+                .map(move |(key, next_p)| {
+                    let v = self
+                        .entities
+                        .remove(&key)
+                        .expect("keys have to be in tabulars if they are in self.ordering");
+                    (key, v, next_p)
                 })
         }
     }
 
-    impl<T, Z, X> IntoIterator for PaginatedMapping<T, Z>
+    impl<T, Z> IntoIterator for PaginatedMapping<T, Z>
     where
-        T: std::hash::Hash + Eq + Debug,
-        Z: Debug,
-        X: Iterator<Item = (T, Z)>,
+        T: std::hash::Hash + Eq + Debug + Clone + 'static,
+        Z: Debug + 'static,
     {
         type Item = (T, Z);
-        type IntoIter = X;
+        type IntoIter = Box<dyn Iterator<Item = (T, Z)>>;
 
         fn into_iter(mut self) -> Self::IntoIter {
-            self.ordering
-                .into_iter()
-                // we can unwrap here since the only way of adding items is via insert which ensures that every
-                // entry in self.ordering is also a key into self.tabulars.
-                .map(|key| {
-                    (
-                        key,
-                        self.entities
+            Box::new(
+                self.ordering
+                    .into_iter()
+                    // we can unwrap here since the only way of adding items is via insert which ensures that every
+                    // entry in self.ordering is also a key into self.tabulars.
+                    .map(move |key| {
+                        let v = self
+                            .entities
                             .remove(&key)
-                            .expect("keys have to be in tabulars if they are in self.ordering"),
-                    )
-                })
+                            .expect("keys have to be in tabulars if they are in self.ordering");
+                        (key, v)
+                    }),
+            )
         }
     }
 }

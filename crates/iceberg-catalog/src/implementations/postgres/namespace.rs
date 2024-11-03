@@ -8,6 +8,7 @@ use crate::service::{
 use crate::{catalog::namespace::MAX_NAMESPACE_DEPTH, service::NamespaceIdentUuid, WarehouseIdent};
 use chrono::Utc;
 use http::StatusCode;
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use sqlx::types::Json;
 use std::{collections::HashMap, ops::Deref};
 use uuid::Uuid;
@@ -162,12 +163,11 @@ pub(crate) async fn list_namespaces(
     for ns_result in namespaces.into_iter().map(|(id, n, ts)| {
         NamespaceIdent::from_vec(n.to_owned())
             .map_err(|e| {
-                ErrorModel::internal(
+                IcebergErrorResponse::from(ErrorModel::internal(
                     "Error converting namespace",
                     "NamespaceConversionError",
                     Some(Box::new(e)),
-                )
-                .into()
+                ))
             })
             .map(|n| (id.into(), n, ts))
     }) {

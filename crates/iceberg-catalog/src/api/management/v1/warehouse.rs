@@ -608,42 +608,39 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
-        let (tabulars, idents, next_page_token) = crate::catalog::fetch_until_full_page::<
-            _,
-            _,
-            _,
-            _,
-            C,
-        >(
-            pagination_query.page_size,
-            pagination_query.page_token,
-            |page_size, page_token, _| {
-                let catalog = catalog.clone();
-                async move {
-                    let PaginatedMapping {
-                        tabulars,
-                        next_page_tokens: next_page_token,
-                    } = C::list_tabulars(
-                        warehouse_id,
-                        ListFlags::only_deleted(),
-                        catalog,
-                        PaginationQuery {
-                            page_size: Some(page_size),
-                            page_token: page_token.into(),
-                        },
-                    )
-                    .await?;
-                    let (idents, ids) = tabulars.into_iter().unzip();
-                    Ok((ids, idents, next_page_token))
-                }
-                .boxed()
-            },
-            |tabular_idents, tabular_ids| {
-                let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
-                async move {
-                    let (next_tabulars, next_uuids): (Vec<_>, Vec<_>) =
-                        futures::future::try_join_all(tabular_ids.iter().map(|tid| match tid {
+        let (tabulars, idents, next_page_token) =
+            crate::catalog::fetch_until_full_page::<_, _, _, C>(
+                pagination_query.page_size,
+                pagination_query.page_token,
+                |page_size, page_token, _| {
+                    let catalog = catalog.clone();
+                    async move {
+                        let PaginatedMapping {
+                            tabulars,
+                            next_page_tokens: next_page_token,
+                        } = C::list_tabulars(
+                            warehouse_id,
+                            ListFlags::only_deleted(),
+                            catalog,
+                            PaginationQuery {
+                                page_size: Some(page_size),
+                                page_token: page_token.into(),
+                            },
+                        )
+                        .await?;
+                        let (idents, ids) = tabulars.into_iter().unzip();
+                        Ok((ids, idents, next_page_token))
+                    }
+                    .boxed()
+                },
+                |tabular_idents, tabular_ids| {
+                    let authorizer = authorizer.clone();
+                    let request_metadata = request_metadata.clone();
+                    async move {
+                        let (next_tabulars, next_uuids): (Vec<_>, Vec<_>) =
+                            futures::future::try_join_all(tabular_ids.iter().map(
+                                |tid| {
+                                    match tid {
                             TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
                                 warehouse_id,
@@ -656,18 +653,22 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                                 (*id).into(),
                                 &crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
-                        }))
-                        .await?
-                        .into_iter()
-                        .zip(tabular_idents.into_iter().zip(tabular_ids.into_iter()))
-                        .filter_map(|(allowed, tabular)| if allowed { Some(tabular) } else { None })
-                        .unzip();
-                    Ok((next_tabulars, next_uuids))
-                }
-            },
-            &mut t,
-        )
-        .await?;
+                        }
+                                },
+                            ))
+                            .await?
+                            .into_iter()
+                            .zip(tabular_idents.into_iter().zip(tabular_ids.into_iter()))
+                            .filter_map(
+                                |(allowed, tabular)| if allowed { Some(tabular) } else { None },
+                            )
+                            .unzip();
+                        Ok((next_tabulars, next_uuids))
+                    }
+                },
+                &mut t,
+            )
+            .await?;
 
         let tabulars = idents
             .into_iter()
