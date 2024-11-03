@@ -275,7 +275,7 @@ where
     )
     .await?;
 
-    let tables = tabulars.map::<TableIdentUuid, TableIdent>(
+    tabulars.map::<TableIdentUuid, TableIdent>(
         |k| match k {
             TabularIdentUuid::Table(t) => {
                 let r: Result<TableIdentUuid> = Ok(TableIdentUuid::from(t));
@@ -289,9 +289,7 @@ where
             .into()),
         },
         |(v, _)| Ok(v.into_inner()),
-    );
-
-    tables
+    )
 }
 
 pub(crate) async fn get_table_metadata_by_id(

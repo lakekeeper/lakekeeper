@@ -1,3 +1,4 @@
+use crate::api::iceberg::v1::PaginationQuery;
 use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse};
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
@@ -7,10 +8,10 @@ pub use crate::service::storage::{
     StorageCredential, StorageProfile,
 };
 use futures::FutureExt;
-
-use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
+use itertools::Itertools;
 
 use crate::api::management::v1::role::require_project_id;
+use crate::catalog::Page;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
@@ -614,11 +615,10 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 pagination_query.page_token,
                 |page_size, page_token, _| {
                     let catalog = catalog.clone();
+                    let authorizer = authorizer.clone();
+                    let request_metadata = request_metadata.clone();
                     async move {
-                        let PaginatedMapping {
-                            tabulars,
-                            next_page_tokens: next_page_token,
-                        } = C::list_tabulars(
+                        let page = C::list_tabulars(
                             warehouse_id,
                             ListFlags::only_deleted(),
                             catalog,
@@ -628,43 +628,48 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             },
                         )
                         .await?;
-                        let (idents, ids) = tabulars.into_iter().unzip();
-                        Ok((ids, idents, next_page_token))
-                    }
-                    .boxed()
-                },
-                |tabular_idents, tabular_ids| {
-                    let authorizer = authorizer.clone();
-                    let request_metadata = request_metadata.clone();
-                    async move {
-                        let (next_tabulars, next_uuids): (Vec<_>, Vec<_>) =
-                            futures::future::try_join_all(tabular_ids.iter().map(
-                                |tid| {
-                                    match tid {
-                            TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
-                                &request_metadata,
-                                warehouse_id,
-                                (*id).into(),
-                                &crate::service::authz::CatalogViewAction::CanIncludeInList,
-                            ),
-                            TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
-                                &request_metadata,
-                                warehouse_id,
-                                (*id).into(),
-                                &crate::service::authz::CatalogTableAction::CanIncludeInList,
-                            ),
-                        }
-                                },
-                            ))
+                        let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                            page.into_iter_with_page_tokens().multiunzip();
+                        let before_filter_len = ids.len();
+
+                        let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                            futures::future::try_join_all(ids.iter().map(|tid| match tid {
+                                TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
+                                    &request_metadata,
+                                    warehouse_id,
+                                    (*id).into(),
+                                    &crate::service::authz::CatalogViewAction::CanIncludeInList,
+                                ),
+                                TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
+                                    &request_metadata,
+                                    warehouse_id,
+                                    (*id).into(),
+                                    &crate::service::authz::CatalogTableAction::CanIncludeInList,
+                                ),
+                            }))
                             .await?
                             .into_iter()
-                            .zip(tabular_idents.into_iter().zip(tabular_ids.into_iter()))
-                            .filter_map(
-                                |(allowed, tabular)| if allowed { Some(tabular) } else { None },
-                            )
-                            .unzip();
-                        Ok((next_tabulars, next_uuids))
+                            .zip(idents.into_iter().zip(ids.into_iter()))
+                            .zip(tokens.into_iter())
+                            .filter_map(|((allowed, namespace), token)| {
+                                allowed.then_some((namespace.0, namespace.1, token))
+                            })
+                            .multiunzip();
+
+                        let p = if before_filter_len == next_idents.len() {
+                            if before_filter_len
+                                == usize::try_from(page_size).expect("we sanitize page size")
+                            {
+                                Page::Full
+                            } else {
+                                Page::Partial
+                            }
+                        } else {
+                            Page::AuthFiltered
+                        };
+                        Ok((next_idents, next_uuids, next_page_tokens, p))
                     }
+                    .boxed()
                 },
                 &mut t,
             )

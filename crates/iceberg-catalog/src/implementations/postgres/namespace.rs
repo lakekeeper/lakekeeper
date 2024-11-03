@@ -161,7 +161,7 @@ pub(crate) async fn list_namespaces(
     let mut namespace_map: PaginatedMapping<NamespaceIdentUuid, NamespaceIdent> =
         PaginatedMapping::with_capacity(namespaces.len());
     for ns_result in namespaces.into_iter().map(|(id, n, ts)| {
-        NamespaceIdent::from_vec(n.to_owned())
+        NamespaceIdent::from_vec(n.clone())
             .map_err(|e| {
                 IcebergErrorResponse::from(ErrorModel::internal(
                     "Error converting namespace",

@@ -84,8 +84,7 @@ pub mod v1 {
         T: std::hash::Hash + Eq + Debug + Clone + 'static,
         Z: Debug + 'static,
     {
-        #[must_use]
-        pub fn map<
+        pub(crate) fn map<
             NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
             NewVal: Debug + 'static,
         >(
@@ -101,16 +100,8 @@ pub mod v1 {
             Ok(new_mapping)
         }
 
-        pub fn into_hashmap(self) -> HashMap<T, Z> {
-            self.entities
-        }
-
-        pub fn next_token(&self) -> Option<&str> {
-            self.next_page_tokens.last().map(|s| s.as_str())
-        }
-
         #[must_use]
-        pub fn with_capacity(capacity: usize) -> Self {
+        pub(crate) fn with_capacity(capacity: usize) -> Self {
             Self {
                 entities: HashMap::with_capacity(capacity),
                 next_page_tokens: Vec::with_capacity(capacity),
@@ -118,19 +109,18 @@ pub mod v1 {
             }
         }
 
-        #[must_use]
-        pub fn insert(&mut self, key: T, value: Z, next_page_token: String) {
+        pub(crate) fn insert(&mut self, key: T, value: Z, next_page_token: String) {
             // TODO: should this become a result instead of a silent overwrite?
-            if let Some(_) = self.entities.insert(key.clone(), value) {
+            if self.entities.insert(key.clone(), value).is_some() {
                 let position = self
                     .ordering
                     .iter()
                     .find_position(|item| **item == key)
                     .map(|(idx, _)| idx);
-                position.map(|idx| {
+                if let Some(idx) = position {
                     self.ordering.remove(idx);
                     self.next_page_tokens.remove(idx);
-                });
+                }
             };
             self.ordering.push(key);
             self.next_page_tokens.push(next_page_token);
@@ -150,10 +140,11 @@ pub mod v1 {
             self.entities.get(key)
         }
 
+        #[allow(clippy::missing_panics_doc)]
         pub fn into_iter_with_page_tokens(mut self) -> impl Iterator<Item = (T, Z, String)> {
             self.ordering
                 .into_iter()
-                .zip(self.next_page_tokens.into_iter())
+                .zip(self.next_page_tokens)
                 // we can unwrap here since the only way of adding items is via insert which ensures that every
                 // entry in self.ordering is also a key into self.tabulars.
                 .map(move |(key, next_p)| {
@@ -163,6 +154,16 @@ pub mod v1 {
                         .expect("keys have to be in tabulars if they are in self.ordering");
                     (key, v, next_p)
                 })
+        }
+
+        #[cfg(test)]
+        pub(crate) fn into_hashmap(self) -> HashMap<T, Z> {
+            self.entities
+        }
+
+        #[cfg(test)]
+        pub(crate) fn next_token(&self) -> Option<&str> {
+            self.next_page_tokens.last().map(String::as_str)
         }
     }
 

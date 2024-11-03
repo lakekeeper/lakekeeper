@@ -75,6 +75,8 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 }
 
 pub const DEFAULT_PAGE_SIZE: i64 = 100;
+
+#[derive(Debug)]
 pub enum Page {
     Full,
     Partial,
