@@ -344,7 +344,7 @@ pub struct AdlsLocation {
 }
 
 impl AdlsLocation {
-    /// Create a new [AdlsLocation] from the given parameters.
+    /// Create a new [`AdlsLocation`] from the given parameters.
     ///
     /// # Errors
     /// Fails if validation of account name, filesystem name or key fails.

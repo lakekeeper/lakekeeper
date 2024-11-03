@@ -1403,6 +1403,39 @@ paths:
                   $ref: '#/components/schemas/User'
 components:
   schemas:
+    AdlsProfile:
+      type: object
+      required:
+      - filesystem
+      - account-name
+      properties:
+        account-name:
+          type: string
+          description: Name of the azure storage account.
+        authority-host:
+          type: string
+          format: uri
+          description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
+          nullable: true
+        filesystem:
+          type: string
+          description: Name of the adls filesystem, in blobstorage also known as container.
+        host:
+          type: string
+          description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
+          nullable: true
+        key-prefix:
+          type: string
+          description: |-
+            Subpath in the filesystem to use.
+            The same prefix can be used for multiple warehouses.
+          nullable: true
+        sas-token-validity-seconds:
+          type: integer
+          format: int64
+          description: 'The validity of the sas token in seconds. Default: 3600.'
+          nullable: true
+          minimum: 0
     AuthZBackend:
       type: string
       enum:
@@ -1430,39 +1463,6 @@ components:
             type: string
       discriminator:
         propertyName: credential-type
-    AzdlsProfile:
-      type: object
-      required:
-      - filesystem
-      - account-name
-      properties:
-        account-name:
-          type: string
-          description: Name of the azure storage account.
-        authority-host:
-          type: string
-          format: uri
-          description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
-          nullable: true
-        filesystem:
-          type: string
-          description: Name of the azdls filesystem, in blobstorage also known as container.
-        host:
-          type: string
-          description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
-          nullable: true
-        key-prefix:
-          type: string
-          description: |-
-            Subpath in the filesystem to use.
-            The same prefix can be used for multiple warehouses.
-          nullable: true
-        sas-token-validity-seconds:
-          type: integer
-          format: int64
-          description: 'The validity of the sas token in seconds. Default: 3600.'
-          nullable: true
-          minimum: 0
     BootstrapRequest:
       type: object
       required:
@@ -2558,7 +2558,7 @@ components:
     StorageProfile:
       oneOf:
       - allOf:
-        - $ref: '#/components/schemas/AzdlsProfile'
+        - $ref: '#/components/schemas/AdlsProfile'
         - type: object
           required:
           - type
@@ -2566,8 +2566,8 @@ components:
             type:
               type: string
               enum:
-              - azdls
-        title: StorageProfileAzdls
+              - adls
+        title: StorageProfileAdls
       - allOf:
         - $ref: '#/components/schemas/S3Profile'
         - type: object
