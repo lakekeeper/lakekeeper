@@ -2,7 +2,7 @@ use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQu
 use crate::api::ApiContext;
 use crate::api::Result;
 use crate::catalog::namespace::validate_namespace_ident;
-use crate::catalog::{require_warehouse_id, Page};
+use crate::catalog::{require_warehouse_id, PageStatus};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{
     Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,
@@ -90,12 +90,12 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
                     let p = if before_filter_len == next_idents.len() {
                         if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
                         {
-                            Page::Full
+                            PageStatus::Full
                         } else {
-                            Page::Partial
+                            PageStatus::Partial
                         }
                     } else {
-                        Page::AuthFiltered
+                        PageStatus::AuthFiltered
                     };
                     Ok((next_idents, next_uuids, next_page_tokens, p))
                 }

@@ -77,7 +77,7 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 pub const DEFAULT_PAGE_SIZE: i64 = 100;
 
 #[derive(Debug)]
-pub enum Page {
+pub enum PageStatus {
     Full,
     Partial,
     AuthFiltered,
@@ -90,13 +90,14 @@ pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun
     transaction: &'d mut C::Transaction,
 ) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
 where
-    FetchFun:
-        for<'c> FnMut(
-            i64,
-            Option<String>,
-            &'c mut C::Transaction,
-        )
-            -> BoxFuture<'c, Result<(Vec<Entity>, Vec<EntityId>, Vec<String>, Page)>>,
+    FetchFun: for<'c> FnMut(
+        i64,
+        Option<String>,
+        &'c mut C::Transaction,
+    ) -> BoxFuture<
+        'c,
+        Result<(Vec<Entity>, Vec<EntityId>, Vec<String>, PageStatus)>,
+    >,
 {
     let page_size = page_size
         .unwrap_or(DEFAULT_PAGE_SIZE)
@@ -108,15 +109,15 @@ where
         fetch_fn(page_size, page_token, transaction).await?;
 
     match filtered {
-        Page::AuthFiltered => {}
-        Page::Full => {
+        PageStatus::AuthFiltered => {}
+        PageStatus::Full => {
             return Ok((
                 fetched_entities,
                 fetched_entity_ids,
                 next_page.last().cloned(),
             ));
         }
-        Page::Partial => {
+        PageStatus::Partial => {
             return Ok((fetched_entities, fetched_entity_ids, None));
         }
     }
@@ -124,7 +125,7 @@ where
     while fetched_entities.len() < page_as_usize {
         let (more_entities, more_ids, more_page_tokens, page) =
             fetch_fn(DEFAULT_PAGE_SIZE, next_page.last().cloned(), transaction).await?;
-        if matches!(page, Page::Partial) {
+        if matches!(page, PageStatus::Partial) {
             next_page = vec![];
             break;
         }

@@ -11,7 +11,7 @@ use futures::FutureExt;
 use itertools::Itertools;
 
 use crate::api::management::v1::role::require_project_id;
-use crate::catalog::Page;
+use crate::catalog::PageStatus;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
@@ -660,12 +660,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             if before_filter_len
                                 == usize::try_from(page_size).expect("we sanitize page size")
                             {
-                                Page::Full
+                                PageStatus::Full
                             } else {
-                                Page::Partial
+                                PageStatus::Partial
                             }
                         } else {
-                            Page::AuthFiltered
+                            PageStatus::AuthFiltered
                         };
                         Ok((next_idents, next_uuids, next_page_tokens, p))
                     }
@@ -786,7 +786,7 @@ mod test {
         assert_eq!(s3_profile.path_style_access, Some(true));
     }
 
-    // #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
+    #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
     mod minio {
         use crate::api::iceberg::types::{PageToken, Prefix};
         use crate::api::iceberg::v1::{

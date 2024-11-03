@@ -79,10 +79,10 @@ pub mod v1 {
         ordering: Vec<T>,
     }
 
-    impl<T, Z> PaginatedMapping<T, Z>
+    impl<T, V> PaginatedMapping<T, V>
     where
         T: std::hash::Hash + Eq + Debug + Clone + 'static,
-        Z: Debug + 'static,
+        V: Debug + 'static,
     {
         pub(crate) fn map<
             NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
@@ -90,7 +90,7 @@ pub mod v1 {
         >(
             self,
             key_map: impl Fn(T) -> Result<NewKey>,
-            value_map: impl Fn(Z) -> Result<NewVal>,
+            value_map: impl Fn(V) -> Result<NewVal>,
         ) -> Result<PaginatedMapping<NewKey, NewVal>> {
             let mut new_mapping = PaginatedMapping::with_capacity(self.len());
             for (key, value, token) in self.into_iter_with_page_tokens() {
@@ -109,7 +109,7 @@ pub mod v1 {
             }
         }
 
-        pub(crate) fn insert(&mut self, key: T, value: Z, next_page_token: String) {
+        pub(crate) fn insert(&mut self, key: T, value: V, next_page_token: String) {
             // TODO: should this become a result instead of a silent overwrite?
             if self.entities.insert(key.clone(), value).is_some() {
                 let position = self
@@ -136,12 +136,20 @@ pub mod v1 {
             self.entities.is_empty()
         }
 
-        pub fn get(&self, key: &T) -> Option<&Z> {
+        pub fn get(&self, key: &T) -> Option<&V> {
             self.entities.get(key)
         }
 
+        #[cfg(test)]
+        pub fn remove(&mut self, key: &T) -> Option<V> {
+            let (idx, _) = self.ordering.iter().find_position(|item| **item == *key)?;
+            self.ordering.remove(idx);
+            self.next_page_tokens.remove(idx);
+            self.entities.remove(key)
+        }
+
         #[allow(clippy::missing_panics_doc)]
-        pub fn into_iter_with_page_tokens(mut self) -> impl Iterator<Item = (T, Z, String)> {
+        pub fn into_iter_with_page_tokens(mut self) -> impl Iterator<Item = (T, V, String)> {
             self.ordering
                 .into_iter()
                 .zip(self.next_page_tokens)
@@ -157,7 +165,7 @@ pub mod v1 {
         }
 
         #[cfg(test)]
-        pub(crate) fn into_hashmap(self) -> HashMap<T, Z> {
+        pub(crate) fn into_hashmap(self) -> HashMap<T, V> {
             self.entities
         }
 

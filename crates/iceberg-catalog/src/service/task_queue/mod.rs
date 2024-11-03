@@ -341,7 +341,6 @@ mod test {
             )
             .await
             .unwrap()
-            .tabulars
             .remove(&tab.table_id.into())
             .unwrap();
 
@@ -380,7 +379,6 @@ mod test {
             )
             .await
             .unwrap()
-            .tabulars
             .remove(&tab.table_id.into())
             .unwrap();
             del.unwrap();
@@ -399,7 +397,6 @@ mod test {
             )
             .await
             .unwrap()
-            .tabulars
             .remove(&tab.table_id.into())
             .is_none());
         }

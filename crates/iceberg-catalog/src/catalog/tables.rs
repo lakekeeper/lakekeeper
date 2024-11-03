@@ -1,7 +1,7 @@
 use super::commit_tables::apply_commit;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer, Page,
+    require_warehouse_id, CatalogServer, PageStatus,
 };
 use futures::FutureExt;
 use std::collections::{HashMap, HashSet};
@@ -146,12 +146,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                             if before_filter_len
                                 == usize::try_from(ps).expect("we sanitize page size")
                             {
-                                Page::Full
+                                PageStatus::Full
                             } else {
-                                Page::Partial
+                                PageStatus::Partial
                             }
                         } else {
-                            Page::AuthFiltered
+                            PageStatus::AuthFiltered
                         };
                         Ok((next_idents, next_uuids, next_page_tokens, p))
                     }
