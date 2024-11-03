@@ -8,7 +8,7 @@ use crate::{
 
 use http::StatusCode;
 
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 use crate::implementations::postgres::tabular::{
     self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
     TabularIdentUuid, TabularType,
@@ -444,7 +444,7 @@ pub(crate) async fn list_views<'e, 'c: 'e, E>(
     include_deleted: bool,
     transaction: E,
     paginate_query: PaginationQuery,
-) -> Result<PaginatedTabulars<ViewIdentUuid, TableIdent>>
+) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -475,7 +475,7 @@ where
             TabularIdentUuid::View(t) => Ok((ViewIdentUuid::from(t), v.into_inner())),
         })
         .collect::<Result<HashMap<ViewIdentUuid, TableIdent>>>();
-    Ok(PaginatedTabulars {
+    Ok(PaginatedMapping {
         tabulars: views?,
         next_page_tokens: next_page_token
             .into_iter()

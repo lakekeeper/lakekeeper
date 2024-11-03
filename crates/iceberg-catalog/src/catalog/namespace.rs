@@ -16,6 +16,7 @@ use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::configs::namespace::NamespaceProperties;
 use iceberg_ext::configs::{ConfigProperty as _, Location};
+use itertools::{Itertools, MultiUnzip};
 use std::collections::HashMap;
 use std::ops::Deref;
 
@@ -91,23 +92,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     // return the correct next page token which is why we do these unholy things here.
                     let list_namespaces =
                         C::list_namespaces(warehouse_id, &query, trx.transaction()).await?;
-                    let next_token = list_namespaces.next_page_tokens;
-                    let mut ns = list_namespaces.namespaces;
+                    let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        list_namespaces.into_iter_with_page_tokens().multiunzip();
 
-                    let (mut ids, mut idents, mut next_tokens) = (
-                        Vec::with_capacity(ns.len()),
-                        Vec::with_capacity(ns.len()),
-                        Vec::with_capacity(ns.len()),
-                    );
-                    for (id, token) in next_token.into_iter() {
-                        let ident = ns.remove(&id).ok_or(ErrorModel::internal("", "", None))?;
-                        ids.push(id);
-                        idents.push(ident);
-                        next_tokens.push(token);
-                    }
                     let before_filter_len = ids.len();
 
-                    let (next_namespaces_uuids, next_page_tokens): (Vec<_>, Vec<_>) =
+                    let (next_namespaces, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         futures::future::try_join_all(ids.iter().map(|n| {
                             authorizer.is_allowed_namespace_action(
                                 &request_metadata,
@@ -119,12 +109,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         .await?
                         .into_iter()
                         .zip(idents.into_iter().zip(ids.into_iter()))
-                        .zip(next_tokens.into_iter())
+                        .zip(tokens.into_iter())
                         .filter_map(|((allowed, namespace), token)| {
-                            allowed.then_some(((namespace.0, namespace.1), token))
+                            allowed.then_some((namespace.0, namespace.1, token))
                         })
-                        .unzip();
-                    let (next_namespaces, next_uuids) = next_namespaces_uuids.into_iter().unzip();
+                        .multiunzip();
                     let p = if before_filter_len == next_namespaces.len() {
                         if before_filter_len == ps.try_into().expect("we sanitize page size") {
                             Page::Full

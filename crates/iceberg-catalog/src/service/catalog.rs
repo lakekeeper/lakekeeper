@@ -7,7 +7,7 @@ pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
     TableIdent, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 use crate::service::health::HealthExt;
 use crate::SecretIdent;
 
@@ -240,7 +240,7 @@ where
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<ListNamespacesResponse>;
+    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>>;
 
     async fn create_namespace<'a>(
         warehouse_id: WarehouseIdent,
@@ -295,7 +295,7 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>>;
+    ) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>>;
 
     /// Return Err only on unexpected errors, not if the table does not exist.
     /// If include_staged is true, also return staged tables.
@@ -591,7 +591,7 @@ where
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<ViewIdentUuid, TableIdent>>;
+    ) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>;
 
     async fn update_view_metadata(
         namespace_id: NamespaceIdentUuid,
@@ -623,7 +623,7 @@ where
         list_flags: ListFlags,
         catalog_state: Self::State,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>;
+    ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -7,9 +7,10 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{
     Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,
 };
-use crate::service::{Catalog, SecretStore, State, Transaction, ViewIdentUuid};
+use crate::service::{Catalog, SecretStore, State, Transaction};
 use futures::FutureExt;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse, ListTablesResponse};
+use iceberg_ext::catalog::rest::ListTablesResponse;
+use itertools::Itertools;
 
 pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
@@ -63,46 +64,29 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
                     let views =
                         C::list_views(warehouse_id, &namespace, false, trx.transaction(), query)
                             .await?;
-                    let next_token = views.next_page_tokens;
-                    let mut views = views.tabulars;
+                    let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        views.into_iter_with_page_tokens().multiunzip();
 
-                    let (mut ids, mut idents, mut next_tokens) = (
-                        Vec::with_capacity(views.len()),
-                        Vec::with_capacity(views.len()),
-                        Vec::with_capacity(views.len()),
-                    );
-
-                    for (id, token) in next_token.into_iter() {
-                        let ident = views
-                            .remove(&id)
-                            .ok_or(ErrorModel::internal("", "", None))?;
-                        ids.push(id);
-                        idents.push(ident);
-                        next_tokens.push(token);
-                    }
                     let before_filter_len = ids.len();
 
-                    let (next_views_next_uuids, next_page_tokens): (
-                        Vec<(_, ViewIdentUuid)>,
-                        Vec<_>,
-                    ) = futures::future::try_join_all(ids.iter().map(|n| {
-                        authorizer.is_allowed_view_action(
-                            &request_metadata,
-                            warehouse_id,
-                            *n,
-                            &CatalogViewAction::CanIncludeInList,
-                        )
-                    }))
-                    .await?
-                    .into_iter()
-                    .zip(idents.into_iter().zip(ids.into_iter()))
-                    .zip(next_tokens.into_iter())
-                    .filter_map(|((allowed, namespace), token)| {
-                        allowed.then_some(((namespace.0, namespace.1), token))
-                    })
-                    .unzip();
-                    let (next_idents, next_uuids): (Vec<_>, Vec<_>) =
-                        next_views_next_uuids.into_iter().unzip();
+                    let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        futures::future::try_join_all(ids.iter().map(|n| {
+                            authorizer.is_allowed_view_action(
+                                &request_metadata,
+                                warehouse_id,
+                                *n,
+                                &CatalogViewAction::CanIncludeInList,
+                            )
+                        }))
+                        .await?
+                        .into_iter()
+                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(tokens.into_iter())
+                        .filter_map(|((allowed, namespace), token)| {
+                            allowed.then_some((namespace.0, namespace.1, token))
+                        })
+                        .multiunzip();
+
                     let p = if before_filter_len == next_idents.len() {
                         if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
                         {

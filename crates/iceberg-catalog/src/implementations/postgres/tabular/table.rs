@@ -14,12 +14,11 @@ use iceberg::spec::{
 };
 use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
 
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 use crate::implementations::postgres::tabular::{
     create_tabular, drop_tabular, list_tabulars, try_parse_namespace_ident, CreateTabular,
     TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
 };
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use iceberg_ext::configs::Location;
 use sqlx::types::Json;
 use std::default::Default;
@@ -262,7 +261,7 @@ pub(crate) async fn list_tables<'e, 'c: 'e, E>(
     list_flags: crate::service::ListFlags,
     transaction: E,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>>
+) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -275,33 +274,24 @@ where
         pagination_query,
     )
     .await?;
-    let tables = tabulars
-        .tabulars
-        .into_iter()
-        .map(|(k, (v, _))| match k {
-            TabularIdentUuid::Table(t) => Ok((TableIdentUuid::from(t), v.into_inner())),
+
+    let tables = tabulars.map::<TableIdentUuid, TableIdent>(
+        |k| match k {
+            TabularIdentUuid::Table(t) => {
+                let r: Result<TableIdentUuid> = Ok(TableIdentUuid::from(t));
+                r
+            }
             TabularIdentUuid::View(_) => Err(ErrorModel::internal(
                 "DB returned a view when filtering for tables.",
                 "InternalDatabaseError",
                 None,
-            )),
-        })
-        .collect::<Result<HashMap<TableIdentUuid, TableIdent>, ErrorModel>>()?;
-    Ok(PaginatedTabulars {
-        tabulars: tables,
-        next_page_tokens: tabulars
-            .next_page_tokens
-            .into_iter()
-            .map(|(k, v)| match k {
-                TabularIdentUuid::Table(t) => Ok((TableIdentUuid::from(t), v)),
-                TabularIdentUuid::View(_) => Err(ErrorModel::internal(
-                    "DB returned a view when filtering for tables.",
-                    "InternalDatabaseError",
-                    None,
-                )),
-            })
-            .collect::<Result<Vec<(TableIdentUuid, String)>, ErrorModel>>()?,
-    })
+            )
+            .into()),
+        },
+        |(v, _)| Ok(v.into_inner()),
+    );
+
+    tables
 }
 
 pub(crate) async fn get_table_metadata_by_id(
@@ -1308,9 +1298,7 @@ pub(crate) mod tests {
             },
             &state.read_pool(),
             PaginationQuery {
-                page_token: PageToken::Present(
-                    tables.next_page_tokens.last().unwrap().1.to_string(),
-                ),
+                page_token: PageToken::Present(tables.next_token().unwrap().to_string()),
                 page_size: Some(2),
             },
         )
@@ -1329,16 +1317,14 @@ pub(crate) mod tests {
             },
             &state.read_pool(),
             PaginationQuery {
-                page_token: PageToken::Present(
-                    tables.next_page_tokens.last().unwrap().1.to_string(),
-                ),
+                page_token: PageToken::Present(tables.next_token().unwrap().to_string()),
                 page_size: Some(2),
             },
         )
         .await
         .unwrap();
         assert_eq!(tables.len(), 0);
-        assert!(tables.next_page_tokens.is_empty());
+        assert!(tables.next_token().is_none());
     }
 
     #[sqlx::test]

@@ -9,7 +9,7 @@ use crate::{
 use http::StatusCode;
 use iceberg_ext::NamespaceIdent;
 
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery, MAX_PAGE_SIZE};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
 
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::DeletionDetails;
@@ -337,7 +337,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedTabulars<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
+) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -462,7 +462,7 @@ where
         };
     }
 
-    Ok(PaginatedTabulars {
+    Ok(PaginatedMapping {
         tabulars,
         next_page_tokens,
     })

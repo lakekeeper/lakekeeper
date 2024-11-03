@@ -8,7 +8,7 @@ pub use crate::service::storage::{
 };
 use futures::FutureExt;
 
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 
 use crate::api::management::v1::role::require_project_id;
 pub use crate::service::WarehouseStatus;
@@ -620,7 +620,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             |page_size, page_token, _| {
                 let catalog = catalog.clone();
                 async move {
-                    let PaginatedTabulars {
+                    let PaginatedMapping {
                         tabulars,
                         next_page_tokens: next_page_token,
                     } = C::list_tabulars(

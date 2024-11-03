@@ -1,9 +1,9 @@
 use super::dbutils::DBErrorHandler;
-use crate::api::iceberg::v1::MAX_PAGE_SIZE;
+use crate::api::iceberg::v1::{PaginatedMapping, MAX_PAGE_SIZE};
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::{
     CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
-    ListNamespacesQuery, ListNamespacesResponse, NamespaceIdent, Result,
+    ListNamespacesQuery, NamespaceIdent, Result,
 };
 use crate::{catalog::namespace::MAX_NAMESPACE_DEPTH, service::NamespaceIdentUuid, WarehouseIdent};
 use chrono::Utc;
@@ -69,7 +69,7 @@ pub(crate) async fn list_namespaces(
         return_uuids: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<ListNamespacesResponse> {
+) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>> {
     let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
 
     // Treat empty parent as None
@@ -156,41 +156,34 @@ pub(crate) async fn list_namespaces(
         .collect()
     };
 
-    let next_page_tokens = namespaces
-        .iter()
-        .map(|(id, _, ts)| {
-            (
-                (*id).into(),
-                PaginateToken::V1(V1PaginateToken {
-                    id: *id,
-                    created_at: *ts,
-                })
-                .to_string(),
-            )
-        })
-        .collect();
-
     // Convert Vec<Vec<String>> to Vec<NamespaceIdent>
-    let namespaces = namespaces
-        .iter()
-        .map(|(id, n, _)| {
-            NamespaceIdent::from_vec(n.to_owned())
-                .map_err(|e| {
-                    ErrorModel::internal(
-                        "Error converting namespace",
-                        "NamespaceConversionError",
-                        Some(Box::new(e)),
-                    )
-                    .into()
-                })
-                .map(|n| (id.into(), n))
-        })
-        .collect::<Result<HashMap<_, _>>>()?;
+    let mut namespace_map: PaginatedMapping<NamespaceIdentUuid, NamespaceIdent> =
+        PaginatedMapping::with_capacity(namespaces.len());
+    for ns_result in namespaces.into_iter().map(|(id, n, ts)| {
+        NamespaceIdent::from_vec(n.to_owned())
+            .map_err(|e| {
+                ErrorModel::internal(
+                    "Error converting namespace",
+                    "NamespaceConversionError",
+                    Some(Box::new(e)),
+                )
+                .into()
+            })
+            .map(|n| (id.into(), n, ts))
+    }) {
+        let (id, ns, created_at) = ns_result?;
+        namespace_map.insert(
+            id,
+            ns,
+            PaginateToken::V1(V1PaginateToken {
+                id: *id,
+                created_at,
+            })
+            .to_string(),
+        );
+    }
 
-    Ok(ListNamespacesResponse {
-        next_page_tokens,
-        namespaces,
-    })
+    Ok(namespace_map)
 }
 
 pub(crate) async fn create_namespace(
@@ -494,7 +487,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(
-            response.namespaces,
+            response.into_hashmap(),
             HashMap::from_iter(vec![(namespace_id, namespace.clone())])
         );
 
@@ -568,10 +561,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let ListNamespacesResponse {
-            namespaces,
-            next_page_tokens,
-        } = PostgresCatalog::list_namespaces(
+        let namespaces = PostgresCatalog::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
                 page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
@@ -583,10 +573,10 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-
+        let next_page_token = namespaces.next_token().map(ToString::to_string);
         assert_eq!(namespaces.len(), 1);
         assert_eq!(
-            namespaces,
+            namespaces.into_hashmap(),
             HashMap::from_iter(vec![(response1.0, response1.1.namespace)])
         );
 
@@ -594,13 +584,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let ListNamespacesResponse {
-            namespaces,
-            next_page_tokens: next_page_token,
-        } = PostgresCatalog::list_namespaces(
+        let namespaces = PostgresCatalog::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
-                page_token: next_page_tokens.last().cloned().map_or(
+                page_token: next_page_token.map_or(
                     crate::api::iceberg::v1::PageToken::Empty,
                     crate::api::iceberg::v1::PageToken::Present,
                 ),
@@ -612,11 +599,11 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-
+        let next_page_token = namespaces.next_token().map(ToString::to_string);
         assert_eq!(namespaces.len(), 2);
-        assert!(!next_page_token.is_empty());
+        assert!(next_page_token.is_some());
         assert_eq!(
-            namespaces,
+            namespaces.into_hashmap(),
             HashMap::from_iter(vec![
                 (response2.0, response2.1.namespace),
                 (response3.0, response3.1.namespace)
@@ -624,13 +611,10 @@ pub(crate) mod tests {
         );
 
         // last page is empty
-        let ListNamespacesResponse {
-            namespaces,
-            next_page_tokens: next_page_token,
-        } = PostgresCatalog::list_namespaces(
+        let namespaces = PostgresCatalog::list_namespaces(
             warehouse_id,
             &ListNamespacesQuery {
-                page_token: next_page_token.last().cloned().map_or(
+                page_token: next_page_token.map_or(
                     crate::api::iceberg::v1::PageToken::Empty,
                     crate::api::iceberg::v1::PageToken::Present,
                 ),
@@ -643,8 +627,8 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        assert_eq!(next_page_token.last(), None);
-        assert_eq!(namespaces, HashMap::new());
+        assert_eq!(namespaces.next_token(), None);
+        assert_eq!(namespaces.into_hashmap(), HashMap::new());
     }
 
     #[sqlx::test]

@@ -30,13 +30,13 @@ use crate::service::{
     storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
     GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse, ListFlags,
-    ListNamespacesQuery, ListNamespacesResponse, LoadTableResponse, NamespaceIdent,
-    NamespaceIdentUuid, ProjectIdent, Result, RoleId, StartupValidationData, TableCreation,
-    TableIdent, TableIdentUuid, Transaction, UserId, WarehouseIdent, WarehouseStatus,
+    ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid, ProjectIdent,
+    Result, RoleId, StartupValidationData, TableCreation, TableIdent, TableIdentUuid, Transaction,
+    UserId, WarehouseIdent, WarehouseStatus,
 };
 use crate::SecretIdent;
 use crate::{
-    api::iceberg::v1::{PaginatedTabulars, PaginationQuery},
+    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     service::TableCommit,
 };
 use crate::{
@@ -201,7 +201,7 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<ListNamespacesResponse> {
+    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>> {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
@@ -260,7 +260,7 @@ impl Catalog for super::PostgresCatalog {
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<TableIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>> {
         list_tables(
             warehouse_id,
             namespace,
@@ -510,7 +510,7 @@ impl Catalog for super::PostgresCatalog {
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<ViewIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>> {
         list_views(
             warehouse_id,
             namespace,
@@ -564,7 +564,7 @@ impl Catalog for super::PostgresCatalog {
         list_flags: ListFlags,
         catalog_state: CatalogState,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedTabulars<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
+    ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
     {
         list_tabulars(
             warehouse_id,
