@@ -65,6 +65,10 @@ pub struct SearchUser {
     pub id: String,
     /// Type of the user
     pub user_type: UserType,
+    /// Email of the user. If id is not specified, the email is extracted
+    /// from the provided token.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, Clone)]
