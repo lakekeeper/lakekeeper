@@ -60,6 +60,7 @@ lazy_static = { workspace = true }
 lru = { workspace = true }
 maplit = { workspace = true }
 openfga-rs = { workspace = true, optional = false }
+paste = { workspace = true }
 percent-encoding = { workspace = true }
 rand = "0.8.5"
 reqwest = { workspace = true }

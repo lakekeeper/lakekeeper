@@ -2998,6 +2998,7 @@ dependencies = [
  "mockall",
  "needs_env_var",
  "openfga-rs",
+ "paste",
  "percent-encoding",
  "pretty_assertions",
  "rand 0.8.5",

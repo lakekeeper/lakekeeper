@@ -35,6 +35,7 @@ use crate::service::{
 };
 
 use crate::catalog;
+use crate::catalog::tabular::list_entities;
 use http::StatusCode;
 use iceberg::spec::{
     MetadataLog, TableMetadataBuildResult, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
@@ -91,72 +92,20 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let include_staged = false;
-        let include_deleted = false;
-        let include_active = true;
 
         let (identifiers, table_uuids, next_page_token) =
             catalog::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
                 query.page_token,
-                |ps, page_token, trx| {
-                    let namespace = namespace.clone();
-                    let authorizer = authorizer.clone();
-                    let request_metadata = request_metadata.clone();
-                    async move {
-                        let query = PaginationQuery {
-                            page_size: Some(ps),
-                            page_token: page_token.into(),
-                        };
-
-                        let list_tables = C::list_tables(
-                            warehouse_id,
-                            &namespace,
-                            ListFlags {
-                                include_active,
-                                include_staged,
-                                include_deleted,
-                            },
-                            trx.transaction(),
-                            query,
-                        )
-                        .await?;
-
-                        let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                            list_tables.into_iter_with_page_tokens().multiunzip();
-                        let before_filter_len = ids.len();
-                        let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                            futures::future::try_join_all(ids.iter().map(|n| {
-                                authorizer.is_allowed_table_action(
-                                    &request_metadata,
-                                    warehouse_id,
-                                    *n,
-                                    &CatalogTableAction::CanIncludeInList,
-                                )
-                            }))
-                            .await?
-                            .into_iter()
-                            .zip(idents.into_iter().zip(ids.into_iter()))
-                            .zip(tokens.into_iter())
-                            .filter_map(|((allowed, namespace), token)| {
-                                allowed.then_some((namespace.0, namespace.1, token))
-                            })
-                            .multiunzip();
-                        let p = if before_filter_len == next_idents.len() {
-                            if before_filter_len
-                                == usize::try_from(ps).expect("we sanitize page size")
-                            {
-                                PageStatus::Full
-                            } else {
-                                PageStatus::Partial
-                            }
-                        } else {
-                            PageStatus::AuthFiltered
-                        };
-                        Ok((next_idents, next_uuids, next_page_tokens, p))
-                    }
-                    .boxed()
-                },
+                list_entities!(
+                    Table,
+                    list_tables,
+                    table_action,
+                    namespace,
+                    authorizer,
+                    request_metadata,
+                    warehouse_id
+                ),
                 &mut t,
             )
             .await?;

@@ -7,6 +7,7 @@ pub(crate) mod namespace;
 #[cfg(feature = "s3-signer")]
 mod s3_signer;
 mod tables;
+mod tabular;
 pub(crate) mod views;
 
 use iceberg::spec::{TableMetadata, ViewMetadata};

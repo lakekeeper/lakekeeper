@@ -2,6 +2,7 @@ use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQu
 use crate::api::ApiContext;
 use crate::api::Result;
 use crate::catalog::namespace::validate_namespace_ident;
+use crate::catalog::tabular::list_entities;
 use crate::catalog::{require_warehouse_id, PageStatus};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{
@@ -52,55 +53,15 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         crate::catalog::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token,
-            |ps, page_token, trx| {
-                let namespace = namespace.clone();
-                let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
-                async move {
-                    let query = PaginationQuery {
-                        page_size: Some(ps),
-                        page_token: page_token.into(),
-                    };
-                    let views =
-                        C::list_views(warehouse_id, &namespace, false, trx.transaction(), query)
-                            .await?;
-                    let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                        views.into_iter_with_page_tokens().multiunzip();
-
-                    let before_filter_len = ids.len();
-
-                    let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                        futures::future::try_join_all(ids.iter().map(|n| {
-                            authorizer.is_allowed_view_action(
-                                &request_metadata,
-                                warehouse_id,
-                                *n,
-                                &CatalogViewAction::CanIncludeInList,
-                            )
-                        }))
-                        .await?
-                        .into_iter()
-                        .zip(idents.into_iter().zip(ids.into_iter()))
-                        .zip(tokens.into_iter())
-                        .filter_map(|((allowed, namespace), token)| {
-                            allowed.then_some((namespace.0, namespace.1, token))
-                        })
-                        .multiunzip();
-
-                    let p = if before_filter_len == next_idents.len() {
-                        if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
-                        {
-                            PageStatus::Full
-                        } else {
-                            PageStatus::Partial
-                        }
-                    } else {
-                        PageStatus::AuthFiltered
-                    };
-                    Ok((next_idents, next_uuids, next_page_tokens, p))
-                }
-                .boxed()
-            },
+            list_entities!(
+                View,
+                list_views,
+                view_action,
+                namespace,
+                authorizer,
+                request_metadata,
+                warehouse_id
+            ),
             &mut t,
         )
         .await?;
