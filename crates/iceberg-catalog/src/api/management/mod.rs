@@ -6,6 +6,7 @@ pub mod v1 {
     pub mod warehouse;
 
     use axum::{Extension, Json, Router};
+    use utoipa::openapi::security::SecurityScheme;
     use utoipa::OpenApi;
 
     use crate::api::{ApiContext, Result};
@@ -38,7 +39,7 @@ pub mod v1 {
         UpdateUserRequest, User, UserLastUpdatedWith, UserType,
     };
     use warehouse::{
-        AzCredential, AzdlsProfile, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
+        AzCredential, AdlsProfile, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
         GcsProfile, GcsServiceKey, GetWarehouseResponse, ListDeletedTabularsQuery,
         ListWarehousesRequest, ListWarehousesResponse, RenameWarehouseRequest, S3Credential,
         S3Profile, Service as _, StorageCredential, StorageProfile, TabularDeleteProfile,
@@ -46,7 +47,7 @@ pub mod v1 {
         UpdateWarehouseStorageRequest, WarehouseStatus,
     };
 
-    pub(crate) fn default_page_size() -> i32 {
+    pub(crate) fn default_page_size() -> i64 {
         100
     }
 
@@ -58,6 +59,9 @@ pub mod v1 {
             (name = "warehouse", description = "Manage Warehouses"),
             (name = "user", description = "Manage Users"),
             (name = "role", description = "Manage Roles")
+        ),
+        security(
+            ("bearerAuth" = [])
         ),
         paths(
             activate_warehouse,
@@ -97,7 +101,7 @@ pub mod v1 {
         components(schemas(
             AuthZBackend,
             AzCredential,
-            AzdlsProfile,
+            AdlsProfile,
             BootstrapRequest,
             CreateProjectRequest,
             CreateProjectResponse,
@@ -146,9 +150,27 @@ pub mod v1 {
             UserLastUpdatedWith,
             UserType,
             WarehouseStatus,
-        ))
+        )),
+        modifiers(&SecurityAddon)
     )]
     struct ManagementApiDoc;
+
+    struct SecurityAddon;
+
+    impl utoipa::Modify for SecurityAddon {
+        fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+            let components = openapi.components.as_mut().unwrap(); // we can unwrap safely since there already is components registered.
+            components.add_security_scheme(
+                "bearerAuth",
+                SecurityScheme::Http(
+                    utoipa::openapi::security::HttpBuilder::new()
+                        .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            );
+        }
+    }
 
     #[derive(Clone, Debug)]
     pub struct ApiServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
@@ -163,7 +185,7 @@ pub mod v1 {
         tag = "server",
         path = "/management/v1/info",
         responses(
-            (status = 200, description = "User details", body = [ServerInfo]),
+            (status = 200, description = "Server info", body = ServerInfo),
         )
     )]
     async fn get_server_info<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -201,11 +223,11 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "user",
-        path = "/management/v1/user/from-token",
+        path = "/management/v1/user",
         request_body = CreateUserRequest,
         responses(
-            (status = 200, description = "User updated", body = [User]),
-            (status = 201, description = "User created", body = [User]),
+            (status = 200, description = "User updated", body = User),
+            (status = 201, description = "User created", body = User),
         )
     )]
     async fn create_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -228,7 +250,7 @@ pub mod v1 {
         path = "/management/v1/search/user",
         request_body = SearchUserRequest,
         responses(
-            (status = 200, description = "List of users", body = [SearchUserResponse]),
+            (status = 200, description = "List of users", body = SearchUserResponse),
         )
     )]
     async fn search_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -246,7 +268,7 @@ pub mod v1 {
         path = "/management/v1/user/{id}",
         params(("id" = Uuid,)),
         responses(
-            (status = 200, description = "User details", body = [User]),
+            (status = 200, description = "User details", body = User),
         )
     )]
     async fn get_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -265,7 +287,7 @@ pub mod v1 {
         tag = "user",
         path = "/management/v1/whoami",
         responses(
-            (status = 200, description = "User details", body = [User]),
+            (status = 200, description = "User details", body = User),
         )
     )]
     async fn whoami<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -317,7 +339,7 @@ pub mod v1 {
         path = "/management/v1/user",
         params(ListUsersQuery),
         responses(
-            (status = 200, description = "List of users", body = [ListUsersResponse]),
+            (status = 200, description = "List of users", body = ListUsersResponse),
         )
     )]
     async fn list_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -360,7 +382,7 @@ pub mod v1 {
         path = "/management/v1/role",
         request_body = CreateRoleRequest,
         responses(
-            (status = 201, description = "Role successfully created", body = [Role]),
+            (status = 201, description = "Role successfully created", body = Role),
         )
     )]
     async fn create_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -381,7 +403,7 @@ pub mod v1 {
         path = "/management/v1/search/role",
         request_body = SearchRoleRequest,
         responses(
-            (status = 200, description = "List of users", body = [SearchRoleResponse]),
+            (status = 200, description = "List of users", body = SearchRoleResponse),
         )
     )]
     async fn search_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -399,7 +421,7 @@ pub mod v1 {
         path = "/management/v1/role",
         params(ListRolesQuery),
         responses(
-            (status = 200, description = "List of roles", body = [ListRolesResponse]),
+            (status = 200, description = "List of roles", body = ListRolesResponse),
         )
     )]
     async fn list_roles<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -439,7 +461,7 @@ pub mod v1 {
         path = "/management/v1/role/{id}",
         params(("id" = Uuid,)),
         responses(
-            (status = 200, description = "Role details", body = [Role]),
+            (status = 200, description = "Role details", body = Role),
         )
     )]
     async fn get_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -460,7 +482,7 @@ pub mod v1 {
         params(("id" = Uuid,)),
         request_body = UpdateRoleRequest,
         responses(
-            (status = 200, description = "Role updated successfully", body = [Role]),
+            (status = 200, description = "Role updated successfully", body = Role),
         )
     )]
     async fn update_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -485,7 +507,7 @@ pub mod v1 {
         path = "/management/v1/warehouse",
         request_body = CreateWarehouseRequest,
         responses(
-            (status = 201, description = "Warehouse created successfully", body = [CreateWarehouseResponse]),
+            (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
         )
     )]
     async fn create_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -502,7 +524,7 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/project-list",
         responses(
-            (status = 200, description = "List of projects", body = [ListProjectsResponse])
+            (status = 200, description = "List of projects", body = ListProjectsResponse)
         )
     )]
     async fn list_projects<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -518,7 +540,7 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/project",
         responses(
-            (status = 201, description = "Project created successfully", body = [CreateProjectResponse])
+            (status = 201, description = "Project created successfully", body = CreateProjectResponse)
         )
     )]
     async fn create_project<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -535,7 +557,7 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/default-project",
         responses(
-            (status = 200, description = "Project details", body = [GetProjectResponse])
+            (status = 200, description = "Project details", body = GetProjectResponse)
         )
     )]
     async fn get_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -552,7 +574,7 @@ pub mod v1 {
         path = "/management/v1/project/{project_id}",
         params(("project_id" = Uuid,)),
         responses(
-            (status = 200, description = "Project details", body = [GetProjectResponse])
+            (status = 200, description = "Project details", body = GetProjectResponse)
         )
     )]
     async fn get_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -643,7 +665,7 @@ pub mod v1 {
         path = "/management/v1/warehouse",
         params(ListWarehousesRequest),
         responses(
-            (status = 200, description = "List of warehouses", body = [ListWarehousesResponse])
+            (status = 200, description = "List of warehouses", body = ListWarehousesResponse)
         )
     )]
     async fn list_warehouses<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -660,7 +682,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}",
         responses(
-            (status = 200, description = "Warehouse details", body = [GetWarehouseResponse])
+            (status = 200, description = "Warehouse details", body = GetWarehouseResponse)
         )
     )]
     async fn get_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -822,7 +844,7 @@ pub mod v1 {
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars",
         params(ListDeletedTabularsQuery),
         responses(
-            (status = 200, description = "List of soft-deleted tabulars", body = [ListDeletedTabularsResponse])
+            (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse)
         )
     )]
     async fn list_deleted_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -914,13 +936,13 @@ pub mod v1 {
                 )
                 .route("/search/role", post(search_role))
                 // User management
-                .route("/whoami", get(whoami).post(create_user))
+                .route("/whoami", get(whoami))
                 .route("/search/user", post(search_user))
                 .route(
                     "/user/:user_id",
                     get(get_user).put(update_user).delete(delete_user),
                 )
-                .route("/user", get(list_user))
+                .route("/user", get(list_user).post(create_user))
                 // Create a new project
                 .route(
                     "/project",

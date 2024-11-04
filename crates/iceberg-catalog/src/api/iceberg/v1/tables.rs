@@ -23,7 +23,7 @@ pub struct ListTablesQuery {
     /// For servers that support pagination, this signals an upper bound of the number of results that a client will receive. For servers that do not support pagination, clients may receive results larger than the indicated `pageSize`.
     #[serde(rename = "pageSize")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<i32>,
+    pub page_size: Option<i64>,
     /// Flag to indicate if the response should include UUIDs for tables.
     /// Default is false.
     #[serde(default)]

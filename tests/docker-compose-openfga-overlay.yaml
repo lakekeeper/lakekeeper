@@ -1,0 +1,31 @@
+services:
+  server:
+    environment:
+      - LAKEKEEPER__AUTHZ_BACKEND=openfga
+      - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
+  migrate:
+    environment:
+      - LAKEKEEPER__AUTHZ_BACKEND=openfga
+      - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
+    depends_on:
+      openfga:
+        condition: service_healthy
+  openfga:
+    image: openfga/openfga:v1.6
+    container_name: openfga
+    command: run
+    environment:
+      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=50
+      - OPENFGA_PLAYGROUND_ENABLED=false
+    networks:
+      - iceberg_rest_tests
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/grpc_health_probe",
+          "-addr=openfga:8081"
+        ]
+      interval: 5s
+      timeout: 30s
+      retries: 3

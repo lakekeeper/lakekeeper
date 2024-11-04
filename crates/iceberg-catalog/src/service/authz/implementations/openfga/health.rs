@@ -10,9 +10,8 @@ impl HealthExt for OpenFGAAuthorizer {
         self.health.read().await.clone()
     }
     async fn update_health(&self) {
-        let mut client = self.client.clone();
-
-        let check_result = client
+        let check_result = self
+            .client
             .check(CheckRequest {
                 store_id: self.store_id.clone(),
                 tuple_key: Some(CheckRequestTupleKey {

@@ -8,7 +8,7 @@ use crate::{
 
 use http::StatusCode;
 
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 use crate::implementations::postgres::tabular::{
     self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
     TabularIdentUuid, TabularType,
@@ -443,7 +443,7 @@ pub(crate) async fn list_views<'e, 'c: 'e, E>(
     include_deleted: bool,
     transaction: E,
     paginate_query: PaginationQuery,
-) -> Result<PaginatedTabulars<ViewIdentUuid, TableIdent>>
+) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -461,24 +461,19 @@ where
         paginate_query,
     )
     .await?;
-    let next_page_token = page.next_page_token;
-    let views = page
-        .tabulars
-        .into_iter()
-        .map(|(k, (v, _))| match k {
-            TabularIdentUuid::Table(_) => Err(ErrorModel::builder()
-                .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-                .message("DB returned a table when filtering for tables.".to_string())
-                .r#type("InternalDatabaseError".to_string())
-                .build()
-                .into()),
-            TabularIdentUuid::View(t) => Ok((ViewIdentUuid::from(t), v.into_inner())),
-        })
-        .collect::<Result<HashMap<ViewIdentUuid, TableIdent>>>();
-    Ok(PaginatedTabulars {
-        tabulars: views?,
-        next_page_token,
-    })
+    let views = page.map::<ViewIdentUuid, TableIdent>(
+        |k| match k {
+            TabularIdentUuid::Table(_) => Err(ErrorModel::internal(
+                "DB returned a table when filtering for views.",
+                "InternalDatabaseError",
+                None,
+            )
+            .into()),
+            TabularIdentUuid::View(t) => Ok(t.into()),
+        },
+        |(v, _)| Ok(v.into_inner()),
+    )?;
+    Ok(views)
 }
 
 async fn insert_representation(

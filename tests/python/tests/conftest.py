@@ -112,7 +112,7 @@ def storage_config(request) -> dict:
 
         return {
             "storage-profile": {
-                "type": "azdls",
+                "type": "adls",
                 "account-name": AZURE_STORAGE_ACCOUNT_NAME,
                 "filesystem": AZURE_STORAGE_FILESYSTEM,
             },
@@ -279,6 +279,21 @@ def server(access_token) -> Server:
     if CATALOG_URL is None:
         pytest.skip("LAKEKEEPER_TEST__CATALOG_URL is not set")
 
+    # Bootstrap the server if is not yet boostrapped
+    management_url = MANAGEMENT_URL.rstrip("/") + "/"
+    server_info = requests.get(
+        management_url + "v1/info", headers={"Authorization": f"Bearer {access_token}"}
+    )
+    server_info.raise_for_status()
+    server_info = server_info.json()
+    if not server_info["bootstrapped"]:
+        response = requests.post(
+            management_url + "v1/bootstrap",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"accept-terms-of-use": True},
+        )
+        response.raise_for_status()
+
     return Server(
         catalog_url=CATALOG_URL.rstrip("/") + "/",
         management_url=MANAGEMENT_URL.rstrip("/") + "/",
@@ -385,7 +400,7 @@ def trino(warehouse: Warehouse, storage_config):
             "s3.endpoint" = '{S3_ENDPOINT}',
             "fs.native-s3.enabled" = 'true'
         """
-    elif storage_config["storage-profile"]["type"] == "azdls":
+    elif storage_config["storage-profile"]["type"] == "adls":
         extra_config = """
             ,
             "fs.native-azure.enabled" = 'true'

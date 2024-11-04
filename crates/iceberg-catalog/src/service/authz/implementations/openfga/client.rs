@@ -97,7 +97,7 @@ pub(crate) async fn new_authorizer(
         get_auth_model_id(&mut client, store_id.clone(), active_model_version).await?;
 
     Ok(OpenFGAAuthorizer {
-        client,
+        client: Arc::new(client),
         store_id,
         authorization_model_id,
         health: Arc::new(RwLock::new(vec![])),

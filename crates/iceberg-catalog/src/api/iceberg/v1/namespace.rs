@@ -244,7 +244,7 @@ pub struct ListNamespacesQuery {
     /// For servers that support pagination, this signals an upper bound of the number of results that a client will receive. For servers that do not support pagination, clients may receive results larger than the indicated `pageSize`.
     #[serde(rename = "pageSize")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<i32>,
+    pub page_size: Option<i64>,
     /// An optional namespace, underneath which to list namespaces. If not provided or empty, all top-level namespaces should be listed. If parent is a multipart namespace, the parts must be separated by the unit separator (`0x1F`) byte.
     #[serde(rename = "parent")]
     #[serde(
@@ -279,7 +279,7 @@ pub struct PaginationQuery {
     /// Signals an upper bound of the number of results that a client will receive.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
-    pub page_size: Option<i32>,
+    pub page_size: Option<i64>,
 }
 
 impl From<ListNamespacesQuery> for PaginationQuery {

@@ -9,7 +9,7 @@ use crate::{
 use http::StatusCode;
 use iceberg_ext::NamespaceIdent;
 
-use crate::api::iceberg::v1::{PaginatedTabulars, PaginationQuery, MAX_PAGE_SIZE};
+use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
 
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::DeletionDetails;
@@ -338,7 +338,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedTabulars<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
+) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -402,15 +402,7 @@ where
     .await
     .map_err(|e| e.into_error_model("Error fetching tables or views".to_string()))?;
 
-    let next_page_token = tables.last().map(|r| {
-        PaginateToken::V1(V1PaginateToken {
-            created_at: r.created_at,
-            id: r.tabular_id,
-        })
-        .to_string()
-    });
-
-    let mut tabulars = HashMap::new();
+    let mut tabulars = PaginatedMapping::with_capacity(tables.len());
     for table in tables {
         let namespace = try_parse_namespace_ident(table.namespace_name)?;
         let name = table.tabular_name;
@@ -442,6 +434,11 @@ where
                         TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
                     ),
+                    PaginateToken::V1(V1PaginateToken {
+                        created_at: table.created_at,
+                        id: table.tabular_id,
+                    })
+                    .to_string(),
                 );
             }
             TabularType::View => {
@@ -451,15 +448,17 @@ where
                         TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
                     ),
+                    PaginateToken::V1(V1PaginateToken {
+                        created_at: table.created_at,
+                        id: table.tabular_id,
+                    })
+                    .to_string(),
                 );
             }
         };
     }
 
-    Ok(PaginatedTabulars {
-        tabulars,
-        next_page_token,
-    })
+    Ok(tabulars)
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.

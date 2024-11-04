@@ -3,18 +3,22 @@ use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
 pub use crate::service::storage::{
-    AzCredential, AzdlsProfile, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
+    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
+use futures::FutureExt;
+use itertools::Itertools;
 
-use crate::api::iceberg::v1::{PageToken, PaginatedTabulars, PaginationQuery};
+use crate::api::iceberg::v1::{PageToken, PaginationQuery};
 use crate::service::NamespaceIdentUuid;
 
-use super::{default_page_size, TabularType};
+use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
+use crate::catalog::PageStatus;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
-    authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, Transaction,
+    authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
+    Transaction,
 };
 use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -34,7 +38,7 @@ pub struct ListDeletedTabularsQuery {
     /// Signals an upper bound of the number of results that a client will receive.
     /// Default: 100
     #[serde(default = "default_page_size")]
-    pub page_size: i32,
+    pub page_size: i64,
 }
 
 impl ListDeletedTabularsQuery {
@@ -72,8 +76,9 @@ pub struct CreateWarehouseRequest {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TabularDeleteProfile {
+    #[schema(title = "TabularDeleteProfileHard")]
     Hard {},
-
+    #[schema(title = "TabularDeleteProfileSoft")]
     Soft {
         #[serde(
             deserialize_with = "crate::config::seconds_to_duration",
@@ -196,7 +201,7 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     async fn create_warehouse(
         request: CreateWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
@@ -618,6 +623,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn list_soft_deleted_tabulars(
         request_metadata: RequestMetadata,
         warehouse_id: WarehouseIdent,
@@ -625,6 +631,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         query: ListDeletedTabularsQuery,
     ) -> Result<ListDeletedTabularsResponse> {
         // ------------------- AuthZ -------------------
+        let catalog = context.v1_state.catalog;
         let authorizer = context.v1_state.authz;
         authorizer
             .require_warehouse_action(
@@ -637,20 +644,79 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let pagination_query = query.pagination_query();
         let namespace_id = query.namespace_id;
-        let PaginatedTabulars {
-            tabulars,
-            next_page_token,
-        } = C::list_tabulars(
-            warehouse_id,
-            namespace_id,
-            ListFlags::only_deleted(),
-            context.v1_state.catalog,
-            pagination_query,
-        )
-        .await?;
+        let mut t = C::Transaction::begin_read(catalog.clone()).await?;
+        let (tabulars, idents, next_page_token) =
+            crate::catalog::fetch_until_full_page::<_, _, _, C>(
+                pagination_query.page_size,
+                pagination_query.page_token,
+                |page_size, page_token, _| {
+                    let catalog = catalog.clone();
+                    let authorizer = authorizer.clone();
+                    let request_metadata = request_metadata.clone();
+                    async move {
+                        let query = PaginationQuery {
+                            page_size: Some(page_size),
+                            page_token: page_token.into(),
+                        };
 
-        let tabulars = tabulars
+                        let page = C::list_tabulars(
+                            warehouse_id,
+                            namespace_id,
+                            ListFlags::only_deleted(),
+                            catalog,
+                            query,
+                        )
+                        .await?;
+                        let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                            page.into_iter_with_page_tokens().multiunzip();
+                        let before_filter_len = ids.len();
+
+                        let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                            futures::future::try_join_all(ids.iter().map(|tid| match tid {
+                                TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
+                                    &request_metadata,
+                                    warehouse_id,
+                                    (*id).into(),
+                                    &crate::service::authz::CatalogViewAction::CanIncludeInList,
+                                ),
+                                TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
+                                    &request_metadata,
+                                    warehouse_id,
+                                    (*id).into(),
+                                    &crate::service::authz::CatalogTableAction::CanIncludeInList,
+                                ),
+                            }))
+                            .await?
+                            .into_iter()
+                            .zip(idents.into_iter().zip(ids.into_iter()))
+                            .zip(tokens.into_iter())
+                            .filter_map(|((allowed, namespace), token)| {
+                                allowed.then_some((namespace.0, namespace.1, token))
+                            })
+                            .multiunzip();
+
+                        let p = if before_filter_len == next_idents.len() {
+                            if before_filter_len
+                                == usize::try_from(page_size).expect("we sanitize page size")
+                            {
+                                PageStatus::Full
+                            } else {
+                                PageStatus::Partial
+                            }
+                        } else {
+                            PageStatus::AuthFiltered
+                        };
+                        Ok((next_idents, next_uuids, next_page_tokens, p))
+                    }
+                    .boxed()
+                },
+                &mut t,
+            )
+            .await?;
+
+        let tabulars = idents
             .into_iter()
+            .zip(tabulars.into_iter())
             .map(|(k, (ident, delete_opts))| {
                 let i = ident.into_inner();
                 let deleted = delete_opts.ok_or(ErrorModel::internal(
@@ -672,27 +738,6 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let tabulars = futures::future::try_join_all(tabulars.iter().map(|t| match t.typ {
-            TabularType::View => authorizer.is_allowed_view_action(
-                &request_metadata,
-                warehouse_id,
-                t.id.into(),
-                &crate::service::authz::CatalogViewAction::CanIncludeInList,
-            ),
-            TabularType::Table => authorizer.is_allowed_table_action(
-                &request_metadata,
-                warehouse_id,
-                t.id.into(),
-                &crate::service::authz::CatalogTableAction::CanIncludeInList,
-            ),
-        }))
-        .await?
-        .into_iter()
-        .zip(tabulars.into_iter())
-        .filter_map(|(allowed, tabular)| if allowed { Some(tabular) } else { None })
-        .collect();
-
-        // ToDo: Better pagination with non-empty pages
         Ok(ListDeletedTabularsResponse {
             tabulars,
             next_page_token,
@@ -778,5 +823,234 @@ mod test {
         assert_eq!(s3_profile.bucket, "test");
         assert_eq!(s3_profile.region, "dummy");
         assert_eq!(s3_profile.path_style_access, Some(true));
+    }
+
+    #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
+    mod minio {
+        use crate::api::iceberg::types::{PageToken, Prefix};
+        use crate::api::iceberg::v1::{
+            DataAccess, DropParams, NamespaceParameters, PaginationQuery, ViewParameters,
+        };
+        use crate::catalog::test::random_request_metadata;
+        use crate::catalog::CatalogServer;
+        use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
+        use iceberg::TableIdent;
+
+        use crate::api::iceberg::v1::views::Service;
+        use crate::api::management::v1::warehouse::{Service as _, TabularDeleteProfile};
+        use crate::api::management::v1::ApiServer;
+        use itertools::Itertools;
+
+        #[sqlx::test]
+        async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
+            let (prof, cred) = crate::catalog::test::minio_profile();
+
+            let hiding_mock = ObjectHidingMock::new();
+            let authz = hiding_mock.to_authorizer();
+
+            let (ctx, warehouse) = crate::catalog::test::setup(
+                pool.clone(),
+                prof,
+                Some(cred),
+                authz,
+                TabularDeleteProfile::Soft {
+                    expiration_seconds: chrono::Duration::seconds(10),
+                },
+            )
+            .await;
+            let ns = crate::catalog::test::create_ns(
+                ctx.clone(),
+                warehouse.warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            // create 10 staged tables
+            for i in 0..10 {
+                let _ = CatalogServer::create_view(
+                    ns_params.clone(),
+                    crate::catalog::views::create::test::create_view_request(
+                        Some(&format!("view-{i}")),
+                        None,
+                    ),
+                    ctx.clone(),
+                    DataAccess {
+                        vended_credentials: true,
+                        remote_signing: false,
+                    },
+                    random_request_metadata(),
+                )
+                .await
+                .unwrap();
+                CatalogServer::drop_view(
+                    ViewParameters {
+                        prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                        view: TableIdent {
+                            name: format!("view-{i}"),
+                            namespace: ns.namespace.clone(),
+                        },
+                    },
+                    DropParams {
+                        purge_requested: None,
+                    },
+                    ctx.clone(),
+                    random_request_metadata(),
+                )
+                .await
+                .unwrap();
+            }
+
+            // list 1 more than existing tables
+            let all = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(11),
+                    page_token: PageToken::NotSpecified,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(all.tabulars.len(), 10);
+
+            // list exactly amount of existing tables
+            let all = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(10),
+                    page_token: PageToken::NotSpecified,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(all.tabulars.len(), 10);
+
+            // next page is empty
+            let next = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(10),
+                    page_token: all.next_page_token.into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(next.tabulars.len(), 0);
+            assert!(next.next_page_token.is_none());
+
+            let first_six = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(6),
+                    page_token: PageToken::NotSpecified,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(first_six.tabulars.len(), 6);
+            assert!(first_six.next_page_token.is_some());
+            let first_six_items = first_six
+                .tabulars
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+
+            for (i, item) in first_six_items.iter().enumerate().take(6) {
+                assert_eq!(item, &format!("view-{i}"));
+            }
+
+            let next_four = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(6),
+                    page_token: first_six.next_page_token.into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(next_four.tabulars.len(), 4);
+            // page-size > number of items left -> no next page
+            assert!(next_four.next_page_token.is_none());
+
+            let next_four_items = next_four
+                .tabulars
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+
+            for (idx, i) in (6..10).enumerate() {
+                assert_eq!(next_four_items[idx], format!("view-{i}"));
+            }
+
+            let mut ids = all.tabulars;
+            ids.sort_by_key(|e| e.id);
+            for t in ids.iter().take(6).skip(4) {
+                hiding_mock.hide(&format!("view:{}", t.id));
+            }
+
+            let page = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(5),
+                    page_token: PageToken::NotSpecified,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(page.tabulars.len(), 5);
+            assert!(page.next_page_token.is_some());
+            let page_items = page
+                .tabulars
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+            for (i, item) in page_items.iter().enumerate() {
+                let tab_id = if i > 3 { i + 2 } else { i };
+                assert_eq!(item, &format!("view-{tab_id}"));
+            }
+
+            let next_page = ApiServer::list_soft_deleted_tabulars(
+                random_request_metadata(),
+                warehouse.warehouse_id.into(),
+                ctx.clone(),
+                PaginationQuery {
+                    page_size: Some(6),
+                    page_token: page.next_page_token.into(),
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(next_page.tabulars.len(), 3);
+
+            let next_page_items = next_page
+                .tabulars
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+
+            for (idx, i) in (7..10).enumerate() {
+                assert_eq!(next_page_items[idx], format!("view-{i}"));
+            }
+        }
     }
 }

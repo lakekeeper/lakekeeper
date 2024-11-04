@@ -99,7 +99,7 @@ pub struct ListRolesQuery {
     /// Signals an upper bound of the number of results that a client will receive.
     /// Default: 100
     #[serde(default = "default_page_size")]
-    pub page_size: i32,
+    pub page_size: i64,
     /// Project ID from which roles should be listed
     /// Only required if the project ID cannot be inferred from the
     /// users token and no default project is set.

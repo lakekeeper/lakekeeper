@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer};
+use super::{require_warehouse_id, CatalogServer, PageStatus};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -10,11 +10,13 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent};
 use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, State, Transaction as _};
 use crate::service::{GetWarehouseResponse, NamespaceIdentUuid};
-use crate::CONFIG;
+use crate::{catalog, CONFIG};
+use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::configs::namespace::NamespaceProperties;
 use iceberg_ext::configs::{ConfigProperty as _, Location};
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::ops::Deref;
 
@@ -44,6 +46,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             return_uuids,
         } = &query;
         parent.as_ref().map(validate_namespace_ident).transpose()?;
+        let return_uuids = *return_uuids;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
@@ -54,7 +57,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &CatalogWarehouseAction::CanListNamespaces,
             )
             .await?;
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
 
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
@@ -69,27 +72,71 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         // ------------------- BUSINESS LOGIC -------------------
+        let (idents, ids, next_page_token) = catalog::fetch_until_full_page::<_, _, _, C>(
+            query.page_size,
+            query.page_token.clone(),
+            |ps, page_token, trx| {
+                let parent = parent.clone();
+                let authorizer = authorizer.clone();
+                let request_metadata = request_metadata.clone();
+                async move {
+                    let query = ListNamespacesQuery {
+                        page_size: Some(ps),
+                        page_token: page_token.into(),
+                        parent,
+                        return_uuids: true,
+                    };
 
-        let list_namespaces = C::list_namespaces(warehouse_id, &query, t.transaction()).await?;
-        // ToDo: Better pagination with non-empty pages
-        let (namespace_uuids, namespaces): (Vec<_>, Vec<_>) =
-            futures::future::try_join_all(list_namespaces.namespaces.iter().map(|n| {
-                authorizer.is_allowed_namespace_action(
-                    &request_metadata,
-                    warehouse_id,
-                    *n.0,
-                    &CatalogNamespaceAction::CanGetMetadata,
-                )
-            }))
-            .await?
-            .into_iter()
-            .zip(list_namespaces.namespaces.into_iter())
-            .filter_map(|(allowed, namespace)| allowed.then_some((*namespace.0, namespace.1)))
-            .collect();
+                    // list_namespaces gives us a HashMap<Id, Ident> and a Vec<(Id, Token)>, in order
+                    // to do sane pagination, we need to rely on the order of the Vec<(Id, Token)> to
+                    // return the correct next page token which is why we do these unholy things here.
+                    let list_namespaces =
+                        C::list_namespaces(warehouse_id, &query, trx.transaction()).await?;
+                    let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        list_namespaces.into_iter_with_page_tokens().multiunzip();
+
+                    let before_filter_len = ids.len();
+
+                    let (next_namespaces, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
+                        futures::future::try_join_all(ids.iter().map(|n| {
+                            authorizer.is_allowed_namespace_action(
+                                &request_metadata,
+                                warehouse_id,
+                                *n,
+                                &CatalogNamespaceAction::CanGetMetadata,
+                            )
+                        }))
+                        .await?
+                        .into_iter()
+                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(tokens.into_iter())
+                        .filter_map(|((allowed, namespace), token)| {
+                            allowed.then_some((namespace.0, namespace.1, token))
+                        })
+                        .multiunzip();
+                    let p = if before_filter_len == next_namespaces.len() {
+                        if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
+                        {
+                            PageStatus::Full
+                        } else {
+                            PageStatus::Partial
+                        }
+                    } else {
+                        PageStatus::AuthFiltered
+                    };
+                    Ok((next_namespaces, next_uuids, next_page_tokens, p))
+                }
+                .boxed()
+            },
+            &mut t,
+        )
+        .await?;
+        t.commit().await?;
+
         Ok(ListNamespacesResponse {
-            namespaces,
-            next_page_token: list_namespaces.next_page_token,
-            namespace_uuids: (*return_uuids).then_some(namespace_uuids),
+            next_page_token,
+            namespaces: idents,
+            namespace_uuids: return_uuids.then_some(ids.into_iter().map(|s| *s).collect()),
         })
     }
 
@@ -567,6 +614,187 @@ fn namespace_location_may_not_change(
 
 #[cfg(test)]
 mod tests {
+
+    #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
+    mod minio {
+        use crate::api::iceberg::types::{PageToken, Prefix};
+        use crate::api::iceberg::v1::namespace::Service;
+        use crate::api::management::v1::warehouse::TabularDeleteProfile;
+        use crate::catalog::test::random_request_metadata;
+        use crate::catalog::CatalogServer;
+        use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
+        use crate::service::ListNamespacesQuery;
+        use iceberg::NamespaceIdent;
+        use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+        use std::collections::HashSet;
+        use std::hash::RandomState;
+
+        #[sqlx::test]
+        async fn test_ns_pagination(pool: sqlx::PgPool) {
+            let (prof, cred) = crate::catalog::test::minio_profile();
+
+            let hiding_mock = ObjectHidingMock::new();
+            let authz = hiding_mock.to_authorizer();
+
+            let (ctx, warehouse) = crate::catalog::test::setup(
+                pool.clone(),
+                prof,
+                Some(cred),
+                authz,
+                TabularDeleteProfile::Hard {},
+            )
+            .await;
+            for n in 0..10 {
+                let ns = format!("ns-{n}");
+                let _ = CatalogServer::create_namespace(
+                    Some(Prefix(warehouse.warehouse_id.to_string())),
+                    CreateNamespaceRequest {
+                        namespace: NamespaceIdent::new(ns),
+                        properties: None,
+                    },
+                    ctx.clone(),
+                    random_request_metadata(),
+                )
+                .await
+                .unwrap();
+            }
+
+            let all = CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(11),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(all.namespaces.len(), 10);
+
+            let _ = CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(10),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(all.namespaces.len(), 10);
+
+            let first_six = CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(6),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(first_six.namespaces.len(), 6);
+            let first_six_items: HashSet<String, RandomState> = first_six
+                .namespaces
+                .into_iter()
+                .map(|ns| ns.to_url_string())
+                .collect();
+            for i in 0..6 {
+                assert!(first_six_items.contains(&format!("ns-{i}")));
+            }
+
+            let next_four = CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::Present(first_six.next_page_token.unwrap()),
+                    page_size: Some(6),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            let next_four_items: HashSet<String, RandomState> = next_four
+                .namespaces
+                .into_iter()
+                .map(|ns| ns.to_url_string())
+                .collect();
+            for i in 6..10 {
+                assert!(next_four_items.contains(&format!("ns-{i}")));
+            }
+
+            let mut ids = all.namespace_uuids.unwrap();
+            ids.sort();
+            for i in ids.iter().take(6).skip(4) {
+                hiding_mock.hide(&format!("namespace:{i}"));
+            }
+
+            let page = CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(5),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(page.namespaces.len(), 5);
+            assert!(page.next_page_token.is_some());
+
+            let page_items: HashSet<String, RandomState> = page
+                .namespaces
+                .into_iter()
+                .map(|ns| ns.to_url_string())
+                .collect();
+
+            for i in 0..5 {
+                let ns_id = if i > 3 { i + 2 } else { i };
+                assert!(page_items.contains(&format!("ns-{ns_id}")));
+            }
+            let next_page = CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::Present(page.next_page_token.unwrap()),
+                    page_size: Some(5),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(next_page.namespaces.len(), 3);
+
+            let next_page_items: HashSet<String, RandomState> = next_page
+                .namespaces
+                .into_iter()
+                .map(|ns| ns.to_url_string())
+                .collect();
+
+            for i in 7..10 {
+                assert!(next_page_items.contains(&format!("ns-{i}")));
+            }
+        }
+    }
+
     #[test]
     fn test_update_ns_properties() {
         use super::*;

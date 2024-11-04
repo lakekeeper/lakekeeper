@@ -16,17 +16,17 @@ license = "Apache-2.0"
 [workspace.dependencies]
 async-nats = "0.37.0"
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-azure_core = { version = "0.20.0", default-features = false, features = [
+azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
 ] }
-azure_storage = { version = "0.20.0", default-features = false, features = [
+azure_storage = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
-azure_storage_blobs = { version = "0.20.0", default-features = false, features = [
+azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
-azure_identity = { version = "0.20.0", default-features = false, features = [
+azure_identity = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
@@ -63,6 +63,7 @@ async-trait = "^0.1"
 env_logger = "^0.11"
 itertools = "0.13.0"
 log = "^0.4"
+mockall = "0.13.0"
 needs_env_var = "1.1.0"
 http = "^1.1"
 derive_more = { version = "^1.0.0", features = ["from"] }
@@ -119,7 +120,7 @@ utoipa = { version = "4.2.3", features = [
 ] }
 serde_yml = "0.0.12"
 utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
-veil = "0.1.7"
+veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"
 time = "0.3.36"

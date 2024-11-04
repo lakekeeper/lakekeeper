@@ -146,6 +146,13 @@ paths:
           schema:
             type: string
           example: "accounting%1Ftax"
+        - name: returnUuids
+          in: query
+          description: If true, include the `namespace-uuids` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListNamespacesResponse'
@@ -241,6 +248,14 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         500:
           $ref: '#/components/responses/ServerErrorResponse'
+      parameters:
+        - name: returnUuid
+          in: query
+          description: If true, include the `namespace-uuid` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
     head:
       tags:
         - Catalog API
@@ -369,6 +384,13 @@ paths:
       parameters:
         - $ref: '#/components/parameters/page-token'
         - $ref: '#/components/parameters/page-size'
+        - name: returnUuids
+          in: query
+          description: If true, include the `table-uuids` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListTablesResponse'
@@ -2749,6 +2771,9 @@ components:
           example: {"owner": "Ralph", 'transient_lastDdlTime': '1452120468'}
           default: {}
           nullable: true
+        namespace-uuid:
+          type: string
+          nullable: true
     ListTablesResponse:
       type: object
       properties:
@@ -2759,6 +2784,12 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/TableIdentifier'
+        table-uuids:
+          type: array
+          uniqueItems: true
+          nullable: true
+          items:
+            type: string
     ListNamespacesResponse:
       type: object
       properties:
@@ -2769,6 +2800,12 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Namespace'
+        namespace-uuids:
+          type: array
+          uniqueItems: true
+          nullable: true
+          items:
+            type: string
     UpdateNamespacePropertiesResponse:
       type: object
       required:

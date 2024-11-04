@@ -15,6 +15,7 @@ use super::user::{UserLastUpdatedWith, UserType};
 #[serde(rename_all = "kebab-case")]
 pub enum AuthZBackend {
     AllowAll,
+    #[serde(rename = "openfga")]
     OpenFGA,
 }
 
@@ -159,12 +160,14 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let actor = request_metadata.auth_details.actor();
         match actor {
             Actor::Anonymous => {
-                return Err(ErrorModel::unauthorized(
-                    "Authentication required",
-                    "AuthenticationRequired",
-                    None,
-                )
-                .into());
+                if CONFIG.authn_enabled() {
+                    return Err(ErrorModel::unauthorized(
+                        "Authentication required",
+                        "AuthenticationRequired",
+                        None,
+                    )
+                    .into());
+                }
             }
             Actor::Principal(_) | Actor::Role { .. } => (),
         }

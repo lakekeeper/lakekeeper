@@ -2,7 +2,7 @@ use crate::api::management::v1::ApiServer;
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
 pub use crate::service::storage::{
-    AzCredential, AzdlsProfile, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
+    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
 use serde::{Deserialize, Serialize};
@@ -79,7 +79,7 @@ impl axum::response::IntoResponse for GetProjectResponse {
 impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
-pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
+pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     async fn create_project(
         request: CreateProjectRequest,
         context: ApiContext<State<A, C, S>>,

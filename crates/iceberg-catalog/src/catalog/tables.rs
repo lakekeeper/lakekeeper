@@ -1,18 +1,18 @@
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr as _;
-
 use super::commit_tables::apply_commit;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer,
+    require_warehouse_id, CatalogServer, PageStatus,
 };
+use futures::FutureExt;
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr as _;
 
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{
     ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
     CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-    LoadTableResult, NamespaceParameters, Prefix, RegisterTableRequest, RenameTableRequest, Result,
-    TableIdent, TableParameters,
+    LoadTableResult, NamespaceParameters, PaginationQuery, Prefix, RegisterTableRequest,
+    RenameTableRequest, Result, TableIdent, TableParameters,
 };
 use crate::api::management::v1::warehouse::TabularDeleteProfile;
 use crate::api::management::v1::TabularType;
@@ -34,6 +34,8 @@ use crate::service::{
     GetNamespaceResponse, TableCommit, TableCreation, TableIdentUuid, WarehouseStatus,
 };
 
+use crate::catalog;
+use crate::catalog::tabular::list_entities;
 use http::StatusCode;
 use iceberg::spec::{
     MetadataLog, TableMetadataBuildResult, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
@@ -41,6 +43,7 @@ use iceberg::spec::{
 use iceberg::{NamespaceIdent, TableUpdate};
 use iceberg_ext::configs::namespace::NamespaceProperties;
 use iceberg_ext::configs::Location;
+use itertools::Itertools;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -52,6 +55,7 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = false;
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::tables::Service<State<A, C, S>> for CatalogServer<C, A, S>
 {
+    #[allow(clippy::too_many_lines)]
     /// List all table identifiers underneath a given namespace
     async fn list_tables(
         parameters: NamespaceParameters,
@@ -88,44 +92,29 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let include_staged = false;
-        let include_deleted = false;
-        let include_active = true;
 
-        let tables = C::list_tables(
-            warehouse_id,
-            &namespace,
-            ListFlags {
-                include_active,
-                include_staged,
-                include_deleted,
-            },
-            t.transaction(),
-            query.into(),
-        )
-        .await?;
-
-        // ToDo: Better pagination with non-empty pages
-        let next_page_token = tables.next_page_token;
-        let (table_uuids, identifiers): (Vec<_>, Vec<_>) =
-            futures::future::try_join_all(tables.tabulars.iter().map(|t| {
-                authorizer.is_allowed_table_action(
-                    &request_metadata,
-                    warehouse_id,
-                    *t.0,
-                    &CatalogTableAction::CanIncludeInList,
-                )
-            }))
-            .await?
-            .into_iter()
-            .zip(tables.tabulars.into_iter())
-            .filter_map(|(allowed, table)| allowed.then_some((*table.0, table.1)))
-            .collect();
+        let (identifiers, table_uuids, next_page_token) =
+            catalog::fetch_until_full_page::<_, _, _, C>(
+                query.page_size,
+                query.page_token,
+                list_entities!(
+                    Table,
+                    list_tables,
+                    table_action,
+                    namespace,
+                    authorizer,
+                    request_metadata,
+                    warehouse_id
+                ),
+                &mut t,
+            )
+            .await?;
+        t.commit().await?;
 
         Ok(ListTablesResponse {
             next_page_token,
             identifiers,
-            table_uuids: return_uuids.then_some(table_uuids),
+            table_uuids: return_uuids.then_some(table_uuids.into_iter().map(|u| *u).collect()),
         })
     }
 
@@ -1439,5 +1428,252 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
     } else {
         tracing::warn!("Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event.");
         serde_json::Value::Null
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
+    mod minio {
+        use crate::api::iceberg::types::{PageToken, Prefix};
+        use crate::api::iceberg::v1::tables::Service;
+        use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
+        use crate::api::management::v1::warehouse::TabularDeleteProfile;
+        use crate::catalog::test::random_request_metadata;
+        use crate::catalog::CatalogServer;
+        use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
+
+        use iceberg::spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec};
+        use iceberg_ext::catalog::rest::CreateTableRequest;
+        use itertools::Itertools;
+
+        fn create_request(table_name: Option<String>) -> CreateTableRequest {
+            CreateTableRequest {
+                name: table_name.unwrap_or("my_table".to_string()),
+                location: None,
+                schema: Schema::builder()
+                    .with_fields(vec![
+                        NestedField::required(
+                            1,
+                            "id",
+                            iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                        )
+                        .into(),
+                        NestedField::required(
+                            2,
+                            "name",
+                            iceberg::spec::Type::Primitive(PrimitiveType::String),
+                        )
+                        .into(),
+                    ])
+                    .build()
+                    .unwrap(),
+                partition_spec: Some(UnboundPartitionSpec {
+                    spec_id: None,
+                    fields: vec![],
+                }),
+                write_order: None,
+                stage_create: Some(false),
+                properties: None,
+            }
+        }
+        #[sqlx::test]
+        async fn test_table_pagination(pool: sqlx::PgPool) {
+            let (prof, cred) = crate::catalog::test::minio_profile();
+
+            let hiding_mock = ObjectHidingMock::new();
+            let authz = hiding_mock.to_authorizer();
+
+            let (ctx, warehouse) = crate::catalog::test::setup(
+                pool.clone(),
+                prof,
+                Some(cred),
+                authz,
+                TabularDeleteProfile::Hard {},
+            )
+            .await;
+            let ns = crate::catalog::test::create_ns(
+                ctx.clone(),
+                warehouse.warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            // create 10 staged tables
+            for i in 0..10 {
+                let _ = CatalogServer::create_table(
+                    ns_params.clone(),
+                    create_request(Some(format!("tab-{i}"))),
+                    DataAccess {
+                        vended_credentials: true,
+                        remote_signing: false,
+                    },
+                    ctx.clone(),
+                    random_request_metadata(),
+                )
+                .await
+                .unwrap();
+            }
+
+            // list 1 more than existing tables
+            let all = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(11),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(all.identifiers.len(), 10);
+
+            // list exactly amount of existing tables
+            let all = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(10),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(all.identifiers.len(), 10);
+
+            // next page is empty
+            let next = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::Present(all.next_page_token.unwrap()),
+                    page_size: Some(10),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(next.identifiers.len(), 0);
+            assert!(next.next_page_token.is_none());
+
+            let first_six = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(6),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(first_six.identifiers.len(), 6);
+            assert!(first_six.next_page_token.is_some());
+            let first_six_items = first_six
+                .identifiers
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+
+            for (i, item) in first_six_items.iter().enumerate().take(6) {
+                assert_eq!(item, &format!("tab-{i}"));
+            }
+
+            let next_four = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::Present(first_six.next_page_token.unwrap()),
+                    page_size: Some(6),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(next_four.identifiers.len(), 4);
+            // page-size > number of items left -> no next page
+            assert!(next_four.next_page_token.is_none());
+
+            let next_four_items = next_four
+                .identifiers
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+
+            for (idx, i) in (6..10).enumerate() {
+                assert_eq!(next_four_items[idx], format!("tab-{i}"));
+            }
+
+            let mut ids = all.table_uuids.unwrap();
+            ids.sort();
+            for t in ids.iter().take(6).skip(4) {
+                hiding_mock.hide(&format!("table:{t}"));
+            }
+
+            let page = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(5),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(page.identifiers.len(), 5);
+            assert!(page.next_page_token.is_some());
+            let page_items = page
+                .identifiers
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+            for (i, item) in page_items.iter().enumerate() {
+                let tab_id = if i > 3 { i + 2 } else { i };
+                assert_eq!(item, &format!("tab-{tab_id}"));
+            }
+
+            let next_page = CatalogServer::list_tables(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token: PageToken::Present(page.next_page_token.unwrap()),
+                    page_size: Some(6),
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(next_page.identifiers.len(), 3);
+
+            let next_page_items = next_page
+                .identifiers
+                .iter()
+                .map(|i| i.name.clone())
+                .sorted()
+                .collect::<Vec<_>>();
+
+            for (idx, i) in (7..10).enumerate() {
+                assert_eq!(next_page_items[idx], format!("tab-{i}"));
+            }
+        }
     }
 }

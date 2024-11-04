@@ -63,6 +63,7 @@ pub enum S3Flavor {
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum S3Credential {
     #[serde(rename_all = "kebab-case")]
+    #[schema(title = "S3CredentialAccessKey")]
     AccessKey {
         aws_access_key_id: String,
         #[redact(partial)]
