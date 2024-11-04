@@ -50,9 +50,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetProjectResponse'
+                $ref: '#/components/schemas/GetProjectResponse'
     delete:
       tags:
       - project
@@ -85,13 +83,11 @@ paths:
       operationId: get_server_info
       responses:
         '200':
-          description: User details
+          description: Server info
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ServerInfo'
+                $ref: '#/components/schemas/ServerInfo'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -112,9 +108,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetNamespaceResponse'
+                $ref: '#/components/schemas/GetNamespaceResponse'
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
@@ -135,9 +129,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetNamespaceAccessResponse'
+                $ref: '#/components/schemas/GetNamespaceAccessResponse'
   /management/v1/permissions/namespace/{namespace_id}/assignments:
     get:
       tags:
@@ -167,9 +159,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
+                $ref: '#/components/schemas/GetNamespaceAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -216,13 +206,6 @@ paths:
       responses:
         '200':
           description: ''
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  default: null
-                  nullable: true
   /management/v1/permissions/project/access:
     get:
       tags:
@@ -236,9 +219,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetProjectAccessResponse'
+                $ref: '#/components/schemas/GetProjectAccessResponse'
   /management/v1/permissions/project/assignments:
     get:
       tags:
@@ -261,9 +242,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+                $ref: '#/components/schemas/GetProjectAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -298,9 +277,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetProjectAccessResponse'
+                $ref: '#/components/schemas/GetProjectAccessResponse'
   /management/v1/permissions/project/{project_id}/assignments:
     get:
       tags:
@@ -330,9 +307,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetProjectAssignmentsResponse'
+                $ref: '#/components/schemas/GetProjectAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -375,9 +350,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetRoleAccessResponse'
+                $ref: '#/components/schemas/GetRoleAccessResponse'
   /management/v1/permissions/role/{role_id}/assignments:
     get:
       tags:
@@ -407,9 +380,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetRoleAssignmentsResponse'
+                $ref: '#/components/schemas/GetRoleAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -445,9 +416,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetServerAccessResponse'
+                $ref: '#/components/schemas/GetServerAccessResponse'
   /management/v1/permissions/server/assignments:
     get:
       tags:
@@ -470,9 +439,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetServerAssignmentsResponse'
+                $ref: '#/components/schemas/GetServerAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -516,9 +483,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetViewAssignmentsResponse'
+                $ref: '#/components/schemas/GetViewAssignmentsResponse'
   /management/v1/permissions/table/{table_id}/access:
     get:
       tags:
@@ -539,9 +504,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetTableAccessResponse'
+                $ref: '#/components/schemas/GetTableAccessResponse'
   /management/v1/permissions/table/{table_id}/assignments:
     post:
       tags:
@@ -585,9 +548,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetViewAccessResponse'
+                $ref: '#/components/schemas/GetViewAccessResponse'
   /management/v1/permissions/view/{view_id}/assignments:
     post:
       tags:
@@ -631,9 +592,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetWarehouseResponse'
+                $ref: '#/components/schemas/GetWarehouseResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
@@ -654,9 +613,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetWarehouseAccessResponse'
+                $ref: '#/components/schemas/GetWarehouseAccessResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/assignments:
     get:
       tags:
@@ -686,9 +643,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
+                $ref: '#/components/schemas/GetWarehouseAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -735,13 +690,6 @@ paths:
       responses:
         '200':
           description: ''
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  default: null
-                  nullable: true
   /management/v1/project:
     post:
       tags:
@@ -761,9 +709,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/CreateProjectResponse'
+                $ref: '#/components/schemas/CreateProjectResponse'
   /management/v1/project-list:
     get:
       tags:
@@ -776,9 +722,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ListProjectsResponse'
+                $ref: '#/components/schemas/ListProjectsResponse'
   /management/v1/project/{project_id}:
     get:
       tags:
@@ -798,9 +742,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetProjectResponse'
+                $ref: '#/components/schemas/GetProjectResponse'
     delete:
       tags:
       - project
@@ -885,9 +827,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ListRolesResponse'
+                $ref: '#/components/schemas/ListRolesResponse'
     post:
       tags:
       - role
@@ -905,9 +845,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Role'
+                $ref: '#/components/schemas/Role'
   /management/v1/role/{id}:
     get:
       tags:
@@ -927,9 +865,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Role'
+                $ref: '#/components/schemas/Role'
     post:
       tags:
       - role
@@ -954,9 +890,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Role'
+                $ref: '#/components/schemas/Role'
     delete:
       tags:
       - role
@@ -991,9 +925,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/SearchUserResponse'
+                $ref: '#/components/schemas/SearchUserResponse'
   /management/v1/user:
     get:
       tags:
@@ -1030,9 +962,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ListUsersResponse'
+                $ref: '#/components/schemas/ListUsersResponse'
     post:
       tags:
       - user
@@ -1053,17 +983,13 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/User'
         '201':
           description: User created
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/User'
   /management/v1/user/{id}:
     get:
       tags:
@@ -1083,9 +1009,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/User'
     put:
       tags:
       - user
@@ -1164,9 +1088,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ListWarehousesResponse'
+                $ref: '#/components/schemas/ListWarehousesResponse'
     post:
       tags:
       - warehouse
@@ -1188,9 +1110,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/CreateWarehouseResponse'
+                $ref: '#/components/schemas/CreateWarehouseResponse'
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -1210,9 +1130,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GetWarehouseResponse'
+                $ref: '#/components/schemas/GetWarehouseResponse'
     delete:
       tags:
       - warehouse
@@ -1316,9 +1234,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ListDeletedTabularsResponse'
+                $ref: '#/components/schemas/ListDeletedTabularsResponse'
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -1398,11 +1314,42 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/User'
 components:
   schemas:
+    AdlsProfile:
+      type: object
+      required:
+      - filesystem
+      - account-name
+      properties:
+        account-name:
+          type: string
+          description: Name of the azure storage account.
+        authority-host:
+          type: string
+          format: uri
+          description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
+          nullable: true
+        filesystem:
+          type: string
+          description: Name of the adls filesystem, in blobstorage also known as container.
+        host:
+          type: string
+          description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
+          nullable: true
+        key-prefix:
+          type: string
+          description: |-
+            Subpath in the filesystem to use.
+            The same prefix can be used for multiple warehouses.
+          nullable: true
+        sas-token-validity-seconds:
+          type: integer
+          format: int64
+          description: 'The validity of the sas token in seconds. Default: 3600.'
+          nullable: true
+          minimum: 0
     AuthZBackend:
       type: string
       enum:
@@ -1430,39 +1377,6 @@ components:
             type: string
       discriminator:
         propertyName: credential-type
-    AzdlsProfile:
-      type: object
-      required:
-      - filesystem
-      - account-name
-      properties:
-        account-name:
-          type: string
-          description: Name of the azure storage account.
-        authority-host:
-          type: string
-          format: uri
-          description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
-          nullable: true
-        filesystem:
-          type: string
-          description: Name of the azdls filesystem, in blobstorage also known as container.
-        host:
-          type: string
-          description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
-          nullable: true
-        key-prefix:
-          type: string
-          description: |-
-            Subpath in the filesystem to use.
-            The same prefix can be used for multiple warehouses.
-          nullable: true
-        sas-token-validity-seconds:
-          type: integer
-          format: int64
-          description: 'The validity of the sas token in seconds. Default: 3600.'
-          nullable: true
-          minimum: 0
     BootstrapRequest:
       type: object
       required:
@@ -2558,7 +2472,7 @@ components:
     StorageProfile:
       oneOf:
       - allOf:
-        - $ref: '#/components/schemas/AzdlsProfile'
+        - $ref: '#/components/schemas/AdlsProfile'
         - type: object
           required:
           - type
@@ -2566,8 +2480,8 @@ components:
             type:
               type: string
               enum:
-              - azdls
-        title: StorageProfileAzdls
+              - adls
+        title: StorageProfileAdls
       - allOf:
         - $ref: '#/components/schemas/S3Profile'
         - type: object

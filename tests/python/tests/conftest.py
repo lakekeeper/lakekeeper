@@ -112,7 +112,7 @@ def storage_config(request) -> dict:
 
         return {
             "storage-profile": {
-                "type": "azdls",
+                "type": "adls",
                 "account-name": AZURE_STORAGE_ACCOUNT_NAME,
                 "filesystem": AZURE_STORAGE_FILESYSTEM,
             },
@@ -400,7 +400,7 @@ def trino(warehouse: Warehouse, storage_config):
             "s3.endpoint" = '{S3_ENDPOINT}',
             "fs.native-s3.enabled" = 'true'
         """
-    elif storage_config["storage-profile"]["type"] == "azdls":
+    elif storage_config["storage-profile"]["type"] == "adls":
         extra_config = """
             ,
             "fs.native-azure.enabled" = 'true'

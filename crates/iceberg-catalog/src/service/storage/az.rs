@@ -28,8 +28,8 @@ use veil::Redact;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
-pub struct AzdlsProfile {
-    /// Name of the azdls filesystem, in blobstorage also known as container.
+pub struct AdlsProfile {
+    /// Name of the adls filesystem, in blobstorage also known as container.
     pub filesystem: String,
     /// Subpath in the filesystem to use.
     /// The same prefix can be used for multiple warehouses.
@@ -51,7 +51,7 @@ lazy_static::lazy_static! {
 
 static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-impl AzdlsProfile {
+impl AdlsProfile {
     /// Validate the Azure storage profile.
     ///
     /// # Errors
@@ -134,7 +134,7 @@ impl AzdlsProfile {
             Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
                 source: Some(Box::new(e)),
                 reason: "Failed to create location for storage profile.".to_string(),
-                storage_type: StorageType::Azdls,
+                storage_type: StorageType::Adls,
                 location,
             })?;
 
@@ -181,7 +181,7 @@ impl AzdlsProfile {
         Ok(config)
     }
 
-    /// Create a new `FileIO` instance for Azdls.
+    /// Create a new `FileIO` instance for Adls.
     ///
     /// # Errors
     /// Fails if the `FileIO` instance cannot be created.
@@ -334,7 +334,7 @@ impl AzdlsProfile {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AzdlsLocation {
+pub struct AdlsLocation {
     account_name: String,
     filesystem: String,
     endpoint_suffix: String,
@@ -343,8 +343,8 @@ pub struct AzdlsLocation {
     location: Location,
 }
 
-impl AzdlsLocation {
-    /// Create a new `AzdlsLocation` from the given parameters.
+impl AdlsLocation {
+    /// Create a new [`AdlsLocation`] from the given parameters.
     ///
     /// # Errors
     /// Fails if validation of account name, filesystem name or key fails.
@@ -367,7 +367,7 @@ impl AzdlsLocation {
             Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
                 source: Some(Box::new(e)),
                 reason: "Invalid adls location".to_string(),
-                storage_type: StorageType::Azdls,
+                storage_type: StorageType::Adls,
                 location,
             })?;
         if !key.is_empty() {
@@ -409,13 +409,13 @@ impl AzdlsLocation {
     }
 }
 
-impl std::fmt::Display for AzdlsLocation {
+impl std::fmt::Display for AdlsLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.location.fmt(f)
     }
 }
 
-impl TryFrom<Location> for AzdlsLocation {
+impl TryFrom<Location> for AdlsLocation {
     type Error = ValidationError;
 
     fn try_from(location: Location) -> Result<Self, Self::Error> {
@@ -424,7 +424,7 @@ impl TryFrom<Location> for AzdlsLocation {
                 reason: "ADLS locations must use abfss protocol.".to_string(),
                 location: location.to_string(),
                 source: None,
-                storage_type: StorageType::Azdls,
+                storage_type: StorageType::Adls,
             });
         }
 
@@ -436,7 +436,7 @@ impl TryFrom<Location> for AzdlsLocation {
                 reason: "ADLS location has no host specified".to_string(),
                 location: location.to_string(),
                 source: None,
-                storage_type: StorageType::Azdls,
+                storage_type: StorageType::Adls,
             })?
             .to_string();
         // Host: account_name.endpoint_suffix
@@ -447,7 +447,7 @@ impl TryFrom<Location> for AzdlsLocation {
                         .to_string(),
                     location: location.to_string(),
                     source: None,
-                    storage_type: StorageType::Azdls,
+                    storage_type: StorageType::Adls,
                 })?;
 
         let key: Vec<String> = location
@@ -466,7 +466,7 @@ impl TryFrom<Location> for AzdlsLocation {
     }
 }
 
-impl FromStr for AzdlsLocation {
+impl FromStr for AdlsLocation {
     type Err = ValidationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -474,15 +474,15 @@ impl FromStr for AzdlsLocation {
             reason: format!("Invalid Location: {e}"),
             location: s.to_string(),
             source: Some(Box::new(e)),
-            storage_type: StorageType::Azdls,
+            storage_type: StorageType::Adls,
         })?;
 
         Self::try_from(location)
     }
 }
 
-impl From<AzdlsLocation> for Location {
-    fn from(location: AzdlsLocation) -> Location {
+impl From<AdlsLocation> for Location {
+    fn from(location: AdlsLocation) -> Location {
         location.location
     }
 }
@@ -542,7 +542,7 @@ pub(super) async fn validate_vended_credentials(
     table_location: &Location,
     profile_for_error: &StorageProfile,
 ) -> Result<(), ValidationError> {
-    let table_location = AzdlsLocation::try_from(table_location.clone())?;
+    let table_location = AdlsLocation::try_from(table_location.clone())?;
     let mut file_location = table_location.location.clone();
     file_location.without_trailing_slash().push("test-file");
 
@@ -762,7 +762,7 @@ mod test {
 
     #[needs_env_var(TEST_AZURE = 1)]
     mod azure_tests {
-        use crate::service::storage::{AzCredential, AzdlsProfile};
+        use crate::service::storage::{AdlsProfile, AzCredential};
         use crate::service::storage::{StorageCredential, StorageProfile};
 
         #[tokio::test]
@@ -773,7 +773,7 @@ mod test {
             let tenant_id = std::env::var("AZURE_TENANT_ID").unwrap();
             let filesystem = std::env::var("AZURE_STORAGE_FILESYSTEM").unwrap();
             let key_prefix = vec!['b'; 512].into_iter().collect::<String>();
-            let prof = AzdlsProfile {
+            let prof = AdlsProfile {
                 filesystem,
                 key_prefix: Some(key_prefix.to_string()),
                 account_name,
@@ -821,7 +821,7 @@ mod test {
 
     #[test]
     fn test_default_adls_locations() {
-        let profile = AzdlsProfile {
+        let profile = AdlsProfile {
             filesystem: "filesystem".to_string(),
             key_prefix: Some("test_prefix".to_string()),
             account_name: "account".to_string(),
@@ -882,7 +882,7 @@ mod test {
         ];
 
         for (location_str, account_name, filesystem, endpoint_suffix, key) in cases {
-            let adls_location = AzdlsLocation::from_str(location_str).unwrap();
+            let adls_location = AdlsLocation::from_str(location_str).unwrap();
             assert_eq!(adls_location.account_name(), account_name);
             assert_eq!(adls_location.filesystem(), filesystem);
             assert_eq!(adls_location.endpoint_suffix(), endpoint_suffix);
@@ -902,7 +902,7 @@ mod test {
         ];
 
         for location in cases {
-            let parsed_location = AzdlsLocation::from_str(location);
+            let parsed_location = AdlsLocation::from_str(location);
             assert!(parsed_location.is_err(), "{}", parsed_location.unwrap());
         }
     }
