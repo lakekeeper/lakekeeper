@@ -803,7 +803,7 @@ mod test {
         use itertools::Itertools;
 
         #[sqlx::test]
-        async fn test_deeleted_tabulars_pagination(pool: sqlx::PgPool) {
+        async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
             let (prof, cred) = crate::catalog::test::minio_profile();
 
             let hiding_mock = ObjectHidingMock::new();

@@ -140,14 +140,6 @@ pub mod v1 {
             self.entities.get(key)
         }
 
-        #[cfg(test)]
-        pub fn remove(&mut self, key: &T) -> Option<V> {
-            let (idx, _) = self.ordering.iter().find_position(|item| **item == *key)?;
-            self.ordering.remove(idx);
-            self.next_page_tokens.remove(idx);
-            self.entities.remove(key)
-        }
-
         #[allow(clippy::missing_panics_doc)]
         pub fn into_iter_with_page_tokens(mut self) -> impl Iterator<Item = (T, V, String)> {
             self.ordering
@@ -162,6 +154,14 @@ pub mod v1 {
                         .expect("keys have to be in tabulars if they are in self.ordering");
                     (key, v, next_p)
                 })
+        }
+
+        #[cfg(test)]
+        pub fn remove(&mut self, key: &T) -> Option<V> {
+            let (idx, _) = self.ordering.iter().find_position(|item| **item == *key)?;
+            self.ordering.remove(idx);
+            self.next_page_tokens.remove(idx);
+            self.entities.remove(key)
         }
 
         #[cfg(test)]
@@ -198,5 +198,79 @@ pub mod v1 {
                     }),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::api::iceberg::v1::PaginatedMapping;
+    use uuid::Uuid;
+
+    #[test]
+    fn iteration_with_page_token_is_in_insertion_order() {
+        let mut map = PaginatedMapping::with_capacity(3);
+        let k1 = Uuid::now_v7();
+        let k2 = Uuid::now_v7();
+        let k3 = Uuid::now_v7();
+
+        map.insert(k1, String::from("v1"), String::from("t1"));
+        map.insert(k2, String::from("v2"), String::from("t2"));
+        map.insert(k3, String::from("v3"), String::from("t3"));
+
+        let r = map.into_iter_with_page_tokens().collect::<Vec<_>>();
+        assert_eq!(
+            r,
+            vec![
+                (k1, String::from("v1"), String::from("t1")),
+                (k2, String::from("v2"), String::from("t2")),
+                (k3, String::from("v3"), String::from("t3")),
+            ]
+        );
+    }
+
+    #[test]
+    fn into_iter_is_in_insertion_order() {
+        let mut map = PaginatedMapping::with_capacity(3);
+        let k1 = Uuid::now_v7();
+        let k2 = Uuid::now_v7();
+        let k3 = Uuid::now_v7();
+
+        map.insert(k1, String::from("v1"), String::from("t1"));
+        map.insert(k2, String::from("v2"), String::from("t2"));
+        map.insert(k3, String::from("v3"), String::from("t3"));
+
+        let r = map.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            r,
+            vec![
+                (k1, String::from("v1")),
+                (k2, String::from("v2")),
+                (k3, String::from("v3")),
+            ]
+        );
+    }
+
+    #[test]
+    fn reinserts_dont_panic() {
+        let mut map = PaginatedMapping::with_capacity(3);
+        let k1 = Uuid::now_v7();
+        let k2 = Uuid::now_v7();
+        let k3 = Uuid::now_v7();
+
+        map.insert(k1, String::from("v1"), String::from("t1"));
+        map.insert(k2, String::from("v2"), String::from("t2"));
+        map.insert(k3, String::from("v3"), String::from("t3"));
+
+        map.insert(k1, String::from("v1"), String::from("t1"));
+
+        let r = map.into_iter_with_page_tokens().collect::<Vec<_>>();
+        assert_eq!(
+            r,
+            vec![
+                (k2, String::from("v2"), String::from("t2")),
+                (k3, String::from("v3"), String::from("t3")),
+                (k1, String::from("v1"), String::from("t1"))
+            ]
+        );
     }
 }
