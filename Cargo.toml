@@ -16,17 +16,17 @@ license = "Apache-2.0"
 [workspace.dependencies]
 async-nats = "0.37.0"
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-azure_core = { version = "0.20.0", default-features = false, features = [
+azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
 ] }
-azure_storage = { version = "0.20.0", default-features = false, features = [
+azure_storage = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
-azure_storage_blobs = { version = "0.20.0", default-features = false, features = [
+azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
-azure_identity = { version = "0.20.0", default-features = false, features = [
+azure_identity = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }

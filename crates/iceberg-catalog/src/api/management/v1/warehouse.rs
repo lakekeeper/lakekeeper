@@ -4,7 +4,7 @@ use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
 pub use crate::service::storage::{
-    AzCredential, AzdlsProfile, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
+    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
 use futures::FutureExt;
@@ -44,8 +44,9 @@ pub struct CreateWarehouseRequest {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TabularDeleteProfile {
+    #[schema(title = "TabularDeleteProfileHard")]
     Hard {},
-
+    #[schema(title = "TabularDeleteProfileSoft")]
     Soft {
         #[serde(
             deserialize_with = "crate::config::seconds_to_duration",

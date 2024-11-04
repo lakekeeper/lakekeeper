@@ -10,8 +10,8 @@ import fsspec
 def test_create_namespace(spark, warehouse: conftest.Warehouse):
     spark.sql("CREATE NAMESPACE test_create_namespace_spark")
     assert (
-               "test_create_namespace_spark",
-           ) in warehouse.pyiceberg_catalog.list_namespaces()
+        "test_create_namespace_spark",
+    ) in warehouse.pyiceberg_catalog.list_namespaces()
 
 
 def test_list_namespaces(spark, warehouse: conftest.Warehouse):
@@ -182,14 +182,21 @@ def test_drop_table(spark, warehouse: conftest.Warehouse):
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config['storage-profile']['type'] == 's3':
+    if storage_config["storage-profile"]["type"] == "s3":
         pytest.skip(
-            "S3 fails to purge tables since it tries to sign a DELETE request for the bucket location which we don't want to sign.")
+            "S3 fails to purge tables since it tries to sign a DELETE request for the bucket location which we don't want to sign."
+        )
 
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
-        "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg")
-    assert spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table").toPandas().shape[0] == 0
+        "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
+    )
+    assert (
+        spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table")
+        .toPandas()
+        .shape[0]
+        == 0
+    )
 
     spark.sql("DROP TABLE test_drop_table_purge_spark.my_table PURGE;")
     with pytest.raises(Exception) as e:
@@ -199,8 +206,8 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
 
 
 def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "azdls":
-        # pyiceberg load_table doesn't contain any of the azdls properties so this test doesn't work until
+    if storage_config["storage-profile"]["type"] == "adls":
+        # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
         # https://github.com/apache/iceberg-python/issues/1146 is resolved
         pytest.skip("ADLS currently doesn't work with pyiceberg.")
 
@@ -223,18 +230,18 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
     table_0 = warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
 
     purge_uri = (
-            warehouse.server.catalog_url.strip("/")
-            + "/"
-            + "/".join(
-        [
-            "v1",
-            str(warehouse.warehouse_id),
-            "namespaces",
-            namespace,
-            "tables",
-            "my_table_0?purgeRequested=True",
-        ]
-    )
+        warehouse.server.catalog_url.strip("/")
+        + "/"
+        + "/".join(
+            [
+                "v1",
+                str(warehouse.warehouse_id),
+                "namespaces",
+                namespace,
+                "tables",
+                "my_table_0?purgeRequested=True",
+            ]
+        )
     )
     requests.delete(
         purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -273,18 +280,18 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
         table = warehouse.pyiceberg_catalog.load_table((namespace, table))
         assert table.scan().to_pandas().equals(df)
         purge_uri = (
-                warehouse.server.catalog_url.strip("/")
-                + "/"
-                + "/".join(
-            [
-                "v1",
-                str(warehouse.warehouse_id),
-                "namespaces",
-                namespace,
-                "tables",
-                f"my_table_{n}?purgeRequested=True",
-            ]
-        )
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+                [
+                    "v1",
+                    str(warehouse.warehouse_id),
+                    "namespaces",
+                    namespace,
+                    "tables",
+                    f"my_table_{n}?purgeRequested=True",
+                ]
+            )
         )
         requests.delete(
             purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -590,7 +597,7 @@ def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
 
 
 def test_cannot_create_table_at_same_location(
-        spark, namespace, warehouse: conftest.Warehouse
+    spark, namespace, warehouse: conftest.Warehouse
 ):
     # Create a table without a custom location to get the default location
     spark.sql(
@@ -632,7 +639,7 @@ def test_cannot_create_table_at_same_location(
 
 
 def test_cannot_create_table_at_sub_location(
-        spark, namespace, warehouse: conftest.Warehouse
+    spark, namespace, warehouse: conftest.Warehouse
 ):
     # Create a table without a custom location to get the default location
     spark.sql(
@@ -654,9 +661,7 @@ def test_cannot_create_table_at_sub_location(
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.my_table_custom_location2 (my_ints INT) USING iceberg LOCATION '{custom_location}/sub_location'"
         )
-    assert "Location is already taken by another table or view" in str(
-        e.value
-    )
+    assert "Location is already taken by another table or view" in str(e.value)
 
     # Write / read data
     spark.sql(
@@ -677,11 +682,11 @@ def test_cannot_create_table_at_sub_location(
 
 @pytest.mark.parametrize("enable_cleanup", [False, True])
 def test_old_metadata_files_are_deleted(
-        spark,
-        namespace,
-        warehouse: conftest.Warehouse,
-        enable_cleanup,
-        io_fsspec: fsspec.AbstractFileSystem,
+    spark,
+    namespace,
+    warehouse: conftest.Warehouse,
+    enable_cleanup,
+    io_fsspec: fsspec.AbstractFileSystem,
 ):
     if not enable_cleanup:
         tbl_name = "old_metadata_files_are_deleted_no_cleanup"

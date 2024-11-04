@@ -2,7 +2,7 @@ use crate::api::management::v1::ApiServer;
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
 pub use crate::service::storage::{
-    AzCredential, AzdlsProfile, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
+    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
 use serde::{Deserialize, Serialize};

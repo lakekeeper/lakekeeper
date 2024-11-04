@@ -78,7 +78,7 @@ tower-http = { workspace = true, optional = true, features = [
     "default",
     "request-id",
     "util",
-    "cors",
+    "cors"
 ] }
 tracing = { workspace = true }
 url = { workspace = true }

@@ -61,7 +61,7 @@
 * **aws:** sts credentials for s3 ([#236](https://github.com/lakekeeper/lakekeeper/issues/236)) ([dbf775b](https://github.com/lakekeeper/lakekeeper/commit/dbf775b6e226a8b8822f2e725ec317b4230aa0c4))
 * **compression-codec:** Support setting and altering write.metadata.compression-codec ([#235](https://github.com/lakekeeper/lakekeeper/issues/235)) ([f4fb4cb](https://github.com/lakekeeper/lakekeeper/commit/f4fb4cbb4ce7f357db8d4d37dce8b92173402777))
 * **storage:** add ability to narrow token permissions ([#249](https://github.com/lakekeeper/lakekeeper/issues/249)) ([ba9f046](https://github.com/lakekeeper/lakekeeper/commit/ba9f046cf48a380b7d0b6ce01a7f2045a9e47bea))
-* **storage:** azdls ([#223](https://github.com/lakekeeper/lakekeeper/issues/223)) ([fd11428](https://github.com/lakekeeper/lakekeeper/commit/fd1142852555d239e8ea8dac2cb9d5db76457ab1))
+* **storage:** adls ([#223](https://github.com/lakekeeper/lakekeeper/issues/223)) ([fd11428](https://github.com/lakekeeper/lakekeeper/commit/fd1142852555d239e8ea8dac2cb9d5db76457ab1))
 
 
 ### Bug Fixes

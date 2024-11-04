@@ -54,6 +54,7 @@ pub enum GcsCredential {
     /// Service Account Key
     ///
     /// The key is the JSON object obtained when creating a service account key in the GCP console.
+    #[schema(title = "GcsCredentialServiceAccountKey")]
     ServiceAccountKey { key: GcsServiceKey },
 }
 
