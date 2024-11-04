@@ -3011,7 +3011,7 @@ dependencies = [
  "uuid",
  "vaultrs",
  "vaultrs-login",
- "veil",
+ "veil 0.2.0",
 ]
 
 [[package]]
@@ -3849,7 +3849,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
- "veil",
+ "veil 0.1.7",
 ]
 
 [[package]]
@@ -6688,7 +6688,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5780b0bc4b24921c448a0943a897b602206190b44dedfb76a264e86d68a04384"
 dependencies = [
  "once_cell",
- "veil-macros",
+ "veil-macros 0.1.7",
+]
+
+[[package]]
+name = "veil"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f00796f9c5969da55497f5c8802c2e69eaf21c0166fe28b6006c7c4699f4d0e"
+dependencies = [
+ "once_cell",
+ "veil-macros 0.2.0",
 ]
 
 [[package]]
@@ -6696,6 +6706,17 @@ name = "veil-macros"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cff2381c6b31ab2555441e382d699a56c3551d0cfdf0c4df5617bf271c1dd102"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.85",
+]
+
+[[package]]
+name = "veil-macros"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b2d5567b6fbd34e8f0488d56b648e67c0d999535f4af2060d14f9074b43e833"
 dependencies = [
  "proc-macro2",
  "quote",
