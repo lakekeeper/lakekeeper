@@ -38,7 +38,9 @@ use crate::catalog;
 use crate::catalog::tabular::list_entities;
 use http::StatusCode;
 use iceberg::spec::{
-    MetadataLog, TableMetadataBuildResult, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+    FormatVersion, MetadataLog, SortOrder, TableMetadata, TableMetadataBuildResult,
+    TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
+    PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
 };
 use iceberg::{NamespaceIdent, TableUpdate};
 use iceberg_ext::configs::namespace::NamespaceProperties;
@@ -159,7 +161,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let table_id: TabularIdentUuid = TabularIdentUuid::Table(uuid::Uuid::now_v7());
+        let id = Uuid::now_v7();
+        let table_id = TabularIdentUuid::Table(id);
 
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
@@ -192,16 +195,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // serialize body before moving it
         let body = maybe_body_to_json(&request);
 
+        let table_metadata = create_table_request_into_table_metadata(id.into(), request)?;
+
         let CreateTableResponse { table_metadata } = C::create_table(
             TableCreation {
                 namespace_id: namespace.namespace_id,
                 table_ident: &table,
-                table_id: (*table_id).into(),
-                table_location: &table_location,
-                table_schema: request.schema,
-                table_partition_spec: request.partition_spec,
-                table_write_order: request.write_order,
-                table_properties: request.properties,
+                table_metadata,
                 metadata_location: metadata_location.as_ref(),
             },
             t.transaction(),
@@ -1429,6 +1429,69 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
         tracing::warn!("Serializing the request body to json failed, this is very unexpected. It will not be part of any emitted Event.");
         serde_json::Value::Null
     }
+}
+
+pub(crate) fn create_table_request_into_table_metadata(
+    table_id: TableIdentUuid,
+    request: CreateTableRequest,
+) -> Result<TableMetadata> {
+    let CreateTableRequest {
+        name: _,
+        location,
+        schema,
+        partition_spec,
+        write_order,
+        // Stage-create is already handled in the catalog service.
+        // If stage-create is true, the metadata_location is None,
+        // otherwise, it is the location of the metadata file.
+        stage_create: _,
+        mut properties,
+    } = request;
+
+    let location = location.ok_or_else(|| {
+        ErrorModel::conflict(
+            "Table location is required",
+            "CreateTableLocationRequired",
+            None,
+        )
+    })?;
+
+    let format_version = properties
+        .as_mut()
+        .and_then(|props| props.remove(PROPERTY_FORMAT_VERSION))
+        .map(|s| match s.as_str() {
+            "v1" | "1" => Ok(FormatVersion::V1),
+            "v2" | "2" => Ok(FormatVersion::V2),
+            _ => Err(ErrorModel::bad_request(
+                format!("Invalid format version specified in table_properties: {s}"),
+                "InvalidFormatVersion",
+                None,
+            )),
+        })
+        .transpose()?
+        .unwrap_or(FormatVersion::V2);
+
+    let table_metadata = TableMetadataBuilder::new(
+        schema,
+        partition_spec.unwrap_or(UnboundPartitionSpec::builder().build()),
+        write_order.unwrap_or(SortOrder::unsorted_order()),
+        location,
+        format_version,
+        properties.unwrap_or_default(),
+    )
+    .map_err(|e| {
+        let msg = e.message().to_string();
+        ErrorModel::bad_request(msg, "CreateTableMetadataError", Some(Box::new(e)))
+    })?
+    .assign_uuid(*table_id)
+    .build()
+    .map_err(|e| {
+        let msg = e.message().to_string();
+        ErrorModel::bad_request(msg, "BuildTableMetadataError", Some(Box::new(e)))
+    })?
+    .metadata;
+
+    Ok(table_metadata)
 }
 
 #[cfg(test)]

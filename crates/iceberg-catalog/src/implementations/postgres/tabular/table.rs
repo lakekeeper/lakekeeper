@@ -9,9 +9,6 @@ use crate::{
 };
 
 use http::StatusCode;
-use iceberg::spec::{
-    FormatVersion, SortOrder, TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
-};
 use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
 
 use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
@@ -96,54 +93,12 @@ pub(crate) async fn create_table(
     TableCreation {
         namespace_id,
         table_ident,
-        table_id,
-        table_location,
-        table_schema,
-        table_partition_spec,
-        table_write_order,
-        table_properties,
+        table_metadata,
         metadata_location,
     }: TableCreation<'_>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<CreateTableResponse> {
     let TableIdent { namespace: _, name } = table_ident;
-
-    let mut table_properties = table_properties.unwrap_or_default();
-    let format_version = table_properties
-        .remove(PROPERTY_FORMAT_VERSION)
-        .map({
-            |s| match s.as_str() {
-                "v1" | "1" => Ok(FormatVersion::V1),
-                "v2" | "2" => Ok(FormatVersion::V2),
-                _ => Err(ErrorModel::bad_request(
-                    format!("Invalid format version specified in table_properties: {s}"),
-                    "InvalidFormatVersion",
-                    None,
-                )),
-            }
-        })
-        .transpose()?
-        .unwrap_or(FormatVersion::V2);
-
-    let table_metadata = TableMetadataBuilder::new(
-        table_schema,
-        table_partition_spec.unwrap_or(UnboundPartitionSpec::builder().build()),
-        table_write_order.unwrap_or(SortOrder::unsorted_order()),
-        table_location.to_string(),
-        format_version,
-        table_properties,
-    )
-    .map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "CreateTableMetadataError", Some(Box::new(e)))
-    })?
-    .assign_uuid(*table_id)
-    .build()
-    .map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "BuildTableMetadataError", Some(Box::new(e)))
-    })?
-    .metadata;
 
     let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
         ErrorModel::internal(
@@ -155,12 +110,18 @@ pub(crate) async fn create_table(
 
     let tabular_id = create_tabular(
         CreateTabular {
-            id: *table_id,
+            id: table_metadata.table_uuid,
             name,
             namespace_id: *namespace_id,
             typ: TabularType::Table,
             metadata_location,
-            location: table_location,
+            location: &Location::from_str(table_metadata.location.as_str()).map_err(|err| {
+                ErrorModel::bad_request(
+                    format!("Invalid location: '{}'", table_metadata.location.as_str()),
+                    "InvalidLocation",
+                    Some(Box::new(err)),
+                )
+            })?,
         },
         transaction,
     )
@@ -600,8 +561,11 @@ pub(crate) mod tests {
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
     use crate::service::{ListFlags, NamespaceIdentUuid};
 
+    use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
-    use iceberg::spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec};
+    use iceberg::spec::{
+        NestedField, PrimitiveType, Schema, TableMetadataBuilder, UnboundPartitionSpec,
+    };
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateTableRequest;
     use iceberg_ext::configs::Location;
@@ -714,22 +678,14 @@ pub(crate) mod tests {
             name: request.name.clone(),
         };
         let table_id = Uuid::now_v7().into();
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+
+        let table_metadata =
+            crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
+                .unwrap();
         let create = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
         let mut transaction = state.write_pool().begin().await.unwrap();
@@ -762,23 +718,15 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+
+        let table_metadata =
+            crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
+                .unwrap();
 
         let request = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
 
@@ -795,8 +743,8 @@ pub(crate) mod tests {
             .as_str()
             .parse::<Location>()
             .unwrap();
-        request.table_location = &location;
-        request.table_id = Uuid::now_v7().into();
+        request.table_metadata.location = location.to_string();
+        request.table_metadata.table_uuid = Uuid::now_v7();
         let create_err = create_table(request, &mut transaction).await.unwrap_err();
 
         assert_eq!(
@@ -834,23 +782,12 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
 
@@ -874,7 +811,7 @@ pub(crate) mod tests {
         // Second create should succeed, even with different id
         let mut transaction = pool.begin().await.unwrap();
         let mut request = request;
-        request.table_id = Uuid::now_v7().into();
+        request.table_metadata.table_uuid = Uuid::now_v7();
         let create_result = create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
 
@@ -882,23 +819,13 @@ pub(crate) mod tests {
 
         // We can overwrite the table with a regular create
         let (request, metadata_location) = create_request(Some(false), None);
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
         let mut transaction = pool.begin().await.unwrap();

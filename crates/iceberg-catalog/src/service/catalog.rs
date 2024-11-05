@@ -17,7 +17,7 @@ use crate::api::management::v1::user::{
 };
 use crate::api::management::v1::warehouse::TabularDeleteProfile;
 use crate::service::tabular_idents::{TabularIdentOwned, TabularIdentUuid};
-use iceberg::spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec, ViewMetadata};
+use iceberg::spec::{TableMetadata, ViewMetadata};
 use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::configs::Location;
@@ -134,13 +134,8 @@ pub struct TableCommit {
 pub struct TableCreation<'c> {
     pub(crate) namespace_id: NamespaceIdentUuid,
     pub(crate) table_ident: &'c TableIdent,
-    pub(crate) table_id: TableIdentUuid,
-    pub(crate) table_location: &'c Location,
-    pub(crate) table_schema: Schema,
-    pub(crate) table_partition_spec: Option<UnboundPartitionSpec>,
-    pub(crate) table_write_order: Option<SortOrder>,
-    pub(crate) table_properties: Option<HashMap<String, String>>,
     pub(crate) metadata_location: Option<&'c Location>,
+    pub(crate) table_metadata: TableMetadata,
 }
 
 #[derive(Debug, Clone)]
