@@ -94,7 +94,7 @@ sqlx = { version = "^0.8.2", default-features = false, features = [
     "uuid",
     "chrono",
 ] }
-thiserror = "1.0.63"
+thiserror = "2.0.0"
 tokio = { version = "1", default-features = false, features = [
     "signal",
     "rt-multi-thread",
