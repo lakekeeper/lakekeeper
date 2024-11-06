@@ -16,7 +16,10 @@ use crate::implementations::postgres::tabular::{
     create_tabular, drop_tabular, list_tabulars, try_parse_namespace_ident, CreateTabular,
     TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
 };
-use iceberg::spec::FormatVersion;
+use iceberg::spec::{
+    FormatVersion, PartitionField, Schema, SnapshotRetention, SortOrder, StructType, Summary,
+    UnboundPartitionSpec,
+};
 use iceberg_ext::configs::Location;
 use sqlx::types::Json;
 use sqlx::PgConnection;
@@ -132,44 +135,12 @@ pub(crate) async fn create_table(
 
     let _update_result = sqlx::query!(
         r#"
-        INSERT INTO "table" (table_id, "metadata")
+        INSERT INTO "table" (table_id, metadata, table_format_version)
         (
-            SELECT $1, $2
+            SELECT $1, $2, $3
             WHERE EXISTS (SELECT 1
                 FROM active_tables
                 WHERE active_tables.table_id = $1))
-        ON CONFLICT ON CONSTRAINT "table_pkey"
-        DO UPDATE SET "metadata" = $2
-        RETURNING "table_id"
-        "#,
-        tabular_id,
-        table_metadata_ser,
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        tracing::warn!("Error creating table: {}", e);
-        e.into_error_model("Error creating table".to_string())
-    })?;
-    let _update_result = sqlx::query!(
-        r#"INSERT INTO "table" (
-            table_id,
-            metadata,
-            table_format_version,
-            current_schema_id,
-            default_partition_spec_id,
-            default_partition_spec_schema_id,
-            default_partition_spec_struct_type,
-            default_sorter_id
-        ) (
-            SELECT
-                $1, $2, $3
-            WHERE EXISTS (
-                SELECT 1
-                FROM active_tables
-                WHERE active_tables.table_id = $1
-            )
-        )
         ON CONFLICT ON CONSTRAINT "table_pkey"
         DO UPDATE SET "metadata" = $2
         RETURNING "table_id"
@@ -209,6 +180,9 @@ pub(crate) async fn create_table(
         ..
     } = &table_metadata;
 
+    let partition_specs = table_metadata.partition_specs_iter();
+    let default_spec = table_metadata.default_partition_spec();
+
     for (_, scheme) in schemas.into_iter() {
         let _ = sqlx::query!(
             r#"INSERT INTO table_schema(schema_id, table_id, schema) VALUES ($1, $2, $3)"#,
@@ -228,19 +202,19 @@ pub(crate) async fn create_table(
         })?;
     }
 
-    // let _ = sqlx::query!(
-    //     r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
-    //     tabular_id,
-    //     current_schema_id
-    // )
-    // .execute(&mut **transaction)
-    // .await
-    // .map_err(|err| {
-    //     tracing::warn!("Error creating table: {}", err);
-    //     err.into_error_model("Error inserting table current schema".to_string())
-    // })?;
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
+        tabular_id,
+        *current_schema_id
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table current schema".to_string())
+    })?;
 
-    for part_spec in table_metadata.partition_specs_iter() {
+    for part_spec in partition_specs {
         let _ = sqlx::query!(
             r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec) VALUES ($1, $2, $3)"#,
             part_spec.spec_id(),
@@ -258,12 +232,21 @@ pub(crate) async fn create_table(
                 err.into_error_model("Error inserting table partition spec".to_string())
             })?;
     }
+    let partition_type = serde_json::to_value(default_spec.partition_type()).map_err(|er| {
+        ErrorModel::internal(
+            "Error serializing partition type",
+            "PartitionTypeSerializationError",
+            Some(Box::new(er)),
+        )
+    })?;
 
     // insert default part spec
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id) VALUES ($1, $2)"#,
-        table_metadata.default_partition_spec().spec_id(),
-        tabular_id
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id, partition_type) VALUES ($1, $2, $3, $4)"#,
+        default_spec.spec_id(),
+        tabular_id,
+        default_spec.schema_ref().schema_id(),
+        partition_type
     )
     .execute(&mut **transaction)
     .await
@@ -347,6 +330,34 @@ pub(crate) async fn create_table(
                 tracing::warn!("Error creating table: {}", err);
                 err.into_error_model("Error inserting table metadata log".to_string())
             })?;
+    }
+
+    for (refname, snapshot_ref) in refs {
+        let retention = serde_json::to_value(&snapshot_ref.retention).map_err(|er| {
+            ErrorModel::internal(
+                "Error serializing retention",
+                "RetentionSerializationError",
+                Some(Box::new(er)),
+            )
+        })?;
+
+        let _ = sqlx::query!(
+            r#"INSERT INTO table_refs(table_id,
+                                      table_ref_name,
+                                      snapshot_id,
+                                      retention)
+            VALUES ($1, $2, $3, $4)"#,
+            tabular_id,
+            refname,
+            snapshot_ref.snapshot_id,
+            retention,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|err| {
+            tracing::warn!("Error creating table: {}", err);
+            err.into_error_model("Error inserting table refs".to_string())
+        })?;
     }
 
     Ok(CreateTableResponse { table_metadata })
@@ -489,6 +500,98 @@ where
         },
         |(v, _)| Ok(v.into_inner()),
     )
+}
+
+#[derive(sqlx::FromRow)]
+struct TableQueryStruct {
+    table_id: Uuid,
+    table_name: String,
+    namespace_name: String,
+    namespace_id: Uuid,
+    metadata: Json<TableMetadata>,
+    table_refs: Vec<(String, i64, Json<SnapshotRetention>)>,
+    default_sort_order_id: Option<i64>,
+    sort_orders: Vec<(i64, Json<SortOrder>)>,
+    metadata_log: Vec<(i64, String)>,
+    snapshot_log: Vec<(i64, i64)>,
+    current_snapshot_id: Option<i64>,
+    snapshots: Vec<(i64, Option<i64>, i64, String, Json<Summary>, i64)>,
+    metadata_location: Option<String>,
+    table_location: String,
+    storage_profile: Json<StorageProfile>,
+    storage_secret_id: Option<Uuid>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
+    default_partition_spec: Option<(i32, i64, Json<Vec<PartitionField>>, Json<StructType>)>,
+    partition_specs: Vec<(i32, Json<UnboundPartitionSpec>)>,
+    current_schema: i64,
+    schemas: Vec<(i64, Json<Schema>)>,
+    table_format_version: DbTableFormatVersion,
+}
+
+pub(crate) async fn get_table_metadata_by_id_2(
+    warehouse_id: WarehouseIdent,
+    table: TableIdentUuid,
+    list_flags: crate::service::ListFlags,
+    catalog_state: CatalogState,
+) -> Result<Option<GetTableMetadataResponse>> {
+    let table = sqlx::query_as!(
+        TableQueryStruct,
+        r#"
+        SELECT
+            t."table_id",
+            ti.name as "table_name",
+            ti.location as "table_location",
+            namespace_name,
+            ti.namespace_id,
+            t."metadata" as "metadata: Json<TableMetadata>",
+            ti."metadata_location",
+            w.storage_profile as "storage_profile: Json<StorageProfile>",
+            w."storage_secret_id"
+        FROM "table" t
+        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        WHERE w.warehouse_id = $1 AND t."table_id" = $2
+            AND w.status = 'active'
+            AND (ti.deleted_at IS NULL OR $3)
+        "#,
+        *warehouse_id,
+        *table,
+        list_flags.include_deleted
+    )
+    .fetch_one(&catalog_state.read_pool())
+    .await;
+
+    let table = match table {
+        Ok(table) => table,
+        Err(sqlx::Error::RowNotFound) => return Ok(None),
+        Err(e) => {
+            return Err(e
+                .into_error_model("Error fetching table".to_string())
+                .into());
+        }
+    };
+
+    if !list_flags.include_staged && table.metadata_location.is_none() {
+        return Ok(None);
+    }
+
+    let namespace = try_parse_namespace_ident(table.namespace_name)?;
+
+    Ok(Some(GetTableMetadataResponse {
+        table: TableIdent {
+            namespace,
+            name: table.table_name,
+        },
+        namespace_id: table.namespace_id.into(),
+        table_id: table.table_id.into(),
+        warehouse_id,
+        location: table.table_location,
+        metadata_location: table.metadata_location,
+        storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
+        storage_profile: table.storage_profile.deref().clone(),
+    }))
 }
 
 pub(crate) async fn get_table_metadata_by_id(
