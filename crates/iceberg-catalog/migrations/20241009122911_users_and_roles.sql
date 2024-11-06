@@ -17,7 +17,7 @@ create table users
 call add_time_columns('users');
 select trigger_updated_at('users');
 
-CREATE INDEX users_name_email_gist_idx ON users USING gist ( (name || ' ' || email) gist_trgm_ops(siglen=256));
+CREATE INDEX users_name_gist_idx ON users USING gist (name gist_trgm_ops(siglen=256));
 
 create table role
 (
