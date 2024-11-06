@@ -152,13 +152,24 @@ pub(crate) async fn create_table(
         e.into_error_model("Error creating table".to_string())
     })?;
     let _update_result = sqlx::query!(
-        r#"
-        INSERT INTO "table" (table_id, metadata, table_format_version)
-        (
-            SELECT $1, $2, $3
-            WHERE EXISTS (SELECT 1
+        r#"INSERT INTO "table" (
+            table_id,
+            metadata,
+            table_format_version,
+            current_schema_id,
+            default_partition_spec_id,
+            default_partition_spec_schema_id,
+            default_partition_spec_struct_type,
+            default_sorter_id
+        ) (
+            SELECT
+                $1, $2, $3
+            WHERE EXISTS (
+                SELECT 1
                 FROM active_tables
-                WHERE active_tables.table_id = $1))
+                WHERE active_tables.table_id = $1
+            )
+        )
         ON CONFLICT ON CONSTRAINT "table_pkey"
         DO UPDATE SET "metadata" = $2
         RETURNING "table_id"
@@ -217,17 +228,17 @@ pub(crate) async fn create_table(
         })?;
     }
 
-    let _ = sqlx::query!(
-        r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
-        tabular_id,
-        current_schema_id
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
-        err.into_error_model("Error inserting table current schema".to_string())
-    })?;
+    // let _ = sqlx::query!(
+    //     r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
+    //     tabular_id,
+    //     current_schema_id
+    // )
+    // .execute(&mut **transaction)
+    // .await
+    // .map_err(|err| {
+    //     tracing::warn!("Error creating table: {}", err);
+    //     err.into_error_model("Error inserting table current schema".to_string())
+    // })?;
 
     for part_spec in table_metadata.partition_specs_iter() {
         let _ = sqlx::query!(
