@@ -506,27 +506,42 @@ where
 struct TableQueryStruct {
     table_id: Uuid,
     table_name: String,
-    namespace_name: String,
+    namespace_name: Vec<String>,
     namespace_id: Uuid,
     metadata: Json<TableMetadata>,
-    table_refs: Vec<(String, i64, Json<SnapshotRetention>)>,
-    default_sort_order_id: Option<i64>,
-    sort_orders: Vec<(i64, Json<SortOrder>)>,
-    metadata_log: Vec<(i64, String)>,
-    snapshot_log: Vec<(i64, i64)>,
+    table_ref_names: Option<Vec<String>>,
+    table_ref_snapshot_ids: Option<Vec<i64>>,
+    table_ref_retention: Option<Vec<Json<SnapshotRetention>>>,
+    default_sort_order_id: Option<i32>,
+    sort_order_ids: Option<Vec<i32>>,
+    sort_orders: Option<Vec<Json<SortOrder>>>,
+    metadata_log_timestamps: Option<Vec<i64>>,
+    metadata_log_files: Option<Vec<String>>,
+    snapshot_log_timestamps: Option<Vec<i64>>,
+    snapshot_log_ids: Option<Vec<i64>>,
     current_snapshot_id: Option<i64>,
-    snapshots: Vec<(i64, Option<i64>, i64, String, Json<Summary>, i64)>,
+    snapshot_ids: Option<Vec<i64>>,
+    snapshot_parent_snapshot_id: Option<Vec<Option<i64>>>,
+    snapshot_sequence_number: Option<Vec<i64>>,
+    snapshot_manifest_list: Option<Vec<Vec<String>>>,
+    snapshot_summary: Option<Vec<Json<Summary>>>,
+    snapshot_schema_id: Option<Vec<i32>>,
     metadata_location: Option<String>,
     table_location: String,
     storage_profile: Json<StorageProfile>,
     storage_secret_id: Option<Uuid>,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
-    default_partition_spec: Option<(i32, i64, Json<Vec<PartitionField>>, Json<StructType>)>,
-    partition_specs: Vec<(i32, Json<UnboundPartitionSpec>)>,
-    current_schema: i64,
-    schemas: Vec<(i64, Json<Schema>)>,
-    table_format_version: DbTableFormatVersion,
+    default_partition_spec_id: Option<i32>,
+    default_partition_schema_id: Option<i32>,
+    default_partition_fields: Option<Json<Vec<PartitionField>>>,
+    default_partition_struct_type: Option<Json<StructType>>,
+    partition_spec_ids: Option<Vec<i32>>,
+    partition_specs: Option<Vec<Json<UnboundPartitionSpec>>>,
+    current_schema: Option<i32>,
+    schemas: Option<Vec<Json<Schema>>>,
+    schema_ids: Option<Vec<i32>>,
+    table_format_version: Option<DbTableFormatVersion>,
 }
 
 pub(crate) async fn get_table_metadata_by_id_2(
@@ -540,6 +555,7 @@ pub(crate) async fn get_table_metadata_by_id_2(
         r#"
         SELECT
             t."table_id",
+            t.table_format_version as "table_format_version: DbTableFormatVersion",
             ti.name as "table_name",
             ti.location as "table_location",
             namespace_name,
@@ -547,11 +563,88 @@ pub(crate) async fn get_table_metadata_by_id_2(
             t."metadata" as "metadata: Json<TableMetadata>",
             ti."metadata_location",
             w.storage_profile as "storage_profile: Json<StorageProfile>",
-            w."storage_secret_id"
+            w."storage_secret_id",
+            ts.schema_ids,
+            tcs.schema_id as "current_schema",
+            tdps.partition_spec_id as "default_partition_spec_id",
+            tdps.schema_id as "default_partition_schema_id",
+            tdps.fields as "default_partition_fields: Json<Vec<PartitionField>>",
+            tdps.partition_type as "default_partition_struct_type: Json<StructType>",
+            ts.schemas as "schemas: Vec<Json<Schema>>",
+            tsnap.snapshot_ids,
+            tcsnap.snapshot_id as "current_snapshot_id",
+            tsnap.parent_snapshot_ids as "snapshot_parent_snapshot_id: Vec<Option<i64>>",
+            tsnap.sequence_numbers as "snapshot_sequence_number",
+            tsnap.manifest_lists as "snapshot_manifest_list: Vec<Vec<String>>",
+            tsnap.summaries as "snapshot_summary: Vec<Json<Summary>>",
+            tsnap.schema_ids as "snapshot_schema_id",
+            tdsort.sort_order_id as "default_sort_order_id",
+            tps.partition_spec_id as "partition_spec_ids",
+            tps.partition_spec as "partition_specs: Vec<Json<UnboundPartitionSpec>>",
+            tp.keys as "table_properties_keys",
+            tp.values as "table_properties_values",
+            tsl.snapshot_ids as "snapshot_log_ids",
+            tsl.timestamps as "snapshot_log_timestamps",
+            tml.metadata_files as "metadata_log_files",
+            tml.timestamps as "metadata_log_timestamps",
+            tso.sort_order_ids as "sort_order_ids",
+            tso.sort_orders as "sort_orders: Vec<Json<SortOrder>>",
+            tr.table_ref_names as "table_ref_names",
+            tr.snapshot_ids as "table_ref_snapshot_ids",
+            tr.retentions as "table_ref_retention: Vec<Json<SnapshotRetention>>"
         FROM "table" t
         INNER JOIN tabular ti ON t.table_id = ti.tabular_id
         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN table_current_schema tcs ON tcs.table_id = t.table_id
+        LEFT JOIN table_default_partition_spec tdps ON tdps.table_id = t.table_id
+        LEFT JOIN table_current_snapshot tcsnap ON tcsnap.table_id = t.table_id
+        LEFT JOIN table_default_sort_order tdsort ON tdsort.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(schema_id) as schema_ids,
+                          ARRAY_AGG(schema) as schemas
+                   FROM table_schema
+                   GROUP BY table_id) ts ON ts.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(partition_spec) as partition_spec,
+                          ARRAY_AGG(partition_spec_id) as partition_spec_id
+                   FROM table_partition_spec
+                   GROUP BY table_id) tps ON tps.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                            ARRAY_AGG(key) as keys,
+                            ARRAY_AGG(value) as values
+                     FROM table_properties
+                     GROUP BY table_id) tp ON tp.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(parent_snapshot_id) as parent_snapshot_ids,
+                          ARRAY_AGG(sequence_number) as sequence_numbers,
+                          ARRAY_AGG(manifest_list) as manifest_lists,
+                          ARRAY_AGG(summary) as summaries,
+                          ARRAY_AGG(schema_id) as schema_ids
+                   FROM table_snapshot
+                   GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(timestamp) as timestamps
+                     FROM table_snapshot_log
+                     GROUP BY table_id) tsl ON tsl.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(timestamp) as timestamps,
+                          ARRAY_AGG(metadata_file) as metadata_files
+                   FROM table_metadata_log
+                   GROUP BY table_id) tml ON tml.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(sort_order_id) as sort_order_ids,
+                          ARRAY_AGG(sort_order) as sort_orders
+                     FROM table_sort_order
+                        GROUP BY table_id) tso ON tso.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(table_ref_name) as table_ref_names,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(retention) as retentions
+                   FROM table_refs
+                   GROUP BY table_id) tr ON tr.table_id = t.table_id
         WHERE w.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)

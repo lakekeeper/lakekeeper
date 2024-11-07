@@ -1,3 +1,5 @@
+-- FIXME: indexes missing
+
 create type table_format_version as enum ('1', '2');
 
 alter table "table"
@@ -65,13 +67,13 @@ select trigger_updated_at('table_properties');
 
 create table table_snapshot
 (
-    snapshot_id        bigint not null primary key,
-    table_id           uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
+    snapshot_id        bigint                                  not null primary key,
+    table_id           uuid                                    not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     parent_snapshot_id bigint REFERENCES table_snapshot (snapshot_id),
-    sequence_number    bigint not null,
-    manifest_list      text   not null,
-    summary            jsonb  not null,
-    schema_id          int    not null,
+    sequence_number    bigint                                  not null,
+    manifest_list      text                                    not null,
+    summary            jsonb                                   not null,
+    schema_id          int REFERENCES table_schema (schema_id) not null,
     UNIQUE (table_id, snapshot_id)
 );
 
@@ -111,7 +113,7 @@ create table table_metadata_log
 call add_time_columns('table_metadata_log');
 select trigger_updated_at('table_metadata_log');
 
-create table table_sort_orders
+create table table_sort_order
 (
     sort_order_id int   not null,
     table_id      uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE,
@@ -119,18 +121,18 @@ create table table_sort_orders
     PRIMARY KEY (table_id, sort_order_id)
 );
 
-call add_time_columns('table_sort_orders');
-select trigger_updated_at('table_sort_orders');
+call add_time_columns('table_sort_order');
+select trigger_updated_at('table_sort_order');
 
-create table table_default_sort_order_id
+create table table_default_sort_order
 (
     table_id      uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
     sort_order_id int not null,
-    FOREIGN KEY (table_id, sort_order_id) REFERENCES table_sort_orders (table_id, sort_order_id)
+    FOREIGN KEY (table_id, sort_order_id) REFERENCES table_sort_order (table_id, sort_order_id)
 );
 
-call add_time_columns('table_default_sort_order_id');
-select trigger_updated_at('table_default_sort_order_id');
+call add_time_columns('table_default_sort_order');
+select trigger_updated_at('table_default_sort_order');
 
 DROP TABLE IF EXISTS table_refs;
 
