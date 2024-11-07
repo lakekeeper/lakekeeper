@@ -18,7 +18,7 @@ use crate::implementations::postgres::tabular::{
 };
 use iceberg::spec::{
     FormatVersion, PartitionField, Schema, SnapshotRetention, SortOrder, StructType, Summary,
-    UnboundPartitionSpec,
+    TableMetadataBuilder, UnboundPartitionSpec,
 };
 use iceberg_ext::configs::Location;
 use sqlx::types::Json;
@@ -240,13 +240,22 @@ pub(crate) async fn create_table(
         )
     })?;
 
+    let fields = serde_json::to_value(default_spec.fields()).map_err(|er| {
+        ErrorModel::internal(
+            "Error serializing partition fields",
+            "PartitionFieldsSerializationError",
+            Some(Box::new(er)),
+        )
+    })?;
+
     // insert default part spec
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id, partition_type) VALUES ($1, $2, $3, $4)"#,
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id, partition_type, fields) VALUES ($1, $2, $3, $4, $5)"#,
         default_spec.spec_id(),
         tabular_id,
         default_spec.schema_ref().schema_id(),
-        partition_type
+        partition_type,
+        fields
     )
     .execute(&mut **transaction)
     .await
@@ -535,7 +544,7 @@ struct TableQueryStruct {
     default_partition_spec_id: Option<i32>,
     default_partition_schema_id: Option<i32>,
     default_partition_fields: Option<Json<Vec<PartitionField>>>,
-    default_partition_struct_type: Option<Json<StructType>>,
+    default_partition_struct_type: Option<serde_json::Value>,
     partition_spec_ids: Option<Vec<i32>>,
     partition_specs: Option<Vec<Json<UnboundPartitionSpec>>>,
     current_schema: Option<i32>,
@@ -544,12 +553,18 @@ struct TableQueryStruct {
     table_format_version: Option<DbTableFormatVersion>,
 }
 
-pub(crate) async fn get_table_metadata_by_id_2(
+impl TableQueryStruct {
+    fn into_table_metadata(self) -> Result<TableMetadata> {
+        todo!()
+    }
+}
+
+pub(crate) async fn load_tables_2(
     warehouse_id: WarehouseIdent,
-    table: TableIdentUuid,
-    list_flags: crate::service::ListFlags,
-    catalog_state: CatalogState,
-) -> Result<Option<GetTableMetadataResponse>> {
+    tables: impl IntoIterator<Item = TableIdentUuid>,
+    include_deleted: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
     let table = sqlx::query_as!(
         TableQueryStruct,
         r#"
@@ -569,16 +584,16 @@ pub(crate) async fn get_table_metadata_by_id_2(
             tdps.partition_spec_id as "default_partition_spec_id",
             tdps.schema_id as "default_partition_schema_id",
             tdps.fields as "default_partition_fields: Json<Vec<PartitionField>>",
-            tdps.partition_type as "default_partition_struct_type: Json<StructType>",
+            tdps.partition_type as "default_partition_struct_type",
             ts.schemas as "schemas: Vec<Json<Schema>>",
             tsnap.snapshot_ids,
-            tcsnap.snapshot_id as "current_snapshot_id",
+            tcsnap.snapshot_id as "current_snapshot_id?",
             tsnap.parent_snapshot_ids as "snapshot_parent_snapshot_id: Vec<Option<i64>>",
             tsnap.sequence_numbers as "snapshot_sequence_number",
             tsnap.manifest_lists as "snapshot_manifest_list: Vec<Vec<String>>",
             tsnap.summaries as "snapshot_summary: Vec<Json<Summary>>",
             tsnap.schema_ids as "snapshot_schema_id",
-            tdsort.sort_order_id as "default_sort_order_id",
+            tdsort.sort_order_id as "default_sort_order_id?",
             tps.partition_spec_id as "partition_spec_ids",
             tps.partition_spec as "partition_specs: Vec<Json<UnboundPartitionSpec>>",
             tp.keys as "table_properties_keys",
@@ -645,46 +660,48 @@ pub(crate) async fn get_table_metadata_by_id_2(
                           ARRAY_AGG(retention) as retentions
                    FROM table_refs
                    GROUP BY table_id) tr ON tr.table_id = t.table_id
-        WHERE w.warehouse_id = $1 AND t."table_id" = $2
-            AND w.status = 'active'
-            AND (ti.deleted_at IS NULL OR $3)
+        WHERE w.warehouse_id = $1
+        AND w.status = 'active'
+        AND (ti.deleted_at IS NULL OR $3)
+        AND t."table_id" = ANY($2)
         "#,
         *warehouse_id,
-        *table,
-        list_flags.include_deleted
+        &tables.into_iter().map(Into::into).collect::<Vec<_>>(),
+        include_deleted
     )
-    .fetch_one(&catalog_state.read_pool())
-    .await;
+    .fetch_all(&mut **transaction)
+    .await
+    .unwrap();
 
-    let table = match table {
-        Ok(table) => table,
-        Err(sqlx::Error::RowNotFound) => return Ok(None),
-        Err(e) => {
-            return Err(e
-                .into_error_model("Error fetching table".to_string())
-                .into());
-        }
-    };
-
-    if !list_flags.include_staged && table.metadata_location.is_none() {
-        return Ok(None);
-    }
-
-    let namespace = try_parse_namespace_ident(table.namespace_name)?;
-
-    Ok(Some(GetTableMetadataResponse {
-        table: TableIdent {
-            namespace,
-            name: table.table_name,
-        },
-        namespace_id: table.namespace_id.into(),
-        table_id: table.table_id.into(),
-        warehouse_id,
-        location: table.table_location,
-        metadata_location: table.metadata_location,
-        storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
-        storage_profile: table.storage_profile.deref().clone(),
-    }))
+    table
+        .into_iter()
+        .map(|table| {
+            let table_id = table.table_id.into();
+            let metadata_location = table
+                .metadata_location
+                .as_deref()
+                .map(FromStr::from_str)
+                .transpose()
+                .map_err(|e| {
+                    ErrorModel::internal(
+                        "Error parsing metadata location",
+                        "InternalMetadataLocationParseError",
+                        Some(Box::new(e)),
+                    )
+                })?;
+            Ok((
+                table_id,
+                LoadTableResponse {
+                    table_id,
+                    namespace_id: table.namespace_id.into(),
+                    table_metadata: table.metadata.deref().clone(),
+                    metadata_location,
+                    storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
+                    storage_profile: table.storage_profile.deref().clone(),
+                },
+            ))
+        })
+        .collect::<Result<HashMap<_, _>>>()
 }
 
 pub(crate) async fn get_table_metadata_by_id(
@@ -993,10 +1010,11 @@ pub(crate) mod tests {
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::warehouse::set_warehouse_status;
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::service::{ListFlags, NamespaceIdentUuid};
+    use crate::service::{ListFlags, NamespaceIdentUuid, Transaction};
 
     use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
+    use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
         NestedField, PrimitiveType, Schema, TableMetadataBuilder, UnboundPartitionSpec,
     };
@@ -1939,5 +1957,34 @@ pub(crate) mod tests {
         .await
         .unwrap()
         .is_none());
+    }
+
+    #[sqlx::test]
+    async fn test_get_by_id_2(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();
+        let tt1 = load_tables(
+            warehouse_id,
+            [table.table_id],
+            false,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        let tt2 = load_tables_2(
+            warehouse_id,
+            [table.table_id],
+            false,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(tt1, tt2);
     }
 }

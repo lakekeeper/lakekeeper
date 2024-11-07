@@ -64,7 +64,7 @@ pub struct CreateTableResponse {
     pub table_metadata: TableMetadata,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LoadTableResponse {
     pub table_id: TableIdentUuid,
     pub namespace_id: NamespaceIdentUuid,
@@ -74,7 +74,7 @@ pub struct LoadTableResponse {
     pub storage_profile: StorageProfile,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct GetTableMetadataResponse {
     pub table: TableIdent,
     pub table_id: TableIdentUuid,
