@@ -413,7 +413,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         require_not_staged(&metadata_location)?;
 
         let table_location =
-            parse_location(&table_metadata.location, StatusCode::INTERNAL_SERVER_ERROR)?;
+            parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // ToDo: This is a small inefficiency: We fetch the secret even if it might
         // not be required based on the `data_access` parameter.
@@ -1468,10 +1468,7 @@ mod test {
                     ])
                     .build()
                     .unwrap(),
-                partition_spec: Some(UnboundPartitionSpec {
-                    spec_id: None,
-                    fields: vec![],
-                }),
+                partition_spec: Some(UnboundPartitionSpec::builder().build()),
                 write_order: None,
                 stage_create: Some(false),
                 properties: None,

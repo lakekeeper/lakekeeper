@@ -216,7 +216,7 @@ impl ContractVerification for ContractVerifiers {
                     tracing::info!(
                         "ContractVerifier '{}' blocked change on table '{}'",
                         checker.name(),
-                        current_metadata.table_uuid
+                        current_metadata.uuid()
                     );
                     return Ok(block_result);
                 }
