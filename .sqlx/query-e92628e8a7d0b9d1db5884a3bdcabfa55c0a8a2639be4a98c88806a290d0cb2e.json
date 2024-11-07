@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_sort_order(sort_order_id, table_id, sort_order) VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e92628e8a7d0b9d1db5884a3bdcabfa55c0a8a2639be4a98c88806a290d0cb2e"
+}

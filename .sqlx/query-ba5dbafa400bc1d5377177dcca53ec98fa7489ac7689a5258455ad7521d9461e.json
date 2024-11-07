@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_snapshot(snapshot_id,\n                                          table_id,\n                                          parent_snapshot_id,\n                                          sequence_number,\n                                          manifest_list,\n                                          summary,\n                                          schema_id)\n            VALUES ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Jsonb",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba5dbafa400bc1d5377177dcca53ec98fa7489ac7689a5258455ad7521d9461e"
+}

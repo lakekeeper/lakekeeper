@@ -17,14 +17,17 @@ use crate::implementations::postgres::tabular::{
     TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
 };
 use iceberg::spec::{
-    FormatVersion, PartitionField, Schema, SnapshotRetention, SortOrder, StructType, Summary,
-    TableMetadataBuilder, UnboundPartitionSpec,
+    BoundPartitionSpec, FormatVersion, PartitionField, PartitionSpecBuilder, Parts, Schema,
+    SchemaId, SchemalessPartitionSpec, SnapshotRetention, SortOrder, Summary, TableMetadataBuilder,
+    UnboundPartitionSpec,
 };
 use iceberg_ext::configs::Location;
+
 use sqlx::types::Json;
 use sqlx::PgConnection;
 use std::default::Default;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -116,14 +119,14 @@ pub(crate) async fn create_table(
 
     let tabular_id = create_tabular(
         CreateTabular {
-            id: table_metadata.table_uuid,
+            id: table_metadata.uuid(),
             name,
             namespace_id: *namespace_id,
             typ: TabularType::Table,
             metadata_location,
-            location: &Location::from_str(table_metadata.location.as_str()).map_err(|err| {
+            location: &Location::from_str(table_metadata.location()).map_err(|err| {
                 ErrorModel::bad_request(
-                    format!("Invalid location: '{}'", table_metadata.location.as_str()),
+                    format!("Invalid location: '{}'", table_metadata.location()),
                     "InvalidLocation",
                     Some(Box::new(err)),
                 )
@@ -132,12 +135,22 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+    let last_seq = table_metadata.last_sequence_number();
+    let last_col = table_metadata.last_column_id();
+    let last_updated = table_metadata.last_updated_ms();
+    let last_partition = table_metadata.last_partition_id();
 
     let _update_result = sqlx::query!(
         r#"
-        INSERT INTO "table" (table_id, metadata, table_format_version)
+        INSERT INTO "table" (table_id,
+                             metadata,
+                             table_format_version,
+                             last_column_id,
+                             last_sequence_number,
+                             last_updated_ms,
+                             last_partition_id)
         (
-            SELECT $1, $2, $3
+            SELECT $1, $2, $3, $4, $5, $6, $7
             WHERE EXISTS (SELECT 1
                 FROM active_tables
                 WHERE active_tables.table_id = $1))
@@ -147,10 +160,14 @@ pub(crate) async fn create_table(
         "#,
         tabular_id,
         table_metadata_ser,
-        match table_metadata.format_version {
+        match table_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
             FormatVersion::V2 => DbTableFormatVersion::V2,
-        } as _
+        } as _,
+        last_col,
+        last_seq,
+        last_updated,
+        last_partition
     )
     .fetch_one(&mut **transaction)
     .await
@@ -159,36 +176,15 @@ pub(crate) async fn create_table(
         e.into_error_model("Error creating table".to_string())
     })?;
 
-    let TableMetadata {
-        format_version,
-        table_uuid,
-        location,
-        last_sequence_number,
-        last_updated_ms,
-        last_column_id,
-        schemas,
-        current_schema_id,
-        last_partition_id,
-        properties,
-        current_snapshot_id,
-        snapshots,
-        snapshot_log,
-        metadata_log,
-        sort_orders,
-        default_sort_order_id,
-        refs,
-        ..
-    } = &table_metadata;
-
     let partition_specs = table_metadata.partition_specs_iter();
     let default_spec = table_metadata.default_partition_spec();
 
-    for (_, scheme) in schemas.into_iter() {
+    for schema in table_metadata.schemas_iter() {
         let _ = sqlx::query!(
             r#"INSERT INTO table_schema(schema_id, table_id, schema) VALUES ($1, $2, $3)"#,
-            scheme.schema_id(),
+            schema.schema_id(),
             tabular_id,
-            serde_json::to_value(scheme).map_err(|er| ErrorModel::internal(
+            serde_json::to_value(schema).map_err(|er| ErrorModel::internal(
                 "Error serializing schema",
                 "SchemaSerializationError",
                 Some(Box::new(er)),
@@ -205,7 +201,7 @@ pub(crate) async fn create_table(
     let _ = sqlx::query!(
         r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
         tabular_id,
-        *current_schema_id
+        table_metadata.current_schema_id()
     )
     .execute(&mut **transaction)
     .await
@@ -264,9 +260,9 @@ pub(crate) async fn create_table(
         err.into_error_model("Error inserting table default partition spec".to_string())
     })?;
 
-    set_table_properties(properties, tabular_id, &mut **transaction).await?;
+    set_table_properties(table_metadata.properties(), tabular_id, &mut **transaction).await?;
 
-    for snap in snapshots.values() {
+    for snap in table_metadata.snapshots() {
         let _ = sqlx::query!(
             r#"INSERT INTO table_snapshot(snapshot_id,
                                           table_id,
@@ -296,11 +292,39 @@ pub(crate) async fn create_table(
         })?;
     }
 
+    for sort_order in table_metadata.sort_orders_iter() {
+        let _ = sqlx::query!(
+            r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order) VALUES ($1, $2, $3)"#,
+            sort_order.order_id,
+            tabular_id,
+            serde_json::to_value(sort_order).map_err(|er| ErrorModel::internal(
+                "Error serializing sort order",
+                "SortOrderSerializationError",
+                Some(Box::new(er)),
+            ))?
+        ).execute(&mut **transaction).await.map_err(|err| {
+            tracing::warn!("Error creating table: {}", err);
+            err.into_error_model("Error inserting table sort order".to_string())
+        })?;
+    }
+
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id) VALUES ($1, $2)"#,
+        tabular_id,
+        table_metadata.default_sort_order_id(),
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table sort order".to_string())
+    })?;
+
     // set current snap
-    if let Some(current_snapshot_id) = current_snapshot_id {
+    if let Some(current_snapshot) = table_metadata.current_snapshot() {
         let _ = sqlx::query!(
             r#"INSERT INTO table_current_snapshot(snapshot_id, table_id) VALUES ($1, $2)"#,
-            current_snapshot_id,
+            current_snapshot.snapshot_id(),
             tabular_id
         )
         .execute(&mut **transaction)
@@ -311,7 +335,7 @@ pub(crate) async fn create_table(
         })?;
     }
 
-    for log in snapshot_log {
+    for log in table_metadata.history() {
         let _ = sqlx::query!(
             r#"INSERT INTO table_snapshot_log(snapshot_id, table_id, timestamp) VALUES ($1, $2, $3)"#,
             log.snapshot_id,
@@ -326,7 +350,7 @@ pub(crate) async fn create_table(
             })?;
     }
 
-    for log in metadata_log {
+    for log in table_metadata.metadata_log() {
         let _ = sqlx::query!(
             r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file) VALUES ($1, $2, $3)"#,
             tabular_id,
@@ -341,7 +365,7 @@ pub(crate) async fn create_table(
             })?;
     }
 
-    for (refname, snapshot_ref) in refs {
+    for (refname, snapshot_ref) in table_metadata.refs() {
         let retention = serde_json::to_value(&snapshot_ref.retention).map_err(|er| {
             ErrorModel::internal(
                 "Error serializing retention",
@@ -379,6 +403,15 @@ pub enum DbTableFormatVersion {
     V1,
     #[sqlx(rename = "2")]
     V2,
+}
+
+impl From<DbTableFormatVersion> for FormatVersion {
+    fn from(v: DbTableFormatVersion) -> Self {
+        match v {
+            DbTableFormatVersion::V1 => FormatVersion::V1,
+            DbTableFormatVersion::V2 => FormatVersion::V2,
+        }
+    }
 }
 
 pub(crate) async fn set_table_properties(
@@ -521,8 +554,8 @@ struct TableQueryStruct {
     table_ref_names: Option<Vec<String>>,
     table_ref_snapshot_ids: Option<Vec<i64>>,
     table_ref_retention: Option<Vec<Json<SnapshotRetention>>>,
-    default_sort_order_id: Option<i32>,
-    sort_order_ids: Option<Vec<i32>>,
+    default_sort_order_id: Option<i64>,
+    sort_order_ids: Option<Vec<i64>>,
     sort_orders: Option<Vec<Json<SortOrder>>>,
     metadata_log_timestamps: Option<Vec<i64>>,
     metadata_log_files: Option<Vec<String>>,
@@ -532,9 +565,10 @@ struct TableQueryStruct {
     snapshot_ids: Option<Vec<i64>>,
     snapshot_parent_snapshot_id: Option<Vec<Option<i64>>>,
     snapshot_sequence_number: Option<Vec<i64>>,
-    snapshot_manifest_list: Option<Vec<Vec<String>>>,
+    snapshot_manifest_list: Option<Vec<String>>,
     snapshot_summary: Option<Vec<Json<Summary>>>,
     snapshot_schema_id: Option<Vec<i32>>,
+    snapshot_timestamp_ms: Option<Vec<i64>>,
     metadata_location: Option<String>,
     table_location: String,
     storage_profile: Json<StorageProfile>,
@@ -546,16 +580,147 @@ struct TableQueryStruct {
     default_partition_fields: Option<Json<Vec<PartitionField>>>,
     default_partition_struct_type: Option<serde_json::Value>,
     partition_spec_ids: Option<Vec<i32>>,
-    partition_specs: Option<Vec<Json<UnboundPartitionSpec>>>,
+    partition_specs: Option<Vec<Json<SchemalessPartitionSpec>>>,
     current_schema: Option<i32>,
     schemas: Option<Vec<Json<Schema>>>,
     schema_ids: Option<Vec<i32>>,
     table_format_version: Option<DbTableFormatVersion>,
+    last_sequence_number: Option<i64>,
+    last_column_id: Option<i32>,
+    last_updated_ms: Option<i64>,
+    last_partition_id: Option<i32>,
 }
 
 impl TableQueryStruct {
-    fn into_table_metadata(self) -> Result<TableMetadata> {
-        todo!()
+    fn into_table_metadata(self) -> Option<Result<TableMetadata>> {
+        // TODO: we're having a ton of options here, some are required, some are not, we're having
+        //       them all optional since we cannot depend on DB migration having already happened
+        //       we need to go through these lines once more and decide where the ? shortcut is
+        //       appropriate and where not.
+        let schemas = self
+            .schemas?
+            .into_iter()
+            .map(|s| (s.0.schema_id(), Arc::new(s.0)))
+            .collect::<HashMap<SchemaId, _>>();
+
+        let partition_specs = self
+            .partition_spec_ids?
+            .into_iter()
+            .zip(self.partition_specs?.into_iter().map(|s| Arc::new(s.0)))
+            .collect::<HashMap<_, _>>();
+
+        let default_spec_schema = schemas.get(&self.default_partition_schema_id?)?.clone();
+        let fields = self.default_partition_fields?.0;
+
+        let mut default = BoundPartitionSpec::builder(default_spec_schema.clone())
+            .with_spec_id(self.default_partition_spec_id?);
+        for field in fields {
+            let source = default_spec_schema.field_by_id(field.source_id).unwrap();
+
+            default = default
+                .add_partition_field(source.name.clone(), field.name, field.transform)
+                .unwrap();
+        }
+        eprintln!("spec done");
+
+        let properties = self
+            .table_properties_keys
+            .unwrap_or_default()
+            .into_iter()
+            .zip(self.table_properties_values.unwrap_or_default().into_iter())
+            .collect::<HashMap<_, _>>();
+        eprintln!("props done");
+        let snapshots = itertools::multizip((
+            self.snapshot_ids.unwrap_or_default(),
+            self.snapshot_schema_id.unwrap_or_default(),
+            self.snapshot_summary.unwrap_or_default(),
+            self.snapshot_manifest_list.unwrap_or_default(),
+            self.snapshot_parent_snapshot_id.unwrap_or_default(),
+            self.snapshot_sequence_number.unwrap_or_default(),
+            self.snapshot_timestamp_ms.unwrap_or_default(),
+        ))
+        .map(
+            |(snap_id, schema_id, summary, manifest, parent_snap, seq, timestamp_ms)| {
+                (
+                    snap_id,
+                    Arc::new(
+                        iceberg::spec::Snapshot::builder()
+                            .with_manifest_list(manifest)
+                            .with_parent_snapshot_id(parent_snap)
+                            .with_schema_id(schema_id)
+                            .with_sequence_number(seq)
+                            .with_snapshot_id(snap_id)
+                            .with_summary(summary.0)
+                            .with_timestamp_ms(timestamp_ms)
+                            .build(),
+                    ),
+                )
+            },
+        )
+        .collect::<_>();
+
+        let snapshot_log = itertools::multizip((
+            self.snapshot_log_ids.unwrap_or_default(),
+            self.snapshot_log_timestamps.unwrap_or_default(),
+        ))
+        .map(|(snap_id, timestamp)| iceberg::spec::SnapshotLog {
+            snapshot_id: snap_id,
+            timestamp_ms: timestamp,
+        })
+        .collect::<Vec<_>>();
+        eprintln!("snap log");
+        let metadata_log = itertools::multizip((
+            self.metadata_log_files.unwrap_or_default(),
+            self.metadata_log_timestamps.unwrap_or_default(),
+        ))
+        .map(|(file, timestamp)| iceberg::spec::MetadataLog {
+            metadata_file: file,
+            timestamp_ms: timestamp,
+        })
+        .collect::<Vec<_>>();
+        eprintln!("meta log");
+        let sort_orders = itertools::multizip((self.sort_order_ids?, self.sort_orders?))
+            .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
+            .collect::<HashMap<_, _>>();
+        eprintln!("sort orders");
+        let refs = itertools::multizip((
+            self.table_ref_names.unwrap_or_default(),
+            self.table_ref_snapshot_ids.unwrap_or_default(),
+            self.table_ref_retention.unwrap_or_default(),
+        ))
+        .map(|(name, snap_id, retention)| {
+            (
+                name,
+                iceberg::spec::SnapshotReference {
+                    snapshot_id: snap_id,
+                    retention: retention.0,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+        Some(Ok(TableMetadata::try_from_parts(Parts {
+            format_version: FormatVersion::from(self.table_format_version?),
+            table_uuid: self.table_id,
+            location: self.table_location,
+            last_sequence_number: self.last_sequence_number?,
+            last_updated_ms: self.last_updated_ms?,
+            last_column_id: self.last_column_id?,
+            schemas,
+            current_schema_id: self.current_schema?,
+            partition_specs,
+            default_spec: Arc::new(default.build().unwrap()),
+            last_partition_id: self.last_partition_id?,
+            properties,
+            current_snapshot_id: self.current_snapshot_id,
+            snapshots,
+            snapshot_log,
+            metadata_log,
+            sort_orders,
+            default_sort_order_id: self.default_sort_order_id?,
+            refs,
+        })
+        .unwrap()))
     }
 }
 
@@ -570,6 +735,10 @@ pub(crate) async fn load_tables_2(
         r#"
         SELECT
             t."table_id",
+            t.last_sequence_number,
+            t.last_column_id,
+            t.last_updated_ms,
+            t.last_partition_id,
             t.table_format_version as "table_format_version: DbTableFormatVersion",
             ti.name as "table_name",
             ti.location as "table_location",
@@ -590,12 +759,13 @@ pub(crate) async fn load_tables_2(
             tcsnap.snapshot_id as "current_snapshot_id?",
             tsnap.parent_snapshot_ids as "snapshot_parent_snapshot_id: Vec<Option<i64>>",
             tsnap.sequence_numbers as "snapshot_sequence_number",
-            tsnap.manifest_lists as "snapshot_manifest_list: Vec<Vec<String>>",
+            tsnap.manifest_lists as "snapshot_manifest_list: Vec<String>",
+            tsnap.timestamp as "snapshot_timestamp_ms",
             tsnap.summaries as "snapshot_summary: Vec<Json<Summary>>",
             tsnap.schema_ids as "snapshot_schema_id",
             tdsort.sort_order_id as "default_sort_order_id?",
             tps.partition_spec_id as "partition_spec_ids",
-            tps.partition_spec as "partition_specs: Vec<Json<UnboundPartitionSpec>>",
+            tps.partition_spec as "partition_specs: Vec<Json<SchemalessPartitionSpec>>",
             tp.keys as "table_properties_keys",
             tp.values as "table_properties_values",
             tsl.snapshot_ids as "snapshot_log_ids",
@@ -636,7 +806,8 @@ pub(crate) async fn load_tables_2(
                           ARRAY_AGG(sequence_number) as sequence_numbers,
                           ARRAY_AGG(manifest_list) as manifest_lists,
                           ARRAY_AGG(summary) as summaries,
-                          ARRAY_AGG(schema_id) as schema_ids
+                          ARRAY_AGG(schema_id) as schema_ids,
+                          ARRAY_AGG(timestamp_ms) as timestamp
                    FROM table_snapshot
                    GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
@@ -694,10 +865,10 @@ pub(crate) async fn load_tables_2(
                 LoadTableResponse {
                     table_id,
                     namespace_id: table.namespace_id.into(),
-                    table_metadata: table.metadata.deref().clone(),
                     metadata_location,
                     storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
                     storage_profile: table.storage_profile.deref().clone(),
+                    table_metadata: table.into_table_metadata().transpose()?.unwrap(),
                 },
             ))
         })
@@ -1192,8 +1363,15 @@ pub(crate) mod tests {
             .as_str()
             .parse::<Location>()
             .unwrap();
-        request.table_metadata.location = location.to_string();
-        request.table_metadata.table_uuid = Uuid::now_v7();
+        let build = request
+            .table_metadata
+            .into_builder(None)
+            .set_location(location.to_string())
+            .assign_uuid(Uuid::now_v7())
+            .build()
+            .unwrap()
+            .metadata;
+        request.table_metadata = build;
         let create_err = create_table(request, &mut transaction).await.unwrap_err();
 
         assert_eq!(
@@ -1260,7 +1438,14 @@ pub(crate) mod tests {
         // Second create should succeed, even with different id
         let mut transaction = pool.begin().await.unwrap();
         let mut request = request;
-        request.table_metadata.table_uuid = Uuid::now_v7();
+        request.table_metadata = request
+            .table_metadata
+            .into_builder(None)
+            .assign_uuid(Uuid::now_v7())
+            .build()
+            .unwrap()
+            .metadata;
+
         let create_result = create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
 

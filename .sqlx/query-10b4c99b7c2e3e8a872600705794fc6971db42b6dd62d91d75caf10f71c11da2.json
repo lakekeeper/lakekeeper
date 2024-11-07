@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_properties (table_id, key, value)\n           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))\n              ON CONFLICT (table_id, key)\n                DO UPDATE SET value = EXCLUDED.value\n           ;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10b4c99b7c2e3e8a872600705794fc6971db42b6dd62d91d75caf10f71c11da2"
+}

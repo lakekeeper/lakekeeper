@@ -3,7 +3,13 @@
 create type table_format_version as enum ('1', '2');
 
 alter table "table"
-    add column table_format_version table_format_version;
+    add column table_format_version table_format_version,
+    -- TODO: should these go here?;
+    add column last_column_id       int,
+    add column last_sequence_number bigint,
+    add column last_updated_ms      bigint,
+    add column last_partition_id    int
+;
 
 
 create table table_schema
@@ -74,6 +80,7 @@ create table table_snapshot
     manifest_list      text   not null,
     summary            jsonb  not null,
     schema_id          int    not null,
+    timestamp_ms       bigint not null,
     FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id),
     UNIQUE (table_id, snapshot_id)
 );
@@ -116,9 +123,9 @@ select trigger_updated_at('table_metadata_log');
 
 create table table_sort_order
 (
-    sort_order_id int   not null,
-    table_id      uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE,
-    sort_order    jsonb not null,
+    sort_order_id bigint not null,
+    table_id      uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
+    sort_order    jsonb  not null,
     PRIMARY KEY (table_id, sort_order_id)
 );
 
@@ -128,7 +135,7 @@ select trigger_updated_at('table_sort_order');
 create table table_default_sort_order
 (
     table_id      uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
-    sort_order_id int not null,
+    sort_order_id bigint not null,
     FOREIGN KEY (table_id, sort_order_id) REFERENCES table_sort_order (table_id, sort_order_id)
 );
 
