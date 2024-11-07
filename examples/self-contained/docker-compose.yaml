@@ -15,7 +15,7 @@ services:
       - "8888:8888"
 
   server:
-    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest}
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     environment:
       - ICEBERG_REST__BASE_URI=http://server:8080
       - ICEBERG_REST__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
@@ -42,7 +42,7 @@ services:
       - "8080:8080"
 
   migrate:
-    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest}
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     environment:
       - ICEBERG_REST__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres

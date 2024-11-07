@@ -2,7 +2,6 @@ use std::str::FromStr as _;
 
 use iceberg::{spec::TableMetadata, TableRequirement, TableUpdate};
 use iceberg_ext::{
-    catalog::rest::TableRequirementExt as _,
     configs::Location,
     spec::{TableMetadataBuildResult, TableMetadataBuilder},
 };
@@ -19,11 +18,17 @@ pub(super) fn apply_commit(
     // Check requirements
     requirements
         .iter()
-        .map(|r| r.assert(&metadata, metadata_location.is_some()))
+        .map(|r| {
+            r.check(&metadata, metadata_location.is_some())
+                .map_err(|e| {
+                    ErrorModel::conflict(e.to_string(), e.kind().to_string(), Some(Box::new(e)))
+                        .into()
+                })
+        })
         .collect::<Result<Vec<_>>>()?;
 
     // Store data of current metadata to prevent disallowed changes
-    let previous_location = Location::from_str(&metadata.location).map_err(|e| {
+    let previous_location = Location::from_str(metadata.location()).map_err(|e| {
         ErrorModel::internal(
             format!("Invalid table location in DB: {e}"),
             "InvalidTableLocation",

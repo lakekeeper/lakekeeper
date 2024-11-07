@@ -241,7 +241,7 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 ) -> Result<SearchUserResponse> {
     let users = sqlx::query!(
         r#"
-        SELECT id, name, name <-> $1 AS dist, user_type as "user_type: DbUserType"
+        SELECT id, name, email, (name || ' ' || email) <-> $1 AS dist, user_type as "user_type: DbUserType"
         FROM users
         ORDER BY dist ASC
         LIMIT 10
@@ -256,6 +256,7 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         id: row.id,
         name: row.name,
         user_type: row.user_type.into(),
+        email: row.email,
     })
     .collect();
 
