@@ -33,6 +33,7 @@ services:
 
   server:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: always
     environment:
       - LAKEKEEPER__BASE_URI=http://server:8080
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
@@ -63,6 +64,7 @@ services:
 
   migrate:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: always
     environment:
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
