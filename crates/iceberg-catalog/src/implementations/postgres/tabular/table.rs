@@ -17,12 +17,12 @@ use crate::implementations::postgres::tabular::{
     TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
 };
 use iceberg::spec::{
-    BoundPartitionSpec, FormatVersion, PartitionField, PartitionSpecBuilder, Parts, Schema,
-    SchemaId, SchemalessPartitionSpec, SnapshotRetention, SortOrder, Summary, TableMetadataBuilder,
-    UnboundPartitionSpec,
+    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
+    SnapshotRetention, SortOrder, Summary,
 };
 use iceberg_ext::configs::Location;
 
+use itertools::Itertools;
 use sqlx::types::Json;
 use sqlx::PgConnection;
 use std::default::Default;
@@ -228,30 +228,13 @@ pub(crate) async fn create_table(
                 err.into_error_model("Error inserting table partition spec".to_string())
             })?;
     }
-    let partition_type = serde_json::to_value(default_spec.partition_type()).map_err(|er| {
-        ErrorModel::internal(
-            "Error serializing partition type",
-            "PartitionTypeSerializationError",
-            Some(Box::new(er)),
-        )
-    })?;
-
-    let fields = serde_json::to_value(default_spec.fields()).map_err(|er| {
-        ErrorModel::internal(
-            "Error serializing partition fields",
-            "PartitionFieldsSerializationError",
-            Some(Box::new(er)),
-        )
-    })?;
 
     // insert default part spec
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id, partition_type, fields) VALUES ($1, $2, $3, $4, $5)"#,
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id) VALUES ($1, $2, $3)"#,
         default_spec.spec_id(),
         tabular_id,
         default_spec.schema_ref().schema_id(),
-        partition_type,
-        fields
     )
     .execute(&mut **transaction)
     .await
@@ -260,37 +243,74 @@ pub(crate) async fn create_table(
         err.into_error_model("Error inserting table default partition spec".to_string())
     })?;
 
-    set_table_properties(table_metadata.properties(), tabular_id, &mut **transaction).await?;
-
-    for snap in table_metadata.snapshots() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_snapshot(snapshot_id,
+    set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
+    // TODO: batched insert
+    let (ids, tabs, parents, seqs, manifs, summaries, schemas, timestamps): (
+        Vec<i64>,
+        Vec<Uuid>,
+        Vec<Option<i64>>,
+        Vec<i64>,
+        Vec<String>,
+        Vec<serde_json::Value>,
+        Vec<Option<SchemaId>>,
+        Vec<i64>,
+    ) = table_metadata
+        .snapshots()
+        .map(|snap| {
+            (
+                snap.snapshot_id(),
+                tabular_id,
+                snap.parent_snapshot_id(),
+                snap.sequence_number(),
+                snap.manifest_list().to_string(),
+                serde_json::to_value(snap.summary())
+                    .map_err(|er| {
+                        ErrorModel::internal(
+                            "Error serializing snapshot summary",
+                            "SnapshotSummarySerializationError",
+                            Some(Box::new(er)),
+                        )
+                    })
+                    .unwrap(),
+                snap.schema_id(),
+                snap.timestamp_ms(),
+            )
+        })
+        .multiunzip();
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_snapshot(snapshot_id,
                                           table_id,
                                           parent_snapshot_id,
                                           sequence_number,
                                           manifest_list,
                                           summary,
-                                          schema_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-            snap.snapshot_id(),
-            tabular_id,
-            snap.parent_snapshot_id(),
-            snap.sequence_number(),
-            snap.manifest_list(),
-            serde_json::to_value(&snap.summary()).map_err(|er| ErrorModel::internal(
-                "Error serializing snapshot summary",
-                "SnapshotSummarySerializationError",
-                Some(Box::new(er)),
-            ))?,
-            snap.schema_id()
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table snapshot".to_string())
-        })?;
-    }
+                                          schema_id,
+                                          timestamp_ms)
+            SELECT * FROM UNNEST(
+                $1::BIGINT[],
+                $2::UUID[],
+                $3::BIGINT[],
+                $4::BIGINT[],
+                $5::TEXT[],
+                $6::JSONB[],
+                $7::INT[],
+                $8::BIGINT[]
+            )"#,
+        &ids,
+        &tabs,
+        &parents as _,
+        &seqs,
+        &manifs,
+        &summaries,
+        &schemas as _,
+        &timestamps
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table snapshot".to_string())
+    })?;
 
     for sort_order in table_metadata.sort_orders_iter() {
         let _ = sqlx::query!(
@@ -577,8 +597,6 @@ struct TableQueryStruct {
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
     default_partition_schema_id: Option<i32>,
-    default_partition_fields: Option<Json<Vec<PartitionField>>>,
-    default_partition_struct_type: Option<serde_json::Value>,
     partition_spec_ids: Option<Vec<i32>>,
     partition_specs: Option<Vec<Json<SchemalessPartitionSpec>>>,
     current_schema: Option<i32>,
@@ -610,7 +628,10 @@ impl TableQueryStruct {
             .collect::<HashMap<_, _>>();
 
         let default_spec_schema = schemas.get(&self.default_partition_schema_id?)?.clone();
-        let fields = self.default_partition_fields?.0;
+        let fields = partition_specs
+            .get(&self.default_partition_spec_id?)
+            .unwrap()
+            .fields();
 
         let mut default = BoundPartitionSpec::builder(default_spec_schema.clone())
             .with_spec_id(self.default_partition_spec_id?);
@@ -618,7 +639,7 @@ impl TableQueryStruct {
             let source = default_spec_schema.field_by_id(field.source_id).unwrap();
 
             default = default
-                .add_partition_field(source.name.clone(), field.name, field.transform)
+                .add_partition_field(source.name.clone(), &field.name, field.transform)
                 .unwrap();
         }
         eprintln!("spec done");
@@ -627,7 +648,7 @@ impl TableQueryStruct {
             .table_properties_keys
             .unwrap_or_default()
             .into_iter()
-            .zip(self.table_properties_values.unwrap_or_default().into_iter())
+            .zip(self.table_properties_values.unwrap_or_default())
             .collect::<HashMap<_, _>>();
         eprintln!("props done");
         let snapshots = itertools::multizip((
@@ -724,6 +745,7 @@ impl TableQueryStruct {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn load_tables_2(
     warehouse_id: WarehouseIdent,
     tables: impl IntoIterator<Item = TableIdentUuid>,
@@ -752,8 +774,6 @@ pub(crate) async fn load_tables_2(
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
             tdps.schema_id as "default_partition_schema_id",
-            tdps.fields as "default_partition_fields: Json<Vec<PartitionField>>",
-            tdps.partition_type as "default_partition_struct_type",
             ts.schemas as "schemas: Vec<Json<Schema>>",
             tsnap.snapshot_ids,
             tcsnap.snapshot_id as "current_snapshot_id?",
@@ -1175,19 +1195,21 @@ pub(crate) mod tests {
     // - Stage-Create => Next regular create works & overwrites
 
     use super::*;
-
     use crate::api::iceberg::types::PageToken;
     use crate::api::management::v1::warehouse::WarehouseStatus;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::warehouse::set_warehouse_status;
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
     use crate::service::{ListFlags, NamespaceIdentUuid, Transaction};
+    use std::default::Default;
+    use std::time::SystemTime;
 
     use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
     use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
-        NestedField, PrimitiveType, Schema, TableMetadataBuilder, UnboundPartitionSpec,
+        NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
+        TableMetadataBuilder, UnboundPartitionSpec,
     };
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateTableRequest;
@@ -1302,6 +1324,44 @@ pub(crate) mod tests {
         let table_metadata =
             crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
                 .unwrap();
+        let schema = table_metadata.current_schema_id();
+        let table_metadata = table_metadata
+            .into_builder(None)
+            .add_snapshot(
+                Snapshot::builder()
+                    .with_manifest_list("a.txt")
+                    .with_parent_snapshot_id(None)
+                    .with_schema_id(schema)
+                    .with_sequence_number(1)
+                    .with_snapshot_id(1)
+                    .with_summary(Summary {
+                        operation: Operation::Append,
+                        other: HashMap::default(),
+                    })
+                    .with_timestamp_ms(
+                        SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                            .try_into()
+                            .unwrap(),
+                    )
+                    .build(),
+            )
+            .unwrap()
+            .set_ref(
+                "my_ref",
+                SnapshotReference {
+                    snapshot_id: 1,
+                    retention: SnapshotRetention::Tag {
+                        max_ref_age_ms: None,
+                    },
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
         let create = TableCreation {
             namespace_id,
             table_ident: &table_ident,
