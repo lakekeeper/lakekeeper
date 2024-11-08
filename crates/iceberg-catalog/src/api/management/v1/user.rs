@@ -80,6 +80,7 @@ pub struct CreateUserRequest {
     pub update_if_exists: bool,
     /// Name of the user. If id is not specified, the name is extracted
     /// from the provided token.
+    #[serde(default)]
     pub name: Option<String>,
     /// Email of the user. If id is not specified, the email is extracted
     /// from the provided token.
