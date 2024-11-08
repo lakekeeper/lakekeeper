@@ -71,16 +71,17 @@ select trigger_updated_at('table_properties');
 
 create table table_snapshot
 (
-    snapshot_id        bigint not null primary key,
+    snapshot_id        bigint not null,
     table_id           uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
-    parent_snapshot_id bigint REFERENCES table_snapshot (snapshot_id),
+    parent_snapshot_id bigint,
     sequence_number    bigint not null,
     manifest_list      text   not null,
     summary            jsonb  not null,
     schema_id          int    not null,
     timestamp_ms       bigint not null,
     FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id),
-    UNIQUE (table_id, snapshot_id)
+    FOREIGN KEY (table_id, parent_snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id),
+    PRIMARY KEY (table_id, snapshot_id)
 );
 
 call add_time_columns('table_snapshot');

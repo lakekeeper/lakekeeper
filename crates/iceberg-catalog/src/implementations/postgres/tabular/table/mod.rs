@@ -116,7 +116,7 @@ impl From<DbTableFormatVersion> for FormatVersion {
     }
 }
 
-pub(crate) async fn load_tables(
+pub(crate) async fn load_tables_fallback(
     warehouse_id: WarehouseIdent,
     tables: impl IntoIterator<Item = TableIdentUuid>,
     include_deleted: bool,
@@ -297,7 +297,6 @@ impl TableQueryStruct {
                 .add_partition_field(source.name.clone(), &field.name, field.transform)
                 .unwrap();
         }
-        eprintln!("spec done");
 
         let properties = self
             .table_properties_keys
@@ -305,7 +304,7 @@ impl TableQueryStruct {
             .into_iter()
             .zip(self.table_properties_values.unwrap_or_default())
             .collect::<HashMap<_, _>>();
-        eprintln!("props done");
+
         let snapshots = itertools::multizip((
             self.snapshot_ids.unwrap_or_default(),
             self.snapshot_schema_id.unwrap_or_default(),
@@ -344,7 +343,7 @@ impl TableQueryStruct {
             timestamp_ms: timestamp,
         })
         .collect::<Vec<_>>();
-        eprintln!("snap log");
+
         let metadata_log = itertools::multizip((
             self.metadata_log_files.unwrap_or_default(),
             self.metadata_log_timestamps.unwrap_or_default(),
@@ -354,11 +353,11 @@ impl TableQueryStruct {
             timestamp_ms: timestamp,
         })
         .collect::<Vec<_>>();
-        eprintln!("meta log");
+
         let sort_orders = itertools::multizip((self.sort_order_ids?, self.sort_orders?))
             .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
             .collect::<HashMap<_, _>>();
-        eprintln!("sort orders");
+
         let refs = itertools::multizip((
             self.table_ref_names.unwrap_or_default(),
             self.table_ref_snapshot_ids.unwrap_or_default(),
@@ -401,7 +400,7 @@ impl TableQueryStruct {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn load_tables_2(
+pub(crate) async fn load_tables(
     warehouse_id: WarehouseIdent,
     tables: impl IntoIterator<Item = TableIdentUuid>,
     include_deleted: bool,
@@ -519,35 +518,56 @@ pub(crate) async fn load_tables_2(
     .await
     .unwrap();
 
-    table
-        .into_iter()
-        .map(|table| {
-            let table_id = table.table_id.into();
-            let metadata_location = table
-                .metadata_location
-                .as_deref()
-                .map(FromStr::from_str)
-                .transpose()
-                .map_err(|e| {
-                    ErrorModel::internal(
-                        "Error parsing metadata location",
-                        "InternalMetadataLocationParseError",
-                        Some(Box::new(e)),
-                    )
-                })?;
-            Ok((
+    let mut tables = HashMap::new();
+    let mut failed_to_fetch = Vec::new();
+    for table in table.into_iter() {
+        let table_id = table.table_id.into();
+        let metadata_location = match table
+            .metadata_location
+            .as_deref()
+            .map(FromStr::from_str)
+            .transpose()
+        {
+            Ok(location) => location,
+            Err(e) => {
+                return Err(ErrorModel::internal(
+                    "Error parsing metadata location",
+                    "InternalMetadataLocationParseError",
+                    Some(Box::new(e)),
+                )
+                .into());
+            }
+        };
+        let namespace_id = table.namespace_id.into();
+        let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
+        let storage_profile = table.storage_profile.deref().clone();
+        let table_metadata = match table.into_table_metadata().transpose() {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => {
+                tracing::warn!("Table metadata could not be fetched from tables, falling back to blob retrieval.");
+                failed_to_fetch.push(table_id);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+
+        tables.insert(
+            table_id,
+            LoadTableResponse {
                 table_id,
-                LoadTableResponse {
-                    table_id,
-                    namespace_id: table.namespace_id.into(),
-                    metadata_location,
-                    storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
-                    storage_profile: table.storage_profile.deref().clone(),
-                    table_metadata: table.into_table_metadata().transpose()?.unwrap(),
-                },
-            ))
-        })
-        .collect::<Result<HashMap<_, _>>>()
+                namespace_id,
+                metadata_location,
+                storage_secret_ident,
+                storage_profile,
+                table_metadata,
+            },
+        );
+    }
+    // not all tables may have been migrated so we try to fetch by table_metadata if we failed previously
+    tables.extend(
+        load_tables_fallback(warehouse_id, failed_to_fetch, include_deleted, transaction).await?,
+    );
+    Ok(tables)
 }
 
 pub(crate) async fn get_table_metadata_by_id(
@@ -1687,8 +1707,16 @@ pub(crate) mod tests {
 
         let loaded_metadata1 = &loaded_tables.get(&table1.table_id).unwrap().table_metadata;
         let loaded_metadata2 = &loaded_tables.get(&table2.table_id).unwrap().table_metadata;
+        let s1 = format!("{:#?}", loaded_metadata1);
+        let s2 = format!("{:#?}", updated_metadata1);
+        let diff = similar::TextDiff::from_lines(&s1, &s2);
+        let diff = diff
+            .unified_diff()
+            .context_radius(5)
+            .missing_newline_hint(false)
+            .to_string();
 
-        assert_eq!(loaded_metadata1, &updated_metadata1);
+        assert_eq!(loaded_metadata1, &updated_metadata1, "{}", diff);
         assert_eq!(loaded_metadata2, &updated_metadata2);
     }
 
@@ -1863,19 +1891,27 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
-        let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();
-        let tt1 = load_tables(
+        let table2 = initialize_table(
             warehouse_id,
-            [table.table_id],
+            state.clone(),
+            false,
+            None,
+            Some("tab2".into()),
+        )
+        .await;
+        let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();
+        let tt1 = load_tables_fallback(
+            warehouse_id,
+            [table.table_id, table2.table_id],
             false,
             transaction.transaction(),
         )
         .await
         .unwrap();
 
-        let tt2 = load_tables_2(
+        let tt2 = load_tables(
             warehouse_id,
-            [table.table_id],
+            [table.table_id, table2.table_id],
             false,
             transaction.transaction(),
         )

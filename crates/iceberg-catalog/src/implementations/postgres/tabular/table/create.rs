@@ -3,11 +3,10 @@ use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::table::DbTableFormatVersion;
 use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
 use crate::service::{CreateTableResponse, TableCreation};
-use iceberg::spec::{BoundPartitionSpecRef, FormatVersion, SchemaId, TableMetadata};
+use iceberg::spec::{BoundPartitionSpecRef, FormatVersion, TableMetadata};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
-use itertools::Itertools;
 use sqlx::{PgConnection, Postgres, Transaction};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -115,24 +114,36 @@ async fn insert_schemas(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    for schema in table_metadata.schemas_iter() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_schema(schema_id, table_id, schema) VALUES ($1, $2, $3)"#,
-            schema.schema_id(),
-            tabular_id,
-            serde_json::to_value(schema).map_err(|er| ErrorModel::internal(
+    let schemas = table_metadata.schemas().len();
+    let mut ids = Vec::with_capacity(schemas);
+    let mut table_ids = Vec::with_capacity(schemas);
+    let mut schemas = Vec::with_capacity(schemas);
+
+    for s in table_metadata.schemas_iter() {
+        ids.push(s.schema_id());
+        table_ids.push(tabular_id);
+        schemas.push(serde_json::to_value(s).map_err(|er| {
+            ErrorModel::internal(
                 "Error serializing schema",
                 "SchemaSerializationError",
                 Some(Box::new(er)),
-            ))?
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table schema".to_string())
-        })?;
+            )
+        })?);
     }
+
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_schema(schema_id, table_id, schema)
+           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])"#,
+        &ids,
+        &table_ids,
+        &schemas
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table schema".to_string())
+    })?;
 
     insert_current_schema(table_metadata, transaction, tabular_id).await?;
     Ok(())
@@ -359,38 +370,33 @@ async fn insert_snapshots(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let (ids, tabs, parents, seqs, manifs, summaries, schemas, timestamps): (
-        Vec<i64>,
-        Vec<Uuid>,
-        Vec<Option<i64>>,
-        Vec<i64>,
-        Vec<String>,
-        Vec<serde_json::Value>,
-        Vec<Option<SchemaId>>,
-        Vec<i64>,
-    ) = table_metadata
-        .snapshots()
-        .map(|snap| {
-            (
-                snap.snapshot_id(),
-                tabular_id,
-                snap.parent_snapshot_id(),
-                snap.sequence_number(),
-                snap.manifest_list().to_string(),
-                serde_json::to_value(snap.summary())
-                    .map_err(|er| {
-                        ErrorModel::internal(
-                            "Error serializing snapshot summary",
-                            "SnapshotSummarySerializationError",
-                            Some(Box::new(er)),
-                        )
-                    })
-                    .unwrap(),
-                snap.schema_id(),
-                snap.timestamp_ms(),
+    let snap_cnt = table_metadata.snapshots_ref().len();
+
+    let mut ids = Vec::with_capacity(snap_cnt);
+    let mut tabs = Vec::with_capacity(snap_cnt);
+    let mut parents = Vec::with_capacity(snap_cnt);
+    let mut seqs = Vec::with_capacity(snap_cnt);
+    let mut manifs = Vec::with_capacity(snap_cnt);
+    let mut summaries = Vec::with_capacity(snap_cnt);
+    let mut schemas = Vec::with_capacity(snap_cnt);
+    let mut timestamps = Vec::with_capacity(snap_cnt);
+
+    for snap in table_metadata.snapshots() {
+        ids.push(snap.snapshot_id());
+        tabs.push(tabular_id);
+        parents.push(snap.parent_snapshot_id());
+        seqs.push(snap.sequence_number());
+        manifs.push(snap.manifest_list().to_string());
+        summaries.push(serde_json::to_value(snap.summary()).map_err(|er| {
+            ErrorModel::internal(
+                "Error serializing snapshot summary",
+                "SnapshotSummarySerializationError",
+                Some(Box::new(er)),
             )
-        })
-        .multiunzip();
+        })?);
+        schemas.push(snap.schema_id());
+        timestamps.push(snap.timestamp_ms());
+    }
     let _ = sqlx::query!(
         r#"INSERT INTO table_snapshot(snapshot_id,
                                           table_id,

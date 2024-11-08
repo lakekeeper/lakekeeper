@@ -2892,7 +2892,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.3.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=58732b7#58732b7476ebdd3a0736846daea07a1db9273fe8"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=f99b185#f99b18526c804aff9c64da84f88737780ddbe19e"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -2990,6 +2990,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_yml",
+ "similar",
  "sqlx",
  "strum",
  "strum_macros",
@@ -5635,6 +5636,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1de1d4f81173b03af4c0cbed3c898f6bff5b870e4a7f5d6f4057d62a7a4b686e"
 
 [[package]]
 name = "simple_asn1"
