@@ -193,7 +193,8 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let acting_user_id = principal.as_ref().map(|p| p.user_id().clone());
 
         // Everything else is self-registration
-        let self_provision = if acting_user_id.is_none() || (id != acting_user_id) {
+        let self_provision = if acting_user_id.is_none() || (id.is_some() && (id != acting_user_id))
+        {
             authorizer
                 .require_server_action(&request_metadata, &CatalogServerAction::CanProvisionUsers)
                 .await?;
