@@ -6,7 +6,7 @@ use super::{
     },
     role::{create_role, delete_role, list_roles, update_role},
     tabular::table::{
-        commit_table_transaction, create_table, drop_table, get_table_metadata_by_id,
+        commit_table_transaction, drop_table, get_table_metadata_by_id,
         get_table_metadata_by_s3_location, list_tables, load_tables, rename_table,
         table_ident_to_id, table_idents_to_ids,
     },
@@ -22,6 +22,7 @@ use crate::api::management::v1::user::{
     ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType,
 };
 use crate::implementations::postgres::role::search_role;
+use crate::implementations::postgres::tabular::table::create_table;
 use crate::implementations::postgres::tabular::{list_tabulars, mark_tabular_as_deleted};
 use crate::implementations::postgres::user::{
     create_or_update_user, delete_user, list_users, search_user,

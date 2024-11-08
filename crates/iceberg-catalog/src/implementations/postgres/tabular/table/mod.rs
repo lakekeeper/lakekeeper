@@ -1,20 +1,22 @@
+mod create;
 use crate::implementations::postgres::{dbutils::DBErrorHandler as _, CatalogState};
-use crate::service::{TableCommit, TableCreation};
+use crate::service::TableCommit;
 use crate::{
     service::{
-        storage::StorageProfile, CreateTableResponse, ErrorModel, GetTableMetadataResponse,
-        LoadTableResponse, Result, TableIdent, TableIdentUuid,
+        storage::StorageProfile, ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result,
+        TableIdent, TableIdentUuid,
     },
     SecretIdent, WarehouseIdent,
 };
+pub(crate) use create::create_table;
 
 use http::StatusCode;
 use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
 
 use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 use crate::implementations::postgres::tabular::{
-    create_tabular, drop_tabular, list_tabulars, try_parse_namespace_ident, CreateTabular,
-    TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
+    drop_tabular, list_tabulars, try_parse_namespace_ident, TabularIdentBorrowed,
+    TabularIdentOwned, TabularIdentUuid, TabularType,
 };
 use iceberg::spec::{
     BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
@@ -22,9 +24,7 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
-use itertools::Itertools;
 use sqlx::types::Json;
-use sqlx::PgConnection;
 use std::default::Default;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -98,324 +98,6 @@ where
     Ok(table_map)
 }
 
-pub(crate) async fn create_table(
-    TableCreation {
-        namespace_id,
-        table_ident,
-        table_metadata,
-        metadata_location,
-    }: TableCreation<'_>,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<CreateTableResponse> {
-    let TableIdent { namespace: _, name } = table_ident;
-
-    let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
-        ErrorModel::internal(
-            "Error serializing table metadata",
-            "TableMetadataSerializationError",
-            Some(Box::new(e)),
-        )
-    })?;
-
-    let tabular_id = create_tabular(
-        CreateTabular {
-            id: table_metadata.uuid(),
-            name,
-            namespace_id: *namespace_id,
-            typ: TabularType::Table,
-            metadata_location,
-            location: &Location::from_str(table_metadata.location()).map_err(|err| {
-                ErrorModel::bad_request(
-                    format!("Invalid location: '{}'", table_metadata.location()),
-                    "InvalidLocation",
-                    Some(Box::new(err)),
-                )
-            })?,
-        },
-        transaction,
-    )
-    .await?;
-    let last_seq = table_metadata.last_sequence_number();
-    let last_col = table_metadata.last_column_id();
-    let last_updated = table_metadata.last_updated_ms();
-    let last_partition = table_metadata.last_partition_id();
-
-    let _update_result = sqlx::query!(
-        r#"
-        INSERT INTO "table" (table_id,
-                             metadata,
-                             table_format_version,
-                             last_column_id,
-                             last_sequence_number,
-                             last_updated_ms,
-                             last_partition_id)
-        (
-            SELECT $1, $2, $3, $4, $5, $6, $7
-            WHERE EXISTS (SELECT 1
-                FROM active_tables
-                WHERE active_tables.table_id = $1))
-        ON CONFLICT ON CONSTRAINT "table_pkey"
-        DO UPDATE SET "metadata" = $2
-        RETURNING "table_id"
-        "#,
-        tabular_id,
-        table_metadata_ser,
-        match table_metadata.format_version() {
-            FormatVersion::V1 => DbTableFormatVersion::V1,
-            FormatVersion::V2 => DbTableFormatVersion::V2,
-        } as _,
-        last_col,
-        last_seq,
-        last_updated,
-        last_partition
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        tracing::warn!("Error creating table: {}", e);
-        e.into_error_model("Error creating table".to_string())
-    })?;
-
-    let partition_specs = table_metadata.partition_specs_iter();
-    let default_spec = table_metadata.default_partition_spec();
-
-    for schema in table_metadata.schemas_iter() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_schema(schema_id, table_id, schema) VALUES ($1, $2, $3)"#,
-            schema.schema_id(),
-            tabular_id,
-            serde_json::to_value(schema).map_err(|er| ErrorModel::internal(
-                "Error serializing schema",
-                "SchemaSerializationError",
-                Some(Box::new(er)),
-            ))?
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table schema".to_string())
-        })?;
-    }
-
-    let _ = sqlx::query!(
-        r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
-        tabular_id,
-        table_metadata.current_schema_id()
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
-        err.into_error_model("Error inserting table current schema".to_string())
-    })?;
-
-    for part_spec in partition_specs {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec) VALUES ($1, $2, $3)"#,
-            part_spec.spec_id(),
-            tabular_id,
-            serde_json::to_value(part_spec).map_err(|er| ErrorModel::internal(
-                "Error serializing partition spec",
-                "PartitionSpecSerializationError",
-                Some(Box::new(er)),
-            ))?
-        )
-            .execute(&mut **transaction)
-            .await
-            .map_err(|err| {
-                tracing::warn!("Error creating table: {}", err);
-                err.into_error_model("Error inserting table partition spec".to_string())
-            })?;
-    }
-
-    // insert default part spec
-    let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id) VALUES ($1, $2, $3)"#,
-        default_spec.spec_id(),
-        tabular_id,
-        default_spec.schema_ref().schema_id(),
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
-        err.into_error_model("Error inserting table default partition spec".to_string())
-    })?;
-
-    set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
-    // TODO: batched insert
-    let (ids, tabs, parents, seqs, manifs, summaries, schemas, timestamps): (
-        Vec<i64>,
-        Vec<Uuid>,
-        Vec<Option<i64>>,
-        Vec<i64>,
-        Vec<String>,
-        Vec<serde_json::Value>,
-        Vec<Option<SchemaId>>,
-        Vec<i64>,
-    ) = table_metadata
-        .snapshots()
-        .map(|snap| {
-            (
-                snap.snapshot_id(),
-                tabular_id,
-                snap.parent_snapshot_id(),
-                snap.sequence_number(),
-                snap.manifest_list().to_string(),
-                serde_json::to_value(snap.summary())
-                    .map_err(|er| {
-                        ErrorModel::internal(
-                            "Error serializing snapshot summary",
-                            "SnapshotSummarySerializationError",
-                            Some(Box::new(er)),
-                        )
-                    })
-                    .unwrap(),
-                snap.schema_id(),
-                snap.timestamp_ms(),
-            )
-        })
-        .multiunzip();
-    let _ = sqlx::query!(
-        r#"INSERT INTO table_snapshot(snapshot_id,
-                                          table_id,
-                                          parent_snapshot_id,
-                                          sequence_number,
-                                          manifest_list,
-                                          summary,
-                                          schema_id,
-                                          timestamp_ms)
-            SELECT * FROM UNNEST(
-                $1::BIGINT[],
-                $2::UUID[],
-                $3::BIGINT[],
-                $4::BIGINT[],
-                $5::TEXT[],
-                $6::JSONB[],
-                $7::INT[],
-                $8::BIGINT[]
-            )"#,
-        &ids,
-        &tabs,
-        &parents as _,
-        &seqs,
-        &manifs,
-        &summaries,
-        &schemas as _,
-        &timestamps
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
-        err.into_error_model("Error inserting table snapshot".to_string())
-    })?;
-
-    for sort_order in table_metadata.sort_orders_iter() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order) VALUES ($1, $2, $3)"#,
-            sort_order.order_id,
-            tabular_id,
-            serde_json::to_value(sort_order).map_err(|er| ErrorModel::internal(
-                "Error serializing sort order",
-                "SortOrderSerializationError",
-                Some(Box::new(er)),
-            ))?
-        ).execute(&mut **transaction).await.map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table sort order".to_string())
-        })?;
-    }
-
-    let _ = sqlx::query!(
-        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id) VALUES ($1, $2)"#,
-        tabular_id,
-        table_metadata.default_sort_order_id(),
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
-        err.into_error_model("Error inserting table sort order".to_string())
-    })?;
-
-    // set current snap
-    if let Some(current_snapshot) = table_metadata.current_snapshot() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_current_snapshot(snapshot_id, table_id) VALUES ($1, $2)"#,
-            current_snapshot.snapshot_id(),
-            tabular_id
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table current snapshot".to_string())
-        })?;
-    }
-
-    for log in table_metadata.history() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_snapshot_log(snapshot_id, table_id, timestamp) VALUES ($1, $2, $3)"#,
-            log.snapshot_id,
-            tabular_id,
-            log.timestamp_ms()
-        )
-            .execute(&mut **transaction)
-            .await
-            .map_err(|err| {
-                tracing::warn!("Error creating table: {}", err);
-                err.into_error_model("Error inserting table snapshot log".to_string())
-            })?;
-    }
-
-    for log in table_metadata.metadata_log() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file) VALUES ($1, $2, $3)"#,
-            tabular_id,
-            log.timestamp_ms,
-            log.metadata_file
-        )
-            .execute(&mut **transaction)
-            .await
-            .map_err(|err| {
-                tracing::warn!("Error creating table: {}", err);
-                err.into_error_model("Error inserting table metadata log".to_string())
-            })?;
-    }
-
-    for (refname, snapshot_ref) in table_metadata.refs() {
-        let retention = serde_json::to_value(&snapshot_ref.retention).map_err(|er| {
-            ErrorModel::internal(
-                "Error serializing retention",
-                "RetentionSerializationError",
-                Some(Box::new(er)),
-            )
-        })?;
-
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_refs(table_id,
-                                      table_ref_name,
-                                      snapshot_id,
-                                      retention)
-            VALUES ($1, $2, $3, $4)"#,
-            tabular_id,
-            refname,
-            snapshot_ref.snapshot_id,
-            retention,
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table refs".to_string())
-        })?;
-    }
-
-    Ok(CreateTableResponse { table_metadata })
-}
-
 #[derive(Debug, sqlx::Type)]
 #[sqlx(type_name = "table_format_version", rename_all = "kebab-case")]
 pub enum DbTableFormatVersion {
@@ -432,35 +114,6 @@ impl From<DbTableFormatVersion> for FormatVersion {
             DbTableFormatVersion::V2 => FormatVersion::V2,
         }
     }
-}
-
-pub(crate) async fn set_table_properties(
-    properties: &HashMap<String, String>,
-    table_id: Uuid,
-    transaction: &mut PgConnection,
-) -> Result<()> {
-    let (keys, vals): (Vec<String>, Vec<String>) = properties
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .unzip();
-    sqlx::query!(
-        r#"INSERT INTO table_properties (table_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
-              ON CONFLICT (table_id, key)
-                DO UPDATE SET value = EXCLUDED.value
-           ;"#,
-        table_id,
-        &keys,
-        &vals
-    )
-    .execute(transaction)
-    .await
-    .map_err(|e| {
-        let message = "Error inserting table property".to_string();
-        tracing::warn!("{}", message);
-        e.into_error_model(message)
-    })?;
-    Ok(())
 }
 
 pub(crate) async fn load_tables(
@@ -564,6 +217,7 @@ where
     )
 }
 
+#[expect(dead_code)]
 #[derive(sqlx::FromRow)]
 struct TableQueryStruct {
     table_id: Uuid,
@@ -610,6 +264,7 @@ struct TableQueryStruct {
 }
 
 impl TableQueryStruct {
+    #[expect(clippy::too_many_lines, dead_code)]
     fn into_table_metadata(self) -> Option<Result<TableMetadata>> {
         // TODO: we're having a ton of options here, some are required, some are not, we're having
         //       them all optional since we cannot depend on DB migration having already happened
@@ -1200,12 +855,13 @@ pub(crate) mod tests {
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::warehouse::set_warehouse_status;
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::service::{ListFlags, NamespaceIdentUuid, Transaction};
+    use crate::service::{ListFlags, NamespaceIdentUuid, TableCreation, Transaction};
     use std::default::Default;
     use std::time::SystemTime;
 
     use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
+    use crate::implementations::postgres::tabular::table::create::create_table;
     use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
