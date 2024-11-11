@@ -99,11 +99,12 @@ call add_time_columns('table_current_snapshot');
 
 create table table_snapshot_log
 (
-    table_id    uuid   not null,
-    snapshot_id bigint not null,
-    timestamp   bigint not null,
+    sequence_number bigserial not null,
+    table_id        uuid      not null,
+    snapshot_id     bigint    not null,
+    timestamp       bigint    not null,
     FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE,
-    PRIMARY KEY (table_id, snapshot_id)
+    PRIMARY KEY (table_id, sequence_number)
 );
 
 call add_time_columns('table_snapshot_log');
@@ -111,10 +112,11 @@ select trigger_updated_at('table_snapshot_log');
 
 create table table_metadata_log
 (
-    table_id      uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
-    timestamp     bigint not null,
-    metadata_file text   not null,
-    PRIMARY KEY (table_id, timestamp)
+    sequence_number bigserial not null,
+    table_id        uuid      not null REFERENCES "table" (table_id) ON DELETE CASCADE,
+    timestamp       bigint    not null,
+    metadata_file   text      not null,
+    PRIMARY KEY (table_id, sequence_number)
 );
 
 call add_time_columns('table_metadata_log');

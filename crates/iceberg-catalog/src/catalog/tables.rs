@@ -524,10 +524,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?
             .into_result()?;
 
+        let old_snapshots = previous_table
+            .table_metadata
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .collect::<HashSet<i64>>();
+
         // Apply changes
         let TableMetadataBuildResult {
             metadata: new_metadata,
-            changes: _,
+            changes,
             expired_metadata_logs,
         } = apply_commit(
             previous_table.table_metadata,
@@ -543,9 +549,19 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &new_compression_codec,
             uuid::Uuid::now_v7(),
         );
+        let new_snapshots = new_metadata
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .collect::<HashSet<i64>>();
+        let added_snapshots = new_snapshots.difference(&old_snapshots).cloned().collect();
+        let removed_snapshots = old_snapshots.difference(&new_snapshots).cloned().collect();
+
         let commit = TableCommit {
             new_metadata,
             new_metadata_location,
+            updates: changes,
+            added_snapshots,
+            removed_snapshots,
         };
         C::commit_table_transaction(warehouse_id, vec![commit.clone()], t.transaction()).await?;
 
@@ -1159,9 +1175,30 @@ struct CommitContext {
 
 impl CommitContext {
     fn commit(&self) -> TableCommit {
+        let new_snaps = self
+            .new_metadata
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .collect::<HashSet<i64>>();
+        let old_snaps = self
+            .previous_metadata
+            .snapshots()
+            .map(|s| s.snapshot_id())
+            .collect::<HashSet<i64>>();
+        let removed_snaps = old_snaps
+            .difference(&new_snaps)
+            .cloned()
+            .collect::<Vec<i64>>();
+        let new_snaps = new_snaps
+            .difference(&old_snaps)
+            .cloned()
+            .collect::<Vec<i64>>();
         TableCommit {
+            removed_snapshots: removed_snaps,
+            added_snapshots: new_snaps,
             new_metadata: self.new_metadata.clone(),
             new_metadata_location: self.new_metadata_location.clone(),
+            updates: self.updates.clone(),
         }
     }
 }

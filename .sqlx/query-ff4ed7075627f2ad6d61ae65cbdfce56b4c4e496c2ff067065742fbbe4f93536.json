@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH deleted AS (\n            DELETE FROM table_refs\n            WHERE table_id = $1 AND table_ref_name = ANY($2::TEXT[])\n        )\n        INSERT INTO table_refs(table_id,\n                              table_ref_name,\n                              snapshot_id,\n                              retention)\n        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Int8Array",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff4ed7075627f2ad6d61ae65cbdfce56b4c4e496c2ff067065742fbbe4f93536"
+}

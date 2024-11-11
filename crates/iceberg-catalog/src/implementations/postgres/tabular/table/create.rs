@@ -3,7 +3,9 @@ use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::table::DbTableFormatVersion;
 use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
 use crate::service::{CreateTableResponse, TableCreation};
-use iceberg::spec::{BoundPartitionSpecRef, FormatVersion, TableMetadata};
+use iceberg::spec::{
+    BoundPartitionSpecRef, FormatVersion, MetadataLog, SnapshotRef, TableMetadata,
+};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
@@ -91,30 +93,45 @@ pub(crate) async fn create_table(
     })?;
 
     insert_schemas(&table_metadata, transaction, tabular_id).await?;
+    insert_current_schema(&table_metadata, transaction, tabular_id).await?;
 
     insert_partition_specs(&table_metadata, transaction, tabular_id).await?;
 
+    insert_default_partition_spec(
+        transaction,
+        tabular_id,
+        table_metadata.default_partition_spec(),
+    )
+    .await?;
+
     set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
 
-    insert_snapshots(&table_metadata, transaction, tabular_id).await?;
+    insert_snapshots(table_metadata.snapshots(), transaction, tabular_id).await?;
+    set_current_snapshot(&table_metadata, transaction, tabular_id).await?;
 
     insert_sort_orders(&table_metadata, transaction, tabular_id).await?;
+    insert_default_sort_order(&table_metadata, transaction, tabular_id).await?;
 
     insert_snapshot_log(&table_metadata, transaction, tabular_id).await?;
 
-    insert_metadata_log(&table_metadata, transaction, tabular_id).await?;
+    insert_metadata_log(
+        table_metadata.metadata_log().iter().map(|s| s.clone()),
+        transaction,
+        tabular_id,
+    )
+    .await?;
 
     insert_snapshot_refs(&table_metadata, transaction, tabular_id).await?;
 
     Ok(CreateTableResponse { table_metadata })
 }
 
-async fn insert_schemas(
+pub(super) async fn insert_schemas(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let schemas = table_metadata.schemas().len();
+    let schemas = table_metadata.schemas_iter().len();
     let mut ids = Vec::with_capacity(schemas);
     let mut table_ids = Vec::with_capacity(schemas);
     let mut schemas = Vec::with_capacity(schemas);
@@ -133,7 +150,8 @@ async fn insert_schemas(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_schema(schema_id, table_id, schema)
-           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])"#,
+           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])
+           ON CONFLICT DO NOTHING"#,
         &ids,
         &table_ids,
         &schemas
@@ -145,17 +163,17 @@ async fn insert_schemas(
         err.into_error_model("Error inserting table schema".to_string())
     })?;
 
-    insert_current_schema(table_metadata, transaction, tabular_id).await?;
     Ok(())
 }
 
-async fn insert_current_schema(
+pub(super) async fn insert_current_schema(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)"#,
+        r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)
+           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id"#,
         tabular_id,
         table_metadata.current_schema_id()
     )
@@ -168,16 +186,16 @@ async fn insert_current_schema(
     Ok(())
 }
 
-async fn insert_partition_specs(
+pub(crate) async fn insert_partition_specs(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let partition_specs = table_metadata.partition_specs_iter();
-    let default_spec = table_metadata.default_partition_spec();
     for part_spec in partition_specs {
         let _ = sqlx::query!(
-            r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec) VALUES ($1, $2, $3)"#,
+            r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec) VALUES ($1, $2, $3)
+                ON CONFLICT DO NOTHING"#,
             part_spec.spec_id(),
             tabular_id,
             serde_json::to_value(part_spec).map_err(|er| ErrorModel::internal(
@@ -194,18 +212,18 @@ async fn insert_partition_specs(
             })?;
     }
 
-    insert_default_partition_spec(transaction, tabular_id, default_spec).await?;
     Ok(())
 }
 
-async fn insert_default_partition_spec(
+pub(crate) async fn insert_default_partition_spec(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
     default_spec: &BoundPartitionSpecRef,
 ) -> api::Result<()> {
     // insert default part spec
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id) VALUES ($1, $2, $3)"#,
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id) VALUES ($1, $2, $3)
+           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id, partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec.spec_id(),
         tabular_id,
         default_spec.schema_ref().schema_id(),
@@ -219,7 +237,7 @@ async fn insert_default_partition_spec(
     Ok(())
 }
 
-async fn insert_sort_orders(
+pub(crate) async fn insert_sort_orders(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
@@ -240,12 +258,10 @@ async fn insert_sort_orders(
         })?;
     }
 
-    insert_default_sort_order(table_metadata, transaction, tabular_id).await?;
-
     Ok(())
 }
 
-async fn insert_default_sort_order(
+pub(crate) async fn insert_default_sort_order(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
@@ -264,7 +280,7 @@ async fn insert_default_sort_order(
     Ok(())
 }
 
-async fn set_current_snapshot(
+pub(super) async fn set_current_snapshot(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
@@ -272,7 +288,8 @@ async fn set_current_snapshot(
     // set current snap
     if let Some(current_snapshot) = table_metadata.current_snapshot() {
         let _ = sqlx::query!(
-            r#"INSERT INTO table_current_snapshot(snapshot_id, table_id) VALUES ($1, $2)"#,
+            r#"INSERT INTO table_current_snapshot(snapshot_id, table_id) VALUES ($1, $2)
+                ON CONFLICT (table_id) DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id"#,
             current_snapshot.snapshot_id(),
             tabular_id
         )
@@ -308,69 +325,112 @@ async fn insert_snapshot_log(
     Ok(())
 }
 
-async fn insert_metadata_log(
-    table_metadata: &TableMetadata,
+pub(super) async fn insert_metadata_log(
+    log: impl ExactSizeIterator<Item = MetadataLog>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    for log in table_metadata.metadata_log() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file) VALUES ($1, $2, $3)"#,
-            tabular_id,
-            log.timestamp_ms,
-            log.metadata_file
-        )
-            .execute(&mut **transaction)
-            .await
-            .map_err(|err| {
-                tracing::warn!("Error creating table: {}", err);
-                err.into_error_model("Error inserting table metadata log".to_string())
-            })?;
+    let mut timestamps = Vec::with_capacity(log.len());
+    let mut metadata_files = Vec::with_capacity(log.len());
+
+    for MetadataLog {
+        timestamp_ms,
+        metadata_file,
+    } in log
+    {
+        timestamps.push(timestamp_ms);
+        metadata_files.push(metadata_file);
     }
+
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file)
+       SELECT $1, unnest($2::BIGINT[]), unnest($3::TEXT[])"#,
+        tabular_id,
+        &timestamps,
+        &metadata_files
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table metadata log".to_string())
+    })?;
     Ok(())
 }
 
-async fn insert_snapshot_refs(
+pub(super) async fn insert_snapshot_refs(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
+    let mut refnames = Vec::new();
+    let mut snapshot_ids = Vec::new();
+    let mut retentions = Vec::new();
+
     for (refname, snapshot_ref) in table_metadata.refs() {
-        let retention = serde_json::to_value(&snapshot_ref.retention).map_err(|er| {
+        refnames.push(refname.clone());
+        snapshot_ids.push(snapshot_ref.snapshot_id);
+        retentions.push(serde_json::to_value(&snapshot_ref.retention).map_err(|er| {
             ErrorModel::internal(
                 "Error serializing retention",
                 "RetentionSerializationError",
                 Some(Box::new(er)),
             )
-        })?;
-
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_refs(table_id,
-                                      table_ref_name,
-                                      snapshot_id,
-                                      retention)
-            VALUES ($1, $2, $3, $4)"#,
-            tabular_id,
-            refname,
-            snapshot_ref.snapshot_id,
-            retention,
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table refs".to_string())
-        })?;
+        })?);
     }
+
+    let _ = sqlx::query!(
+        r#"
+        WITH deleted AS (
+            DELETE FROM table_refs
+            WHERE table_id = $1 AND table_ref_name = ANY($2::TEXT[])
+        )
+        INSERT INTO table_refs(table_id,
+                              table_ref_name,
+                              snapshot_id,
+                              retention)
+        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])"#,
+        tabular_id,
+        &refnames,
+        &snapshot_ids,
+        &retentions,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table refs".to_string())
+    })?;
+
     Ok(())
 }
 
-async fn insert_snapshots(
-    table_metadata: &TableMetadata,
+pub(super) async fn remove_snapshots(
+    table_id: Uuid,
+    snapshot_ids: Vec<i64>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_snapshot WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        table_id,
+        &snapshot_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error deleting table snapshots".to_string())
+    })?;
+
+    Ok(())
+}
+
+pub(super) async fn insert_snapshots(
+    snapshots: impl ExactSizeIterator<Item = &SnapshotRef>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let snap_cnt = table_metadata.snapshots_ref().len();
+    let snap_cnt = snapshots.len();
 
     let mut ids = Vec::with_capacity(snap_cnt);
     let mut tabs = Vec::with_capacity(snap_cnt);
@@ -381,7 +441,7 @@ async fn insert_snapshots(
     let mut schemas = Vec::with_capacity(snap_cnt);
     let mut timestamps = Vec::with_capacity(snap_cnt);
 
-    for snap in table_metadata.snapshots() {
+    for snap in snapshots {
         ids.push(snap.snapshot_id());
         tabs.push(tabular_id);
         parents.push(snap.parent_snapshot_id());
@@ -431,7 +491,6 @@ async fn insert_snapshots(
         tracing::warn!("Error creating table: {}", err);
         err.into_error_model("Error inserting table snapshot".to_string())
     })?;
-    set_current_snapshot(table_metadata, transaction, tabular_id).await?;
 
     Ok(())
 }
@@ -446,11 +505,8 @@ pub(crate) async fn set_table_properties(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .unzip();
     sqlx::query!(
-        r#"INSERT INTO table_properties (table_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
-              ON CONFLICT (table_id, key)
-                DO UPDATE SET value = EXCLUDED.value
-           ;"#,
+        r#"WITH drop as (DELETE FROM table_properties WHERE table_id = $1) INSERT INTO table_properties (table_id, key, value)
+           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]));"#,
         table_id,
         &keys,
         &vals

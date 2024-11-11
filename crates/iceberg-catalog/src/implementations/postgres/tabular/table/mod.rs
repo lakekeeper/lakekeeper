@@ -19,11 +19,14 @@ use crate::implementations::postgres::tabular::{
     TabularIdentOwned, TabularIdentUuid, TabularType,
 };
 use iceberg::spec::{
-    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
-    SnapshotRetention, SortOrder, Summary,
+    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec, Snapshot,
+    SnapshotReference, SnapshotRetention, SortOrder, Summary, UnboundPartitionSpec,
 };
 use iceberg_ext::configs::Location;
 
+use crate::catalog::CommonMetadata;
+use iceberg::TableUpdate;
+use itertools::Itertools;
 use sqlx::types::Json;
 use std::default::Default;
 use std::str::FromStr;
@@ -485,13 +488,13 @@ pub(crate) async fn load_tables(
                    FROM table_snapshot
                    GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
-                          ARRAY_AGG(snapshot_id) as snapshot_ids,
-                          ARRAY_AGG(timestamp) as timestamps
+                          ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
+                          ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
                      FROM table_snapshot_log
                      GROUP BY table_id) tsl ON tsl.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
-                          ARRAY_AGG(timestamp) as timestamps,
-                          ARRAY_AGG(metadata_file) as metadata_files
+                          ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps,
+                          ARRAY_AGG(metadata_file ORDER BY sequence_number) as metadata_files
                    FROM table_metadata_log
                    GROUP BY table_id) tml ON tml.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
@@ -763,6 +766,88 @@ pub(crate) async fn drop_table<'a>(
     drop_tabular(TabularIdentUuid::Table(*table_id), transaction).await
 }
 
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
+pub enum TableUpdate2 {
+    AddSnapshot,
+    AddSchema,
+    AddSpec,
+    AddSortOrder,
+    UpgradeFormatVersion,
+    AssignUuid,
+    RemoveSnapshots,
+    RemoveSnapshotRef,
+    SetLocation,
+    RemoveProperties,
+    SetProperties,
+    SetDefaultSortOrder,
+    SetDefaultSpec,
+    SetSnapshotRef,
+    SetCurrentSchema,
+}
+
+impl From<&TableUpdate> for TableUpdate2 {
+    fn from(u: &TableUpdate) -> Self {
+        match u {
+            TableUpdate::UpgradeFormatVersion { .. } => TableUpdate2::UpgradeFormatVersion,
+            TableUpdate::AssignUuid { .. } => TableUpdate2::AssignUuid,
+            TableUpdate::AddSchema { .. } => TableUpdate2::AddSchema,
+            TableUpdate::SetCurrentSchema { .. } => TableUpdate2::SetCurrentSchema,
+            TableUpdate::AddSpec { .. } => TableUpdate2::AddSpec,
+            TableUpdate::SetDefaultSpec { .. } => TableUpdate2::SetDefaultSpec,
+            TableUpdate::AddSortOrder { .. } => TableUpdate2::AddSortOrder,
+            TableUpdate::SetDefaultSortOrder { .. } => TableUpdate2::SetDefaultSortOrder,
+            TableUpdate::AddSnapshot { .. } => TableUpdate2::AddSnapshot,
+            TableUpdate::SetSnapshotRef { .. } => TableUpdate2::SetSnapshotRef,
+            TableUpdate::RemoveSnapshots { .. } => TableUpdate2::RemoveSnapshots,
+            TableUpdate::RemoveSnapshotRef { .. } => TableUpdate2::RemoveSnapshotRef,
+            TableUpdate::SetLocation { .. } => TableUpdate2::SetLocation,
+            TableUpdate::SetProperties { .. } => TableUpdate2::SetProperties,
+            TableUpdate::RemoveProperties { .. } => TableUpdate2::RemoveProperties,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TableUpdates {
+    upgraded_format_version: bool,
+    changed_schemas: bool,
+    current_schema: bool,
+    changed_specs: bool,
+    default_spec: bool,
+    sort_orders: bool,
+    default_sort_order: bool,
+    snapshots: bool,
+    snapshot_refs: bool,
+    location: bool,
+    properties: bool,
+}
+
+impl From<&[TableUpdate]> for TableUpdates {
+    fn from(value: &[TableUpdate]) -> Self {
+        let mut s = TableUpdates::default();
+        for u in value.iter() {
+            match u {
+                TableUpdate::UpgradeFormatVersion { .. } => s.upgraded_format_version = true,
+                TableUpdate::AssignUuid { .. } => {}
+                TableUpdate::AddSchema { .. } => s.changed_schemas = true,
+                TableUpdate::SetCurrentSchema { .. } => s.current_schema = true,
+                TableUpdate::AddSpec { .. } => s.changed_specs = true,
+                TableUpdate::SetDefaultSpec { .. } => s.default_spec = true,
+                TableUpdate::AddSortOrder { .. } => s.sort_orders = true,
+                TableUpdate::SetDefaultSortOrder { .. } => s.default_sort_order = true,
+                TableUpdate::AddSnapshot { .. } => s.snapshots = true,
+                TableUpdate::SetSnapshotRef { .. } => s.snapshot_refs = true,
+                TableUpdate::RemoveSnapshots { .. } => s.snapshots = true,
+                TableUpdate::RemoveSnapshotRef { .. } => s.snapshot_refs = true,
+                TableUpdate::SetLocation { .. } => s.location = true,
+                TableUpdate::SetProperties { .. } => s.properties = true,
+                TableUpdate::RemoveProperties { .. } => s.properties = true,
+            }
+        }
+        s
+    }
+}
+
 pub(crate) async fn commit_table_transaction<'a>(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses
     _: WarehouseIdent,
@@ -782,7 +867,7 @@ pub(crate) async fn commit_table_transaction<'a>(
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
-        SET "metadata" = c."metadata"
+        SET "metadata" = c."metadata", table_format_version = c."table_format_version"
         FROM (VALUES
         "#,
     );
@@ -796,7 +881,124 @@ pub(crate) async fn commit_table_transaction<'a>(
         "#,
     );
 
-    for (i, commit) in commits.iter().enumerate() {
+    let n_commits = commits.len();
+    for (i, commit) in commits.into_iter().enumerate() {
+        let TableUpdates {
+            upgraded_format_version: _,
+            changed_schemas,
+            current_schema,
+            changed_specs,
+            default_spec,
+            sort_orders,
+            default_sort_order,
+            snapshots: _,
+            snapshot_refs,
+            location: _,
+            properties,
+        } = TableUpdates::from(commit.updates.as_slice());
+        if changed_schemas {
+            create::insert_schemas(
+                &commit.new_metadata,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+        if current_schema {
+            create::insert_current_schema(
+                &commit.new_metadata,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+        if changed_specs {
+            create::insert_partition_specs(
+                &commit.new_metadata,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+        if default_spec {
+            create::insert_default_partition_spec(
+                transaction,
+                commit.new_metadata.uuid(),
+                &commit.new_metadata.default_partition_spec(),
+            )
+            .await?;
+        }
+        if sort_orders {
+            create::insert_sort_orders(
+                &commit.new_metadata,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+        if default_sort_order {
+            create::insert_default_sort_order(
+                &commit.new_metadata,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+        if commit.removed_snapshots.len() > 0 {
+            create::remove_snapshots(
+                commit.new_metadata.uuid(),
+                commit.removed_snapshots,
+                transaction,
+            )
+            .await?;
+        }
+        if commit.added_snapshots.len() > 0 {
+            create::insert_snapshots(
+                commit
+                    .added_snapshots
+                    .into_iter()
+                    .filter_map(|s| commit.new_metadata.snapshot_by_id(s))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+
+        create::set_current_snapshot(
+            &commit.new_metadata,
+            transaction,
+            commit.new_metadata.uuid(),
+        )
+        .await?;
+
+        if snapshot_refs {
+            create::insert_snapshot_refs(
+                &commit.new_metadata,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+        if properties {
+            create::set_table_properties(
+                commit.new_metadata.properties(),
+                commit.new_metadata.uuid(),
+                transaction,
+            )
+            .await?;
+        }
+        // TODO: can a single transaction result in multiple log entries?
+        if let Some(log) = commit.new_metadata.metadata_log().last() {
+            create::insert_metadata_log(
+                [log.clone()].into_iter(),
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+
         let metadata_ser = serde_json::to_value(&commit.new_metadata).map_err(|e| {
             ErrorModel::internal(
                 "Error serializing table metadata",
@@ -809,6 +1011,19 @@ pub(crate) async fn commit_table_transaction<'a>(
         query_builder_table.push_bind(commit.new_metadata.uuid());
         query_builder_table.push(", ");
         query_builder_table.push_bind(metadata_ser);
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(match commit.new_metadata.format_version() {
+            FormatVersion::V1 => DbTableFormatVersion::V1,
+            FormatVersion::V2 => DbTableFormatVersion::V2,
+        });
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(commit.new_metadata.last_column_id());
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(commit.new_metadata.last_sequence_number());
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(commit.new_metadata.last_updated_ms());
+        query_builder_table.push(", ");
+        query_builder_table.push_bind(commit.new_metadata.last_partition_id());
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
@@ -816,16 +1031,17 @@ pub(crate) async fn commit_table_transaction<'a>(
         query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(commit.new_metadata_location.to_string());
         query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(commit.new_metadata.location());
+        query_builder_tabular.push_bind(commit.new_metadata.location().to_string());
         query_builder_tabular.push(")");
 
-        if i != commits.len() - 1 {
+        if i != n_commits - 1 {
             query_builder_table.push(", ");
             query_builder_tabular.push(", ");
         }
     }
 
-    query_builder_table.push(") as c(table_id, metadata) WHERE c.table_id = t.table_id");
+    query_builder_table
+        .push(") as c(table_id, metadata, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
     query_builder_tabular.push(
         ") as c(table_id, metadata_location, location) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
     );
@@ -849,7 +1065,7 @@ pub(crate) async fn commit_table_transaction<'a>(
             e.into_error_model("Error committing tablemetadata location updates".to_string())
         })?;
 
-    if updated_meta.len() != commits.len() || updated_meta_location.len() != commits.len() {
+    if updated_meta.len() != n_commits || updated_meta_location.len() != n_commits {
         return Err(ErrorModel::builder()
             .code(StatusCode::INTERNAL_SERVER_ERROR.into())
             .message("Error committing table updates".to_string())
@@ -1672,19 +1888,29 @@ pub(crate) mod tests {
             "t2_value".to_string(),
         )]))
         .unwrap();
-        let updated_metadata1 = builder1.build().unwrap().metadata;
-        let updated_metadata2 = builder2.build().unwrap().metadata;
+        let res1 = builder1.build().unwrap();
+        let res2 = builder2.build().unwrap();
+        let updates1 = res1.changes;
+        let updates2 = res2.changes;
+        let updated_metadata1 = res1.metadata;
+        let updated_metadata2 = res2.metadata;
 
         let commits = vec![
             TableCommit {
                 new_metadata: updated_metadata1.clone(),
                 new_metadata_location: Location::from_str("s3://my_bucket/table1/metadata/foo")
                     .unwrap(),
+                updates: updates1,
+                added_snapshots: vec![],
+                removed_snapshots: vec![],
             },
             TableCommit {
                 new_metadata: updated_metadata2.clone(),
                 new_metadata_location: Location::from_str("s3://my_bucket/table2/metadata/foo")
                     .unwrap(),
+                updates: updates2,
+                added_snapshots: vec![],
+                removed_snapshots: vec![],
             },
         ];
 
@@ -1712,11 +1938,11 @@ pub(crate) mod tests {
         let diff = similar::TextDiff::from_lines(&s1, &s2);
         let diff = diff
             .unified_diff()
-            .context_radius(5)
+            .context_radius(15)
             .missing_newline_hint(false)
             .to_string();
-
-        assert_eq!(loaded_metadata1, &updated_metadata1, "{}", diff);
+        dbg!(loaded_metadata1);
+        assert_eq!(loaded_metadata1, &dbg!(updated_metadata1), "{}", diff);
         assert_eq!(loaded_metadata2, &updated_metadata2);
     }
 
