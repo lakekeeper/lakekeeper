@@ -9,7 +9,6 @@ use iceberg::spec::{
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
-use itertools::Itertools;
 use sqlx::{PgConnection, Postgres, Transaction};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -53,6 +52,9 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+    // TODO: depending on staged table being overwritten, we may have to do some cleanup in certain
+    //       logs?
+
     let last_seq = table_metadata.last_sequence_number();
     let last_col = table_metadata.last_column_id();
     let last_updated = table_metadata.last_updated_ms();
@@ -73,7 +75,7 @@ pub(crate) async fn create_table(
                 FROM active_tables
                 WHERE active_tables.table_id = $1))
         ON CONFLICT ON CONSTRAINT "table_pkey"
-        DO UPDATE SET "metadata" = $2
+        DO UPDATE SET "metadata" = $2, last_column_id = $4, last_sequence_number = $5, last_updated_ms = $6, last_partition_id = $7
         RETURNING "table_id"
         "#,
         tabular_id,

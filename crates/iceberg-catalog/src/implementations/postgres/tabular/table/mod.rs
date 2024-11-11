@@ -1418,7 +1418,6 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
         let create_result = create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
-
         let load_result = load_tables(
             warehouse_id,
             vec![table_id],
@@ -1428,9 +1427,19 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(load_result.len(), 1);
+        let s1 = format!("{:#?}", load_result.get(&table_id).unwrap().table_metadata);
+        let s2 = format!("{:#?}", create_result.table_metadata);
+        let diff = similar::TextDiff::from_lines(&s1, &s2);
+        let diff = diff
+            .unified_diff()
+            .context_radius(15)
+            .missing_newline_hint(false)
+            .to_string();
         assert_eq!(
             load_result.get(&table_id).unwrap().table_metadata,
-            create_result.table_metadata
+            create_result.table_metadata,
+            "{}",
+            diff
         );
         assert_eq!(
             load_result.get(&table_id).unwrap().metadata_location,
@@ -1942,8 +1951,8 @@ pub(crate) mod tests {
             .context_radius(15)
             .missing_newline_hint(false)
             .to_string();
-        dbg!(loaded_metadata1);
-        assert_eq!(loaded_metadata1, &dbg!(updated_metadata1), "{}", diff);
+
+        assert_eq!(loaded_metadata1, &updated_metadata1, "{}", diff);
         assert_eq!(loaded_metadata2, &updated_metadata2);
     }
 
