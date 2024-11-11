@@ -9,8 +9,10 @@ use iceberg::spec::{
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
+use itertools::Itertools;
 use sqlx::{PgConnection, Postgres, Transaction};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -33,7 +35,7 @@ pub(crate) async fn create_table(
         )
     })?;
 
-    let tabular_id = create_tabular(
+    let (tabular_id, overwritten) = create_tabular(
         CreateTabular {
             id: table_metadata.uuid(),
             name,
@@ -242,21 +244,37 @@ pub(crate) async fn insert_sort_orders(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
+    let n_orders = table_metadata.sort_orders_iter().len();
+    let mut sort_order_ids = Vec::with_capacity(n_orders);
+    let mut sort_orders = Vec::with_capacity(n_orders);
+
     for sort_order in table_metadata.sort_orders_iter() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order) VALUES ($1, $2, $3)"#,
-            sort_order.order_id,
-            tabular_id,
-            serde_json::to_value(sort_order).map_err(|er| ErrorModel::internal(
+        sort_order_ids.push(sort_order.order_id);
+        sort_orders.push(serde_json::to_value(sort_order).map_err(|er| {
+            ErrorModel::internal(
                 "Error serializing sort order",
                 "SortOrderSerializationError",
                 Some(Box::new(er)),
-            ))?
-        ).execute(&mut **transaction).await.map_err(|err| {
+            )
+        })?);
+    }
+    // we use a data-modifying CTE here to get rid of sort orders that may have belonged to a
+    // previously staged table that's now being overwritten.
+    let _ = sqlx::query!(
+        r#"WITH delete as (DELETE from table_sort_order WHERE table_id = $2 AND sort_order_id = ANY($1::BIGINT[]))
+           INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
+           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])
+           ON CONFLICT (table_id, sort_order_id) DO UPDATE SET sort_order = EXCLUDED.sort_order"#,
+        &sort_order_ids,
+        tabular_id,
+        &sort_orders
+    )
+    .execute(&mut **transaction)
+    .await
+        .map_err(|err| {
             tracing::warn!("Error creating table: {}", err);
             err.into_error_model("Error inserting table sort order".to_string())
         })?;
-    }
 
     Ok(())
 }
@@ -267,7 +285,8 @@ pub(crate) async fn insert_default_sort_order(
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id) VALUES ($1, $2)"#,
+        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id) VALUES ($1, $2)
+           ON CONFLICT (table_id) DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
         tabular_id,
         table_metadata.default_sort_order_id(),
     )
@@ -308,20 +327,32 @@ async fn insert_snapshot_log(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    for log in table_metadata.history() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_snapshot_log(snapshot_id, table_id, timestamp) VALUES ($1, $2, $3)"#,
-            log.snapshot_id,
-            tabular_id,
-            log.timestamp_ms()
+    let (snap, stamp): (Vec<_>, Vec<_>) = table_metadata
+        .history()
+        .into_iter()
+        .map(|log| (log.snapshot_id, log.timestamp_ms))
+        .unzip();
+    let seq = 0i64..snap.len().try_into().map_err(|e| {
+        ErrorModel::internal(
+            "Too many snapshot log entries.",
+            "TooManySnapshotLogEntries",
+            Some(Box::new(e)),
         )
-            .execute(&mut **transaction)
-            .await
-            .map_err(|err| {
-                tracing::warn!("Error creating table: {}", err);
-                err.into_error_model("Error inserting table snapshot log".to_string())
-            })?;
-    }
+    })?;
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_snapshot_log(table_id, snapshot_id, timestamp)
+           SELECT $2, UNNEST($1::BIGINT[]), UNNEST($3::BIGINT[]) ORDER BY UNNEST($4::BIGINT[])"#,
+        &snap,
+        &tabular_id,
+        &stamp,
+        &seq.collect::<Vec<_>>()
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table snapshot log".to_string())
+    })?;
     Ok(())
 }
 
@@ -332,7 +363,13 @@ pub(super) async fn insert_metadata_log(
 ) -> api::Result<()> {
     let mut timestamps = Vec::with_capacity(log.len());
     let mut metadata_files = Vec::with_capacity(log.len());
-
+    let seqs: Range<i64> = 0..log.len().try_into().map_err(|e| {
+        ErrorModel::internal(
+            "Too many metadata log entries.",
+            "TooManyMetadataLogEntries",
+            Some(Box::new(e)),
+        )
+    })?;
     for MetadataLog {
         timestamp_ms,
         metadata_file,
@@ -344,10 +381,11 @@ pub(super) async fn insert_metadata_log(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file)
-       SELECT $1, unnest($2::BIGINT[]), unnest($3::TEXT[])"#,
+           SELECT $1, UNNEST($2::BIGINT[]), UNNEST($3::TEXT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,
         tabular_id,
         &timestamps,
-        &metadata_files
+        &metadata_files,
+        &seqs.collect::<Vec<_>>(),
     )
     .execute(&mut **transaction)
     .await
@@ -389,7 +427,9 @@ pub(super) async fn insert_snapshot_refs(
                               table_ref_name,
                               snapshot_id,
                               retention)
-        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])"#,
+        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])
+        ON CONFLICT (table_id, table_ref_name)
+        DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
         tabular_id,
         &refnames,
         &snapshot_ids,

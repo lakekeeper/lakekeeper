@@ -24,9 +24,7 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
-use crate::catalog::CommonMetadata;
 use iceberg::TableUpdate;
-use itertools::Itertools;
 use sqlx::types::Json;
 use std::default::Default;
 use std::str::FromStr;
@@ -825,7 +823,7 @@ struct TableUpdates {
 impl From<&[TableUpdate]> for TableUpdates {
     fn from(value: &[TableUpdate]) -> Self {
         let mut s = TableUpdates::default();
-        for u in value.iter() {
+        for u in value {
             match u {
                 TableUpdate::UpgradeFormatVersion { .. } => s.upgraded_format_version = true,
                 TableUpdate::AssignUuid { .. } => {}
@@ -835,13 +833,16 @@ impl From<&[TableUpdate]> for TableUpdates {
                 TableUpdate::SetDefaultSpec { .. } => s.default_spec = true,
                 TableUpdate::AddSortOrder { .. } => s.sort_orders = true,
                 TableUpdate::SetDefaultSortOrder { .. } => s.default_sort_order = true,
-                TableUpdate::AddSnapshot { .. } => s.snapshots = true,
-                TableUpdate::SetSnapshotRef { .. } => s.snapshot_refs = true,
-                TableUpdate::RemoveSnapshots { .. } => s.snapshots = true,
-                TableUpdate::RemoveSnapshotRef { .. } => s.snapshot_refs = true,
+                TableUpdate::RemoveSnapshots { .. } | TableUpdate::AddSnapshot { .. } => {
+                    s.snapshots = true
+                }
+                TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {
+                    s.snapshot_refs = true
+                }
                 TableUpdate::SetLocation { .. } => s.location = true,
-                TableUpdate::SetProperties { .. } => s.properties = true,
-                TableUpdate::RemoveProperties { .. } => s.properties = true,
+                TableUpdate::RemoveProperties { .. } | TableUpdate::SetProperties { .. } => {
+                    s.properties = true
+                }
             }
         }
         s

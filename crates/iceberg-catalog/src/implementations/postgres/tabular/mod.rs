@@ -256,7 +256,7 @@ pub(crate) async fn create_tabular<'a>(
         location,
     }: CreateTabular<'a>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Uuid> {
+) -> Result<(Uuid, bool)> {
     let query_strings = location
         .partial_locations()
         .into_iter()
@@ -267,14 +267,15 @@ pub(crate) async fn create_tabular<'a>(
     // They can be overwritten in a new create statement as if they wouldn't exist yet.
     // Views do not require this distinction, as `metadata_location` is always set for them
     // (validated by constraint).
-    let tabular_id = sqlx::query_scalar!(
+    let r = sqlx::query!(
         r#"
+        WITH old_id as (select 1 as overwrite from tabular where name = $2 and namespace_id = $3 and typ = $4 and metadata_location is null)
         INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location)
         VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT ON CONSTRAINT unique_name_per_namespace_id
         DO UPDATE SET tabular_id = $1, metadata_location = $5, location = $6
         WHERE tabular.metadata_location IS NULL AND tabular.typ = 'table'
-        RETURNING tabular_id
+        RETURNING tabular_id, (select overwrite from old_id) as overwrite
         "#,
         id,
         name,
@@ -296,6 +297,9 @@ pub(crate) async fn create_tabular<'a>(
         }
         _ => e.into_error_model(format!("Error creating {typ}")),
     })?;
+
+    let tabular_id = r.tabular_id;
+    let overwritten = r.overwrite.is_some();
 
     let location_is_taken = sqlx::query_scalar!(
         r#"
@@ -326,7 +330,7 @@ pub(crate) async fn create_tabular<'a>(
         .into());
     }
 
-    Ok(tabular_id)
+    Ok((tabular_id, overwritten))
 }
 
 #[allow(clippy::too_many_lines)]

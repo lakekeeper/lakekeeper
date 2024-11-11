@@ -79,7 +79,7 @@ pub(crate) async fn create_view(
         .append_details(vec![location.to_string(), metadata.location.to_string()])
         .into());
     }
-    let tabular_id = create_tabular(
+    let (tabular_id, _) = create_tabular(
         CreateTabular {
             id: metadata.view_uuid,
             name,
