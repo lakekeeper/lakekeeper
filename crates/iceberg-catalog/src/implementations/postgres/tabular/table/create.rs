@@ -34,7 +34,7 @@ pub(crate) async fn create_table(
         )
     })?;
 
-    let (tabular_id, overwritten) = create_tabular(
+    let (tabular_id, _overwritten) = create_tabular(
         CreateTabular {
             id: table_metadata.uuid(),
             name,
@@ -119,7 +119,7 @@ pub(crate) async fn create_table(
     insert_snapshot_log(&table_metadata, transaction, tabular_id).await?;
 
     insert_metadata_log(
-        table_metadata.metadata_log().iter().map(|s| s.clone()),
+        table_metadata.metadata_log().iter().cloned(),
         transaction,
         tabular_id,
     )
@@ -331,7 +331,7 @@ async fn insert_snapshot_log(
 ) -> api::Result<()> {
     let (snap, stamp): (Vec<_>, Vec<_>) = table_metadata
         .history()
-        .into_iter()
+        .iter()
         .map(|log| (log.snapshot_id, log.timestamp_ms))
         .unzip();
     let seq = 0i64..snap.len().try_into().map_err(|e| {

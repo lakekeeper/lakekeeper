@@ -549,12 +549,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &new_compression_codec,
             uuid::Uuid::now_v7(),
         );
+        // TODO: this is currently duplicated between here and TableContext::commit, should be unified
         let new_snapshots = new_metadata
             .snapshots()
             .map(|s| s.snapshot_id())
             .collect::<HashSet<i64>>();
-        let added_snapshots = new_snapshots.difference(&old_snapshots).cloned().collect();
-        let removed_snapshots = old_snapshots.difference(&new_snapshots).cloned().collect();
+        let added_snapshots = new_snapshots.difference(&old_snapshots).copied().collect();
+        let removed_snapshots = old_snapshots.difference(&new_snapshots).copied().collect();
 
         let commit = TableCommit {
             new_metadata,
@@ -1187,11 +1188,11 @@ impl CommitContext {
             .collect::<HashSet<i64>>();
         let removed_snaps = old_snaps
             .difference(&new_snaps)
-            .cloned()
+            .copied()
             .collect::<Vec<i64>>();
         let new_snaps = new_snaps
             .difference(&old_snaps)
-            .cloned()
+            .copied()
             .collect::<Vec<i64>>();
         TableCommit {
             removed_snapshots: removed_snaps,

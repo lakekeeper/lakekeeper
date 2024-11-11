@@ -19,8 +19,8 @@ use crate::implementations::postgres::tabular::{
     TabularIdentOwned, TabularIdentUuid, TabularType,
 };
 use iceberg::spec::{
-    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec, Snapshot,
-    SnapshotReference, SnapshotRetention, SortOrder, Summary, UnboundPartitionSpec,
+    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
+    SnapshotRetention, SortOrder, Summary,
 };
 use iceberg_ext::configs::Location;
 
@@ -265,7 +265,7 @@ struct TableQueryStruct {
 }
 
 impl TableQueryStruct {
-    #[expect(clippy::too_many_lines, dead_code)]
+    #[expect(clippy::too_many_lines)]
     fn into_table_metadata(self) -> Option<Result<TableMetadata>> {
         // TODO: we're having a ton of options here, some are required, some are not, we're having
         //       them all optional since we cannot depend on DB migration having already happened
@@ -521,7 +521,7 @@ pub(crate) async fn load_tables(
 
     let mut tables = HashMap::new();
     let mut failed_to_fetch = Vec::new();
-    for table in table.into_iter() {
+    for table in table {
         let table_id = table.table_id.into();
         let metadata_location = match table
             .metadata_location
@@ -557,10 +557,10 @@ pub(crate) async fn load_tables(
             LoadTableResponse {
                 table_id,
                 namespace_id,
+                table_metadata,
                 metadata_location,
                 storage_secret_ident,
                 storage_profile,
-                table_metadata,
             },
         );
     }
@@ -765,7 +765,7 @@ pub(crate) async fn drop_table<'a>(
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
-pub enum TableUpdate2 {
+enum TableUpdate2 {
     AddSnapshot,
     AddSchema,
     AddSpec,
@@ -806,6 +806,7 @@ impl From<&TableUpdate> for TableUpdate2 {
 }
 
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct TableUpdates {
     upgraded_format_version: bool,
     changed_schemas: bool,
@@ -834,14 +835,14 @@ impl From<&[TableUpdate]> for TableUpdates {
                 TableUpdate::AddSortOrder { .. } => s.sort_orders = true,
                 TableUpdate::SetDefaultSortOrder { .. } => s.default_sort_order = true,
                 TableUpdate::RemoveSnapshots { .. } | TableUpdate::AddSnapshot { .. } => {
-                    s.snapshots = true
+                    s.snapshots = true;
                 }
                 TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {
-                    s.snapshot_refs = true
+                    s.snapshot_refs = true;
                 }
                 TableUpdate::SetLocation { .. } => s.location = true,
                 TableUpdate::RemoveProperties { .. } | TableUpdate::SetProperties { .. } => {
-                    s.properties = true
+                    s.properties = true;
                 }
             }
         }
@@ -849,6 +850,7 @@ impl From<&[TableUpdate]> for TableUpdates {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn commit_table_transaction<'a>(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses
     _: WarehouseIdent,
@@ -925,7 +927,7 @@ pub(crate) async fn commit_table_transaction<'a>(
             create::insert_default_partition_spec(
                 transaction,
                 commit.new_metadata.uuid(),
-                &commit.new_metadata.default_partition_spec(),
+                commit.new_metadata.default_partition_spec(),
             )
             .await?;
         }
@@ -945,7 +947,7 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
-        if commit.removed_snapshots.len() > 0 {
+        if !commit.removed_snapshots.is_empty() {
             create::remove_snapshots(
                 commit.new_metadata.uuid(),
                 commit.removed_snapshots,
@@ -953,7 +955,7 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
-        if commit.added_snapshots.len() > 0 {
+        if !commit.added_snapshots.is_empty() {
             create::insert_snapshots(
                 commit
                     .added_snapshots
@@ -1438,8 +1440,7 @@ pub(crate) mod tests {
         assert_eq!(
             load_result.get(&table_id).unwrap().table_metadata,
             create_result.table_metadata,
-            "{}",
-            diff
+            "{diff}",
         );
         assert_eq!(
             load_result.get(&table_id).unwrap().metadata_location,
@@ -1943,8 +1944,8 @@ pub(crate) mod tests {
 
         let loaded_metadata1 = &loaded_tables.get(&table1.table_id).unwrap().table_metadata;
         let loaded_metadata2 = &loaded_tables.get(&table2.table_id).unwrap().table_metadata;
-        let s1 = format!("{:#?}", loaded_metadata1);
-        let s2 = format!("{:#?}", updated_metadata1);
+        let s1 = format!("{loaded_metadata1:#?}",);
+        let s2 = format!("{updated_metadata1:#?}",);
         let diff = similar::TextDiff::from_lines(&s1, &s2);
         let diff = diff
             .unified_diff()
@@ -1952,7 +1953,7 @@ pub(crate) mod tests {
             .missing_newline_hint(false)
             .to_string();
 
-        assert_eq!(loaded_metadata1, &updated_metadata1, "{}", diff);
+        assert_eq!(loaded_metadata1, &updated_metadata1, "{diff}");
         assert_eq!(loaded_metadata2, &updated_metadata2);
     }
 
