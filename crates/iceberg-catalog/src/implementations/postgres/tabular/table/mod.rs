@@ -542,6 +542,7 @@ pub(crate) async fn load_tables(
         let namespace_id = table.namespace_id.into();
         let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
         let storage_profile = table.storage_profile.deref().clone();
+
         let table_metadata = match table.into_table_metadata().transpose() {
             Ok(Some(metadata)) => metadata,
             Ok(None) => {
@@ -870,7 +871,12 @@ pub(crate) async fn commit_table_transaction<'a>(
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
-        SET "metadata" = c."metadata", table_format_version = c."table_format_version"
+        SET "metadata" = c."metadata",
+            table_format_version = c."table_format_version",
+            last_column_id = c."last_column_id",
+            last_sequence_number = c."last_sequence_number",
+            last_updated_ms = c."last_updated_ms",
+            last_partition_id = c."last_partition_id"
         FROM (VALUES
         "#,
     );
@@ -984,6 +990,17 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
+
+        // TODO: can a single transaction result in multiple log entries?
+        if let Some(snap) = commit.new_metadata.history().last() {
+            create::insert_snapshot_log(
+                [snap].into_iter(),
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+
         if properties {
             create::set_table_properties(
                 commit.new_metadata.properties(),

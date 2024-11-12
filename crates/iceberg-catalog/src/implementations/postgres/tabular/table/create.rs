@@ -4,7 +4,7 @@ use crate::implementations::postgres::tabular::table::DbTableFormatVersion;
 use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
 use crate::service::{CreateTableResponse, TableCreation};
 use iceberg::spec::{
-    BoundPartitionSpecRef, FormatVersion, MetadataLog, SnapshotRef, TableMetadata,
+    BoundPartitionSpecRef, FormatVersion, MetadataLog, SnapshotLog, SnapshotRef, TableMetadata,
 };
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -52,13 +52,9 @@ pub(crate) async fn create_table(
         transaction,
     )
     .await?;
+
     // TODO: depending on staged table being overwritten, we may have to do some cleanup in certain
     //       logs?
-
-    let last_seq = table_metadata.last_sequence_number();
-    let last_col = table_metadata.last_column_id();
-    let last_updated = table_metadata.last_updated_ms();
-    let last_partition = table_metadata.last_partition_id();
 
     let _update_result = sqlx::query!(
         r#"
@@ -84,10 +80,10 @@ pub(crate) async fn create_table(
             FormatVersion::V1 => DbTableFormatVersion::V1,
             FormatVersion::V2 => DbTableFormatVersion::V2,
         } as _,
-        last_col,
-        last_seq,
-        last_updated,
-        last_partition
+        table_metadata.last_column_id(),
+        table_metadata.last_sequence_number(),
+        table_metadata.last_updated_ms(),
+        table_metadata.last_partition_id()
     )
     .fetch_one(&mut **transaction)
     .await
@@ -116,7 +112,12 @@ pub(crate) async fn create_table(
     insert_sort_orders(&table_metadata, transaction, tabular_id).await?;
     insert_default_sort_order(&table_metadata, transaction, tabular_id).await?;
 
-    insert_snapshot_log(&table_metadata, transaction, tabular_id).await?;
+    insert_snapshot_log(
+        table_metadata.history().into_iter(),
+        transaction,
+        tabular_id,
+    )
+    .await?;
 
     insert_metadata_log(
         table_metadata.metadata_log().iter().cloned(),
@@ -324,14 +325,12 @@ pub(super) async fn set_current_snapshot(
     Ok(())
 }
 
-async fn insert_snapshot_log(
-    table_metadata: &TableMetadata,
+pub(crate) async fn insert_snapshot_log(
+    table_metadata: impl ExactSizeIterator<Item = &SnapshotLog>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let (snap, stamp): (Vec<_>, Vec<_>) = table_metadata
-        .history()
-        .iter()
         .map(|log| (log.snapshot_id, log.timestamp_ms))
         .unzip();
     let seq = 0i64..snap.len().try_into().map_err(|e| {
