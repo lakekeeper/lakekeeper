@@ -23,14 +23,16 @@ use crate::WarehouseIdent;
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
 const WRITE_METHODS: &[&str] = &["PUT", "POST", "DELETE"];
 // Keep only the following headers:
-const HEADERS_TO_SIGN: [&str; 7] = [
+const HEADERS_TO_SIGN: [&str; 9] = [
     "amz-sdk-invocation-id",
     "amz-sdk-request",
+    "x-amz-te",
     "content-length",
     "content-type",
     "expect",
     "host",
     "content-md5",
+    "range",
 ];
 
 #[async_trait::async_trait]
