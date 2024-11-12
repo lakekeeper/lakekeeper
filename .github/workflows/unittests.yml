@@ -19,8 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v3
       - name: Cargo sqlx-check
         run: |
           sudo apt-get install libpq-dev -y
@@ -58,9 +56,6 @@ jobs:
           TEST_GCS: 1
           TEST_KV2: 1
           TEST_MINIO: 1
-
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v3
 
       - name: Cargo clippy
         run: just check-clippy
@@ -123,9 +118,6 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         env:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
-
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v3
 
       - name: Migrate database
         run: |

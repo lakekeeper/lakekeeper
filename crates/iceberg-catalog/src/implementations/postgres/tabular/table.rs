@@ -650,10 +650,7 @@ pub(crate) mod tests {
                     ])
                     .build()
                     .unwrap(),
-                partition_spec: Some(UnboundPartitionSpec {
-                    spec_id: None,
-                    fields: vec![],
-                }),
+                partition_spec: Some(UnboundPartitionSpec::builder().build()),
                 write_order: None,
                 stage_create,
                 properties: None,

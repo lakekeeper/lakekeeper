@@ -79,6 +79,7 @@ jobs:
       - name: Test Examples
         run: |
           cd examples/self-contained
+          sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64

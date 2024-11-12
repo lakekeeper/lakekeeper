@@ -1205,10 +1205,12 @@ pub(crate) mod tests {
             }
         }
 
+        #[cfg(test)]
         pub(crate) fn hide(&self, object: &str) {
             self.hidden.write().unwrap().insert(object.to_string());
         }
 
+        #[cfg(test)]
         pub(crate) fn to_authorizer(&self) -> OpenFGAAuthorizer {
             OpenFGAAuthorizer {
                 client: self.mock.clone(),

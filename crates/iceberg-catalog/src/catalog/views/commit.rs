@@ -21,7 +21,7 @@ use crate::service::{
 };
 use crate::service::{TabularIdentUuid, ViewIdentUuid};
 use http::StatusCode;
-use iceberg::spec::{AppendViewVersion, ViewMetadata, ViewMetadataBuilder};
+use iceberg::spec::{AppendViewVersion, ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::rest::ViewUpdate;
 use iceberg_ext::catalog::ViewRequirement;
 use uuid::Uuid;
@@ -246,15 +246,7 @@ fn build_new_metadata(
             }
 
             ViewUpdate::UpgradeFormatVersion { format_version } => match format_version {
-                1 => m,
-                _ => {
-                    return Err(ErrorModel::builder()
-                        .code(StatusCode::BAD_REQUEST.into())
-                        .message("Format version not supported".to_string())
-                        .r#type("FormatVersionNotSupported".to_string())
-                        .build()
-                        .into());
-                }
+                ViewFormatVersion::V1 => m,
             },
             ViewUpdate::AddSchema {
                 schema,
