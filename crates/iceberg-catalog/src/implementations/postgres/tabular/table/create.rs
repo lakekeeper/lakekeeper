@@ -548,7 +548,8 @@ pub(crate) async fn set_table_properties(
         .unzip();
     sqlx::query!(
         r#"WITH drop as (DELETE FROM table_properties WHERE table_id = $1) INSERT INTO table_properties (table_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]));"#,
+           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
+           ON CONFLICT (key, table_id) DO UPDATE SET value = EXCLUDED.value;"#,
         table_id,
         &keys,
         &vals
