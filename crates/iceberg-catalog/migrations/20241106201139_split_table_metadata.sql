@@ -154,9 +154,10 @@ create table table_refs
 (
     table_id       uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     table_ref_name text   not null,
-    snapshot_id    bigint not null REFERENCES table_snapshot (snapshot_id) ON DELETE CASCADE,
+    snapshot_id    bigint not null,
     retention      jsonb  not null,
-    PRIMARY KEY (table_id, table_ref_name)
+    PRIMARY KEY (table_id, table_ref_name),
+    FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE
 );
 
 call add_time_columns('table_refs');
