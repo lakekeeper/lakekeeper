@@ -756,7 +756,6 @@ impl From<&[TableUpdate]> for TableUpdates {
         let mut s = TableUpdates::default();
         for u in value {
             match u {
-                TableUpdate::AssignUuid { .. } => {}
                 TableUpdate::AddSchema { .. } => s.changed_schemas = true,
                 TableUpdate::SetCurrentSchema { .. } => s.current_schema = true,
                 TableUpdate::AddSpec { .. } => s.changed_specs = true,

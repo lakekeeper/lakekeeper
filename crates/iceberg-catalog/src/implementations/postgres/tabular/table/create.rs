@@ -230,7 +230,8 @@ pub(crate) async fn insert_partition_specs(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
-               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])"#,
+               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])
+               ON CONFLICT DO NOTHING"#,
         &spec_ids,
         tabular_id,
         &specs
@@ -287,22 +288,21 @@ pub(crate) async fn insert_sort_orders(
             )
         })?);
     }
-    // we use a data-modifying CTE here to get rid of sort orders that may have belonged to a
-    // previously staged table that's now being overwritten.
+
     let _ = sqlx::query!(
-        r#"WITH delete as (DELETE from table_sort_order WHERE table_id = $2 AND sort_order_id = ANY($1::BIGINT[]))
-           INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])"#,
+        r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
+           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])
+           ON CONFLICT DO NOTHING"#,
         &sort_order_ids,
         tabular_id,
         &sort_orders
     )
     .execute(&mut **transaction)
     .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table sort order".to_string())
-        })?;
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table sort order".to_string())
+    })?;
 
     Ok(())
 }
@@ -353,11 +353,11 @@ pub(super) async fn set_current_snapshot(
 }
 
 pub(crate) async fn insert_snapshot_log(
-    table_metadata: impl ExactSizeIterator<Item = &SnapshotLog>,
+    snapshots: impl ExactSizeIterator<Item = &SnapshotLog>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let (snap, stamp): (Vec<_>, Vec<_>) = table_metadata
+    let (snap, stamp): (Vec<_>, Vec<_>) = snapshots
         .map(|log| (log.snapshot_id, log.timestamp_ms))
         .unzip();
     let seq = 0i64..snap.len().try_into().map_err(|e| {
