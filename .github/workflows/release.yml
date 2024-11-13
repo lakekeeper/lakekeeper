@@ -6,6 +6,10 @@ on:
     - main
     - 'releases/**'
   pull_request:
+    branches:
+      - main
+      - 'releases/**'
+
     paths:
     - '.github/workflows/release.yml'
   workflow_dispatch:
