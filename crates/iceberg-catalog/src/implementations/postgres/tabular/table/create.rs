@@ -15,6 +15,12 @@ use std::ops::Range;
 use std::str::FromStr;
 use uuid::Uuid;
 
+// TODO: currently, we upsert & use a data-modifying CTE to delete existing stuff pretty much
+//       everywhere, we're doing it to avoid leftovers from staged tables since this code is shared
+//       between one-shot and staged creation. Since staged tables have two code-paths that can
+//       influence them, a) the table creation itself, and b) the table commit, we cannot simply
+//       rely on the `_overwritten` flag from `create_tabular` within the `insert_x` functions.
+
 pub(crate) async fn create_table(
     TableCreation {
         namespace_id,
@@ -151,7 +157,7 @@ pub(super) async fn insert_schemas(
     let _ = sqlx::query!(
         r#"INSERT INTO table_schema(schema_id, table_id, schema)
            SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])
-           ON CONFLICT DO NOTHING"#,
+           ON CONFLICT (schema_id, table_id) DO UPDATE SET schema = EXCLUDED.schema"#,
         &ids,
         &table_ids,
         &schemas
@@ -192,25 +198,34 @@ pub(crate) async fn insert_partition_specs(
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let partition_specs = table_metadata.partition_specs_iter();
+    let mut spec_ids = Vec::with_capacity(partition_specs.len());
+    let mut specs = Vec::with_capacity(partition_specs.len());
+
     for part_spec in partition_specs {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec) VALUES ($1, $2, $3)
-                ON CONFLICT DO NOTHING"#,
-            part_spec.spec_id(),
-            tabular_id,
-            serde_json::to_value(part_spec).map_err(|er| ErrorModel::internal(
+        spec_ids.push(part_spec.spec_id());
+        specs.push(serde_json::to_value(part_spec).map_err(|er| {
+            ErrorModel::internal(
                 "Error serializing partition spec",
                 "PartitionSpecSerializationError",
                 Some(Box::new(er)),
-            ))?
-        )
-            .execute(&mut **transaction)
-            .await
-            .map_err(|err| {
-                tracing::warn!("Error creating table: {}", err);
-                err.into_error_model("Error inserting table partition spec".to_string())
-            })?;
+            )
+        })?);
     }
+
+    let _ = sqlx::query!(
+            r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
+               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])
+               ON CONFLICT (partition_spec_id, table_id) DO UPDATE SET partition_spec = EXCLUDED.partition_spec"#,
+            &spec_ids,
+            tabular_id,
+            &specs
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|err| {
+            tracing::warn!("Error creating table: {}", err);
+            err.into_error_model("Error inserting table partition spec".to_string())
+        })?;
 
     Ok(())
 }
@@ -222,7 +237,8 @@ pub(crate) async fn insert_default_partition_spec(
 ) -> api::Result<()> {
     // insert default part spec
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id) VALUES ($1, $2, $3)
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id)
+           VALUES ($1, $2, $3)
            ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id, partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec.spec_id(),
         tabular_id,
@@ -283,7 +299,8 @@ pub(crate) async fn insert_default_sort_order(
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id) VALUES ($1, $2)
+        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id)
+           VALUES ($1, $2)
            ON CONFLICT (table_id) DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
         tabular_id,
         table_metadata.default_sort_order_id(),
@@ -305,8 +322,9 @@ pub(super) async fn set_current_snapshot(
     // set current snap
     if let Some(current_snapshot) = table_metadata.current_snapshot() {
         let _ = sqlx::query!(
-            r#"INSERT INTO table_current_snapshot(snapshot_id, table_id) VALUES ($1, $2)
-                ON CONFLICT (table_id) DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id"#,
+            r#"INSERT INTO table_current_snapshot(snapshot_id, table_id)
+               VALUES ($1, $2)
+               ON CONFLICT (table_id) DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id"#,
             current_snapshot.snapshot_id(),
             tabular_id
         )
