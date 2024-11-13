@@ -171,7 +171,9 @@ pub(super) async fn insert_schemas(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_schema(schema_id, table_id, schema)
-           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])"#,
+           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])
+           -- schemas are append only, so we do nothing on conflict
+           ON CONFLICT DO NOTHING"#,
         &ids,
         &table_ids,
         &schemas
