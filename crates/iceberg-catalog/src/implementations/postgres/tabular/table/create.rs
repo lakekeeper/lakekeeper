@@ -112,12 +112,7 @@ pub(crate) async fn create_table(
     insert_sort_orders(&table_metadata, transaction, tabular_id).await?;
     insert_default_sort_order(&table_metadata, transaction, tabular_id).await?;
 
-    insert_snapshot_log(
-        table_metadata.history().into_iter(),
-        transaction,
-        tabular_id,
-    )
-    .await?;
+    insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
 
     insert_metadata_log(
         table_metadata.metadata_log().iter().cloned(),
