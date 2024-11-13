@@ -22,6 +22,7 @@ use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::configs::Location;
 
+use crate::catalog::tables::Diffs;
 use iceberg::TableUpdate;
 use std::collections::{HashMap, HashSet};
 
@@ -130,8 +131,7 @@ pub struct TableCommit {
     pub new_metadata: TableMetadata,
     pub new_metadata_location: Location,
     pub updates: Vec<TableUpdate>,
-    pub added_snapshots: Vec<i64>,
-    pub removed_snapshots: Vec<i64>,
+    pub diffs: Diffs,
 }
 
 #[derive(Debug, Clone)]

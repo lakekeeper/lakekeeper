@@ -4,7 +4,8 @@ use crate::implementations::postgres::tabular::table::DbTableFormatVersion;
 use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
 use crate::service::{CreateTableResponse, TableCreation};
 use iceberg::spec::{
-    BoundPartitionSpecRef, FormatVersion, MetadataLog, SnapshotLog, SnapshotRef, TableMetadata,
+    BoundPartitionSpecRef, FormatVersion, MetadataLog, SchemaRef, SchemalessPartitionSpecRef,
+    SnapshotLog, SnapshotRef, TableMetadata,
 };
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -113,10 +114,15 @@ pub(crate) async fn create_table(
         e.into_error_model("Error creating table".to_string())
     })?;
 
-    insert_schemas(&table_metadata, transaction, tabular_id).await?;
+    insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
     insert_current_schema(&table_metadata, transaction, tabular_id).await?;
 
-    insert_partition_specs(&table_metadata, transaction, tabular_id).await?;
+    insert_partition_specs(
+        table_metadata.partition_specs_iter(),
+        transaction,
+        tabular_id,
+    )
+    .await?;
 
     insert_default_partition_spec(
         transaction,
@@ -147,17 +153,37 @@ pub(crate) async fn create_table(
     Ok(CreateTableResponse { table_metadata })
 }
 
+pub(super) async fn remove_schemas(
+    table_id: Uuid,
+    schema_ids: Vec<i32>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_schema WHERE table_id = $1 AND schema_id = ANY($2::INT[])"#,
+        table_id,
+        &schema_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error deleting table schemas".to_string())
+    })?;
+
+    Ok(())
+}
+
 pub(super) async fn insert_schemas(
-    table_metadata: &TableMetadata,
+    schema_iter: impl ExactSizeIterator<Item = &SchemaRef>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let schemas = table_metadata.schemas_iter().len();
+    let schemas = schema_iter.len();
     let mut ids = Vec::with_capacity(schemas);
     let mut table_ids = Vec::with_capacity(schemas);
     let mut schemas = Vec::with_capacity(schemas);
 
-    for s in table_metadata.schemas_iter() {
+    for s in schema_iter {
         ids.push(s.schema_id());
         table_ids.push(tabular_id);
         schemas.push(serde_json::to_value(s).map_err(|er| {
@@ -208,12 +234,31 @@ pub(super) async fn insert_current_schema(
     Ok(())
 }
 
+pub(super) async fn remove_partition_specs(
+    table_id: Uuid,
+    spec_ids: Vec<i32>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_partition_spec WHERE table_id = $1 AND partition_spec_id = ANY($2::INT[])"#,
+        table_id,
+        &spec_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error deleting table partition specs".to_string())
+    })?;
+
+    Ok(())
+}
+
 pub(crate) async fn insert_partition_specs(
-    table_metadata: &TableMetadata,
+    partition_specs: impl ExactSizeIterator<Item = &SchemalessPartitionSpecRef>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let partition_specs = table_metadata.partition_specs_iter();
     let mut spec_ids = Vec::with_capacity(partition_specs.len());
     let mut specs = Vec::with_capacity(partition_specs.len());
 

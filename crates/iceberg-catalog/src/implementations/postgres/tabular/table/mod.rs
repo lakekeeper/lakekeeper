@@ -741,7 +741,6 @@ pub(crate) async fn drop_table<'a>(
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
 struct TableUpdates {
-    changed_schemas: bool,
     current_schema: bool,
     changed_specs: bool,
     default_spec: bool,
@@ -756,7 +755,6 @@ impl From<&[TableUpdate]> for TableUpdates {
         let mut s = TableUpdates::default();
         for u in value {
             match u {
-                TableUpdate::AddSchema { .. } => s.changed_schemas = true,
                 TableUpdate::SetCurrentSchema { .. } => s.current_schema = true,
                 TableUpdate::AddSpec { .. } => s.changed_specs = true,
                 TableUpdate::SetDefaultSpec { .. } => s.default_spec = true,
@@ -817,7 +815,6 @@ pub(crate) async fn commit_table_transaction<'a>(
     let n_commits = commits.len();
     for (i, commit) in commits.into_iter().enumerate() {
         let TableUpdates {
-            changed_schemas,
             current_schema,
             changed_specs,
             default_spec,
@@ -826,14 +823,29 @@ pub(crate) async fn commit_table_transaction<'a>(
             snapshot_refs,
             properties,
         } = TableUpdates::from(commit.updates.as_slice());
-        if changed_schemas {
+        if !commit.diffs.removed_schemas.is_empty() {
+            create::remove_schemas(
+                commit.new_metadata.uuid(),
+                commit.diffs.removed_schemas,
+                transaction,
+            )
+            .await?;
+        }
+        if !commit.diffs.added_schemas.is_empty() {
             create::insert_schemas(
-                &commit.new_metadata,
+                commit
+                    .diffs
+                    .added_schemas
+                    .into_iter()
+                    .filter_map(|s| commit.new_metadata.schema_by_id(s))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
                 transaction,
                 commit.new_metadata.uuid(),
             )
             .await?;
         }
+
         if current_schema {
             create::insert_current_schema(
                 &commit.new_metadata,
@@ -842,9 +854,23 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
-        if changed_specs {
+        if !commit.diffs.removed_partition_specs.is_empty() {
+            create::remove_partition_specs(
+                commit.new_metadata.uuid(),
+                commit.diffs.removed_partition_specs,
+                transaction,
+            )
+            .await?;
+        }
+        if !commit.diffs.added_partition_specs.is_empty() {
             create::insert_partition_specs(
-                &commit.new_metadata,
+                commit
+                    .diffs
+                    .added_partition_specs
+                    .into_iter()
+                    .filter_map(|s| commit.new_metadata.partition_spec_by_id(s))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
                 transaction,
                 commit.new_metadata.uuid(),
             )
@@ -858,7 +884,7 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
-        if sort_orders {
+        if !commit.diffs.added_sort_orders.is_empty() {
             create::insert_sort_orders(
                 &commit.new_metadata,
                 transaction,
@@ -874,17 +900,18 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
-        if !commit.removed_snapshots.is_empty() {
+        if !commit.diffs.removed_snapshots.is_empty() {
             create::remove_snapshots(
                 commit.new_metadata.uuid(),
-                commit.removed_snapshots,
+                commit.diffs.removed_snapshots,
                 transaction,
             )
             .await?;
         }
-        if !commit.added_snapshots.is_empty() {
+        if !commit.diffs.added_snapshots.is_empty() {
             create::insert_snapshots(
                 commit
+                    .diffs
                     .added_snapshots
                     .into_iter()
                     .filter_map(|s| commit.new_metadata.snapshot_by_id(s))
@@ -1036,7 +1063,7 @@ pub(crate) mod tests {
     use std::default::Default;
     use std::time::SystemTime;
 
-    use crate::catalog::tables::create_table_request_into_table_metadata;
+    use crate::catalog::tables::{create_table_request_into_table_metadata, Diffs};
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
     use crate::implementations::postgres::tabular::table::create::create_table;
     use crate::implementations::postgres::PostgresTransaction;
@@ -1850,16 +1877,32 @@ pub(crate) mod tests {
                 new_metadata_location: Location::from_str("s3://my_bucket/table1/metadata/foo")
                     .unwrap(),
                 updates: updates1,
-                added_snapshots: vec![],
-                removed_snapshots: vec![],
+                diffs: Diffs {
+                    removed_snapshots: vec![],
+                    added_snapshots: vec![],
+                    removed_schemas: vec![],
+                    added_schemas: vec![],
+                    removed_partition_specs: vec![],
+                    added_partition_specs: vec![],
+                    removed_sort_orders: vec![],
+                    added_sort_orders: vec![],
+                },
             },
             TableCommit {
                 new_metadata: updated_metadata2.clone(),
                 new_metadata_location: Location::from_str("s3://my_bucket/table2/metadata/foo")
                     .unwrap(),
                 updates: updates2,
-                added_snapshots: vec![],
-                removed_snapshots: vec![],
+                diffs: Diffs {
+                    removed_snapshots: vec![],
+                    added_snapshots: vec![],
+                    removed_schemas: vec![],
+                    added_schemas: vec![],
+                    removed_partition_specs: vec![],
+                    added_partition_specs: vec![],
+                    removed_sort_orders: vec![],
+                    added_sort_orders: vec![],
+                },
             },
         ];
 

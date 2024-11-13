@@ -38,7 +38,7 @@ use crate::catalog;
 use crate::catalog::tabular::list_entities;
 use http::StatusCode;
 use iceberg::spec::{
-    FormatVersion, MetadataLog, SortOrder, TableMetadata, TableMetadataBuildResult,
+    FormatVersion, MetadataLog, SchemaId, SortOrder, TableMetadata, TableMetadataBuildResult,
     TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
     PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
 };
@@ -529,6 +529,21 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .snapshots()
             .map(|s| s.snapshot_id())
             .collect::<HashSet<i64>>();
+        let old_schemas = previous_table
+            .table_metadata
+            .schemas_iter()
+            .map(|s| s.schema_id())
+            .collect::<HashSet<_>>();
+        let old_partition_specs = previous_table
+            .table_metadata
+            .partition_specs_iter()
+            .map(|s| s.spec_id())
+            .collect::<HashSet<_>>();
+        let old_sort_orders = previous_table
+            .table_metadata
+            .sort_orders_iter()
+            .map(|s| s.order_id)
+            .collect::<HashSet<_>>();
 
         // Apply changes
         let TableMetadataBuildResult {
@@ -557,12 +572,53 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let added_snapshots = new_snapshots.difference(&old_snapshots).copied().collect();
         let removed_snapshots = old_snapshots.difference(&new_snapshots).copied().collect();
 
+        let new_schemas = new_metadata
+            .schemas_iter()
+            .map(|s| s.schema_id())
+            .collect::<HashSet<_>>();
+        let added_schemas = new_schemas.difference(&old_schemas).copied().collect();
+        let removed_schemas = old_schemas.difference(&new_schemas).copied().collect();
+
+        let new_partition_specs = new_metadata
+            .partition_specs_iter()
+            .map(|s| s.spec_id())
+            .collect::<HashSet<_>>();
+        let added_partition_specs = new_partition_specs
+            .difference(&old_partition_specs)
+            .copied()
+            .collect();
+        let removed_partition_specs = old_partition_specs
+            .difference(&new_partition_specs)
+            .copied()
+            .collect();
+
+        let new_sort_orders = new_metadata
+            .sort_orders_iter()
+            .map(|s| s.order_id)
+            .collect::<HashSet<_>>();
+        let added_sort_orders = new_sort_orders
+            .difference(&old_sort_orders)
+            .copied()
+            .collect();
+        let removed_sort_orders = old_sort_orders
+            .difference(&new_sort_orders)
+            .copied()
+            .collect();
+
         let commit = TableCommit {
             new_metadata,
             new_metadata_location,
             updates: changes,
-            added_snapshots,
-            removed_snapshots,
+            diffs: Diffs {
+                removed_snapshots,
+                added_snapshots,
+                removed_schemas,
+                added_schemas,
+                removed_partition_specs,
+                added_partition_specs,
+                removed_sort_orders,
+                added_sort_orders,
+            },
         };
         C::commit_table_transaction(warehouse_id, vec![commit.clone()], t.transaction()).await?;
 
@@ -1176,32 +1232,113 @@ struct CommitContext {
 
 impl CommitContext {
     fn commit(&self) -> TableCommit {
-        let new_snaps = self
-            .new_metadata
-            .snapshots()
-            .map(|s| s.snapshot_id())
-            .collect::<HashSet<i64>>();
-        let old_snaps = self
-            .previous_metadata
-            .snapshots()
-            .map(|s| s.snapshot_id())
-            .collect::<HashSet<i64>>();
-        let removed_snaps = old_snaps
-            .difference(&new_snaps)
-            .copied()
-            .collect::<Vec<i64>>();
-        let new_snaps = new_snaps
-            .difference(&old_snaps)
-            .copied()
-            .collect::<Vec<i64>>();
+        let new_metadata = &self.new_metadata;
+        let previous_metadata = &self.previous_metadata;
+
+        let diffs = calculate_diffs(new_metadata, previous_metadata);
+
         TableCommit {
-            removed_snapshots: removed_snaps,
-            added_snapshots: new_snaps,
-            new_metadata: self.new_metadata.clone(),
+            diffs,
+            new_metadata: new_metadata.clone(),
             new_metadata_location: self.new_metadata_location.clone(),
             updates: self.updates.clone(),
         }
     }
+}
+
+fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetadata) -> Diffs {
+    let new_snaps = new_metadata
+        .snapshots()
+        .map(|s| s.snapshot_id())
+        .collect::<HashSet<i64>>();
+    let old_snaps = previous_metadata
+        .snapshots()
+        .map(|s| s.snapshot_id())
+        .collect::<HashSet<i64>>();
+    let removed_snaps = old_snaps
+        .difference(&new_snaps)
+        .copied()
+        .collect::<Vec<i64>>();
+    let new_snaps = new_snaps
+        .difference(&old_snaps)
+        .copied()
+        .collect::<Vec<i64>>();
+
+    let old_schemas = previous_metadata
+        .schemas_iter()
+        .map(|s| s.schema_id())
+        .collect::<HashSet<SchemaId>>();
+    let new_schemas = new_metadata
+        .schemas_iter()
+        .map(|s| s.schema_id())
+        .collect::<HashSet<SchemaId>>();
+
+    let removed_schemas = old_schemas
+        .difference(&new_schemas)
+        .copied()
+        .collect::<Vec<SchemaId>>();
+    let new_schemas = new_schemas
+        .difference(&old_schemas)
+        .copied()
+        .collect::<Vec<SchemaId>>();
+
+    let old_specs = previous_metadata
+        .partition_specs_iter()
+        .map(|s| s.spec_id())
+        .collect::<HashSet<i32>>();
+    let new_specs = new_metadata
+        .partition_specs_iter()
+        .map(|s| s.spec_id())
+        .collect::<HashSet<i32>>();
+
+    let removed_specs = old_specs
+        .difference(&new_specs)
+        .copied()
+        .collect::<Vec<i32>>();
+    let new_specs = new_specs
+        .difference(&old_specs)
+        .copied()
+        .collect::<Vec<i32>>();
+
+    let old_sort_orders = previous_metadata
+        .sort_orders_iter()
+        .map(|s| s.order_id)
+        .collect::<HashSet<i64>>();
+    let new_sort_orders = new_metadata
+        .sort_orders_iter()
+        .map(|s| s.order_id)
+        .collect::<HashSet<i64>>();
+
+    let removed_sort_orders = old_sort_orders
+        .difference(&new_sort_orders)
+        .copied()
+        .collect::<Vec<i64>>();
+    let new_sort_orders = new_sort_orders
+        .difference(&old_sort_orders)
+        .copied()
+        .collect::<Vec<i64>>();
+    Diffs {
+        removed_snapshots: removed_snaps,
+        added_snapshots: new_snaps,
+        removed_schemas,
+        added_schemas: new_schemas,
+        removed_partition_specs: removed_specs,
+        added_partition_specs: new_specs,
+        removed_sort_orders,
+        added_sort_orders: new_sort_orders,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Diffs {
+    pub(crate) removed_snapshots: Vec<i64>,
+    pub(crate) added_snapshots: Vec<i64>,
+    pub(crate) removed_schemas: Vec<i32>,
+    pub(crate) added_schemas: Vec<i32>,
+    pub(crate) removed_partition_specs: Vec<i32>,
+    pub(crate) added_partition_specs: Vec<i32>,
+    pub(crate) removed_sort_orders: Vec<i64>,
+    pub(crate) added_sort_orders: Vec<i64>,
 }
 
 pub(crate) fn determine_table_ident(
