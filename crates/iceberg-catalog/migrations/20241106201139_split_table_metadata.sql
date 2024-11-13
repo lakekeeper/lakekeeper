@@ -8,14 +8,19 @@ alter table "table"
     add column last_column_id       int,
     add column last_sequence_number bigint,
     add column last_updated_ms      bigint,
-    add column last_partition_id    int
+    add column last_partition_id    int,
+    drop constraint "tabular_ident_fk",
+    add constraint "tabular_ident_fk" foreign key (table_id) references tabular (tabular_id) on delete cascade
 ;
 
+alter table "view"
+    drop constraint "tabular_ident_fk",
+    add constraint "tabular_ident_fk" foreign key (view_id) references tabular (tabular_id) on delete cascade;
 
 create table table_schema
 (
     schema_id int   not null,
-    table_id  uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id  uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     schema    jsonb not null,
     CONSTRAINT "unique_schema_per_table" unique (table_id, schema_id),
     PRIMARY KEY (table_id, schema_id)
@@ -26,7 +31,7 @@ select trigger_updated_at('table_schema');
 
 create table table_current_schema
 (
-    table_id  uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id  uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
     schema_id int not null,
     FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id)
 );
@@ -37,7 +42,7 @@ select trigger_updated_at('table_current_schema');
 create table table_partition_spec
 (
     partition_spec_id int   not null,
-    table_id          uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id          uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     partition_spec    jsonb not null,
     CONSTRAINT "unique_partition_spec_per_table" unique (table_id, partition_spec_id),
     PRIMARY KEY (table_id, partition_spec_id)
@@ -48,7 +53,7 @@ select trigger_updated_at('table_partition_spec');
 
 create table table_default_partition_spec
 (
-    table_id          uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id          uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
     schema_id         int not null,
     partition_spec_id int not null,
     FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id),
@@ -60,7 +65,7 @@ select trigger_updated_at('table_default_partition_spec');
 
 create table table_properties
 (
-    table_id uuid not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id uuid not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     key      text not null,
     value    text not null,
     PRIMARY KEY (table_id, key)
@@ -72,7 +77,7 @@ select trigger_updated_at('table_properties');
 create table table_snapshot
 (
     snapshot_id        bigint not null,
-    table_id           uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id           uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     parent_snapshot_id bigint,
     sequence_number    bigint not null,
     manifest_list      text   not null,
@@ -89,7 +94,7 @@ select trigger_updated_at('table_snapshot');
 
 create table table_current_snapshot
 (
-    table_id    uuid PRIMARY KEY REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id    uuid PRIMARY KEY REFERENCES "table" (table_id) ON DELETE CASCADE,
     snapshot_id bigint not null,
     FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id)
 );
@@ -103,7 +108,7 @@ create table table_snapshot_log
     table_id        uuid      not null,
     snapshot_id     bigint    not null,
     timestamp       bigint    not null,
-    FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE,
     PRIMARY KEY (table_id, sequence_number)
 );
 
@@ -113,7 +118,7 @@ select trigger_updated_at('table_snapshot_log');
 create table table_metadata_log
 (
     sequence_number bigserial not null,
-    table_id        uuid      not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id        uuid      not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     timestamp       bigint    not null,
     metadata_file   text      not null,
     PRIMARY KEY (table_id, sequence_number)
@@ -125,7 +130,7 @@ select trigger_updated_at('table_metadata_log');
 create table table_sort_order
 (
     sort_order_id bigint not null,
-    table_id      uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id      uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     sort_order    jsonb  not null,
     PRIMARY KEY (table_id, sort_order_id)
 );
@@ -135,7 +140,7 @@ select trigger_updated_at('table_sort_order');
 
 create table table_default_sort_order
 (
-    table_id      uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id      uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
     sort_order_id bigint not null,
     FOREIGN KEY (table_id, sort_order_id) REFERENCES table_sort_order (table_id, sort_order_id)
 );
@@ -147,7 +152,7 @@ DROP TABLE IF EXISTS table_refs;
 
 create table table_refs
 (
-    table_id       uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    table_id       uuid   not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     table_ref_name text   not null,
     snapshot_id    bigint not null,
     retention      jsonb  not null,

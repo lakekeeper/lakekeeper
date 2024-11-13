@@ -79,7 +79,7 @@ pub(crate) async fn create_view(
         .append_details(vec![location.to_string(), metadata.location.to_string()])
         .into());
     }
-    let (tabular_id, _) = create_tabular(
+    let tabular_id = create_tabular(
         CreateTabular {
             id: metadata.view_uuid,
             name,
@@ -160,30 +160,6 @@ pub(crate) async fn drop_view<'a>(
     view_id: ViewIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    let _ = sqlx::query!(
-        r#"
-     DELETE FROM view
-     WHERE view_id = $1
-     AND view_id IN (select view_id from active_views)
-     RETURNING view_id
-     "#,
-        *view_id,
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            ErrorModel::builder()
-                .code(StatusCode::NOT_FOUND.into())
-                .message("View not found".to_string())
-                .r#type("NoSuchViewError".to_string())
-                .build()
-        } else {
-            tracing::warn!("Error dropping view: {}", e);
-            e.into_error_model("Error dropping view".to_string())
-        }
-    })?;
-
     drop_tabular(TabularIdentUuid::View(*view_id), transaction).await
 }
 

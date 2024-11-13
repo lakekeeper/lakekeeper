@@ -40,7 +40,24 @@ pub(crate) async fn create_table(
         )
     })?;
 
-    let (tabular_id, _overwritten) = create_tabular(
+    let result = sqlx::query!(r#"DELETE FROM tabular t WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL"#, *namespace_id, name)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            let message = "Error creating table".to_string();
+            tracing::warn!("{}", message);
+            e.into_error_model(message)
+        })?;
+
+    if result.rows_affected() > 0 {
+        tracing::debug!(
+            "Overwriting existing tabular entry for table '{}' within namespace_id: '{}'",
+            name,
+            namespace_id
+        );
+    }
+
+    let tabular_id = create_tabular(
         CreateTabular {
             id: table_metadata.uuid(),
             name,
@@ -76,8 +93,6 @@ pub(crate) async fn create_table(
             WHERE EXISTS (SELECT 1
                 FROM active_tables
                 WHERE active_tables.table_id = $1))
-        ON CONFLICT ON CONSTRAINT "table_pkey"
-        DO UPDATE SET "metadata" = $2, last_column_id = $4, last_sequence_number = $5, last_updated_ms = $6, last_partition_id = $7
         RETURNING "table_id"
         "#,
         tabular_id,
@@ -156,8 +171,7 @@ pub(super) async fn insert_schemas(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_schema(schema_id, table_id, schema)
-           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])
-           ON CONFLICT (schema_id, table_id) DO UPDATE SET schema = EXCLUDED.schema"#,
+           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])"#,
         &ids,
         &table_ids,
         &schemas
@@ -213,19 +227,18 @@ pub(crate) async fn insert_partition_specs(
     }
 
     let _ = sqlx::query!(
-            r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
-               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])
-               ON CONFLICT (partition_spec_id, table_id) DO UPDATE SET partition_spec = EXCLUDED.partition_spec"#,
-            &spec_ids,
-            tabular_id,
-            &specs
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table partition spec".to_string())
-        })?;
+        r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
+               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])"#,
+        &spec_ids,
+        tabular_id,
+        &specs
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table partition spec".to_string())
+    })?;
 
     Ok(())
 }
@@ -277,8 +290,7 @@ pub(crate) async fn insert_sort_orders(
     let _ = sqlx::query!(
         r#"WITH delete as (DELETE from table_sort_order WHERE table_id = $2 AND sort_order_id = ANY($1::BIGINT[]))
            INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])
-           ON CONFLICT (table_id, sort_order_id) DO UPDATE SET sort_order = EXCLUDED.sort_order"#,
+           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])"#,
         &sort_order_ids,
         tabular_id,
         &sort_orders
@@ -355,7 +367,7 @@ pub(crate) async fn insert_snapshot_log(
     })?;
     let _ = sqlx::query!(
         r#"INSERT INTO table_snapshot_log(table_id, snapshot_id, timestamp)
-           SELECT $2, UNNEST($1::BIGINT[]), UNNEST($3::BIGINT[]) ORDER BY UNNEST($4::BIGINT[])"#,
+           SELECT $2, UNNEST($1::BIGINT[]), UNNEST($3::BIGINT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,
         &snap,
         &tabular_id,
         &stamp,
@@ -559,7 +571,8 @@ pub(crate) async fn set_table_properties(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .unzip();
     sqlx::query!(
-        r#"WITH drop as (DELETE FROM table_properties WHERE table_id = $1) INSERT INTO table_properties (table_id, key, value)
+        r#"WITH drop as (DELETE FROM table_properties WHERE table_id = $1)
+           INSERT INTO table_properties (table_id, key, value)
            VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
            ON CONFLICT (key, table_id) DO UPDATE SET value = EXCLUDED.value;"#,
         table_id,

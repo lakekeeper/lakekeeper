@@ -735,90 +735,19 @@ pub(crate) async fn drop_table<'a>(
     table_id: TableIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    let _ = sqlx::query!(
-        r#"
-        DELETE FROM "table"
-        WHERE table_id = $1 AND EXISTS (
-            SELECT 1
-            FROM active_tables
-            WHERE active_tables.table_id = $1
-        )
-        RETURNING table_id
-        "#,
-        *table_id,
-    )
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            ErrorModel::not_found(
-                "Table not found",
-                "NoSuchTabularError".to_string(),
-                Some(Box::new(e)),
-            )
-        } else {
-            tracing::warn!("Error dropping table: {}", e);
-            e.into_error_model("Error dropping table".into())
-        }
-    })?;
-
     drop_tabular(TabularIdentUuid::Table(*table_id), transaction).await
-}
-
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Clone)]
-enum TableUpdate2 {
-    AddSnapshot,
-    AddSchema,
-    AddSpec,
-    AddSortOrder,
-    UpgradeFormatVersion,
-    AssignUuid,
-    RemoveSnapshots,
-    RemoveSnapshotRef,
-    SetLocation,
-    RemoveProperties,
-    SetProperties,
-    SetDefaultSortOrder,
-    SetDefaultSpec,
-    SetSnapshotRef,
-    SetCurrentSchema,
-}
-
-impl From<&TableUpdate> for TableUpdate2 {
-    fn from(u: &TableUpdate) -> Self {
-        match u {
-            TableUpdate::UpgradeFormatVersion { .. } => TableUpdate2::UpgradeFormatVersion,
-            TableUpdate::AssignUuid { .. } => TableUpdate2::AssignUuid,
-            TableUpdate::AddSchema { .. } => TableUpdate2::AddSchema,
-            TableUpdate::SetCurrentSchema { .. } => TableUpdate2::SetCurrentSchema,
-            TableUpdate::AddSpec { .. } => TableUpdate2::AddSpec,
-            TableUpdate::SetDefaultSpec { .. } => TableUpdate2::SetDefaultSpec,
-            TableUpdate::AddSortOrder { .. } => TableUpdate2::AddSortOrder,
-            TableUpdate::SetDefaultSortOrder { .. } => TableUpdate2::SetDefaultSortOrder,
-            TableUpdate::AddSnapshot { .. } => TableUpdate2::AddSnapshot,
-            TableUpdate::SetSnapshotRef { .. } => TableUpdate2::SetSnapshotRef,
-            TableUpdate::RemoveSnapshots { .. } => TableUpdate2::RemoveSnapshots,
-            TableUpdate::RemoveSnapshotRef { .. } => TableUpdate2::RemoveSnapshotRef,
-            TableUpdate::SetLocation { .. } => TableUpdate2::SetLocation,
-            TableUpdate::SetProperties { .. } => TableUpdate2::SetProperties,
-            TableUpdate::RemoveProperties { .. } => TableUpdate2::RemoveProperties,
-        }
-    }
 }
 
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
 struct TableUpdates {
-    upgraded_format_version: bool,
     changed_schemas: bool,
     current_schema: bool,
     changed_specs: bool,
     default_spec: bool,
     sort_orders: bool,
     default_sort_order: bool,
-    snapshots: bool,
     snapshot_refs: bool,
-    location: bool,
     properties: bool,
 }
 
@@ -827,7 +756,6 @@ impl From<&[TableUpdate]> for TableUpdates {
         let mut s = TableUpdates::default();
         for u in value {
             match u {
-                TableUpdate::UpgradeFormatVersion { .. } => s.upgraded_format_version = true,
                 TableUpdate::AssignUuid { .. } => {}
                 TableUpdate::AddSchema { .. } => s.changed_schemas = true,
                 TableUpdate::SetCurrentSchema { .. } => s.current_schema = true,
@@ -835,16 +763,13 @@ impl From<&[TableUpdate]> for TableUpdates {
                 TableUpdate::SetDefaultSpec { .. } => s.default_spec = true,
                 TableUpdate::AddSortOrder { .. } => s.sort_orders = true,
                 TableUpdate::SetDefaultSortOrder { .. } => s.default_sort_order = true,
-                TableUpdate::RemoveSnapshots { .. } | TableUpdate::AddSnapshot { .. } => {
-                    s.snapshots = true;
-                }
                 TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {
                     s.snapshot_refs = true;
                 }
-                TableUpdate::SetLocation { .. } => s.location = true,
                 TableUpdate::RemoveProperties { .. } | TableUpdate::SetProperties { .. } => {
                     s.properties = true;
                 }
+                _ => {}
             }
         }
         s
@@ -893,16 +818,13 @@ pub(crate) async fn commit_table_transaction<'a>(
     let n_commits = commits.len();
     for (i, commit) in commits.into_iter().enumerate() {
         let TableUpdates {
-            upgraded_format_version: _,
             changed_schemas,
             current_schema,
             changed_specs,
             default_spec,
             sort_orders,
             default_sort_order,
-            snapshots: _,
             snapshot_refs,
-            location: _,
             properties,
         } = TableUpdates::from(commit.updates.as_slice());
         if changed_schemas {
