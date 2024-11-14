@@ -742,9 +742,7 @@ pub(crate) async fn drop_table<'a>(
 #[allow(clippy::struct_excessive_bools)]
 struct TableUpdates {
     current_schema: bool,
-    changed_specs: bool,
     default_spec: bool,
-    sort_orders: bool,
     default_sort_order: bool,
     snapshot_refs: bool,
     properties: bool,
@@ -756,9 +754,7 @@ impl From<&[TableUpdate]> for TableUpdates {
         for u in value {
             match u {
                 TableUpdate::SetCurrentSchema { .. } => s.current_schema = true,
-                TableUpdate::AddSpec { .. } => s.changed_specs = true,
                 TableUpdate::SetDefaultSpec { .. } => s.default_spec = true,
-                TableUpdate::AddSortOrder { .. } => s.sort_orders = true,
                 TableUpdate::SetDefaultSortOrder { .. } => s.default_sort_order = true,
                 TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {
                     s.snapshot_refs = true;
@@ -816,9 +812,7 @@ pub(crate) async fn commit_table_transaction<'a>(
     for (i, commit) in commits.into_iter().enumerate() {
         let TableUpdates {
             current_schema,
-            changed_specs,
             default_spec,
-            sort_orders,
             default_sort_order,
             snapshot_refs,
             properties,
@@ -1302,7 +1296,7 @@ pub(crate) mod tests {
 
         // Load should succeed
         let mut t = pool.begin().await.unwrap();
-        let load_result = load_tables(warehouse_id, vec![table_id], false, &mut t)
+        let load_result = load_tables(warehouse_id, vec![table_id.into()], false, &mut t)
             .await
             .unwrap();
         assert_eq!(load_result.len(), 1);
@@ -1346,7 +1340,7 @@ pub(crate) mod tests {
         // Its staged - should not have metadata_location
         let load = load_tables(
             warehouse_id,
-            vec![table_id],
+            vec![table_id.into()],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -1387,7 +1381,7 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
         let load_result = load_tables(
             warehouse_id,
-            vec![table_id],
+            vec![table_id.into()],
             false,
             &mut pool.begin().await.unwrap(),
         )

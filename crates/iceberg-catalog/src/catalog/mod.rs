@@ -1,4 +1,4 @@
-mod commit_tables;
+pub(crate) mod commit_tables;
 pub(crate) mod compression_codec;
 mod config;
 pub(crate) mod io;
