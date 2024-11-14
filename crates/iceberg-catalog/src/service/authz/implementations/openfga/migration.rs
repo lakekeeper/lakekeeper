@@ -213,6 +213,7 @@ fn parse_applied_model_versions(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) mod tests {
     use super::super::client::new_authorizer;
     use super::super::OpenFGAAuthorizer;

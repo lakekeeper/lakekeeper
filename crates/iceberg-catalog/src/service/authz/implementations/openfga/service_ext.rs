@@ -21,6 +21,7 @@ pub(crate) trait ClientHelper {
     async fn get_or_create_store(&mut self, store_name: &str) -> OpenFGAResult<Store>;
 
     #[cfg(test)]
+    #[allow(dead_code)]
     async fn get_auth_model_id(
         &mut self,
         store_id: String,
@@ -28,6 +29,7 @@ pub(crate) trait ClientHelper {
     ) -> OpenFGAResult<Option<String>>;
 
     #[cfg(test)]
+    #[allow(dead_code)]
     async fn get_all_auth_models(
         &mut self,
         store_id: String,

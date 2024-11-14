@@ -146,6 +146,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) mod test {
     use crate::api::iceberg::types::Prefix;
     use crate::api::iceberg::v1::namespace::Service;

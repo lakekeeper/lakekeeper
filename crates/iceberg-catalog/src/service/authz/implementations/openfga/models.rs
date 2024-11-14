@@ -85,9 +85,11 @@ impl ModelVersion {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn get_model_ref(&self) -> &AuthorizationModel {
         MODEL.get_model(self)
     }
+
     #[must_use]
     pub(crate) fn as_monotonic_int(&self) -> i32 {
         match self {
