@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.0](https://github.com/lakekeeper/lakekeeper/compare/v0.4.2...v0.5.0) (2024-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* Default to single-tenant / single-project with NIL Project-ID
+
+### Features
+
+* Add iceberg openapi to swagger ([#431](https://github.com/lakekeeper/lakekeeper/issues/431)) ([bb3d12f](https://github.com/lakekeeper/lakekeeper/commit/bb3d12f2075e704eaab58b5a8292422fee3784fb))
+* Add Iceberg REST Spec to swagger ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Add namespace_id filter to list deleted tabulars ([#443](https://github.com/lakekeeper/lakekeeper/issues/443)) ([cc82736](https://github.com/lakekeeper/lakekeeper/commit/cc82736e9507f69e33f68c54d21bd4638126ef72))
+* Create default Project on Bootstrap ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Default to single-tenant / single-project with NIL Project-ID ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Extend user search to email field ([#477](https://github.com/lakekeeper/lakekeeper/issues/477)) ([9f9f42b](https://github.com/lakekeeper/lakekeeper/commit/9f9f42b5ac3dfb6b978f4db20a698cbc7163dec7))
+* Fine Grained Access Controls with OpenFGA ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Generated TS Client ([#453](https://github.com/lakekeeper/lakekeeper/issues/453)) ([24bfccf](https://github.com/lakekeeper/lakekeeper/commit/24bfccf80fb1166f5a52f72ac0e8d2effb5b0bc0))
+* Hierarchical Namespaces ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Optionally return uuids for Iceberg APIs ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* pagination without empty pages ([#450](https://github.com/lakekeeper/lakekeeper/issues/450)) ([c88a59d](https://github.com/lakekeeper/lakekeeper/commit/c88a59db4e99a01118a281a51c97aa21f69cdb0f))
+* Project Management APIs ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Server Info Endpoint ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+
+
+### Bug Fixes
+
+* aws s3 signer ([#493](https://github.com/lakekeeper/lakekeeper/issues/493)) ([b7ad8f4](https://github.com/lakekeeper/lakekeeper/commit/b7ad8f44eaba31c6ce181ba0844d2f0f6b8b1e76))
+* Delete Namespaces with children should not be possible ([#482](https://github.com/lakekeeper/lakekeeper/issues/482)) ([7ffd864](https://github.com/lakekeeper/lakekeeper/commit/7ffd8648fd058be72126e76abfedb9d860e7c69d))
+
 ## [0.4.2](https://github.com/lakekeeper/lakekeeper/compare/v0.4.1...v0.4.2) (2024-10-28)
 
 
