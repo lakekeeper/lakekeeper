@@ -4,8 +4,11 @@ on:
   push:
     branches:
       - main
+      - 'releases/**'
   pull_request:
-
+    branches:
+      - main
+      - 'releases/**'
 
 env:
   CARGO_TERM_COLOR: always
