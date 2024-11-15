@@ -429,6 +429,39 @@ pub(crate) async fn insert_snapshot_log(
     Ok(())
 }
 
+pub(super) async fn expire_metadata_log_entries(
+    n_entries: usize,
+    transaction: &mut Transaction<'_, Postgres>,
+    tabular_id: Uuid,
+) -> api::Result<()> {
+    let i: i64 = n_entries.try_into().map_err(|e| {
+        ErrorModel::internal(
+            "Too many metadata log entries to expire.",
+            "TooManyMetadataLogEntries",
+            Some(Box::new(e)),
+        )
+    })?;
+    let exec = sqlx::query!(
+        r#"DELETE FROM table_metadata_log WHERE table_id = $1
+           AND sequence_number IN (SELECT sequence_number FROM table_metadata_log WHERE table_id = $1 ORDER BY sequence_number ASC LIMIT $2)"#,
+        tabular_id,
+        i
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error expiring table metadata log entries".to_string())
+    })?;
+
+    tracing::debug!(
+        "Expired {} metadata log entries for table_id: {}",
+        exec.len(),
+        tabular_id
+    );
+    Ok(())
+}
+
 pub(super) async fn insert_metadata_log(
     log: impl ExactSizeIterator<Item = MetadataLog>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -451,7 +484,7 @@ pub(super) async fn insert_metadata_log(
         timestamps.push(timestamp_ms);
         metadata_files.push(metadata_file);
     }
-
+    eprintln!("Inserting metadata log entries: {:?}", metadata_files);
     let _ = sqlx::query!(
         r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file)
            SELECT $1, UNNEST($2::BIGINT[]), UNNEST($3::TEXT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,

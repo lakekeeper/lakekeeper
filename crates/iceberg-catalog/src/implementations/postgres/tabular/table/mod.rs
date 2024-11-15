@@ -24,6 +24,7 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
+use crate::implementations::postgres::tabular::table::create::expire_metadata_log_entries;
 use iceberg::TableUpdate;
 use sqlx::types::Json;
 use std::default::Default;
@@ -847,7 +848,7 @@ pub(crate) async fn commit_table_transaction<'a>(
             snapshot_refs,
             properties,
         } = TableUpdates::from(commit.updates.as_slice());
-        if !commit.diffs.removed_schemas.is_empty() {
+        if !&commit.diffs.removed_schemas.is_empty() {
             create::remove_schemas(
                 commit.new_metadata.uuid(),
                 commit.diffs.removed_schemas,
@@ -972,6 +973,28 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
+        if commit.expired_metadata_logs > 0 {
+            expire_metadata_log_entries(
+                commit.expired_metadata_logs,
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
+
+        create::insert_metadata_log(
+            commit
+                .new_metadata
+                .metadata_log()
+                .into_iter()
+                .rev()
+                .take(commit.added_metadata_log)
+                .rev()
+                .cloned(),
+            transaction,
+            commit.new_metadata.uuid(),
+        )
+        .await?;
 
         if properties {
             create::set_table_properties(
@@ -982,14 +1005,6 @@ pub(crate) async fn commit_table_transaction<'a>(
             .await?;
         }
         // TODO: can a single transaction result in multiple log entries?
-        if let Some(log) = commit.new_metadata.metadata_log().last() {
-            create::insert_metadata_log(
-                [log.clone()].into_iter(),
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
 
         let metadata_ser = serde_json::to_value(&commit.new_metadata).map_err(|e| {
             ErrorModel::internal(
@@ -1912,6 +1927,8 @@ pub(crate) mod tests {
                     removed_sort_orders: vec![],
                     added_sort_orders: vec![],
                 },
+                expired_metadata_logs: 0,
+                added_metadata_log: 0,
             },
             TableCommit {
                 new_metadata: updated_metadata2.clone(),
@@ -1928,6 +1945,8 @@ pub(crate) mod tests {
                     removed_sort_orders: vec![],
                     added_sort_orders: vec![],
                 },
+                expired_metadata_logs: 0,
+                added_metadata_log: 0,
             },
         ];
 

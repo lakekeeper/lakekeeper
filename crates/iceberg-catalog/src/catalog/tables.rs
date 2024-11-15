@@ -908,15 +908,18 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,
-                expired_metadata_logs: this_expired,
+                expired_metadata_logs: mut this_expired,
             } = apply_commit(
                 previous_table.table_metadata.clone(),
                 &previous_table.metadata_location,
                 &change.requirements,
                 change.updates.clone(),
             )?;
+            let n_expired = this_expired.len();
             if get_delete_after_commit_enabled(new_metadata.properties()) {
                 expired_metadata_logs.extend(this_expired);
+            } else {
+                this_expired.clear();
             }
             let new_table_location =
                 parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -926,12 +929,18 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 &new_compression_codec,
                 Uuid::now_v7(),
             );
+
+            let added_metadata_log = (new_metadata.metadata_log().len() + n_expired)
+                - previous_table.table_metadata.metadata_log().len();
+
             Ok(CommitContext {
                 new_metadata,
                 new_metadata_location,
                 new_compression_codec,
                 updates: change.updates,
                 previous_metadata: previous_table.table_metadata,
+                expired_metadata_logs: n_expired,
+                added_metadata_log,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1028,6 +1037,8 @@ struct CommitContext {
     pub previous_metadata: iceberg::spec::TableMetadata,
     pub updates: Vec<TableUpdate>,
     pub new_compression_codec: CompressionCodec,
+    pub expired_metadata_logs: usize,
+    pub added_metadata_log: usize,
 }
 
 impl CommitContext {
@@ -1042,6 +1053,8 @@ impl CommitContext {
             new_metadata: new_metadata.clone(),
             new_metadata_location: self.new_metadata_location.clone(),
             updates: self.updates.clone(),
+            expired_metadata_logs: self.expired_metadata_logs,
+            added_metadata_log: self.added_metadata_log,
         }
     }
 }
@@ -1117,6 +1130,7 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
         .difference(&old_sort_orders)
         .copied()
         .collect::<Vec<i64>>();
+
     Diffs {
         removed_snapshots: removed_snaps,
         added_snapshots: new_snaps,
@@ -1471,6 +1485,497 @@ pub(crate) fn create_table_request_into_table_metadata(
 
 #[cfg(test)]
 mod test {
+    use crate::api::iceberg::types::Prefix;
+    use crate::api::iceberg::v1::tables::Service as _;
+    use crate::api::iceberg::v1::{DataAccess, NamespaceParameters, TableParameters};
+    use crate::api::management::v1::warehouse::TabularDeleteProfile;
+    use crate::api::ApiContext;
+    use crate::catalog::test::random_request_metadata;
+    use crate::catalog::CatalogServer;
+    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
+    use crate::service::authz::AllowAllAuthorizer;
+    use crate::service::State;
+    use iceberg::spec::{
+        NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
+        SnapshotRetention, Summary, Transform, UnboundPartitionField, UnboundPartitionSpec,
+        MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+    };
+    use iceberg::TableIdent;
+    use iceberg_ext::catalog::rest::{
+        CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
+    };
+    use sqlx::PgPool;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    fn create_request(table_name: Option<String>) -> CreateTableRequest {
+        CreateTableRequest {
+            name: table_name.unwrap_or("my_table".to_string()),
+            location: None,
+            schema: Schema::builder()
+                .with_fields(vec![
+                    NestedField::required(
+                        1,
+                        "id",
+                        iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                    )
+                    .into(),
+                    NestedField::required(
+                        2,
+                        "name",
+                        iceberg::spec::Type::Primitive(PrimitiveType::String),
+                    )
+                    .into(),
+                ])
+                .build()
+                .unwrap(),
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties: None,
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_set_properties_commit_table(pool: sqlx::PgPool) {
+        let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+        let table_id = table.metadata.uuid();
+
+        let table_metadata = table
+            .metadata
+            .into_builder(table.metadata_location)
+            .set_properties(HashMap::from([
+                ("p1".into(), "v2".into()),
+                ("p2".into(), "v2".into()),
+            ]))
+            .unwrap()
+            .build()
+            .unwrap();
+        let updates = table_metadata.changes;
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns.namespace.clone(),
+                        name: "tab-1".to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .new_metadata;
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix,
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: "tab-1".to_string(),
+                },
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata, table_metadata.metadata);
+    }
+
+    #[sqlx::test]
+    async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
+        let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+        let table_id = table.metadata.uuid();
+
+        let added_spec = UnboundPartitionSpec::builder()
+            .with_spec_id(10)
+            .add_partition_fields(vec![
+                UnboundPartitionField {
+                    // The previous field - has field_id set
+                    name: "y".to_string(),
+                    transform: Transform::Bucket(15),
+                    source_id: 2,
+                    field_id: Some(1000),
+                },
+                UnboundPartitionField {
+                    // A new field without field id - should still be without field id in changes
+                    name: "z".to_string(),
+                    transform: Transform::Identity,
+                    source_id: 3,
+                    field_id: None,
+                },
+            ])
+            .unwrap()
+            .build();
+
+        let table_metadata = table
+            .metadata
+            .into_builder(table.metadata_location)
+            .add_partition_spec(added_spec.clone())
+            .unwrap()
+            .build()
+            .unwrap();
+        let updates = table_metadata.changes;
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns.namespace.clone(),
+                        name: "tab-1".to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix,
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: "tab-1".to_string(),
+                },
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata, table_metadata.metadata);
+    }
+
+    #[sqlx::test]
+    async fn test_set_default_partition_spec(pool: PgPool) {
+        let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+        let table_id = table.metadata.uuid();
+
+        let added_spec = UnboundPartitionSpec::builder()
+            .with_spec_id(10)
+            .add_partition_field(1, "y_bucket[2]", Transform::Bucket(2))
+            .unwrap()
+            .build();
+
+        let table_metadata = table
+            .metadata
+            .into_builder(table.metadata_location)
+            .add_partition_spec(added_spec)
+            .unwrap()
+            .set_default_partition_spec(-1)
+            .unwrap()
+            .build()
+            .unwrap();
+        let updates = table_metadata.changes;
+        let committed = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns.namespace.clone(),
+                        name: "tab-1".to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .new_metadata;
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix,
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: "tab-1".to_string(),
+                },
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata, table_metadata.metadata);
+    }
+
+    #[sqlx::test]
+    async fn test_set_ref(pool: PgPool) {
+        let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+        let table_id = table.metadata.uuid();
+        let builder = table.metadata.into_builder(table.metadata_location);
+
+        let snapshot = Snapshot::builder()
+            .with_snapshot_id(1)
+            .with_timestamp_ms(builder.last_updated_ms() + 1)
+            .with_sequence_number(0)
+            .with_schema_id(0)
+            .with_manifest_list("/snap-1.avro")
+            .with_summary(Summary {
+                operation: Operation::Append,
+                other: HashMap::from_iter(vec![
+                    (
+                        "spark.app.id".to_string(),
+                        "local-1662532784305".to_string(),
+                    ),
+                    ("added-data-files".to_string(), "4".to_string()),
+                    ("added-records".to_string(), "4".to_string()),
+                    ("added-files-size".to_string(), "6001".to_string()),
+                ]),
+            })
+            .build();
+
+        let builder = builder
+            .add_snapshot(snapshot.clone())
+            .unwrap()
+            .set_ref(
+                MAIN_BRANCH,
+                SnapshotReference {
+                    snapshot_id: 1,
+                    retention: SnapshotRetention::Branch {
+                        min_snapshots_to_keep: Some(10),
+                        max_snapshot_age_ms: None,
+                        max_ref_age_ms: None,
+                    },
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let updates = builder.changes;
+
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(TableIdent {
+                        namespace: ns.namespace.clone(),
+                        name: "tab-1".to_string(),
+                    }),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix,
+                table: TableIdent {
+                    namespace: ns.namespace.clone(),
+                    name: "tab-1".to_string(),
+                },
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata, builder.metadata);
+    }
+
+    #[sqlx::test]
+    async fn test_expire_metadata_log(pool: PgPool) {
+        let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
+        let table_id = table.metadata.uuid();
+        let table_ident = TableIdent {
+            namespace: ns.namespace.clone(),
+            name: "tab-1".to_string(),
+        };
+        let builder = table
+            .metadata
+            .into_builder(table.metadata_location)
+            .set_properties(HashMap::from_iter([(
+                PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX.to_string(),
+                "2".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap();
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata, builder.metadata);
+
+        let builder = builder
+            .metadata
+            .into_builder(tab.metadata_location)
+            .set_properties(HashMap::from_iter(vec![(
+                "change_nr".to_string(),
+                "1".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let committed = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tab.metadata, builder.metadata);
+
+        let builder = committed
+            .new_metadata
+            .into_builder(tab.metadata_location)
+            .set_properties(HashMap::from_iter(vec![(
+                "change_nr".to_string(),
+                "2".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix,
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tab.metadata, builder.metadata);
+    }
+
+    async fn commit_test_setup(
+        pool: PgPool,
+    ) -> (
+        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        CreateNamespaceResponse,
+        NamespaceParameters,
+        LoadTableResult,
+    ) {
+        let (prof) = crate::catalog::test::test_io_profile();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        let table = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some("tab-1".to_string())),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        (ctx, ns, ns_params, table)
+    }
+
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
     mod minio {
         use crate::api::iceberg::types::{PageToken, Prefix};
@@ -1485,33 +1990,6 @@ mod test {
         use iceberg_ext::catalog::rest::CreateTableRequest;
         use itertools::Itertools;
 
-        fn create_request(table_name: Option<String>) -> CreateTableRequest {
-            CreateTableRequest {
-                name: table_name.unwrap_or("my_table".to_string()),
-                location: None,
-                schema: Schema::builder()
-                    .with_fields(vec![
-                        NestedField::required(
-                            1,
-                            "id",
-                            iceberg::spec::Type::Primitive(PrimitiveType::Int),
-                        )
-                        .into(),
-                        NestedField::required(
-                            2,
-                            "name",
-                            iceberg::spec::Type::Primitive(PrimitiveType::String),
-                        )
-                        .into(),
-                    ])
-                    .build()
-                    .unwrap(),
-                partition_spec: Some(UnboundPartitionSpec::builder().build()),
-                write_order: None,
-                stage_create: Some(false),
-                properties: None,
-            }
-        }
         #[sqlx::test]
         async fn test_table_pagination(pool: sqlx::PgPool) {
             let (prof, cred) = crate::catalog::test::minio_profile();
@@ -1541,7 +2019,7 @@ mod test {
             for i in 0..10 {
                 let _ = CatalogServer::create_table(
                     ns_params.clone(),
-                    create_request(Some(format!("tab-{i}"))),
+                    super::create_request(Some(format!("tab-{i}"))),
                     DataAccess {
                         vended_credentials: true,
                         remote_signing: false,
