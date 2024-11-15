@@ -314,6 +314,26 @@ pub(crate) async fn insert_default_partition_spec(
     Ok(())
 }
 
+pub(crate) async fn remove_sort_orders(
+    table_id: Uuid,
+    order_ids: Vec<i64>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_sort_order WHERE table_id = $1 AND sort_order_id = ANY($2::BIGINT[])"#,
+        table_id,
+        &order_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error deleting table sort orders".to_string())
+    })?;
+
+    Ok(())
+}
+
 pub(crate) async fn insert_sort_orders(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
@@ -456,7 +476,7 @@ pub(super) async fn expire_metadata_log_entries(
 
     tracing::debug!(
         "Expired {} metadata log entries for table_id: {}",
-        exec.len(),
+        exec.rows_affected(),
         tabular_id
     );
     Ok(())

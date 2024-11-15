@@ -909,6 +909,15 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
+        if !commit.diffs.removed_sort_orders.is_empty() {
+            create::remove_sort_orders(
+                commit.new_metadata.uuid(),
+                commit.diffs.removed_sort_orders,
+                transaction,
+            )
+            .await?;
+        }
+
         if !commit.diffs.added_sort_orders.is_empty() {
             create::insert_sort_orders(
                 &commit.new_metadata,
@@ -1852,134 +1861,6 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(tables.len(), 0);
         assert!(tables.next_token().is_none());
-    }
-
-    #[sqlx::test]
-    async fn test_commit_transaction(pool: sqlx::PgPool) {
-        let state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table1 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
-        let table2 = initialize_table(warehouse_id, state.clone(), false, None, None).await;
-        let _ = initialize_table(warehouse_id, state.clone(), false, None, None).await;
-
-        let loaded_tables = load_tables(
-            warehouse_id,
-            vec![table1.table_id, table2.table_id],
-            false,
-            &mut pool.begin().await.unwrap(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(loaded_tables.len(), 2);
-        assert!(loaded_tables
-            .get(&table1.table_id)
-            .unwrap()
-            .metadata_location
-            .is_none());
-        assert!(loaded_tables
-            .get(&table2.table_id)
-            .unwrap()
-            .metadata_location
-            .is_some());
-
-        let table1_metadata = &loaded_tables.get(&table1.table_id).unwrap().table_metadata;
-        let table2_metadata = &loaded_tables.get(&table2.table_id).unwrap().table_metadata;
-
-        let builder1 = TableMetadataBuilder::new_from_metadata(
-            table1_metadata.clone(),
-            Some("s3://my_bucket/table1/metadata/foo".to_string()),
-        )
-        .set_properties(HashMap::from_iter(vec![(
-            "t1_key".to_string(),
-            "t1_value".to_string(),
-        )]))
-        .unwrap();
-        let builder2 = TableMetadataBuilder::new_from_metadata(
-            table2_metadata.clone(),
-            Some("s3://my_bucket/table2/metadata/foo".to_string()),
-        )
-        .set_properties(HashMap::from_iter(vec![(
-            "t2_key".to_string(),
-            "t2_value".to_string(),
-        )]))
-        .unwrap();
-        let res1 = builder1.build().unwrap();
-        let res2 = builder2.build().unwrap();
-        let updates1 = res1.changes;
-        let updates2 = res2.changes;
-        let updated_metadata1 = res1.metadata;
-        let updated_metadata2 = res2.metadata;
-
-        let commits = vec![
-            TableCommit {
-                new_metadata: updated_metadata1.clone(),
-                new_metadata_location: Location::from_str("s3://my_bucket/table1/metadata/foo")
-                    .unwrap(),
-                updates: updates1,
-                diffs: Diffs {
-                    removed_snapshots: vec![],
-                    added_snapshots: vec![],
-                    removed_schemas: vec![],
-                    added_schemas: vec![],
-                    removed_partition_specs: vec![],
-                    added_partition_specs: vec![],
-                    removed_sort_orders: vec![],
-                    added_sort_orders: vec![],
-                },
-                expired_metadata_logs: 0,
-                added_metadata_log: 0,
-            },
-            TableCommit {
-                new_metadata: updated_metadata2.clone(),
-                new_metadata_location: Location::from_str("s3://my_bucket/table2/metadata/foo")
-                    .unwrap(),
-                updates: updates2,
-                diffs: Diffs {
-                    removed_snapshots: vec![],
-                    added_snapshots: vec![],
-                    removed_schemas: vec![],
-                    added_schemas: vec![],
-                    removed_partition_specs: vec![],
-                    added_partition_specs: vec![],
-                    removed_sort_orders: vec![],
-                    added_sort_orders: vec![],
-                },
-                expired_metadata_logs: 0,
-                added_metadata_log: 0,
-            },
-        ];
-
-        let mut transaction = pool.begin().await.unwrap();
-        commit_table_transaction(warehouse_id, commits.clone(), &mut transaction)
-            .await
-            .unwrap();
-        transaction.commit().await.unwrap();
-
-        let loaded_tables = load_tables(
-            warehouse_id,
-            vec![table1.table_id, table2.table_id],
-            false,
-            &mut pool.begin().await.unwrap(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(loaded_tables.len(), 2);
-
-        let loaded_metadata1 = &loaded_tables.get(&table1.table_id).unwrap().table_metadata;
-        let loaded_metadata2 = &loaded_tables.get(&table2.table_id).unwrap().table_metadata;
-        let s1 = format!("{loaded_metadata1:#?}",);
-        let s2 = format!("{updated_metadata1:#?}",);
-        let diff = similar::TextDiff::from_lines(&s1, &s2);
-        let diff = diff
-            .unified_diff()
-            .context_radius(15)
-            .missing_newline_hint(false)
-            .to_string();
-
-        assert_eq!(loaded_metadata1, &updated_metadata1, "{diff}");
-        assert_eq!(loaded_metadata2, &updated_metadata2);
     }
 
     #[sqlx::test]

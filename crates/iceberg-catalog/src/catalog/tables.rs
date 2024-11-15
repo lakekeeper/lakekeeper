@@ -1497,16 +1497,16 @@ mod test {
     use crate::service::State;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-        SnapshotRetention, Summary, Transform, UnboundPartitionField, UnboundPartitionSpec,
+        SnapshotRetention, Summary, Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
         MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
     };
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::{
         CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
     };
+    use itertools::Itertools;
     use sqlx::PgPool;
     use std::collections::HashMap;
-    use std::time::Duration;
 
     fn create_request(table_name: Option<String>) -> CreateTableRequest {
         CreateTableRequest {
@@ -1534,6 +1534,14 @@ mod test {
             stage_create: Some(false),
             properties: None,
         }
+    }
+
+    fn partition_spec() -> UnboundPartitionSpec {
+        UnboundPartitionSpec::builder()
+            .with_spec_id(0)
+            .add_partition_field(2, "y", Transform::Identity)
+            .unwrap()
+            .build()
     }
 
     #[sqlx::test]
@@ -1591,6 +1599,17 @@ mod test {
         assert_eq!(tab.metadata, table_metadata.metadata);
     }
 
+    fn schema() -> Schema {
+        Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "x", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::required(2, "y", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::required(3, "z", Type::Primitive(PrimitiveType::Long)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
     #[sqlx::test]
     async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
@@ -1602,7 +1621,7 @@ mod test {
                 UnboundPartitionField {
                     // The previous field - has field_id set
                     name: "y".to_string(),
-                    transform: Transform::Bucket(15),
+                    transform: Transform::Identity,
                     source_id: 2,
                     field_id: Some(1000),
                 },
@@ -1620,6 +1639,11 @@ mod test {
         let table_metadata = table
             .metadata
             .into_builder(table.metadata_location)
+            .add_schema(schema())
+            .set_current_schema(-1)
+            .unwrap()
+            .add_partition_spec(partition_spec())
+            .unwrap()
             .add_partition_spec(added_spec.clone())
             .unwrap()
             .build()
@@ -1657,7 +1681,43 @@ mod test {
         )
         .await
         .unwrap();
-        assert_eq!(tab.metadata, table_metadata.metadata);
+        let json = serde_json::to_string_pretty(&tab.metadata).unwrap();
+        let json2 = serde_json::to_string_pretty(&table_metadata.metadata).unwrap();
+        pretty_assertions::assert_eq!(
+            tab.metadata.current_schema(),
+            table_metadata.metadata.current_schema()
+        );
+
+        pretty_assertions::assert_eq!(
+            tab.metadata
+                .schemas_iter()
+                .sorted_by_key(|s| s.schema_id())
+                .collect_vec(),
+            table_metadata
+                .metadata
+                .schemas_iter()
+                .sorted_by_key(|s| s.schema_id())
+                .collect_vec()
+        );
+
+        pretty_assertions::assert_eq!(
+            tab.metadata
+                .partition_specs_iter()
+                .sorted_by_key(|s| s.spec_id())
+                .collect_vec(),
+            table_metadata
+                .metadata
+                .partition_specs_iter()
+                .sorted_by_key(|s| s.spec_id())
+                .collect_vec()
+        );
+
+        pretty_assertions::assert_eq!(
+            tab.metadata.default_partition_spec(),
+            table_metadata.metadata.default_partition_spec()
+        );
+
+        pretty_assertions::assert_eq!(tab.metadata, table_metadata.metadata);
     }
 
     #[sqlx::test]
