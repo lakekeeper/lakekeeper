@@ -86,6 +86,8 @@ jobs:
         run: just update-management-openapi
       - name: Fail on diff
         run: git diff --exit-code
+      - name: Build TS Client
+        run: npx @hey-api/openapi-ts -i openapi/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 
   test:
     runs-on: ubuntu-latest
