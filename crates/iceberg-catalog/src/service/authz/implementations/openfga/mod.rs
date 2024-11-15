@@ -1151,6 +1151,7 @@ impl Client for OpenFgaServiceClient<ClientConnection> {
     }
 }
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) mod tests {
     use crate::service::authz::implementations::openfga::{MockClient, OpenFGAAuthorizer};
     use needs_env_var::needs_env_var;

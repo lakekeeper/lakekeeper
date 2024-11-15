@@ -13,8 +13,6 @@ pub mod v1 {
     use crate::request_metadata::RequestMetadata;
     use std::marker::PhantomData;
 
-    use crate::api::iceberg::v1::PaginationQuery;
-
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
     use crate::service::{
         authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
@@ -42,10 +40,11 @@ pub mod v1 {
     };
     use warehouse::{
         AdlsProfile, AzCredential, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
-        GcsProfile, GcsServiceKey, GetWarehouseResponse, ListWarehousesRequest,
-        ListWarehousesResponse, RenameWarehouseRequest, S3Credential, S3Profile, Service as _,
-        StorageCredential, StorageProfile, TabularDeleteProfile, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest, WarehouseStatus,
+        GcsProfile, GcsServiceKey, GetWarehouseResponse, ListDeletedTabularsQuery,
+        ListWarehousesRequest, ListWarehousesResponse, RenameWarehouseRequest, S3Credential,
+        S3Profile, Service as _, StorageCredential, StorageProfile, TabularDeleteProfile,
+        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+        UpdateWarehouseStorageRequest, WarehouseStatus,
     };
 
     pub(crate) fn default_page_size() -> i64 {
@@ -843,14 +842,14 @@ pub mod v1 {
         get,
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars",
-        params(PaginationQuery),
+        params(ListDeletedTabularsQuery),
         responses(
             (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse)
         )
     )]
     async fn list_deleted_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
-        Query(pagination): Query<PaginationQuery>,
+        Query(query): Query<ListDeletedTabularsQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<Json<ListDeletedTabularsResponse>> {
@@ -858,7 +857,7 @@ pub mod v1 {
             metadata,
             warehouse_id.into(),
             api_context,
-            pagination,
+            query,
         )
         .await
         .map(Json)

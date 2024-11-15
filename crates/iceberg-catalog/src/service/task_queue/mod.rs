@@ -331,6 +331,7 @@ mod test {
 
             let (_, _) = <PostgresCatalog as Catalog>::list_tabulars(
                 warehouse,
+                None,
                 ListFlags {
                     include_active: true,
                     include_staged: false,
@@ -369,6 +370,7 @@ mod test {
 
             let (_, del) = <PostgresCatalog as Catalog>::list_tabulars(
                 warehouse,
+                None,
                 ListFlags {
                     include_active: false,
                     include_staged: false,
@@ -387,6 +389,7 @@ mod test {
 
             assert!(<PostgresCatalog as Catalog>::list_tabulars(
                 warehouse,
+                None,
                 ListFlags {
                     include_active: false,
                     include_staged: false,

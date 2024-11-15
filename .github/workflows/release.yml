@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'releases/**'
   pull_request:
     paths:
       - '.github/workflows/release.yml'
@@ -38,6 +39,9 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please/release-please-config.json
           manifest-file: release-please/.release-please-manifest.json
+          # The short ref name of the branch or tag that triggered
+          #  the workflow run. For example, `main` or `1.x`
+          target-branch: ${{ github.ref }}
 
   build-binary:
     name: Build Binary

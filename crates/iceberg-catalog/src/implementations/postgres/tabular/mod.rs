@@ -3,7 +3,7 @@ pub(crate) mod view;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
-    service::{ErrorModel, Result, TableIdent},
+    service::{ErrorModel, NamespaceIdentUuid, Result, TableIdent},
     WarehouseIdent,
 };
 use http::StatusCode;
@@ -326,6 +326,7 @@ pub(crate) async fn create_tabular<'a>(
 pub(crate) async fn list_tabulars<'e, 'c, E>(
     warehouse_id: WarehouseIdent,
     namespace: Option<&NamespaceIdent>,
+    namespace_id: Option<NamespaceIdentUuid>,
     list_flags: crate::service::ListFlags,
     catalog_state: E,
     typ: Option<TabularType>,
@@ -372,6 +373,7 @@ where
         LEFT JOIN task tt ON te.task_id = tt.task_id
         WHERE n.warehouse_id = $1
             AND (namespace_name = $2 OR $2 IS NULL)
+            AND (n.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted
@@ -391,6 +393,7 @@ where
         token_ts,
         token_id,
         page_size,
+        namespace_id.map(|n| *n),
     )
     .fetch_all(catalog_state)
     .await

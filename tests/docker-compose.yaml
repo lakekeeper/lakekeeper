@@ -42,8 +42,8 @@ services:
       - LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME}
       - LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=${AZURE_STORAGE_FILESYSTEM}
-      - LAKEKEEPER_TEST_GCS_CREDENTIAL=${GCS_CREDENTIAL}
-      - LAKEKEEPER_TEST_GCS_BUCKET=${GCS_BUCKET}
+      - LAKEKEEPER_TEST__GCS_CREDENTIAL=${GCS_CREDENTIAL}
+      - LAKEKEEPER_TEST__GCS_BUCKET=${GCS_BUCKET}
     depends_on:
       server:
         condition: service_healthy
@@ -110,7 +110,7 @@ services:
       - iceberg_rest_tests
 
   db:
-    image: bitnami/postgresql:15
+    image: bitnami/postgresql:16.3.0
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres

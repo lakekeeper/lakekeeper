@@ -1,4 +1,3 @@
-use crate::api::iceberg::v1::PaginationQuery;
 use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse};
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
@@ -10,6 +9,10 @@ pub use crate::service::storage::{
 use futures::FutureExt;
 use itertools::Itertools;
 
+use crate::api::iceberg::v1::{PageToken, PaginationQuery};
+use crate::service::NamespaceIdentUuid;
+
+use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
 use crate::catalog::PageStatus;
 pub use crate::service::WarehouseStatus;
@@ -21,6 +24,35 @@ use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
 use utoipa::ToSchema;
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDeletedTabularsQuery {
+    /// Filter by Namespace ID
+    #[serde(default)]
+    #[param(value_type=uuid::Uuid)]
+    pub namespace_id: Option<NamespaceIdentUuid>,
+    /// Next page token
+    #[serde(default)]
+    pub page_token: Option<String>,
+    /// Signals an upper bound of the number of results that a client will receive.
+    /// Default: 100
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+}
+
+impl ListDeletedTabularsQuery {
+    #[must_use]
+    pub fn pagination_query(&self) -> PaginationQuery {
+        PaginationQuery {
+            page_token: self
+                .page_token
+                .clone()
+                .map_or(PageToken::Empty, PageToken::Present),
+            page_size: Some(self.page_size),
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -591,11 +623,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn list_soft_deleted_tabulars(
         request_metadata: RequestMetadata,
         warehouse_id: WarehouseIdent,
         context: ApiContext<State<A, C, S>>,
-        pagination_query: PaginationQuery,
+        query: ListDeletedTabularsQuery,
     ) -> Result<ListDeletedTabularsResponse> {
         // ------------------- AuthZ -------------------
         let catalog = context.v1_state.catalog;
@@ -609,6 +642,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
+        let pagination_query = query.pagination_query();
+        let namespace_id = query.namespace_id;
         let mut t = C::Transaction::begin_read(catalog.clone()).await?;
         let (tabulars, idents, next_page_token) =
             crate::catalog::fetch_until_full_page::<_, _, _, C>(
@@ -619,14 +654,17 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     let authorizer = authorizer.clone();
                     let request_metadata = request_metadata.clone();
                     async move {
+                        let query = PaginationQuery {
+                            page_size: Some(page_size),
+                            page_token: page_token.into(),
+                        };
+
                         let page = C::list_tabulars(
                             warehouse_id,
+                            namespace_id,
                             ListFlags::only_deleted(),
                             catalog,
-                            PaginationQuery {
-                                page_size: Some(page_size),
-                                page_token: page_token.into(),
-                            },
+                            query,
                         )
                         .await?;
                         let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
@@ -789,9 +827,9 @@ mod test {
 
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
     mod minio {
-        use crate::api::iceberg::types::{PageToken, Prefix};
+        use crate::api::iceberg::types::Prefix;
         use crate::api::iceberg::v1::{
-            DataAccess, DropParams, NamespaceParameters, PaginationQuery, ViewParameters,
+            DataAccess, DropParams, NamespaceParameters, ViewParameters,
         };
         use crate::catalog::test::random_request_metadata;
         use crate::catalog::CatalogServer;
@@ -799,7 +837,9 @@ mod test {
         use iceberg::TableIdent;
 
         use crate::api::iceberg::v1::views::Service;
-        use crate::api::management::v1::warehouse::{Service as _, TabularDeleteProfile};
+        use crate::api::management::v1::warehouse::{
+            ListDeletedTabularsQuery, Service as _, TabularDeleteProfile,
+        };
         use crate::api::management::v1::ApiServer;
         use itertools::Itertools;
 
@@ -870,9 +910,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(11),
-                    page_token: PageToken::NotSpecified,
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 11,
+                    page_token: None,
                 },
             )
             .await
@@ -884,9 +925,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(10),
-                    page_token: PageToken::NotSpecified,
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 10,
+                    page_token: None,
                 },
             )
             .await
@@ -898,9 +940,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(10),
-                    page_token: all.next_page_token.into(),
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 10,
+                    page_token: all.next_page_token,
                 },
             )
             .await
@@ -912,9 +955,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(6),
-                    page_token: PageToken::NotSpecified,
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 6,
+                    page_token: None,
                 },
             )
             .await
@@ -936,9 +980,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(6),
-                    page_token: first_six.next_page_token.into(),
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 6,
+                    page_token: first_six.next_page_token,
                 },
             )
             .await
@@ -968,9 +1013,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(5),
-                    page_token: PageToken::NotSpecified,
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 5,
+                    page_token: None,
                 },
             )
             .await
@@ -993,9 +1039,10 @@ mod test {
                 random_request_metadata(),
                 warehouse.warehouse_id.into(),
                 ctx.clone(),
-                PaginationQuery {
-                    page_size: Some(6),
-                    page_token: page.next_page_token.into(),
+                ListDeletedTabularsQuery {
+                    namespace_id: None,
+                    page_size: 6,
+                    page_token: page.next_page_token,
                 },
             )
             .await

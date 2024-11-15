@@ -2,10 +2,10 @@ openapi: 3.0.3
 info:
   title: iceberg-catalog
   description: |
-    Implementation of the Iceberg REST Catalog server.
+    Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
   license:
     name: Apache-2.0
-  version: 0.4.2
+  version: 0.4.3
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -810,7 +810,7 @@ paths:
         required: false
         schema:
           type: integer
-          format: int32
+          format: int64
       - name: projectId
         in: query
         description: |-
@@ -955,7 +955,7 @@ paths:
         required: false
         schema:
           type: integer
-          format: int32
+          format: int64
       responses:
         '200':
           description: List of users
@@ -1208,20 +1208,29 @@ paths:
       description: List all soft-deleted tabulars in the warehouse that are visible to you.
       operationId: list_deleted_tabulars
       parameters:
+      - name: namespaceId
+        in: query
+        description: Filter by Namespace ID
+        required: false
+        schema:
+          type: string
+          format: uuid
       - name: pageToken
         in: query
         description: Next page token
         required: false
         schema:
           type: string
+          nullable: true
       - name: pageSize
         in: query
-        description: Signals an upper bound of the number of results that a client will receive.
+        description: |-
+          Signals an upper bound of the number of results that a client will receive.
+          Default: 100
         required: false
         schema:
           type: integer
-          format: int32
-          nullable: true
+          format: int64
       - name: warehouse_id
         in: path
         required: true
@@ -2341,6 +2350,12 @@ components:
       - id
       - user-type
       properties:
+        email:
+          type: string
+          description: |-
+            Email of the user. If id is not specified, the email is extracted
+            from the provided token.
+          nullable: true
         id:
           type: string
           description: ID of the user
