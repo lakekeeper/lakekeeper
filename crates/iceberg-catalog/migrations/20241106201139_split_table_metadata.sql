@@ -54,9 +54,7 @@ select trigger_updated_at('table_partition_spec');
 create table table_default_partition_spec
 (
     table_id          uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
-    schema_id         int not null,
     partition_spec_id int not null,
-    FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id) ON DELETE CASCADE,
     FOREIGN KEY (table_id, partition_spec_id) REFERENCES table_partition_spec (table_id, partition_spec_id) ON DELETE CASCADE
 );
 

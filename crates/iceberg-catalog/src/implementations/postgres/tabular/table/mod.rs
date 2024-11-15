@@ -253,7 +253,6 @@ struct TableQueryStruct {
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
-    default_partition_schema_id: Option<i32>,
     partition_spec_ids: Option<Vec<i32>>,
     partition_specs: Option<Vec<Json<SchemalessPartitionSpec>>>,
     current_schema: Option<i32>,
@@ -296,7 +295,7 @@ impl TableQueryStruct {
             .collect::<HashMap<_, _>>();
 
         let default_spec_schema = schemas
-            .get(&expect!(self.default_partition_schema_id))
+            .get(&expect!(self.current_schema))
             .ok_or(ErrorModel::internal(
                 "Default partition schema not found",
                 "InternalDefaultPartitionSchemaNotFound",
@@ -461,7 +460,6 @@ pub(crate) async fn load_tables(
             ts.schema_ids,
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
-            tdps.schema_id as "default_partition_schema_id",
             ts.schemas as "schemas: Vec<Json<Schema>>",
             tsnap.snapshot_ids,
             tcsnap.snapshot_id as "current_snapshot_id?",

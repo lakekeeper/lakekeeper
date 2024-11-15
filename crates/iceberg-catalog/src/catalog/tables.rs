@@ -1648,6 +1648,7 @@ mod test {
             .unwrap()
             .build()
             .unwrap();
+
         let updates = table_metadata.changes;
         let _ = super::commit_tables_internal(
             ns_params.prefix.clone(),
@@ -1681,8 +1682,7 @@ mod test {
         )
         .await
         .unwrap();
-        let json = serde_json::to_string_pretty(&tab.metadata).unwrap();
-        let json2 = serde_json::to_string_pretty(&table_metadata.metadata).unwrap();
+
         pretty_assertions::assert_eq!(
             tab.metadata.current_schema(),
             table_metadata.metadata.current_schema()

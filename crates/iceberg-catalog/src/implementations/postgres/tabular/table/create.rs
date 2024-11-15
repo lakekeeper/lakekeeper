@@ -296,21 +296,19 @@ pub(crate) async fn insert_default_partition_spec(
     tabular_id: Uuid,
     default_spec: &BoundPartitionSpecRef,
 ) -> api::Result<()> {
-    // insert default part spec
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, schema_id)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id, partition_spec_id = EXCLUDED.partition_spec_id"#,
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id)
+           VALUES ($1, $2)
+           ON CONFLICT (table_id) DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec.spec_id(),
         tabular_id,
-        default_spec.schema_ref().schema_id(),
     )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table default partition spec".to_string())
-        })?;
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table default partition spec".to_string())
+    })?;
     Ok(())
 }
 
