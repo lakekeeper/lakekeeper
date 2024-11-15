@@ -70,6 +70,23 @@ jobs:
           TEST_GCS: 1
           TEST_KV2: 1
           TEST_MINIO: 1
+
+  check-management-openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - run: sudo snap install --edge --classic just
+      - uses: actions/checkout@v4
+      - name: Setup Rust toolchain and cache
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+        env:
+          RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
+      - name: Regenerate management openapi
+        run: just update-management-openapi
+      - name: Fail on diff
+        run: git diff --exit-code
+
   test:
     runs-on: ubuntu-latest
     services:
