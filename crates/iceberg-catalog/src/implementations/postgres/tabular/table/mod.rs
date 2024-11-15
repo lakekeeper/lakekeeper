@@ -20,7 +20,7 @@ use crate::implementations::postgres::tabular::{
 };
 use iceberg::spec::{
     BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
-    SnapshotRetention, SortOrder, Summary,
+    SnapshotRetention, SortOrder, Summary, UnboundPartitionField,
 };
 use iceberg_ext::configs::Location;
 
@@ -284,20 +284,21 @@ impl TableQueryStruct {
             .collect::<HashMap<_, _>>();
 
         let default_spec_schema = schemas.get(&self.default_partition_schema_id?)?.clone();
-        let fields = partition_specs
+        let default_spec = partition_specs
             .get(&self.default_partition_spec_id?)
-            .unwrap()
-            .fields();
-
+            .unwrap();
+        let fields = default_spec.fields();
         let mut default = BoundPartitionSpec::builder(default_spec_schema.clone())
-            .with_spec_id(self.default_partition_spec_id?);
-        for field in fields {
-            let source = default_spec_schema.field_by_id(field.source_id).unwrap();
+            .with_spec_id(self.default_partition_spec_id?)
+            .add_unbound_fields(fields.into_iter().map(|f| UnboundPartitionField {
+                source_id: f.source_id,
+                field_id: Some(f.field_id),
+                name: f.name.clone(),
+                transform: f.transform,
+            }))
+            .unwrap();
 
-            default = default
-                .add_partition_field(source.name.clone(), &field.name, field.transform)
-                .unwrap();
-        }
+        let default = default.build().unwrap();
 
         let properties = self
             .table_properties_keys
@@ -385,7 +386,7 @@ impl TableQueryStruct {
             schemas,
             current_schema_id: self.current_schema?,
             partition_specs,
-            default_spec: Arc::new(default.build().unwrap()),
+            default_spec: Arc::new(default),
             last_partition_id: self.last_partition_id?,
             properties,
             current_snapshot_id: self.current_snapshot_id,
@@ -1068,6 +1069,7 @@ pub(crate) mod tests {
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateTableRequest;
     use iceberg_ext::configs::Location;
+    use sqlx::PgPool;
     use uuid::Uuid;
 
     fn create_request(
@@ -2132,5 +2134,47 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
 
         assert_eq!(tt1, tt2);
+    }
+
+    #[sqlx::test]
+    async fn test_load_is_equal_to_deserialized_jsons(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
+
+        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<Vec<TableMetadata>, _>>()
+            .unwrap();
+        let mut trx = pool.begin().await.unwrap();
+        for js in jsons.clone() {
+            create_table(
+                TableCreation {
+                    namespace_id,
+                    table_ident: &TableIdent {
+                        namespace: namespace.clone(),
+                        name: js.uuid().to_string(),
+                    },
+                    table_metadata: js,
+                    metadata_location: None,
+                },
+                &mut trx,
+            )
+            .await
+            .unwrap();
+        }
+
+        for (idx, js) in jsons.into_iter().enumerate() {
+            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
+                .await
+                .unwrap();
+            let table = tables.get(&(js.uuid().into())).unwrap();
+            pretty_assertions::assert_eq!(table.table_metadata, js);
+        }
+        trx.commit().await.unwrap();
     }
 }
