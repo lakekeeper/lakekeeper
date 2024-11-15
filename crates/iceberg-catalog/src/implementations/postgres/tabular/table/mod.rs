@@ -266,30 +266,51 @@ struct TableQueryStruct {
 
 impl TableQueryStruct {
     #[expect(clippy::too_many_lines)]
-    fn into_table_metadata(self) -> Option<Result<TableMetadata>> {
+    fn into_table_metadata(self) -> Result<Option<TableMetadata>> {
         // TODO: we're having a ton of options here, some are required, some are not, we're having
         //       them all optional since we cannot depend on DB migration having already happened
         //       we need to go through these lines once more and decide where the ? shortcut is
         //       appropriate and where not.
-        let schemas = self
-            .schemas?
+        macro_rules! expect {
+            ($e:expr) => {
+                match $e {
+                    Some(v) => v,
+                    None => return Ok(None),
+                }
+            };
+        }
+        let schemas = expect!(self.schemas)
             .into_iter()
             .map(|s| (s.0.schema_id(), Arc::new(s.0)))
             .collect::<HashMap<SchemaId, _>>();
 
-        let partition_specs = self
-            .partition_spec_ids?
+        let partition_specs = expect!(self.partition_spec_ids)
             .into_iter()
-            .zip(self.partition_specs?.into_iter().map(|s| Arc::new(s.0)))
+            .zip(
+                expect!(self.partition_specs)
+                    .into_iter()
+                    .map(|s| Arc::new(s.0)),
+            )
             .collect::<HashMap<_, _>>();
 
-        let default_spec_schema = schemas.get(&self.default_partition_schema_id?)?.clone();
+        let default_spec_schema = schemas
+            .get(&expect!(self.default_partition_schema_id))
+            .ok_or(ErrorModel::internal(
+                "Default partition schema not found",
+                "InternalDefaultPartitionSchemaNotFound",
+                None,
+            ))?
+            .clone();
         let default_spec = partition_specs
-            .get(&self.default_partition_spec_id?)
-            .unwrap();
+            .get(&expect!(self.default_partition_spec_id))
+            .ok_or(ErrorModel::internal(
+                "Default partition spec not found",
+                "InternalDefaultPartitionSpecNotFound",
+                None,
+            ))?;
         let fields = default_spec.fields();
-        let mut default = BoundPartitionSpec::builder(default_spec_schema.clone())
-            .with_spec_id(self.default_partition_spec_id?)
+        let default = BoundPartitionSpec::builder(default_spec_schema.clone())
+            .with_spec_id(default_spec.spec_id())
             .add_unbound_fields(fields.into_iter().map(|f| UnboundPartitionField {
                 source_id: f.source_id,
                 field_id: Some(f.field_id),
@@ -356,9 +377,10 @@ impl TableQueryStruct {
         })
         .collect::<Vec<_>>();
 
-        let sort_orders = itertools::multizip((self.sort_order_ids?, self.sort_orders?))
-            .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
-            .collect::<HashMap<_, _>>();
+        let sort_orders =
+            itertools::multizip((expect!(self.sort_order_ids), expect!(self.sort_orders)))
+                .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
+                .collect::<HashMap<_, _>>();
 
         let refs = itertools::multizip((
             self.table_ref_names.unwrap_or_default(),
@@ -376,28 +398,36 @@ impl TableQueryStruct {
         })
         .collect::<HashMap<_, _>>();
 
-        Some(Ok(TableMetadata::try_from_parts(Parts {
-            format_version: FormatVersion::from(self.table_format_version?),
-            table_uuid: self.table_id,
-            location: self.table_location,
-            last_sequence_number: self.last_sequence_number?,
-            last_updated_ms: self.last_updated_ms?,
-            last_column_id: self.last_column_id?,
-            schemas,
-            current_schema_id: self.current_schema?,
-            partition_specs,
-            default_spec: Arc::new(default),
-            last_partition_id: self.last_partition_id?,
-            properties,
-            current_snapshot_id: self.current_snapshot_id,
-            snapshots,
-            snapshot_log,
-            metadata_log,
-            sort_orders,
-            default_sort_order_id: self.default_sort_order_id?,
-            refs,
-        })
-        .unwrap()))
+        Ok(Some(
+            TableMetadata::try_from_parts(Parts {
+                format_version: FormatVersion::from(expect!(self.table_format_version)),
+                table_uuid: self.table_id,
+                location: self.table_location,
+                last_sequence_number: expect!(self.last_sequence_number),
+                last_updated_ms: expect!(self.last_updated_ms),
+                last_column_id: expect!(self.last_column_id),
+                schemas,
+                current_schema_id: expect!(self.current_schema),
+                partition_specs,
+                default_spec: Arc::new(default),
+                last_partition_id: expect!(self.last_partition_id),
+                properties,
+                current_snapshot_id: self.current_snapshot_id,
+                snapshots,
+                snapshot_log,
+                metadata_log,
+                sort_orders,
+                default_sort_order_id: expect!(self.default_sort_order_id),
+                refs,
+            })
+            .map_err(|e| {
+                ErrorModel::internal(
+                    "Error parsing table metadata from DB",
+                    "InternalTableMetadataParseError",
+                    Some(Box::new(e)),
+                )
+            })?,
+        ))
     }
 }
 
@@ -544,14 +574,13 @@ pub(crate) async fn load_tables(
         let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
         let storage_profile = table.storage_profile.deref().clone();
 
-        let table_metadata = match table.into_table_metadata().transpose() {
-            Ok(Some(metadata)) => metadata,
-            Ok(None) => {
+        let table_metadata = match table.into_table_metadata()? {
+            Some(metadata) => metadata,
+            None => {
                 tracing::warn!("Table metadata could not be fetched from tables, falling back to blob retrieval.");
                 failed_to_fetch.push(table_id);
                 continue;
             }
-            Err(e) => return Err(e),
         };
 
         tables.insert(
