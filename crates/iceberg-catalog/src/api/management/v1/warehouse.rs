@@ -81,12 +81,28 @@ pub enum TabularDeleteProfile {
     #[schema(title = "TabularDeleteProfileSoft")]
     Soft {
         #[serde(
-            deserialize_with = "crate::config::seconds_to_duration",
-            serialize_with = "crate::config::duration_to_seconds"
+            deserialize_with = "seconds_to_duration",
+            serialize_with = "duration_to_seconds"
         )]
         #[schema(value_type=i32)]
         expiration_seconds: chrono::Duration,
     },
+}
+
+fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let buf = i64::deserialize(deserializer)?;
+
+    Ok(chrono::Duration::seconds(buf))
+}
+
+fn duration_to_seconds<S>(duration: &chrono::Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_i64(duration.num_seconds())
 }
 
 impl TabularDeleteProfile {
