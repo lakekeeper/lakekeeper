@@ -24,12 +24,14 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
+use crate::catalog::tables::Diffs;
 use crate::implementations::postgres::tabular::table::create::{
     expire_metadata_log_entries, remove_snapshot_log_entries,
 };
 use iceberg::TableUpdate;
 use itertools::Itertools;
 use sqlx::types::Json;
+use sqlx::{Postgres, Transaction};
 use std::default::Default;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -841,201 +843,20 @@ pub(crate) async fn commit_table_transaction<'a>(
     );
 
     let n_commits = commits.len();
-    for (i, commit) in commits.into_iter().enumerate() {
-        let TableUpdates {
-            current_schema,
-            default_spec,
-            default_sort_order,
-            snapshot_refs,
-            properties,
-        } = TableUpdates::from(commit.updates.as_slice());
-        if !&commit.diffs.removed_schemas.is_empty() {
-            create::remove_schemas(
-                commit.new_metadata.uuid(),
-                commit.diffs.removed_schemas,
-                transaction,
-            )
-            .await?;
-        }
-        if !commit.diffs.added_schemas.is_empty() {
-            create::insert_schemas(
-                commit
-                    .diffs
-                    .added_schemas
-                    .into_iter()
-                    .filter_map(|s| commit.new_metadata.schema_by_id(s))
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
+    for (
+        i,
+        TableCommit {
+            new_metadata,
+            new_metadata_location,
+            updates,
+            diffs,
+        },
+    ) in commits.into_iter().enumerate()
+    {
+        let updates = TableUpdates::from(updates.as_slice());
+        handle_atomic_updates(transaction, updates, &new_metadata, diffs).await?;
 
-        if current_schema {
-            create::insert_current_schema(
-                &commit.new_metadata,
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-        if !commit.diffs.removed_partition_specs.is_empty() {
-            create::remove_partition_specs(
-                commit.new_metadata.uuid(),
-                commit.diffs.removed_partition_specs,
-                transaction,
-            )
-            .await?;
-        }
-        if !commit.diffs.added_partition_specs.is_empty() {
-            create::insert_partition_specs(
-                commit
-                    .diffs
-                    .added_partition_specs
-                    .into_iter()
-                    .filter_map(|s| commit.new_metadata.partition_spec_by_id(s))
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-        if default_spec {
-            create::insert_default_partition_spec(
-                transaction,
-                commit.new_metadata.uuid(),
-                commit.new_metadata.default_partition_spec(),
-            )
-            .await?;
-        }
-        if !commit.diffs.removed_sort_orders.is_empty() {
-            create::remove_sort_orders(
-                commit.new_metadata.uuid(),
-                commit.diffs.removed_sort_orders,
-                transaction,
-            )
-            .await?;
-        }
-
-        if !commit.diffs.added_sort_orders.is_empty() {
-            create::insert_sort_orders(
-                commit
-                    .diffs
-                    .added_sort_orders
-                    .into_iter()
-                    .filter_map(|id| commit.new_metadata.sort_order_by_id(id))
-                    .collect_vec()
-                    .into_iter(),
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-        if default_sort_order {
-            create::insert_default_sort_order(
-                &commit.new_metadata,
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-        if !commit.diffs.removed_snapshots.is_empty() {
-            create::remove_snapshots(
-                commit.new_metadata.uuid(),
-                commit.diffs.removed_snapshots,
-                transaction,
-            )
-            .await?;
-        }
-        if !commit.diffs.added_snapshots.is_empty() {
-            create::insert_snapshots(
-                commit
-                    .diffs
-                    .added_snapshots
-                    .into_iter()
-                    .filter_map(|s| commit.new_metadata.snapshot_by_id(s))
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-
-        create::set_current_snapshot(
-            &commit.new_metadata,
-            transaction,
-            commit.new_metadata.uuid(),
-        )
-        .await?;
-
-        if snapshot_refs {
-            create::insert_snapshot_refs(
-                &commit.new_metadata,
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-
-        // TODO: this assumes only latest entry in snapshot log is ever added in a commit
-        if commit.latest_snap_changed {
-            if let Some(snap) = commit.new_metadata.history().last() {
-                create::insert_snapshot_log(
-                    [snap].into_iter(),
-                    transaction,
-                    commit.new_metadata.uuid(),
-                )
-                .await?;
-            }
-        }
-
-        if commit.removed_snapshot_log > 0 {
-            remove_snapshot_log_entries(
-                commit.removed_snapshot_log,
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-
-        if commit.expired_metadata_logs > 0 {
-            expire_metadata_log_entries(
-                commit.expired_metadata_logs,
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-        if commit.added_metadata_log > 0 {
-            create::insert_metadata_log(
-                commit
-                    .new_metadata
-                    .metadata_log()
-                    .iter()
-                    .rev()
-                    .take(commit.added_metadata_log)
-                    .rev()
-                    .cloned(),
-                transaction,
-                commit.new_metadata.uuid(),
-            )
-            .await?;
-        }
-
-        if properties {
-            create::set_table_properties(
-                commit.new_metadata.properties(),
-                commit.new_metadata.uuid(),
-                transaction,
-            )
-            .await?;
-        }
-        // TODO: can a single transaction result in multiple log entries?
-
-        let metadata_ser = serde_json::to_value(&commit.new_metadata).map_err(|e| {
+        let metadata_ser = serde_json::to_value(&new_metadata).map_err(|e| {
             ErrorModel::internal(
                 "Error serializing table metadata",
                 "TableMetadataSerializationError",
@@ -1044,30 +865,30 @@ pub(crate) async fn commit_table_transaction<'a>(
         })?;
 
         query_builder_table.push("(");
-        query_builder_table.push_bind(commit.new_metadata.uuid());
+        query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");
         query_builder_table.push_bind(metadata_ser);
         query_builder_table.push(", ");
-        query_builder_table.push_bind(match commit.new_metadata.format_version() {
+        query_builder_table.push_bind(match new_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
             FormatVersion::V2 => DbTableFormatVersion::V2,
         });
         query_builder_table.push(", ");
-        query_builder_table.push_bind(commit.new_metadata.last_column_id());
+        query_builder_table.push_bind(new_metadata.last_column_id());
         query_builder_table.push(", ");
-        query_builder_table.push_bind(commit.new_metadata.last_sequence_number());
+        query_builder_table.push_bind(new_metadata.last_sequence_number());
         query_builder_table.push(", ");
-        query_builder_table.push_bind(commit.new_metadata.last_updated_ms());
+        query_builder_table.push_bind(new_metadata.last_updated_ms());
         query_builder_table.push(", ");
-        query_builder_table.push_bind(commit.new_metadata.last_partition_id());
+        query_builder_table.push_bind(new_metadata.last_partition_id());
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
-        query_builder_tabular.push_bind(commit.new_metadata.uuid());
+        query_builder_tabular.push_bind(new_metadata.uuid());
         query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(commit.new_metadata_location.to_string());
+        query_builder_tabular.push_bind(new_metadata_location.to_string());
         query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(commit.new_metadata.location().to_string());
+        query_builder_tabular.push_bind(new_metadata.location().to_string());
         query_builder_tabular.push(")");
 
         if i != n_commits - 1 {
@@ -1110,6 +931,158 @@ pub(crate) async fn commit_table_transaction<'a>(
             .into());
     }
 
+    Ok(())
+}
+
+async fn handle_atomic_updates(
+    transaction: &mut Transaction<'_, Postgres>,
+    table_updates: TableUpdates,
+    new_metadata: &TableMetadata,
+    diffs: Diffs,
+) -> Result<()> {
+    let TableUpdates {
+        current_schema,
+        default_spec,
+        default_sort_order,
+        snapshot_refs,
+        properties,
+    } = table_updates;
+    if !&diffs.removed_schemas.is_empty() {
+        create::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
+    }
+    if !diffs.added_schemas.is_empty() {
+        create::insert_schemas(
+            diffs
+                .added_schemas
+                .into_iter()
+                .filter_map(|s| new_metadata.schema_by_id(s))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+
+    if current_schema {
+        create::insert_current_schema(&new_metadata, transaction, new_metadata.uuid()).await?;
+    }
+    if !diffs.removed_partition_specs.is_empty() {
+        create::remove_partition_specs(
+            new_metadata.uuid(),
+            diffs.removed_partition_specs,
+            transaction,
+        )
+        .await?;
+    }
+    if !diffs.added_partition_specs.is_empty() {
+        create::insert_partition_specs(
+            diffs
+                .added_partition_specs
+                .into_iter()
+                .filter_map(|s| new_metadata.partition_spec_by_id(s))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+    if default_spec {
+        create::insert_default_partition_spec(
+            transaction,
+            new_metadata.uuid(),
+            new_metadata.default_partition_spec(),
+        )
+        .await?;
+    }
+    if !diffs.removed_sort_orders.is_empty() {
+        create::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
+            .await?;
+    }
+
+    if !diffs.added_sort_orders.is_empty() {
+        create::insert_sort_orders(
+            diffs
+                .added_sort_orders
+                .into_iter()
+                .filter_map(|id| new_metadata.sort_order_by_id(id))
+                .collect_vec()
+                .into_iter(),
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+    if default_sort_order {
+        create::insert_default_sort_order(&new_metadata, transaction, new_metadata.uuid()).await?;
+    }
+    if !diffs.removed_snapshots.is_empty() {
+        create::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
+    }
+    if !diffs.added_snapshots.is_empty() {
+        create::insert_snapshots(
+            diffs
+                .added_snapshots
+                .into_iter()
+                .filter_map(|s| new_metadata.snapshot_by_id(s))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+
+    create::set_current_snapshot(&new_metadata, transaction, new_metadata.uuid()).await?;
+
+    if snapshot_refs {
+        create::insert_snapshot_refs(&new_metadata, transaction, new_metadata.uuid()).await?;
+    }
+
+    if diffs.head_of_snapshot_log_changed {
+        if let Some(snap) = new_metadata.history().last() {
+            create::insert_snapshot_log([snap].into_iter(), transaction, new_metadata.uuid())
+                .await?;
+        }
+    }
+
+    if diffs.n_removed_snapshot_log > 0 {
+        remove_snapshot_log_entries(
+            diffs.n_removed_snapshot_log,
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+
+    if diffs.expired_metadata_logs > 0 {
+        expire_metadata_log_entries(
+            diffs.expired_metadata_logs,
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+    if diffs.added_metadata_log > 0 {
+        create::insert_metadata_log(
+            new_metadata
+                .metadata_log()
+                .iter()
+                .rev()
+                .take(diffs.added_metadata_log)
+                .rev()
+                .cloned(),
+            transaction,
+            new_metadata.uuid(),
+        )
+        .await?;
+    }
+
+    if properties {
+        create::set_table_properties(new_metadata.properties(), new_metadata.uuid(), transaction)
+            .await?;
+    }
     Ok(())
 }
 

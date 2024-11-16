@@ -1046,33 +1046,28 @@ struct CommitContext {
 
 impl CommitContext {
     fn commit(&self) -> TableCommit {
-        let new_metadata = &self.new_metadata;
-        let previous_metadata = &self.previous_metadata;
-
-        let diffs = calculate_diffs(new_metadata, previous_metadata);
-        let latest_snap_changed =
-            dbg!(self.previous_metadata.history().last() != new_metadata.history().last());
-
-        let snap_log_diff = self.previous_metadata.history().len().saturating_sub(
-            new_metadata
-                .history()
-                .len()
-                .saturating_sub(usize::from(latest_snap_changed)),
+        let diffs = calculate_diffs(
+            &self.new_metadata,
+            &self.previous_metadata,
+            self.added_metadata_log,
+            self.expired_metadata_logs,
         );
+
         TableCommit {
             diffs,
-            new_metadata: new_metadata.clone(),
+            new_metadata: (&self.new_metadata).clone(),
             new_metadata_location: self.new_metadata_location.clone(),
             updates: self.updates.clone(),
-            expired_metadata_logs: self.expired_metadata_logs,
-            added_metadata_log: self.added_metadata_log,
-            removed_snapshot_log: dbg!(snap_log_diff),
-            latest_snap_changed,
         }
     }
 }
 
-fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetadata) -> Diffs {
+fn calculate_diffs(
+    new_metadata: &TableMetadata,
+    previous_metadata: &TableMetadata,
+    added_metadata_log: usize,
+    expired_metadata_logs: usize,
+) -> Diffs {
     let new_snaps = new_metadata
         .snapshots()
         .map(|s| s.snapshot_id())
@@ -1144,6 +1139,16 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
         .copied()
         .collect::<Vec<i64>>();
 
+    let head_of_snapshot_log_changed =
+        previous_metadata.history().last() != new_metadata.history().last();
+
+    let n_removed_snapshot_log = previous_metadata.history().len().saturating_sub(
+        new_metadata
+            .history()
+            .len()
+            .saturating_sub(usize::from(head_of_snapshot_log_changed)),
+    );
+
     Diffs {
         removed_snapshots: removed_snaps,
         added_snapshots: new_snaps,
@@ -1153,6 +1158,10 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
         added_partition_specs: new_specs,
         removed_sort_orders,
         added_sort_orders: new_sort_orders,
+        head_of_snapshot_log_changed,
+        n_removed_snapshot_log,
+        expired_metadata_logs,
+        added_metadata_log,
     }
 }
 
@@ -1166,6 +1175,10 @@ pub struct Diffs {
     pub(crate) added_partition_specs: Vec<i32>,
     pub(crate) removed_sort_orders: Vec<i64>,
     pub(crate) added_sort_orders: Vec<i64>,
+    pub head_of_snapshot_log_changed: bool,
+    pub n_removed_snapshot_log: usize,
+    pub expired_metadata_logs: usize,
+    pub added_metadata_log: usize,
 }
 
 pub(crate) fn determine_table_ident(

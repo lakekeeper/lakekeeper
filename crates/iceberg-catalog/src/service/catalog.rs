@@ -132,10 +132,6 @@ pub struct TableCommit {
     pub new_metadata_location: Location,
     pub updates: Vec<TableUpdate>,
     pub diffs: Diffs,
-    pub expired_metadata_logs: usize,
-    pub added_metadata_log: usize,
-    pub removed_snapshot_log: usize,
-    pub latest_snap_changed: bool,
 }
 
 #[derive(Debug, Clone)]
