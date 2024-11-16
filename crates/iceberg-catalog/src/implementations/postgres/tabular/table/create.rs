@@ -130,10 +130,10 @@ pub(crate) async fn create_table(
     set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
 
     insert_snapshots(table_metadata.snapshots(), transaction, tabular_id).await?;
-    set_current_snapshot(&table_metadata, transaction, tabular_id).await?;
+    set_current_snapshot(&table_metadata, transaction).await?;
 
     insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
-    insert_default_sort_order(&table_metadata, transaction, tabular_id).await?;
+    insert_default_sort_order(&table_metadata, transaction).await?;
 
     insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
 
@@ -144,7 +144,7 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    insert_snapshot_refs(&table_metadata, transaction, tabular_id).await?;
+    insert_snapshot_refs(&table_metadata, transaction).await?;
 
     Ok(CreateTableResponse { table_metadata })
 }
@@ -369,13 +369,12 @@ pub(crate) async fn insert_sort_orders(
 pub(crate) async fn insert_default_sort_order(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
-    tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
         r#"INSERT INTO table_default_sort_order(table_id, sort_order_id)
            VALUES ($1, $2)
            ON CONFLICT (table_id) DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
-        tabular_id,
+        table_metadata.uuid(),
         table_metadata.default_sort_order_id(),
     )
     .execute(&mut **transaction)
@@ -390,7 +389,6 @@ pub(crate) async fn insert_default_sort_order(
 pub(super) async fn set_current_snapshot(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
-    tabular_id: Uuid,
 ) -> api::Result<()> {
     // set current snap
     if let Some(current_snapshot) = table_metadata.current_snapshot() {
@@ -399,7 +397,7 @@ pub(super) async fn set_current_snapshot(
                VALUES ($1, $2)
                ON CONFLICT (table_id) DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id"#,
             current_snapshot.snapshot_id(),
-            tabular_id
+            table_metadata.uuid(),
         )
         .execute(&mut **transaction)
         .await
@@ -552,7 +550,6 @@ pub(super) async fn insert_metadata_log(
 pub(super) async fn insert_snapshot_refs(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
-    tabular_id: Uuid,
 ) -> api::Result<()> {
     let mut refnames = Vec::new();
     let mut snapshot_ids = Vec::new();
@@ -583,7 +580,7 @@ pub(super) async fn insert_snapshot_refs(
         SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])
         ON CONFLICT (table_id, table_ref_name)
         DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
-        tabular_id,
+        table_metadata.uuid(),
         &refnames,
         &snapshot_ids,
         &retentions,

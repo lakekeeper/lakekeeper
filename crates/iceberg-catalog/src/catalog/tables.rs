@@ -1055,7 +1055,7 @@ impl CommitContext {
 
         TableCommit {
             diffs,
-            new_metadata: (&self.new_metadata).clone(),
+            new_metadata: self.new_metadata.clone(),
             new_metadata_location: self.new_metadata_location.clone(),
             updates: self.updates.clone(),
         }

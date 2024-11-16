@@ -934,6 +934,7 @@ pub(crate) async fn commit_table_transaction<'a>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_atomic_updates(
     transaction: &mut Transaction<'_, Postgres>,
     table_updates: TableUpdates,
@@ -965,7 +966,7 @@ async fn handle_atomic_updates(
     }
 
     if current_schema {
-        create::insert_current_schema(&new_metadata, transaction, new_metadata.uuid()).await?;
+        create::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
     }
     if !diffs.removed_partition_specs.is_empty() {
         create::remove_partition_specs(
@@ -1015,7 +1016,7 @@ async fn handle_atomic_updates(
         .await?;
     }
     if default_sort_order {
-        create::insert_default_sort_order(&new_metadata, transaction, new_metadata.uuid()).await?;
+        create::insert_default_sort_order(new_metadata, transaction).await?;
     }
     if !diffs.removed_snapshots.is_empty() {
         create::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
@@ -1034,10 +1035,10 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    create::set_current_snapshot(&new_metadata, transaction, new_metadata.uuid()).await?;
+    create::set_current_snapshot(new_metadata, transaction).await?;
 
     if snapshot_refs {
-        create::insert_snapshot_refs(&new_metadata, transaction, new_metadata.uuid()).await?;
+        create::insert_snapshot_refs(new_metadata, transaction).await?;
     }
 
     if diffs.head_of_snapshot_log_changed {
