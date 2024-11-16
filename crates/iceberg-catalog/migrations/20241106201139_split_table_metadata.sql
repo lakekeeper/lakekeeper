@@ -4,7 +4,6 @@ create type table_format_version as enum ('1', '2');
 
 alter table "table"
     add column table_format_version table_format_version,
-    -- TODO: should these go here?;
     add column last_column_id       int,
     add column last_sequence_number bigint,
     add column last_updated_ms      bigint,
@@ -53,7 +52,7 @@ create table table_default_partition_spec
 (
     table_id          uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
     partition_spec_id int not null,
-    FOREIGN KEY (table_id, partition_spec_id) REFERENCES table_partition_spec (table_id, partition_spec_id) ON DELETE CASCADE
+    FOREIGN KEY (table_id, partition_spec_id) REFERENCES table_partition_spec (table_id, partition_spec_id)
 );
 
 call add_time_columns('table_default_partition_spec');
@@ -80,8 +79,8 @@ create table table_snapshot
     summary            jsonb  not null,
     schema_id          int    not null,
     timestamp_ms       bigint not null,
-    FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id) ON DELETE CASCADE,
-    FOREIGN KEY (table_id, parent_snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE SET NULL (parent_snapshot_id),
+    FOREIGN KEY (table_id, schema_id) REFERENCES table_schema (table_id, schema_id),
+    -- FOREIGN KEY (table_id, parent_snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id), ON DELETE SET NULL (parent_snapshot_id),
     PRIMARY KEY (table_id, snapshot_id)
 );
 
@@ -104,7 +103,6 @@ create table table_snapshot_log
     table_id        uuid      not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     snapshot_id     bigint    not null,
     timestamp       bigint    not null,
-    -- TODO: does the snapshot_log lose entries? FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE,
     PRIMARY KEY (table_id, sequence_number)
 );
 
@@ -138,13 +136,11 @@ create table table_default_sort_order
 (
     table_id      uuid primary key REFERENCES "table" (table_id) ON DELETE CASCADE,
     sort_order_id bigint not null,
-    FOREIGN KEY (table_id, sort_order_id) REFERENCES table_sort_order (table_id, sort_order_id) ON DELETE CASCADE
+    FOREIGN KEY (table_id, sort_order_id) REFERENCES table_sort_order (table_id, sort_order_id)
 );
 
 call add_time_columns('table_default_sort_order');
 select trigger_updated_at('table_default_sort_order');
-
-DROP TABLE IF EXISTS table_refs;
 
 create table table_refs
 (
@@ -153,7 +149,7 @@ create table table_refs
     snapshot_id    bigint not null,
     retention      jsonb  not null,
     PRIMARY KEY (table_id, table_ref_name),
-    FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE
+    FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id)
 );
 
 call add_time_columns('table_refs');

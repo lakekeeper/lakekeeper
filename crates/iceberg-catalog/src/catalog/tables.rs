@@ -2232,7 +2232,18 @@ mod test {
         )
         .await
         .unwrap();
-
+        assert_eq!(tab.metadata.history(), builder.metadata.history());
+        assert_eq!(
+            tab.metadata
+                .snapshots()
+                .sorted_by_key(|s| s.snapshot_id())
+                .collect_vec(),
+            builder
+                .metadata
+                .snapshots()
+                .sorted_by_key(|s| s.snapshot_id())
+                .collect_vec()
+        );
         assert_eq!(tab.metadata, builder.metadata);
     }
 
