@@ -447,10 +447,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn commit_table(
         parameters: TableParameters,
-        request: CommitTableRequest,
+        mut request: CommitTableRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
+        request.identifier = Some(parameters.table);
         let t = commit_tables_internal(
             parameters.prefix,
             CommitTransactionRequest {
