@@ -314,7 +314,7 @@ impl TableQueryStruct {
         let fields = default_spec.fields();
         let default = BoundPartitionSpec::builder(default_spec_schema.clone())
             .with_spec_id(default_spec.spec_id())
-            .add_unbound_fields(fields.into_iter().map(|f| UnboundPartitionField {
+            .add_unbound_fields(fields.iter().map(|f| UnboundPartitionField {
                 source_id: f.source_id,
                 field_id: Some(f.field_id),
                 name: f.name.clone(),
@@ -576,13 +576,12 @@ pub(crate) async fn load_tables(
         let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
         let storage_profile = table.storage_profile.deref().clone();
 
-        let table_metadata = match table.into_table_metadata()? {
-            Some(metadata) => metadata,
-            None => {
-                tracing::warn!("Table metadata could not be fetched from tables, falling back to blob retrieval.");
-                failed_to_fetch.push(table_id);
-                continue;
-            }
+        let Some(table_metadata) = table.into_table_metadata()? else {
+            tracing::warn!(
+                "Table metadata could not be fetched from tables, falling back to blob retrieval."
+            );
+            failed_to_fetch.push(table_id);
+            continue;
         };
 
         tables.insert(
@@ -1008,7 +1007,7 @@ pub(crate) async fn commit_table_transaction<'a>(
                 commit
                     .new_metadata
                     .metadata_log()
-                    .into_iter()
+                    .iter()
                     .rev()
                     .take(commit.added_metadata_log)
                     .rev()
@@ -1125,13 +1124,13 @@ pub(crate) mod tests {
     use std::default::Default;
     use std::time::SystemTime;
 
-    use crate::catalog::tables::{create_table_request_into_table_metadata, Diffs};
+    use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
     use crate::implementations::postgres::tabular::table::create::create_table;
     use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-        TableMetadataBuilder, UnboundPartitionSpec,
+        UnboundPartitionSpec,
     };
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateTableRequest;
@@ -1365,7 +1364,7 @@ pub(crate) mod tests {
 
         // Load should succeed
         let mut t = pool.begin().await.unwrap();
-        let load_result = load_tables(warehouse_id, vec![table_id.into()], false, &mut t)
+        let load_result = load_tables(warehouse_id, vec![table_id], false, &mut t)
             .await
             .unwrap();
         assert_eq!(load_result.len(), 1);
@@ -1409,7 +1408,7 @@ pub(crate) mod tests {
         // Its staged - should not have metadata_location
         let load = load_tables(
             warehouse_id,
-            vec![table_id.into()],
+            vec![table_id],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -1450,7 +1449,7 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
         let load_result = load_tables(
             warehouse_id,
-            vec![table_id.into()],
+            vec![table_id],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -2111,7 +2110,7 @@ pub(crate) mod tests {
             .unwrap();
         }
 
-        for (idx, js) in jsons.into_iter().enumerate() {
+        for js in jsons {
             let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
                 .unwrap();

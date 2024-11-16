@@ -16,12 +16,8 @@ use std::ops::Range;
 use std::str::FromStr;
 use uuid::Uuid;
 
-// TODO: currently, we upsert & use a data-modifying CTE to delete existing stuff pretty much
-//       everywhere, we're doing it to avoid leftovers from staged tables since this code is shared
-//       between one-shot and staged creation. Since staged tables have two code-paths that can
-//       influence them, a) the table creation itself, and b) the table commit, we cannot simply
-//       rely on the `_overwritten` flag from `create_tabular` within the `insert_x` functions.
-
+// TODO: split this into multiple functions
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn create_table(
     TableCreation {
         namespace_id,
@@ -535,7 +531,7 @@ pub(super) async fn insert_metadata_log(
         timestamps.push(timestamp_ms);
         metadata_files.push(metadata_file);
     }
-    eprintln!("Inserting metadata log entries: {:?}", metadata_files);
+
     let _ = sqlx::query!(
         r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file)
            SELECT $1, UNNEST($2::BIGINT[]), UNNEST($3::TEXT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,

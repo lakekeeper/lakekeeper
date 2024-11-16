@@ -397,7 +397,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // ------------------- BUSINESS LOGIC -------------------
         let mut metadatas = C::load_tables(
             warehouse_id,
-            vec![table_id.into()],
+            vec![table_id],
             include_deleted,
             t.transaction(),
         )
@@ -776,6 +776,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
+// TODO: split this into smaller functions
+#[allow(clippy::too_many_lines)]
 async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
     request: CommitTransactionRequest,
@@ -1054,7 +1056,7 @@ impl CommitContext {
             new_metadata
                 .history()
                 .len()
-                .saturating_sub(latest_snap_changed as usize),
+                .saturating_sub(usize::from(latest_snap_changed)),
         );
         TableCommit {
             diffs,
@@ -1505,7 +1507,7 @@ mod test {
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::AllowAllAuthorizer;
     use crate::service::State;
-    use assert_json_diff::assert_json_eq;
+
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
         SnapshotRetention, Summary, Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
@@ -1558,7 +1560,6 @@ mod test {
     #[sqlx::test]
     async fn test_set_properties_commit_table(pool: sqlx::PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
-        let table_id = table.metadata.uuid();
 
         let table_metadata = table
             .metadata
@@ -1624,7 +1625,6 @@ mod test {
     #[sqlx::test]
     async fn test_add_partition_spec_commit_table(pool: sqlx::PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
-        let table_id = table.metadata.uuid();
 
         let added_spec = UnboundPartitionSpec::builder()
             .with_spec_id(10)
@@ -1734,7 +1734,6 @@ mod test {
     #[sqlx::test]
     async fn test_set_default_partition_spec(pool: PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
-        let table_id = table.metadata.uuid();
 
         let added_spec = UnboundPartitionSpec::builder()
             .with_spec_id(10)
@@ -1752,7 +1751,8 @@ mod test {
             .build()
             .unwrap();
         let updates = table_metadata.changes;
-        let committed = super::commit_tables_internal(
+
+        let _ = super::commit_tables_internal(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -1794,7 +1794,7 @@ mod test {
     #[sqlx::test]
     async fn test_set_ref(pool: PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
-        let table_id = table.metadata.uuid();
+
         let builder = table.metadata.into_builder(table.metadata_location);
 
         let snapshot = Snapshot::builder()
@@ -1874,7 +1874,6 @@ mod test {
     #[sqlx::test]
     async fn test_expire_metadata_log(pool: PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pool).await;
-        let table_id = table.metadata.uuid();
         let table_ident = TableIdent {
             namespace: ns.namespace.clone(),
             name: "tab-1".to_string(),
@@ -2007,7 +2006,6 @@ mod test {
     #[sqlx::test]
     async fn test_remove_snapshot_commit(pg_pool: PgPool) {
         let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
-        let table_id = table.metadata.uuid();
         let table_ident = TableIdent {
             namespace: ns.namespace.clone(),
             name: "tab-1".to_string(),
@@ -2233,24 +2231,6 @@ mod test {
         )
         .await
         .unwrap();
-        assert_eq!(tab.metadata.history(), builder.metadata.history());
-        assert_json_eq!(
-            dbg!(serde_json::to_value(
-                &tab.metadata
-                    .snapshots()
-                    .sorted_by_key(|s| s.schema_id())
-                    .collect_vec()
-            )
-            .unwrap()),
-            dbg!(serde_json::to_value(
-                &builder
-                    .metadata
-                    .snapshots()
-                    .sorted_by_key(|s| s.schema_id())
-                    .collect_vec()
-            )
-            .unwrap())
-        );
 
         assert_eq!(tab.metadata, builder.metadata);
     }
@@ -2263,7 +2243,7 @@ mod test {
         NamespaceParameters,
         LoadTableResult,
     ) {
-        let (prof) = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::test_io_profile();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),

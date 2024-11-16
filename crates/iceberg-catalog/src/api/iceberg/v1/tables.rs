@@ -319,6 +319,7 @@ pub struct DataAccess {
 
 impl DataAccess {
     #[cfg(test)]
+    #[must_use]
     pub fn none() -> Self {
         Self {
             vended_credentials: false,
