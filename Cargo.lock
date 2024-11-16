@@ -2400,6 +2400,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2975,6 +2984,7 @@ dependencies = [
  "figment",
  "flate2",
  "futures",
+ "fxhash",
  "google-cloud-auth",
  "google-cloud-token",
  "hostname 0.4.0",

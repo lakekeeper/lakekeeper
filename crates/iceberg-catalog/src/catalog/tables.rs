@@ -3,10 +3,6 @@ use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
     require_warehouse_id, CatalogServer, PageStatus,
 };
-use futures::FutureExt;
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr as _;
-
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{
     ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
@@ -33,6 +29,10 @@ use crate::service::{
 use crate::service::{
     GetNamespaceResponse, TableCommit, TableCreation, TableIdentUuid, WarehouseStatus,
 };
+use futures::FutureExt;
+use fxhash::FxHashSet;
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr as _;
 
 use crate::catalog;
 use crate::catalog::tabular::list_entities;
@@ -1076,11 +1076,11 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
     let new_snaps = new_metadata
         .snapshots()
         .map(|s| s.snapshot_id())
-        .collect::<HashSet<i64>>();
+        .collect::<FxHashSet<i64>>();
     let old_snaps = previous_metadata
         .snapshots()
         .map(|s| s.snapshot_id())
-        .collect::<HashSet<i64>>();
+        .collect::<FxHashSet<i64>>();
     let removed_snaps = old_snaps
         .difference(&new_snaps)
         .copied()
@@ -1093,11 +1093,11 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
     let old_schemas = previous_metadata
         .schemas_iter()
         .map(|s| s.schema_id())
-        .collect::<HashSet<SchemaId>>();
+        .collect::<FxHashSet<SchemaId>>();
     let new_schemas = new_metadata
         .schemas_iter()
         .map(|s| s.schema_id())
-        .collect::<HashSet<SchemaId>>();
+        .collect::<FxHashSet<SchemaId>>();
 
     let removed_schemas = old_schemas
         .difference(&new_schemas)
@@ -1111,11 +1111,11 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
     let old_specs = previous_metadata
         .partition_specs_iter()
         .map(|s| s.spec_id())
-        .collect::<HashSet<i32>>();
+        .collect::<FxHashSet<i32>>();
     let new_specs = new_metadata
         .partition_specs_iter()
         .map(|s| s.spec_id())
-        .collect::<HashSet<i32>>();
+        .collect::<FxHashSet<i32>>();
 
     let removed_specs = old_specs
         .difference(&new_specs)
@@ -1129,11 +1129,11 @@ fn calculate_diffs(new_metadata: &TableMetadata, previous_metadata: &TableMetada
     let old_sort_orders = previous_metadata
         .sort_orders_iter()
         .map(|s| s.order_id)
-        .collect::<HashSet<i64>>();
+        .collect::<FxHashSet<i64>>();
     let new_sort_orders = new_metadata
         .sort_orders_iter()
         .map(|s| s.order_id)
-        .collect::<HashSet<i64>>();
+        .collect::<FxHashSet<i64>>();
 
     let removed_sort_orders = old_sort_orders
         .difference(&new_sort_orders)

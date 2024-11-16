@@ -44,6 +44,7 @@ cloudevents-sdk = { version = "0.7.0" }
 derive_more = { workspace = true }
 figment = { workspace = true }
 flate2 = { workspace = true }
+fxhash = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-token = { workspace = true }
