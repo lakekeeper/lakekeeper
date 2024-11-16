@@ -78,7 +78,7 @@ services:
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
-      - ICEBERG_REST__NATS_URI=nats://nats:4222
+      - ICEBERG_REST__NATS_ADDRESS=nats://nats:4222
       - ICEBERG_REST__NATS_TOPIC=changes
       - ICEBERG_REST__NATS_USER=test
       - ICEBERG_REST__NATS_PASSWORD=test
