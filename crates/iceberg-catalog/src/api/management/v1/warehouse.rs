@@ -84,6 +84,7 @@ pub enum TabularDeleteProfile {
             deserialize_with = "crate::config::seconds_to_duration",
             serialize_with = "crate::config::duration_to_seconds"
         )]
+        #[schema(value_type=i32)]
         expiration_seconds: chrono::Duration,
     },
 }

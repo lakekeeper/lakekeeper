@@ -2645,7 +2645,8 @@ components:
         - type
         properties:
           expiration_seconds:
-            type: string
+            type: integer
+            format: int32
           type:
             type: string
             enum:
