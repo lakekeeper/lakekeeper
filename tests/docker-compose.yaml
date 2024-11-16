@@ -84,7 +84,6 @@ services:
       - ICEBERG_REST__NATS_PASSWORD=test
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
       - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
-      - ICEBERG_REST__DEFAULT_TABULAR_EXPIRATION_DELAY_SECONDS="2"
       - RUST_LOG=trace,axum=trace,reqwest=trace
     command: [ "serve" ]
     healthcheck:

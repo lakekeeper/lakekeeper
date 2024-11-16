@@ -20,7 +20,7 @@ use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
     Transaction,
 };
-use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
+use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
 use utoipa::ToSchema;

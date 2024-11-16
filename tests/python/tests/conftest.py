@@ -194,6 +194,7 @@ class Server:
             "project-id": str(project_id),
             "warehouse-name": name,
             **storage_config,
+            "delete-profile": {"type": "soft", "expiration-seconds": 2},
         }
 
         warehouse_url = self.warehouse_url
