@@ -99,9 +99,7 @@ impl TabularDeleteProfile {
 
 impl Default for TabularDeleteProfile {
     fn default() -> Self {
-        Self::Soft {
-            expiration_seconds: CONFIG.default_tabular_expiration_delay_seconds,
-        }
+        Self::Hard {}
     }
 }
 
