@@ -143,6 +143,7 @@ pub(crate) async fn list_namespaces(
             FROM namespace n
             INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
             WHERE n.warehouse_id = $1
+            AND array_length("namespace_name", 1) = 1
             AND w.status = 'active'
             AND ((n.created_at > $2 OR $2 IS NULL) OR (n.created_at = $2 AND n.namespace_id > $3))
             ORDER BY n.created_at, n.namespace_id ASC
