@@ -104,7 +104,7 @@ pub(crate) async fn list_namespaces(
             r#"
             SELECT
                 n.namespace_id,
-                "namespace_name"[$2 + 1:] as "namespace_name: Vec<String>",
+                "namespace_name" as "namespace_name: Vec<String>",
                 n.created_at
             FROM namespace n
             INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -128,10 +128,7 @@ pub(crate) async fn list_namespaces(
         .await
         .map_err(|e| e.into_error_model("Error fetching Namespace".into()))?
         .into_iter()
-        .filter_map(|r| match r.namespace_name {
-            Some(n) => Some((r.namespace_id, n, r.created_at)),
-            None => None,
-        })
+        .map(|r| (r.namespace_id, r.namespace_name, r.created_at))
         .collect()
     } else {
         sqlx::query!(

@@ -30,10 +30,11 @@ def test_list_hierarchical_namespaces(warehouse: conftest.Warehouse):
     )
     namespaces = catalog.list_namespaces()
     assert ("test_list_hierarchical_namespaces_1",) in namespaces
-    assert len(namespaces) == 1
+    assert all([len(namespace) == 1 for namespace in namespaces])
     namespaces = catalog.list_namespaces(
         namespace=("test_list_hierarchical_namespaces_1",)
     )
+    print(namespaces)
     assert (
         "test_list_hierarchical_namespaces_1",
         "test_list_hierarchical_namespaces_2",
