@@ -1047,7 +1047,15 @@ impl CommitContext {
         let previous_metadata = &self.previous_metadata;
 
         let diffs = calculate_diffs(new_metadata, previous_metadata);
+        let latest_snap_changed =
+            dbg!(self.previous_metadata.history().last() != new_metadata.history().last());
 
+        let snap_log_diff = self.previous_metadata.history().len().saturating_sub(
+            new_metadata
+                .history()
+                .len()
+                .saturating_sub(latest_snap_changed as usize),
+        );
         TableCommit {
             diffs,
             new_metadata: new_metadata.clone(),
@@ -1055,6 +1063,8 @@ impl CommitContext {
             updates: self.updates.clone(),
             expired_metadata_logs: self.expired_metadata_logs,
             added_metadata_log: self.added_metadata_log,
+            removed_snapshot_log: dbg!(snap_log_diff),
+            latest_snap_changed,
         }
     }
 }
@@ -1495,6 +1505,7 @@ mod test {
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::AllowAllAuthorizer;
     use crate::service::State;
+    use assert_json_diff::assert_json_eq;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
         SnapshotRetention, Summary, Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
@@ -1989,6 +2000,257 @@ mod test {
         )
         .await
         .unwrap();
+
+        assert_eq!(tab.metadata, builder.metadata);
+    }
+
+    #[sqlx::test]
+    async fn test_remove_snapshot_commit(pg_pool: PgPool) {
+        let (ctx, ns, ns_params, table) = commit_test_setup(pg_pool).await;
+        let table_id = table.metadata.uuid();
+        let table_ident = TableIdent {
+            namespace: ns.namespace.clone(),
+            name: "tab-1".to_string(),
+        };
+        let builder = table.metadata.into_builder(table.metadata_location);
+
+        let snap = Snapshot::builder()
+            .with_snapshot_id(1)
+            .with_timestamp_ms(builder.last_updated_ms() + 1)
+            .with_sequence_number(0)
+            .with_schema_id(0)
+            .with_manifest_list("/snap-1.avro")
+            .with_summary(Summary {
+                operation: Operation::Append,
+                other: HashMap::from_iter(vec![
+                    (
+                        "spark.app.id".to_string(),
+                        "local-1662532784305".to_string(),
+                    ),
+                    ("added-data-files".to_string(), "4".to_string()),
+                    ("added-records".to_string(), "4".to_string()),
+                    ("added-files-size".to_string(), "6001".to_string()),
+                ]),
+            })
+            .build();
+
+        let builder = builder
+            .add_snapshot(snap)
+            .unwrap()
+            .set_ref(
+                MAIN_BRANCH,
+                SnapshotReference {
+                    snapshot_id: 1,
+                    retention: SnapshotRetention::Branch {
+                        min_snapshots_to_keep: Some(10),
+                        max_snapshot_age_ms: None,
+                        max_ref_age_ms: None,
+                    },
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates: builder.changes,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata.history(), builder.metadata.history());
+        assert_eq!(tab.metadata, builder.metadata);
+
+        assert_json_diff::assert_json_eq!(
+            serde_json::to_value(tab.metadata.clone()).unwrap(),
+            serde_json::to_value(builder.metadata.clone()).unwrap()
+        );
+
+        let builder = builder.metadata.into_builder(tab.metadata_location);
+
+        let snap = Snapshot::builder()
+            .with_snapshot_id(2)
+            .with_parent_snapshot_id(Some(1))
+            .with_timestamp_ms(builder.last_updated_ms() + 1)
+            .with_sequence_number(1)
+            .with_schema_id(0)
+            .with_manifest_list("/snap-2.avro")
+            .with_summary(Summary {
+                operation: Operation::Append,
+                other: HashMap::from_iter(vec![
+                    (
+                        "spark.app.id".to_string(),
+                        "local-1662532784305".to_string(),
+                    ),
+                    ("added-data-files".to_string(), "4".to_string()),
+                    ("added-records".to_string(), "4".to_string()),
+                    ("added-files-size".to_string(), "6001".to_string()),
+                ]),
+            })
+            .build();
+
+        let builder = builder.add_snapshot(snap).unwrap().build().unwrap();
+
+        let updates = builder.changes;
+
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tab.metadata, builder.metadata);
+
+        let builder = builder.metadata.into_builder(tab.metadata_location);
+
+        let snap = Snapshot::builder()
+            .with_snapshot_id(3)
+            .with_timestamp_ms(builder.last_updated_ms() + 1)
+            .with_parent_snapshot_id(Some(2))
+            .with_sequence_number(2)
+            .with_schema_id(0)
+            .with_manifest_list("/snap-2.avro")
+            .with_summary(Summary {
+                operation: Operation::Append,
+                other: HashMap::from_iter(vec![
+                    (
+                        "spark.app.id".to_string(),
+                        "local-1662532784305".to_string(),
+                    ),
+                    ("added-data-files".to_string(), "4".to_string()),
+                    ("added-records".to_string(), "4".to_string()),
+                    ("added-files-size".to_string(), "6001".to_string()),
+                ]),
+            })
+            .build();
+
+        let builder = builder.add_snapshot(snap).unwrap().build().unwrap();
+
+        let updates = builder.changes;
+
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tab.metadata, builder.metadata);
+
+        let builder = builder
+            .metadata
+            .into_builder(tab.metadata_location)
+            .remove_snapshots(&[2])
+            .build()
+            .unwrap();
+
+        let updates = builder.changes;
+
+        let _ = super::commit_tables_internal(
+            ns_params.prefix.clone(),
+            super::CommitTransactionRequest {
+                table_changes: vec![CommitTableRequest {
+                    identifier: Some(table_ident.clone()),
+                    requirements: vec![],
+                    updates,
+                }],
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let tab = CatalogServer::load_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DataAccess::none(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tab.metadata.history(), builder.metadata.history());
+        assert_json_eq!(
+            dbg!(serde_json::to_value(
+                &tab.metadata
+                    .snapshots()
+                    .sorted_by_key(|s| s.schema_id())
+                    .collect_vec()
+            )
+            .unwrap()),
+            dbg!(serde_json::to_value(
+                &builder
+                    .metadata
+                    .snapshots()
+                    .sorted_by_key(|s| s.schema_id())
+                    .collect_vec()
+            )
+            .unwrap())
+        );
 
         assert_eq!(tab.metadata, builder.metadata);
     }

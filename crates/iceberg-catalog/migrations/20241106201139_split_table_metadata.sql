@@ -22,7 +22,6 @@ create table table_schema
     schema_id int   not null,
     table_id  uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     schema    jsonb not null,
-    CONSTRAINT "unique_schema_per_table" unique (table_id, schema_id),
     PRIMARY KEY (table_id, schema_id)
 );
 
@@ -44,7 +43,6 @@ create table table_partition_spec
     partition_spec_id int   not null,
     table_id          uuid  not null REFERENCES "table" (table_id) ON DELETE CASCADE,
     partition_spec    jsonb not null,
-    CONSTRAINT "unique_partition_spec_per_table" unique (table_id, partition_spec_id),
     PRIMARY KEY (table_id, partition_spec_id)
 );
 

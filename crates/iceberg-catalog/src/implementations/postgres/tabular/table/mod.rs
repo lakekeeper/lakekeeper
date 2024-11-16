@@ -24,7 +24,9 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
-use crate::implementations::postgres::tabular::table::create::expire_metadata_log_entries;
+use crate::implementations::postgres::tabular::table::create::{
+    expire_metadata_log_entries, remove_snapshot_log_entries,
+};
 use iceberg::TableUpdate;
 use sqlx::types::Json;
 use std::default::Default;
@@ -972,15 +974,27 @@ pub(crate) async fn commit_table_transaction<'a>(
             .await?;
         }
 
-        // TODO: can a single transaction result in multiple log entries?
-        if let Some(snap) = commit.new_metadata.history().last() {
-            create::insert_snapshot_log(
-                [snap].into_iter(),
+        // TODO: this assumes only latest entry in snapshot log is ever added in a commit
+        if commit.latest_snap_changed {
+            if let Some(snap) = commit.new_metadata.history().last() {
+                create::insert_snapshot_log(
+                    [snap].into_iter(),
+                    transaction,
+                    commit.new_metadata.uuid(),
+                )
+                .await?;
+            }
+        }
+
+        if commit.removed_snapshot_log > 0 {
+            remove_snapshot_log_entries(
+                commit.removed_snapshot_log,
                 transaction,
                 commit.new_metadata.uuid(),
             )
             .await?;
         }
+
         if commit.expired_metadata_logs > 0 {
             expire_metadata_log_entries(
                 commit.expired_metadata_logs,
@@ -989,20 +1003,21 @@ pub(crate) async fn commit_table_transaction<'a>(
             )
             .await?;
         }
-
-        create::insert_metadata_log(
-            commit
-                .new_metadata
-                .metadata_log()
-                .into_iter()
-                .rev()
-                .take(commit.added_metadata_log)
-                .rev()
-                .cloned(),
-            transaction,
-            commit.new_metadata.uuid(),
-        )
-        .await?;
+        if commit.added_metadata_log > 0 {
+            create::insert_metadata_log(
+                commit
+                    .new_metadata
+                    .metadata_log()
+                    .into_iter()
+                    .rev()
+                    .take(commit.added_metadata_log)
+                    .rev()
+                    .cloned(),
+                transaction,
+                commit.new_metadata.uuid(),
+            )
+            .await?;
+        }
 
         if properties {
             create::set_table_properties(

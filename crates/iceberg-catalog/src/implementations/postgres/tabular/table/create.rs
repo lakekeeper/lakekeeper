@@ -415,6 +415,39 @@ pub(super) async fn set_current_snapshot(
     Ok(())
 }
 
+pub(crate) async fn remove_snapshot_log_entries(
+    n_entries: usize,
+    transaction: &mut Transaction<'_, Postgres>,
+    tabular_id: Uuid,
+) -> api::Result<()> {
+    let i: i64 = n_entries.try_into().map_err(|e| {
+        ErrorModel::internal(
+            "Too many snapshot log entries to expire.",
+            "TooManySnapshotLogEntries",
+            Some(Box::new(e)),
+        )
+    })?;
+    let exec = sqlx::query!(
+        r#"DELETE FROM table_snapshot_log WHERE table_id = $1
+           AND sequence_number IN (SELECT sequence_number FROM table_snapshot_log WHERE table_id = $1 ORDER BY sequence_number ASC LIMIT $2)"#,
+        tabular_id,
+        i
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error expiring table snapshot log entries".to_string())
+    })?;
+
+    tracing::debug!(
+        "Expired {} snapshot log entries for table_id: {}",
+        exec.rows_affected(),
+        tabular_id
+    );
+    Ok(())
+}
+
 pub(crate) async fn insert_snapshot_log(
     snapshots: impl ExactSizeIterator<Item = &SnapshotLog>,
     transaction: &mut Transaction<'_, Postgres>,
