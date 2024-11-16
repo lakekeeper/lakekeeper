@@ -28,6 +28,7 @@ use crate::implementations::postgres::tabular::table::create::{
     expire_metadata_log_entries, remove_snapshot_log_entries,
 };
 use iceberg::TableUpdate;
+use itertools::Itertools;
 use sqlx::types::Json;
 use std::default::Default;
 use std::str::FromStr;
@@ -920,7 +921,13 @@ pub(crate) async fn commit_table_transaction<'a>(
 
         if !commit.diffs.added_sort_orders.is_empty() {
             create::insert_sort_orders(
-                &commit.new_metadata,
+                commit
+                    .diffs
+                    .added_sort_orders
+                    .into_iter()
+                    .filter_map(|id| commit.new_metadata.sort_order_by_id(id))
+                    .collect_vec()
+                    .into_iter(),
                 transaction,
                 commit.new_metadata.uuid(),
             )

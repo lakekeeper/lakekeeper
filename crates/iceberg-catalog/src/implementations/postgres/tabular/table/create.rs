@@ -5,7 +5,7 @@ use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, T
 use crate::service::{CreateTableResponse, TableCreation};
 use iceberg::spec::{
     BoundPartitionSpecRef, FormatVersion, MetadataLog, SchemaRef, SchemalessPartitionSpecRef,
-    SnapshotLog, SnapshotRef, TableMetadata,
+    SnapshotLog, SnapshotRef, SortOrderRef, TableMetadata,
 };
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -132,7 +132,7 @@ pub(crate) async fn create_table(
     insert_snapshots(table_metadata.snapshots(), transaction, tabular_id).await?;
     set_current_snapshot(&table_metadata, transaction, tabular_id).await?;
 
-    insert_sort_orders(&table_metadata, transaction, tabular_id).await?;
+    insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
     insert_default_sort_order(&table_metadata, transaction, tabular_id).await?;
 
     insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
@@ -329,15 +329,15 @@ pub(crate) async fn remove_sort_orders(
 }
 
 pub(crate) async fn insert_sort_orders(
-    table_metadata: &TableMetadata,
+    sort_orders_iter: impl ExactSizeIterator<Item = &SortOrderRef>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let n_orders = table_metadata.sort_orders_iter().len();
+    let n_orders = sort_orders_iter.len();
     let mut sort_order_ids = Vec::with_capacity(n_orders);
     let mut sort_orders = Vec::with_capacity(n_orders);
 
-    for sort_order in table_metadata.sort_orders_iter() {
+    for sort_order in sort_orders_iter {
         sort_order_ids.push(sort_order.order_id);
         sort_orders.push(serde_json::to_value(sort_order).map_err(|er| {
             ErrorModel::internal(
