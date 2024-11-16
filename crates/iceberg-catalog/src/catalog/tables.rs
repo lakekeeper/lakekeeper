@@ -2289,8 +2289,6 @@ mod test {
         use crate::catalog::CatalogServer;
         use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
 
-        use iceberg::spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec};
-        use iceberg_ext::catalog::rest::CreateTableRequest;
         use itertools::Itertools;
 
         #[sqlx::test]
