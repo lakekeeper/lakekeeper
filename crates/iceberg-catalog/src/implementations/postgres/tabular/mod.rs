@@ -284,17 +284,21 @@ pub(crate) async fn create_tabular<'a>(
     })?;
 
     let location_is_taken = sqlx::query_scalar!(
-        r#"
-        SELECT EXISTS (
-            SELECT 1
-            FROM tabular ta
-            JOIN namespace n ON ta.namespace_id = n.namespace_id
-            JOIN warehouse w ON w.warehouse_id = n.warehouse_id
-            WHERE location = ANY($1) AND tabular_id != $2
-        ) AS "prefix_exists!"
-        "#,
+        r#"SELECT EXISTS (
+               SELECT 1
+               FROM tabular ta
+               JOIN namespace n ON ta.namespace_id = n.namespace_id
+               JOIN warehouse w ON w.warehouse_id = n.warehouse_id
+               WHERE (location = ANY($1) OR
+                      -- FIXME: this does not seem to make use of any index put on location
+                      -- e.g. a text_pattern_ops on location did not show up in EXPLAIN ANALYZE
+                      -- with set enable_seqscan = off;
+                      (length($3) < length(location) AND (location LIKE $3 || '%'))
+               ) AND tabular_id != $2
+           ) as "exists!""#,
         &query_strings,
-        id
+        id,
+        location.as_str()
     )
     .fetch_one(&mut **transaction)
     .await
