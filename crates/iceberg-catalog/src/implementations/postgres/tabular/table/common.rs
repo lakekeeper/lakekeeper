@@ -243,29 +243,6 @@ pub(crate) async fn insert_default_sort_order(
     Ok(())
 }
 
-pub(super) async fn set_current_snapshot(
-    table_metadata: &TableMetadata,
-    transaction: &mut Transaction<'_, Postgres>,
-) -> api::Result<()> {
-    // set current snap
-    if let Some(current_snapshot) = table_metadata.current_snapshot() {
-        let _ = sqlx::query!(
-            r#"INSERT INTO table_current_snapshot(snapshot_id, table_id)
-               VALUES ($1, $2)
-               ON CONFLICT (table_id) DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id"#,
-            current_snapshot.snapshot_id(),
-            table_metadata.uuid(),
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|err| {
-            tracing::warn!("Error creating table: {}", err);
-            err.into_error_model("Error inserting table current snapshot".to_string())
-        })?;
-    }
-    Ok(())
-}
-
 pub(crate) async fn remove_snapshot_log_entries(
     n_entries: usize,
     transaction: &mut Transaction<'_, Postgres>,

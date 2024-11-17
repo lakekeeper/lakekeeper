@@ -23,7 +23,7 @@ use crate::implementations::postgres::tabular::{
 };
 use iceberg::spec::{
     BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
-    SnapshotRetention, SortOrder, Summary, UnboundPartitionField,
+    SnapshotRetention, SortOrder, Summary, UnboundPartitionField, MAIN_BRANCH,
 };
 use iceberg_ext::configs::Location;
 
@@ -242,7 +242,6 @@ struct TableQueryStruct {
     metadata_log_files: Option<Vec<String>>,
     snapshot_log_timestamps: Option<Vec<i64>>,
     snapshot_log_ids: Option<Vec<i64>>,
-    current_snapshot_id: Option<i64>,
     snapshot_ids: Option<Vec<i64>>,
     snapshot_parent_snapshot_id: Option<Vec<Option<i64>>>,
     snapshot_sequence_number: Option<Vec<i64>>,
@@ -399,6 +398,8 @@ impl TableQueryStruct {
         })
         .collect::<HashMap<_, _>>();
 
+        let current_snapshot_id = refs.get(MAIN_BRANCH).map(|s| s.snapshot_id);
+
         Ok(Some(
             TableMetadata::try_from_parts(Parts {
                 format_version: FormatVersion::from(expect!(self.table_format_version)),
@@ -413,7 +414,7 @@ impl TableQueryStruct {
                 default_spec: Arc::new(default),
                 last_partition_id: expect!(self.last_partition_id),
                 properties,
-                current_snapshot_id: self.current_snapshot_id,
+                current_snapshot_id,
                 snapshots,
                 snapshot_log,
                 metadata_log,
@@ -462,7 +463,6 @@ pub(crate) async fn load_tables(
             tdps.partition_spec_id as "default_partition_spec_id",
             ts.schemas as "schemas: Vec<Json<Schema>>",
             tsnap.snapshot_ids,
-            tcsnap.snapshot_id as "current_snapshot_id?",
             tsnap.parent_snapshot_ids as "snapshot_parent_snapshot_id: Vec<Option<i64>>",
             tsnap.sequence_numbers as "snapshot_sequence_number",
             tsnap.manifest_lists as "snapshot_manifest_list: Vec<String>",
@@ -489,7 +489,6 @@ pub(crate) async fn load_tables(
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
         INNER JOIN table_current_schema tcs ON tcs.table_id = t.table_id
         LEFT JOIN table_default_partition_spec tdps ON tdps.table_id = t.table_id
-        LEFT JOIN table_current_snapshot tcsnap ON tcsnap.table_id = t.table_id
         LEFT JOIN table_default_sort_order tdsort ON tdsort.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(schema_id) as schema_ids,

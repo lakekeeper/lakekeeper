@@ -63,7 +63,6 @@ pub(crate) async fn create_table(
     .await?;
 
     common::insert_snapshots(tabular_id, table_metadata.snapshots(), transaction).await?;
-    common::set_current_snapshot(&table_metadata, transaction).await?;
     common::insert_snapshot_refs(&table_metadata, transaction).await?;
     common::insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
 

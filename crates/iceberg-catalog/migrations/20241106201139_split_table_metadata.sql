@@ -87,15 +87,6 @@ create table table_snapshot
 call add_time_columns('table_snapshot');
 select trigger_updated_at('table_snapshot');
 
-create table table_current_snapshot
-(
-    table_id    uuid PRIMARY KEY REFERENCES "table" (table_id) ON DELETE CASCADE,
-    snapshot_id bigint not null,
-    FOREIGN KEY (table_id, snapshot_id) REFERENCES table_snapshot (table_id, snapshot_id) ON DELETE CASCADE
-);
-
-select trigger_updated_at('table_current_snapshot');
-call add_time_columns('table_current_snapshot');
 
 create table table_snapshot_log
 (

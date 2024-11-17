@@ -273,8 +273,6 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    common::set_current_snapshot(new_metadata, transaction).await?;
-
     if snapshot_refs {
         common::insert_snapshot_refs(new_metadata, transaction).await?;
     }
