@@ -806,12 +806,12 @@ pub(crate) async fn commit_table_transaction<'a>(
 ) -> Result<()> {
     let commits: Vec<TableCommit> = commits.into_iter().collect();
     if commits.len() > (MAX_PARAMETERS / 4) {
-        return Err(ErrorModel::builder()
-            .code(StatusCode::BAD_REQUEST.into())
-            .message("Too updates in single commit".to_string())
-            .r#type("TooManyTablesForCommit".to_string())
-            .build()
-            .into());
+        return Err(ErrorModel::bad_request(
+            "Too updates in single commit",
+            "TooManyTablesForCommit".to_string(),
+            None,
+        )
+        .into());
     }
 
     let mut query_builder_table = sqlx::QueryBuilder::new(
