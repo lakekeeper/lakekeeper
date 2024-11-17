@@ -1175,10 +1175,10 @@ pub struct Diffs {
     pub(crate) added_partition_specs: Vec<i32>,
     pub(crate) removed_sort_orders: Vec<i64>,
     pub(crate) added_sort_orders: Vec<i64>,
-    pub head_of_snapshot_log_changed: bool,
-    pub n_removed_snapshot_log: usize,
-    pub expired_metadata_logs: usize,
-    pub added_metadata_log: usize,
+    pub(crate) head_of_snapshot_log_changed: bool,
+    pub(crate) n_removed_snapshot_log: usize,
+    pub(crate) expired_metadata_logs: usize,
+    pub(crate) added_metadata_log: usize,
 }
 
 pub(crate) fn determine_table_ident(
