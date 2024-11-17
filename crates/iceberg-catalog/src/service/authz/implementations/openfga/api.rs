@@ -649,7 +649,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments to the current project
+/// Get user and role assignments of a role
 #[utoipa::path(
     get,
     tag = "permissions",
@@ -684,7 +684,7 @@ async fn get_role_assignments_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments to the current project
+/// Get user and role assignments of the server
 #[utoipa::path(
     get,
     tag = "permissions",
@@ -715,7 +715,7 @@ async fn get_server_assignments<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments to the current project
+/// Get user and role assignments of a project
 #[utoipa::path(
     get,
     tag = "permissions",
@@ -1145,7 +1145,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     Ok(())
 }
 
-/// Update permissions for a view
+/// Update permissions for a role
 #[utoipa::path(
     post,
     tag = "permissions",

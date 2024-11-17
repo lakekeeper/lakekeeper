@@ -754,7 +754,7 @@ impl Assignment for WarehouseAssignment {
 }
 
 #[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
-#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 #[schema(as=WarehouseAction)]
 pub(super) enum APIWarehouseAction {
     CreateNamespace,

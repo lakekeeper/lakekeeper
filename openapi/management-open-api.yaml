@@ -224,7 +224,7 @@ paths:
     get:
       tags:
       - permissions
-      summary: Get user and role assignments to the current project
+      summary: Get user and role assignments of a project
       operationId: get_project_assignments
       parameters:
       - name: relations
@@ -355,7 +355,7 @@ paths:
     get:
       tags:
       - permissions
-      summary: Get user and role assignments to the current project
+      summary: Get user and role assignments of a role
       operationId: get_role_assignments_by_id
       parameters:
       - name: relations
@@ -384,7 +384,7 @@ paths:
     post:
       tags:
       - permissions
-      summary: Update permissions for a view
+      summary: Update permissions for a role
       operationId: update_role_assignments_by_id
       parameters:
       - name: role_id
@@ -421,7 +421,7 @@ paths:
     get:
       tags:
       - permissions
-      summary: Get user and role assignments to the current project
+      summary: Get user and role assignments of the server
       operationId: get_server_assignments
       parameters:
       - name: relations
@@ -2963,26 +2963,26 @@ components:
     WarehouseAction:
       type: string
       enum:
-      - CreateNamespace
-      - Delete
-      - ModifyStorage
-      - ModifyStorageCredential
-      - GetConfig
-      - GetMetadata
-      - ListNamespaces
-      - IncludeInList
-      - Deactivate
-      - Activate
-      - Rename
-      - ListDeletedTabulars
-      - ReadAssignments
-      - GrantCreate
-      - GrantDescribe
-      - GrantModify
-      - GrantSelect
-      - GrantPassGrants
-      - GrantManageGrants
-      - ChangeOwnership
+      - create_namespace
+      - delete
+      - modify_storage
+      - modify_storage_credential
+      - get_config
+      - get_metadata
+      - list_namespaces
+      - include_in_list
+      - deactivate
+      - activate
+      - rename
+      - list_deleted_tabulars
+      - read_assignments
+      - grant_create
+      - grant_describe
+      - grant_modify
+      - grant_select
+      - grant_pass_grants
+      - grant_manage_grants
+      - change_ownership
     WarehouseAssignment:
       oneOf:
       - allOf:
