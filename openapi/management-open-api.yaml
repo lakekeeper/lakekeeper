@@ -1815,8 +1815,11 @@ components:
       - name
       - project-id
       - storage-profile
+      - delete-profile
       - status
       properties:
+        delete-profile:
+          $ref: '#/components/schemas/TabularDeleteProfile'
         id:
           type: string
           format: uuid
@@ -2043,7 +2046,7 @@ components:
       - grant_select
       - grant_project_admin
       - grant_security_admin
-      - grant_warehouse_admin
+      - grant_data_admin
     ProjectAssignment:
       oneOf:
       - allOf:
@@ -2077,8 +2080,8 @@ components:
             type:
               type: string
               enum:
-              - warehouse_admin
-        title: ProjectAssignmentWarehouseAdmin
+              - data_admin
+        title: ProjectAssignmentDataAdmin
       - allOf:
         - $ref: '#/components/schemas/UserOrRole'
         - type: object
@@ -2152,7 +2155,7 @@ components:
       enum:
       - project_admin
       - security_admin
-      - warehouse_admin
+      - data_admin
       - role_creator
       - describe
       - select
@@ -2645,7 +2648,8 @@ components:
         - type
         properties:
           expiration-seconds:
-            type: string
+            type: integer
+            format: int32
           type:
             type: string
             enum:

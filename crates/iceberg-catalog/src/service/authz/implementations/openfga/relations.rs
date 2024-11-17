@@ -361,7 +361,7 @@ pub(super) enum ProjectRelation {
     // -- Direct relations --
     ProjectAdmin,
     SecurityAdmin,
-    WarehouseAdmin,
+    DataAdmin,
     RoleCreator,
     Describe,
     Select,
@@ -385,7 +385,7 @@ pub(super) enum ProjectRelation {
     CanGrantSelect,
     CanGrantProjectAdmin,
     CanGrantSecurityAdmin,
-    CanGrantWarehouseAdmin,
+    CanGrantDataAdmin,
 }
 
 impl OpenFgaRelation for ProjectRelation {}
@@ -396,7 +396,7 @@ impl OpenFgaRelation for ProjectRelation {}
 pub(super) enum APIProjectRelation {
     ProjectAdmin,
     SecurityAdmin,
-    WarehouseAdmin,
+    DataAdmin,
     RoleCreator,
     Describe,
     Select,
@@ -411,8 +411,8 @@ pub(super) enum ProjectAssignment {
     ProjectAdmin(UserOrRole),
     #[schema(title = "ProjectAssignmentSecurityAdmin")]
     SecurityAdmin(UserOrRole),
-    #[schema(title = "ProjectAssignmentWarehouseAdmin")]
-    WarehouseAdmin(UserOrRole),
+    #[schema(title = "ProjectAssignmentDataAdmin")]
+    DataAdmin(UserOrRole),
     #[schema(title = "ProjectAssignmentRoleCreator")]
     RoleCreator(UserOrRole),
     #[schema(title = "ProjectAssignmentDescribe")]
@@ -442,7 +442,7 @@ impl GrantableRelation for APIProjectRelation {
         match self {
             APIProjectRelation::ProjectAdmin => ProjectRelation::CanGrantProjectAdmin,
             APIProjectRelation::SecurityAdmin => ProjectRelation::CanGrantSecurityAdmin,
-            APIProjectRelation::WarehouseAdmin => ProjectRelation::CanGrantWarehouseAdmin,
+            APIProjectRelation::DataAdmin => ProjectRelation::CanGrantDataAdmin,
             APIProjectRelation::RoleCreator => ProjectRelation::CanGrantRoleCreator,
             APIProjectRelation::Describe => ProjectRelation::CanGrantDescribe,
             APIProjectRelation::Select => ProjectRelation::CanGrantSelect,
@@ -463,8 +463,8 @@ impl Assignment for ProjectAssignment {
             APIProjectRelation::SecurityAdmin => {
                 UserOrRole::parse_from_openfga(user).map(ProjectAssignment::SecurityAdmin)
             }
-            APIProjectRelation::WarehouseAdmin => {
-                UserOrRole::parse_from_openfga(user).map(ProjectAssignment::WarehouseAdmin)
+            APIProjectRelation::DataAdmin => {
+                UserOrRole::parse_from_openfga(user).map(ProjectAssignment::DataAdmin)
             }
             APIProjectRelation::RoleCreator => {
                 UserOrRole::parse_from_openfga(user).map(ProjectAssignment::RoleCreator)
@@ -488,7 +488,7 @@ impl Assignment for ProjectAssignment {
         match self {
             ProjectAssignment::ProjectAdmin(user)
             | ProjectAssignment::SecurityAdmin(user)
-            | ProjectAssignment::WarehouseAdmin(user)
+            | ProjectAssignment::DataAdmin(user)
             | ProjectAssignment::RoleCreator(user) => user.to_openfga(),
             ProjectAssignment::Describe { role }
             | ProjectAssignment::Select { role }
@@ -501,7 +501,7 @@ impl Assignment for ProjectAssignment {
         match self {
             ProjectAssignment::ProjectAdmin(_) => APIProjectRelation::ProjectAdmin,
             ProjectAssignment::SecurityAdmin(_) => APIProjectRelation::SecurityAdmin,
-            ProjectAssignment::WarehouseAdmin(_) => APIProjectRelation::WarehouseAdmin,
+            ProjectAssignment::DataAdmin(_) => APIProjectRelation::DataAdmin,
             ProjectAssignment::RoleCreator(_) => APIProjectRelation::RoleCreator,
             ProjectAssignment::Describe { .. } => APIProjectRelation::Describe,
             ProjectAssignment::Select { .. } => APIProjectRelation::Select,
@@ -530,7 +530,7 @@ pub(super) enum APIProjectAction {
     GrantSelect,
     GrantProjectAdmin,
     GrantSecurityAdmin,
-    GrantWarehouseAdmin,
+    GrantDataAdmin,
 }
 
 impl ReducedRelation for APIProjectRelation {
@@ -540,7 +540,7 @@ impl ReducedRelation for APIProjectRelation {
         match self {
             APIProjectRelation::ProjectAdmin => ProjectRelation::ProjectAdmin,
             APIProjectRelation::SecurityAdmin => ProjectRelation::SecurityAdmin,
-            APIProjectRelation::WarehouseAdmin => ProjectRelation::WarehouseAdmin,
+            APIProjectRelation::DataAdmin => ProjectRelation::DataAdmin,
             APIProjectRelation::RoleCreator => ProjectRelation::RoleCreator,
             APIProjectRelation::Describe => ProjectRelation::Describe,
             APIProjectRelation::Select => ProjectRelation::Select,
@@ -570,7 +570,7 @@ impl ReducedRelation for APIProjectAction {
             APIProjectAction::GrantSelect => ProjectRelation::CanGrantSelect,
             APIProjectAction::GrantProjectAdmin => ProjectRelation::CanGrantProjectAdmin,
             APIProjectAction::GrantSecurityAdmin => ProjectRelation::CanGrantSecurityAdmin,
-            APIProjectAction::GrantWarehouseAdmin => ProjectRelation::CanGrantWarehouseAdmin,
+            APIProjectAction::GrantDataAdmin => ProjectRelation::CanGrantDataAdmin,
         }
     }
 }
