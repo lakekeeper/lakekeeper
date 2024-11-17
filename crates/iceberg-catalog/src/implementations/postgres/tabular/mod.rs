@@ -278,16 +278,9 @@ pub(crate) async fn create_tabular<'a>(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| match &e {
-        sqlx::Error::RowNotFound => {
-            tracing::debug!("conflicted out {id}, {namespace_id}, {typ}");
-            ErrorModel::conflict(
-                "Table or View with same name already exists in Namespace",
-                "TableOrViewAlreadyExists",
-                None,
-            )
-        }
-        _ => e.into_error_model(format!("Error creating {typ}")),
+    .map_err(|e| {
+        tracing::warn!("Error creating new {typ}: {e}");
+        e.into_error_model(format!("Error creating {typ}"))
     })?;
 
     let location_is_taken = sqlx::query_scalar!(
@@ -306,7 +299,7 @@ pub(crate) async fn create_tabular<'a>(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| {
-        tracing::warn!("Error checking for conflicting locations: {}", e);
+        tracing::warn!("Error checking for conflicting locations: {e}");
         e.into_error_model("Error checking for conflicting locations".to_string())
     })?;
 

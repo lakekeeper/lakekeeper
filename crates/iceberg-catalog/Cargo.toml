@@ -44,8 +44,8 @@ cloudevents-sdk = { version = "0.7.0" }
 derive_more = { workspace = true }
 figment = { workspace = true }
 flate2 = { workspace = true }
-fxhash = { workspace = true }
 futures = { workspace = true }
+fxhash = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-token = { workspace = true }
 hostname = { workspace = true }
@@ -93,6 +93,7 @@ vaultrs-login = "0.2.1"
 veil = { workspace = true }
 
 [dev-dependencies]
+assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
 mockall = { workspace = true }
@@ -102,4 +103,3 @@ serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
-assert-json-diff = { workspace = true }
