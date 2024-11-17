@@ -359,13 +359,13 @@ paths:
       operationId: get_role_assignments_by_id
       parameters:
       - name: relations
-        in: path
+        in: query
         description: Relations to be loaded. If not specified, all relations are returned.
-        required: true
+        required: false
         schema:
           type: array
           items:
-            $ref: '#/components/schemas/ProjectRelation'
+            $ref: '#/components/schemas/RoleRelation'
           nullable: true
       - name: role_id
         in: path

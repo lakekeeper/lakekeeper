@@ -655,7 +655,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/assignments",
     params(
-        GetProjectAssignmentsQuery,
+        GetRoleAssignmentsQuery,
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
     responses(
