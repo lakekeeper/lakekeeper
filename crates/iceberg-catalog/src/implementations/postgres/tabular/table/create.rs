@@ -1,16 +1,16 @@
-use crate::api;
+use crate::api::{self, Result};
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::table::{common, DbTableFormatVersion};
 use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
-use crate::service::{CreateTableResponse, TableCreation};
-use iceberg::spec::FormatVersion;
+use crate::service::{CreateTableResponse, NamespaceIdentUuid, TableCreation};
+use iceberg::spec::{FormatVersion, TableMetadata};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
+use sqlx::{Postgres, Transaction};
 use std::str::FromStr;
+use uuid::Uuid;
 
-// TODO: split this into multiple functions
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn create_table(
     TableCreation {
         namespace_id,
@@ -29,30 +29,7 @@ pub(crate) async fn create_table(
         )
     })?;
 
-    let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
-        ErrorModel::internal(
-            "Error serializing table metadata",
-            "TableMetadataSerializationError",
-            Some(Box::new(e)),
-        )
-    })?;
-
-    // we delete any staged table which has the same namespace + name
-    // staged tables do not have a metadata_location and can be overwritten
-    if sqlx::query!(r#"DELETE FROM tabular t WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL"#, *namespace_id, name)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|e| {
-            let message = "Error creating table".to_string();
-            tracing::warn!("Failed to delete potentially staged table with same ident due to: '{}'", message);
-            e.into_error_model(message)
-        })?.rows_affected() > 0 {
-        tracing::debug!(
-            "Overwriting staged tabular entry for table '{}' within namespace_id: '{}'",
-            name,
-            namespace_id
-        );
-    }
+    maybe_delete_staged_table(namespace_id, transaction, name).await?;
 
     let tabular_id = create_tabular(
         CreateTabular {
@@ -67,39 +44,7 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    let _update_result = sqlx::query!(
-        r#"
-        INSERT INTO "table" (table_id,
-                             metadata,
-                             table_format_version,
-                             last_column_id,
-                             last_sequence_number,
-                             last_updated_ms,
-                             last_partition_id)
-        (
-            SELECT $1, $2, $3, $4, $5, $6, $7
-            WHERE EXISTS (SELECT 1
-                FROM active_tables
-                WHERE active_tables.table_id = $1))
-        RETURNING "table_id"
-        "#,
-        tabular_id,
-        table_metadata_ser,
-        match table_metadata.format_version() {
-            FormatVersion::V1 => DbTableFormatVersion::V1,
-            FormatVersion::V2 => DbTableFormatVersion::V2,
-        } as _,
-        table_metadata.last_column_id(),
-        table_metadata.last_sequence_number(),
-        table_metadata.last_updated_ms(),
-        table_metadata.last_partition_id()
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        tracing::warn!("Error creating table: {}", e);
-        e.into_error_model("Error creating table".to_string())
-    })?;
+    insert_table(&table_metadata, transaction, tabular_id).await?;
 
     common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
     common::insert_current_schema(&table_metadata, transaction, tabular_id).await?;
@@ -135,4 +80,77 @@ pub(crate) async fn create_table(
     .await?;
 
     Ok(CreateTableResponse { table_metadata })
+}
+
+async fn maybe_delete_staged_table(
+    namespace_id: NamespaceIdentUuid,
+    transaction: &mut Transaction<'_, Postgres>,
+    name: &String,
+) -> Result<()> {
+    // we delete any staged table which has the same namespace + name
+    // staged tables do not have a metadata_location and can be overwritten
+    if sqlx::query!(r#"DELETE FROM tabular t WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL"#, *namespace_id, name)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            let message = "Error creating table".to_string();
+            tracing::warn!("Failed to delete potentially staged table with same ident due to: '{}'", message);
+            e.into_error_model(message)
+        })?.rows_affected() > 0 {
+        tracing::debug!(
+            "Overwriting staged tabular entry for table '{}' within namespace_id: '{}'",
+            name,
+            namespace_id
+        );
+    }
+    Ok(())
+}
+
+async fn insert_table(
+    table_metadata: &TableMetadata,
+    transaction: &mut Transaction<'_, Postgres>,
+    tabular_id: Uuid,
+) -> Result<()> {
+    let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
+        ErrorModel::internal(
+            "Error serializing table metadata",
+            "TableMetadataSerializationError",
+            Some(Box::new(e)),
+        )
+    })?;
+
+    let _ = sqlx::query!(
+        r#"
+        INSERT INTO "table" (table_id,
+                             metadata,
+                             table_format_version,
+                             last_column_id,
+                             last_sequence_number,
+                             last_updated_ms,
+                             last_partition_id)
+        (
+            SELECT $1, $2, $3, $4, $5, $6, $7
+            WHERE EXISTS (SELECT 1
+                FROM active_tables
+                WHERE active_tables.table_id = $1))
+        RETURNING "table_id"
+        "#,
+        tabular_id,
+        table_metadata_ser,
+        match table_metadata.format_version() {
+            FormatVersion::V1 => DbTableFormatVersion::V1,
+            FormatVersion::V2 => DbTableFormatVersion::V2,
+        } as _,
+        table_metadata.last_column_id(),
+        table_metadata.last_sequence_number(),
+        table_metadata.last_updated_ms(),
+        table_metadata.last_partition_id()
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        tracing::warn!("Error creating table: {}", e);
+        e.into_error_model("Error creating table".to_string())
+    })?;
+    Ok(())
 }

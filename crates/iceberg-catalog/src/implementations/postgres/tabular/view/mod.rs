@@ -351,25 +351,25 @@ async fn create_view_version(
             )
         .fetch_one(&mut **transaction)
         .await.map_err(|e| {
-            if let sqlx::Error::RowNotFound = e {
-                let message = "View version already exists";
-                tracing::debug!(?e,"{}", message);
-                ErrorModel::builder()
-                    .code(StatusCode::CONFLICT.into())
-                    .message(message.to_string())
-                    .r#type("ViewVersionAlreadyExists".to_string())
-                    .build()
-            } else {
-                let message = "Error creating view version";
-                tracing::warn!(?e, "{} for: '{}'/'{}' with schema_id: '{}' due to: '{}'",
+        if let sqlx::Error::RowNotFound = e {
+            let message = "View version already exists";
+            tracing::debug!(?e,"{}", message);
+            ErrorModel::builder()
+                .code(StatusCode::CONFLICT.into())
+                .message(message.to_string())
+                .r#type("ViewVersionAlreadyExists".to_string())
+                .build()
+        } else {
+            let message = "Error creating view version";
+            tracing::warn!(?e, "{} for: '{}'/'{}' with schema_id: '{}' due to: '{}'",
                 message,
                 view_id,
                 version_id,
                 schema_id,
                 e
             );
-                e.into_error_model(message.to_string())
-            }
+            e.into_error_model(message.to_string())
+        }
     })?;
 
     for rep in view_version.representations().iter() {
