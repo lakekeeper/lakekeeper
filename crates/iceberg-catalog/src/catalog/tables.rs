@@ -454,7 +454,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
-        request.identifier = Some(parameters.table);
+        request.identifier = Some(determine_table_ident(
+            parameters.table,
+            &request.identifier,
+        )?);
         let t = commit_tables_internal(
             parameters.prefix,
             CommitTransactionRequest {
