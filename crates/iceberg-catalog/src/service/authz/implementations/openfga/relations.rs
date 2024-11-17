@@ -44,12 +44,15 @@ pub(super) trait GrantableRelation: ReducedRelation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "kebab-case")]
+/// Identifies a user or a role
 pub(super) enum UserOrRole {
     #[schema(value_type = uuid::Uuid)]
     #[schema(title = "UserOrRoleUser")]
+    /// Id of the user
     User(UserId),
     #[schema(value_type = uuid::Uuid)]
     #[schema(title = "UserOrRoleRole")]
+    /// Id of the role
     Role(RoleId),
 }
 
