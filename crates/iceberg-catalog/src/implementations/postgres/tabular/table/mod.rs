@@ -1021,6 +1021,7 @@ async fn handle_atomic_updates(
 
     if !diffs.added_snapshots.is_empty() {
         create_commit::insert_snapshots(
+            new_metadata.uuid(),
             diffs
                 .added_snapshots
                 .into_iter()
@@ -1028,7 +1029,6 @@ async fn handle_atomic_updates(
                 .collect::<Vec<_>>()
                 .into_iter(),
             transaction,
-            new_metadata.uuid(),
         )
         .await?;
     }
@@ -1061,14 +1061,15 @@ async fn handle_atomic_updates(
 
     if diffs.expired_metadata_logs > 0 {
         expire_metadata_log_entries(
+            new_metadata.uuid(),
             diffs.expired_metadata_logs,
             transaction,
-            new_metadata.uuid(),
         )
         .await?;
     }
     if diffs.added_metadata_log > 0 {
         create_commit::insert_metadata_log(
+            new_metadata.uuid(),
             new_metadata
                 .metadata_log()
                 .iter()
@@ -1077,15 +1078,14 @@ async fn handle_atomic_updates(
                 .rev()
                 .cloned(),
             transaction,
-            new_metadata.uuid(),
         )
         .await?;
     }
 
     if properties {
         create_commit::set_table_properties(
-            new_metadata.properties(),
             new_metadata.uuid(),
+            new_metadata.properties(),
             transaction,
         )
         .await?;

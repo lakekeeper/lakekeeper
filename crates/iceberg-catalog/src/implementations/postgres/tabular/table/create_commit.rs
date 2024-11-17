@@ -122,7 +122,7 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    insert_snapshots(table_metadata.snapshots(), transaction, tabular_id).await?;
+    insert_snapshots(tabular_id, table_metadata.snapshots(), transaction).await?;
     set_current_snapshot(&table_metadata, transaction).await?;
     insert_snapshot_refs(&table_metadata, transaction).await?;
     insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
@@ -130,12 +130,12 @@ pub(crate) async fn create_table(
     insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
     insert_default_sort_order(&table_metadata, transaction).await?;
 
-    set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
+    set_table_properties(tabular_id, table_metadata.properties(), transaction).await?;
 
     insert_metadata_log(
+        tabular_id,
         table_metadata.metadata_log().iter().cloned(),
         transaction,
-        tabular_id,
     )
     .await?;
 
@@ -464,9 +464,9 @@ pub(crate) async fn insert_snapshot_log(
 }
 
 pub(super) async fn expire_metadata_log_entries(
+    tabular_id: Uuid,
     n_entries: usize,
     transaction: &mut Transaction<'_, Postgres>,
-    tabular_id: Uuid,
 ) -> api::Result<()> {
     let i: i64 = n_entries.try_into().map_err(|e| {
         ErrorModel::internal(
@@ -497,9 +497,9 @@ pub(super) async fn expire_metadata_log_entries(
 }
 
 pub(super) async fn insert_metadata_log(
+    tabular_id: Uuid,
     log: impl ExactSizeIterator<Item = MetadataLog>,
     transaction: &mut Transaction<'_, Postgres>,
-    tabular_id: Uuid,
 ) -> api::Result<()> {
     let mut timestamps = Vec::with_capacity(log.len());
     let mut metadata_files = Vec::with_capacity(log.len());
@@ -605,9 +605,9 @@ pub(super) async fn remove_snapshots(
 }
 
 pub(super) async fn insert_snapshots(
+    tabular_id: Uuid,
     snapshots: impl ExactSizeIterator<Item = &SnapshotRef>,
     transaction: &mut Transaction<'_, Postgres>,
-    tabular_id: Uuid,
 ) -> api::Result<()> {
     let snap_cnt = snapshots.len();
 
@@ -675,8 +675,8 @@ pub(super) async fn insert_snapshots(
 }
 
 pub(crate) async fn set_table_properties(
-    properties: &HashMap<String, String>,
     table_id: Uuid,
+    properties: &HashMap<String, String>,
     transaction: &mut PgConnection,
 ) -> api::Result<()> {
     let (keys, vals): (Vec<String>, Vec<String>) = properties
