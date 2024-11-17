@@ -27,7 +27,12 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
+use crate::api::iceberg::types::PageToken;
+use crate::implementations::postgres::namespace::list_namespaces;
+use crate::implementations::postgres::warehouse::{list_projects, list_warehouses};
+use crate::service::{ListFlags, ListNamespacesQuery, TableCreation, WarehouseStatus};
 use iceberg::TableUpdate;
+use itertools::Itertools;
 use sqlx::types::Json;
 use std::default::Default;
 use std::str::FromStr;
@@ -202,6 +207,7 @@ where
         transaction,
         Some(TabularType::Table),
         pagination_query,
+        None,
     )
     .await?;
 
@@ -789,6 +795,103 @@ impl From<&[TableUpdate]> for TableUpdates {
         }
         s
     }
+}
+
+pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
+    let projects = list_projects(None, catalog_state.clone()).await?;
+    for project in projects {
+        tracing::info!("Migrating tables for project {}", project.project_id);
+        let warehouses = list_warehouses(
+            project.project_id,
+            Some(vec![WarehouseStatus::Active, WarehouseStatus::Inactive]),
+            catalog_state.clone(),
+        )
+        .await?;
+        for warehouse in warehouses {
+            let warehouse_id = warehouse.id;
+            let mut transaction = catalog_state.write_pool().begin().await.map_err(|e| {
+                ErrorModel::internal(
+                    "Error starting transaction",
+                    "InternalTransactionError",
+                    Some(Box::new(e)),
+                )
+            })?;
+            let mut token = None;
+            loop {
+                let tabs = list_tabulars(
+                    warehouse_id,
+                    None,
+                    None,
+                    ListFlags {
+                        include_active: true,
+                        include_deleted: true,
+                        include_staged: true,
+                    },
+                    &mut transaction,
+                    Some(TabularType::Table),
+                    PaginationQuery {
+                        page_token: match token {
+                            Some(token) => PageToken::Present(token),
+                            None => PageToken::NotSpecified,
+                        },
+                        page_size: Some(100),
+                    },
+                    None,
+                )
+                .await?;
+                token = tabs.next_token().map(ToString::to_string);
+                let tabs = tabs.into_hashmap();
+                let ids = tabs
+                    .iter()
+                    .map(|k| match k {
+                        TabularIdentUuid::Table(t) => Ok((TableIdentUuid::from(*t))),
+                        TabularIdentUuid::View(_) => Err(ErrorModel::internal(
+                            "DB returned a view when filtering for tables.",
+                            "InternalDatabaseError",
+                            None,
+                        )
+                        .into()),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let tables = load_tables(warehouse_id, ids, true, &mut transaction).await?;
+                let n_tables = tables.len();
+                for (idx, (table_id, table)) in tables.into_iter().enumerate() {
+                    tracing::info!("Migrating table '{table_id}', {idx}/{n_tables}");
+                    drop_table(table_id, &mut transaction).await?;
+                    create_table(
+                        TableCreation {
+                            namespace_id: table.namespace_id,
+                            table_ident: match &tabs
+                                .get(&TabularIdentUuid::Table(*table_id))
+                                .unwrap()
+                                .0
+                            {
+                                TabularIdentOwned::Table(t) => t,
+                                TabularIdentOwned::View(_) => {
+                                    return ErrorModel::internal(
+                                        "DB returned a view when filtering for tables.",
+                                        "InternalDatabaseError",
+                                        None,
+                                    )
+                                    .into()
+                                }
+                            },
+                            metadata_location: table.metadata_location.as_ref(),
+                            table_metadata: table.table_metadata,
+                        },
+                        &mut transaction,
+                    )
+                    .await?;
+                }
+                if token.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

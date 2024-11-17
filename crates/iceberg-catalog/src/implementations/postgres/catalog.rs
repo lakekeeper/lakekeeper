@@ -576,6 +576,7 @@ impl Catalog for super::PostgresCatalog {
             &catalog_state.read_pool(),
             None,
             pagination_query,
+            None,
         )
         .await
     }

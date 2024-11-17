@@ -265,8 +265,8 @@ pub(crate) async fn create_tabular<'a>(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, server_version)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING tabular_id
         "#,
         id,
@@ -275,6 +275,7 @@ pub(crate) async fn create_tabular<'a>(
         typ as _,
         metadata_location.map(iceberg_ext::configs::Location::as_str),
         location.as_str(),
+        env!("CARGO_PKG_VERSION").to_string()
     )
     .fetch_one(&mut **transaction)
     .await
@@ -326,6 +327,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
+    server_version: Option<String>,
 ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
@@ -368,16 +370,17 @@ where
         LEFT JOIN task tt ON te.task_id = tt.task_id
         WHERE n.warehouse_id = $1
             AND (namespace_name = $2 OR $2 IS NULL)
-            AND (n.namespace_id = $10 OR $10 IS NULL)
+            AND (n.namespace_id = $11 OR $11 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted
             AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)
             AND (t.deleted_at IS NULL OR $5)
             AND (t.metadata_location IS NOT NULL OR $6)
-            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
+            AND (t.server_version = $7 OR $7 IS NULL)
+            AND ((t.created_at > $8 OR $8 IS NULL) OR (t.created_at = $8 AND t.tabular_id > $9))
             ORDER BY t.created_at, t.tabular_id ASC
-            LIMIT $9
+            LIMIT $10
         "#,
         *warehouse_id,
         namespace.as_deref().map(|n| n.as_ref().as_slice()),
@@ -385,6 +388,7 @@ where
         list_flags.include_active,
         list_flags.include_deleted,
         list_flags.include_staged,
+        server_version,
         token_ts,
         token_id,
         page_size,

@@ -144,7 +144,8 @@ async fn insert_table(
                              last_column_id,
                              last_sequence_number,
                              last_updated_ms,
-                             last_partition_id)
+                             last_partition_id
+                             )
         (
             SELECT $1, $2, $3, $4, $5, $6, $7
             WHERE EXISTS (SELECT 1

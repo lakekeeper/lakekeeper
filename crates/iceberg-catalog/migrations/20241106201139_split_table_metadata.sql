@@ -145,3 +145,9 @@ create table table_refs
 
 call add_time_columns('table_refs');
 select trigger_updated_at('table_refs');
+
+alter table tabular
+    add column server_version text;
+update tabular
+set server_version = '0.4.3';
+create index tabular_server_version_idx on tabular (server_version);
