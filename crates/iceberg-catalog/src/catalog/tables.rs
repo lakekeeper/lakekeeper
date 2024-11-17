@@ -198,7 +198,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let table_metadata = create_table_request_into_table_metadata(table_id, request)?;
 
-        let CreateTableResponse { table_metadata } = C::create_table(
+        let CreateTableResponse {
+            table_metadata,
+            staged_table_id,
+        } = C::create_table(
             TableCreation {
                 namespace_id: namespace.namespace_id,
                 table_ident: &table,
@@ -262,11 +265,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             config: Some(config.into()),
         };
 
-        // Tables are the odd one out: If a staged table was created before,
-        // we must be able to overwrite it.
-        authorizer
-            .delete_table(TableIdentUuid::from(*tabular_id))
-            .await?;
         authorizer
             .create_table(
                 &request_metadata,
@@ -277,6 +275,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // Metadata file written, now we can commit the transaction
         t.commit().await?;
+
+        if let Some(staged_table_id) = staged_table_id {
+            authorizer.delete_table(staged_table_id).await.ok();
+        }
 
         emit_change_event(
             EventMetadata {

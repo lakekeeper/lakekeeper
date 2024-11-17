@@ -64,6 +64,7 @@ pub struct ListNamespacesResponse {
 #[derive(Debug)]
 pub struct CreateTableResponse {
     pub table_metadata: TableMetadata,
+    pub staged_table_id: Option<TableIdentUuid>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

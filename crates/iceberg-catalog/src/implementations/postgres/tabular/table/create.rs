@@ -2,7 +2,7 @@ use crate::api::{self, Result};
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::table::{common, DbTableFormatVersion};
 use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
-use crate::service::{CreateTableResponse, NamespaceIdentUuid, TableCreation};
+use crate::service::{CreateTableResponse, NamespaceIdentUuid, TableCreation, TableIdentUuid};
 use iceberg::spec::{FormatVersion, TableMetadata};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
@@ -29,7 +29,7 @@ pub(crate) async fn create_table(
         )
     })?;
 
-    maybe_delete_staged_table(namespace_id, transaction, name).await?;
+    let staged_table_id = maybe_delete_staged_table(namespace_id, transaction, name).await?;
 
     let tabular_id = create_tabular(
         CreateTabular {
@@ -78,31 +78,49 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    Ok(CreateTableResponse { table_metadata })
+    Ok(CreateTableResponse {
+        table_metadata,
+        staged_table_id,
+    })
 }
 
 async fn maybe_delete_staged_table(
     namespace_id: NamespaceIdentUuid,
     transaction: &mut Transaction<'_, Postgres>,
     name: &String,
-) -> Result<()> {
+    // Returns the staged table id if it was deleted
+) -> Result<Option<TableIdentUuid>> {
     // we delete any staged table which has the same namespace + name
     // staged tables do not have a metadata_location and can be overwritten
-    if sqlx::query!(r#"DELETE FROM tabular t WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL"#, *namespace_id, name)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|e| {
-            let message = "Error creating table".to_string();
-            tracing::warn!("Failed to delete potentially staged table with same ident due to: '{}'", message);
-            e.into_error_model(message)
-        })?.rows_affected() > 0 {
+    let staged_tabular_id = sqlx::query!(
+        r#"DELETE FROM tabular t 
+           WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL
+           RETURNING t.tabular_id
+        "#,
+        *namespace_id,
+        name
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| {
+        let message = "Error creating table".to_string();
+        tracing::warn!(
+            ?e,
+            "Failed to delete potentially staged table with same ident",
+        );
+        e.into_error_model(message)
+    })?
+    .map(|row| TableIdentUuid::from(row.tabular_id));
+
+    if staged_tabular_id.is_some() {
         tracing::debug!(
             "Overwriting staged tabular entry for table '{}' within namespace_id: '{}'",
             name,
             namespace_id
         );
     }
-    Ok(())
+
+    Ok(staged_tabular_id)
 }
 
 async fn insert_table(
