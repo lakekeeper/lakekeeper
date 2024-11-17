@@ -145,6 +145,3 @@ create table table_refs
 
 call add_time_columns('table_refs');
 select trigger_updated_at('table_refs');
-
-alter table server
-    add column table_metadata_migrated_json_to_tables boolean unique not null default false;
