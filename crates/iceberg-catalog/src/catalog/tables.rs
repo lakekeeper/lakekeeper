@@ -1093,7 +1093,7 @@ fn calculate_diffs(
         .difference(&new_snaps)
         .copied()
         .collect::<Vec<i64>>();
-    let new_snaps = new_snaps
+    let added_snapshots = new_snaps
         .difference(&old_snaps)
         .copied()
         .collect::<Vec<i64>>();
@@ -1111,7 +1111,7 @@ fn calculate_diffs(
         .difference(&new_schemas)
         .copied()
         .collect::<Vec<SchemaId>>();
-    let new_schemas = new_schemas
+    let added_schemas = new_schemas
         .difference(&old_schemas)
         .copied()
         .collect::<Vec<SchemaId>>();
@@ -1129,7 +1129,7 @@ fn calculate_diffs(
         .difference(&new_specs)
         .copied()
         .collect::<Vec<i32>>();
-    let new_specs = new_specs
+    let added_partition_specs = new_specs
         .difference(&old_specs)
         .copied()
         .collect::<Vec<i32>>();
@@ -1147,7 +1147,7 @@ fn calculate_diffs(
         .difference(&new_sort_orders)
         .copied()
         .collect::<Vec<i64>>();
-    let new_sort_orders = new_sort_orders
+    let added_sort_orders = new_sort_orders
         .difference(&old_sort_orders)
         .copied()
         .collect::<Vec<i64>>();
@@ -1164,13 +1164,13 @@ fn calculate_diffs(
 
     Diffs {
         removed_snapshots: removed_snaps,
-        added_snapshots: new_snaps,
+        added_snapshots,
         removed_schemas,
-        added_schemas: new_schemas,
+        added_schemas,
         removed_partition_specs: removed_specs,
-        added_partition_specs: new_specs,
+        added_partition_specs,
         removed_sort_orders,
-        added_sort_orders: new_sort_orders,
+        added_sort_orders,
         head_of_snapshot_log_changed,
         n_removed_snapshot_log,
         expired_metadata_logs,
