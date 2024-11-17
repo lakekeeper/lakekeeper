@@ -361,19 +361,17 @@ pub mod v1 {
         path = "/management/v1/user/{id}",
         params(("id" = Uuid,)),
         responses(
-            (status = 200, description = "User deleted successfully"),
+            (status = 204, description = "User deleted successfully"),
         )
     )]
     async fn delete_user<C: Catalog, A: Authorizer, S: SecretStore>(
         Path(id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Response {
-        (
-            StatusCode::OK,
-            Json(ApiServer::<C, A, S>::delete_user(api_context, metadata, id).await),
-        )
-            .into_response()
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_user(api_context, metadata, id)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
     /// Create a new role
@@ -442,7 +440,7 @@ pub mod v1 {
         path = "/management/v1/role/{id}",
         params(("id" = Uuid,)),
         responses(
-            (status = 200, description = "Role deleted successfully"),
+            (status = 204, description = "Role deleted successfully"),
         )
     )]
     async fn delete_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -452,7 +450,7 @@ pub mod v1 {
     ) -> Result<(StatusCode, ())> {
         ApiServer::<C, A, S>::delete_role(api_context, metadata, id)
             .await
-            .map(|()| (StatusCode::OK, ()))
+            .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
     /// Get a role
@@ -592,14 +590,16 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/default-project",
         responses(
-            (status = 200, description = "Project deleted successfully")
+            (status = 204, description = "Project deleted successfully")
         )
     )]
     async fn delete_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<()> {
-        ApiServer::<C, A, S>::delete_project(None, api_context, metadata).await
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_project(None, api_context, metadata)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
     /// Delete the default project
@@ -609,15 +609,17 @@ pub mod v1 {
         path = "/management/v1/project/{project_id}",
         params(("project_id" = Uuid,)),
         responses(
-            (status = 200, description = "Project deleted successfully")
+            (status = 204, description = "Project deleted successfully")
         )
     )]
     async fn delete_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
         Path(project_id): Path<ProjectIdent>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<()> {
-        ApiServer::<C, A, S>::delete_project(Some(project_id), api_context, metadata).await
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_project(Some(project_id), api_context, metadata)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
     /// Rename the default project
@@ -700,15 +702,17 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}",
         responses(
-            (status = 200, description = "Warehouse deleted successfully")
+            (status = 204, description = "Warehouse deleted successfully")
         )
     )]
     async fn delete_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<()> {
-        ApiServer::<C, A, S>::delete_warehouse(warehouse_id.into(), api_context, metadata).await
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_warehouse(warehouse_id.into(), api_context, metadata)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
     /// Rename a warehouse
