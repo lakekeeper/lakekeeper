@@ -1,4 +1,4 @@
-mod create;
+mod create_commit;
 use crate::implementations::postgres::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::service::TableCommit;
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
     },
     SecretIdent, WarehouseIdent,
 };
-pub(crate) use create::create_table;
+pub(crate) use create_commit::create_table;
 
 use http::StatusCode;
 use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
@@ -25,7 +25,7 @@ use iceberg::spec::{
 use iceberg_ext::configs::Location;
 
 use crate::catalog::tables::Diffs;
-use crate::implementations::postgres::tabular::table::create::{
+use crate::implementations::postgres::tabular::table::create_commit::{
     expire_metadata_log_entries, remove_snapshot_log_entries,
 };
 use iceberg::TableUpdate;
@@ -940,10 +940,11 @@ async fn handle_atomic_updates(
         properties,
     } = table_updates;
     if !&diffs.removed_schemas.is_empty() {
-        create::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
+        create_commit::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction)
+            .await?;
     }
     if !diffs.added_schemas.is_empty() {
-        create::insert_schemas(
+        create_commit::insert_schemas(
             diffs
                 .added_schemas
                 .into_iter()
@@ -956,10 +957,10 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    create::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
+    create_commit::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
 
     if !diffs.removed_partition_specs.is_empty() {
-        create::remove_partition_specs(
+        create_commit::remove_partition_specs(
             new_metadata.uuid(),
             diffs.removed_partition_specs,
             transaction,
@@ -968,7 +969,7 @@ async fn handle_atomic_updates(
     }
 
     if !diffs.added_partition_specs.is_empty() {
-        create::insert_partition_specs(
+        create_commit::insert_partition_specs(
             diffs
                 .added_partition_specs
                 .into_iter()
@@ -981,7 +982,7 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    create::insert_default_partition_spec(
+    create_commit::insert_default_partition_spec(
         transaction,
         new_metadata.uuid(),
         new_metadata.default_partition_spec(),
@@ -989,12 +990,16 @@ async fn handle_atomic_updates(
     .await?;
 
     if !diffs.removed_sort_orders.is_empty() {
-        create::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
-            .await?;
+        create_commit::remove_sort_orders(
+            new_metadata.uuid(),
+            diffs.removed_sort_orders,
+            transaction,
+        )
+        .await?;
     }
 
     if !diffs.added_sort_orders.is_empty() {
-        create::insert_sort_orders(
+        create_commit::insert_sort_orders(
             diffs
                 .added_sort_orders
                 .into_iter()
@@ -1007,14 +1012,15 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    create::insert_default_sort_order(new_metadata, transaction).await?;
+    create_commit::insert_default_sort_order(new_metadata, transaction).await?;
 
     if !diffs.removed_snapshots.is_empty() {
-        create::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
+        create_commit::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction)
+            .await?;
     }
 
     if !diffs.added_snapshots.is_empty() {
-        create::insert_snapshots(
+        create_commit::insert_snapshots(
             diffs
                 .added_snapshots
                 .into_iter()
@@ -1027,16 +1033,20 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    create::set_current_snapshot(new_metadata, transaction).await?;
+    create_commit::set_current_snapshot(new_metadata, transaction).await?;
 
     if snapshot_refs {
-        create::insert_snapshot_refs(new_metadata, transaction).await?;
+        create_commit::insert_snapshot_refs(new_metadata, transaction).await?;
     }
 
     if diffs.head_of_snapshot_log_changed {
         if let Some(snap) = new_metadata.history().last() {
-            create::insert_snapshot_log([snap].into_iter(), transaction, new_metadata.uuid())
-                .await?;
+            create_commit::insert_snapshot_log(
+                [snap].into_iter(),
+                transaction,
+                new_metadata.uuid(),
+            )
+            .await?;
         }
     }
 
@@ -1058,7 +1068,7 @@ async fn handle_atomic_updates(
         .await?;
     }
     if diffs.added_metadata_log > 0 {
-        create::insert_metadata_log(
+        create_commit::insert_metadata_log(
             new_metadata
                 .metadata_log()
                 .iter()
@@ -1073,8 +1083,12 @@ async fn handle_atomic_updates(
     }
 
     if properties {
-        create::set_table_properties(new_metadata.properties(), new_metadata.uuid(), transaction)
-            .await?;
+        create_commit::set_table_properties(
+            new_metadata.properties(),
+            new_metadata.uuid(),
+            transaction,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -1099,7 +1113,7 @@ pub(crate) mod tests {
 
     use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
-    use crate::implementations::postgres::tabular::table::create::create_table;
+    use crate::implementations::postgres::tabular::table::create_commit::create_table;
     use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,

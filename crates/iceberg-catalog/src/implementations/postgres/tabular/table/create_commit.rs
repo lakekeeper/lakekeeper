@@ -28,6 +28,13 @@ pub(crate) async fn create_table(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> api::Result<CreateTableResponse> {
     let TableIdent { namespace: _, name } = table_ident;
+    let location = Location::from_str(table_metadata.location()).map_err(|err| {
+        ErrorModel::bad_request(
+            format!("Invalid location: '{}'", table_metadata.location()),
+            "InvalidLocation",
+            Some(Box::new(err)),
+        )
+    })?;
 
     let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
         ErrorModel::internal(
@@ -37,18 +44,16 @@ pub(crate) async fn create_table(
         )
     })?;
 
-    let result = sqlx::query!(r#"DELETE FROM tabular t WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL"#, *namespace_id, name)
+    if sqlx::query!(r#"DELETE FROM tabular t WHERE t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL"#, *namespace_id, name)
         .execute(&mut **transaction)
         .await
         .map_err(|e| {
             let message = "Error creating table".to_string();
-            tracing::warn!("{}", message);
+            tracing::warn!("Failed to delete potentially staged table with same ident due to: '{}'", message);
             e.into_error_model(message)
-        })?;
-
-    if result.rows_affected() > 0 {
+        })?.rows_affected() > 0 {
         tracing::debug!(
-            "Overwriting existing tabular entry for table '{}' within namespace_id: '{}'",
+            "Overwriting staged tabular entry for table '{}' within namespace_id: '{}'",
             name,
             namespace_id
         );
@@ -61,20 +66,11 @@ pub(crate) async fn create_table(
             namespace_id: *namespace_id,
             typ: TabularType::Table,
             metadata_location,
-            location: &Location::from_str(table_metadata.location()).map_err(|err| {
-                ErrorModel::bad_request(
-                    format!("Invalid location: '{}'", table_metadata.location()),
-                    "InvalidLocation",
-                    Some(Box::new(err)),
-                )
-            })?,
+            location: &location,
         },
         transaction,
     )
     .await?;
-
-    // TODO: depending on staged table being overwritten, we may have to do some cleanup in certain
-    //       logs?
 
     let _update_result = sqlx::query!(
         r#"
@@ -119,7 +115,6 @@ pub(crate) async fn create_table(
         tabular_id,
     )
     .await?;
-
     insert_default_partition_spec(
         transaction,
         tabular_id,
@@ -127,15 +122,15 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
-
     insert_snapshots(table_metadata.snapshots(), transaction, tabular_id).await?;
     set_current_snapshot(&table_metadata, transaction).await?;
+    insert_snapshot_refs(&table_metadata, transaction).await?;
+    insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
 
     insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
     insert_default_sort_order(&table_metadata, transaction).await?;
 
-    insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
+    set_table_properties(table_metadata.properties(), tabular_id, transaction).await?;
 
     insert_metadata_log(
         table_metadata.metadata_log().iter().cloned(),
@@ -143,8 +138,6 @@ pub(crate) async fn create_table(
         tabular_id,
     )
     .await?;
-
-    insert_snapshot_refs(&table_metadata, transaction).await?;
 
     Ok(CreateTableResponse { table_metadata })
 }
@@ -193,9 +186,7 @@ pub(super) async fn insert_schemas(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_schema(schema_id, table_id, schema)
-           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])
-           -- schemas are append only, so we do nothing on conflict
-           ON CONFLICT DO NOTHING"#,
+           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])"#,
         &ids,
         &table_ids,
         &schemas
@@ -271,8 +262,7 @@ pub(crate) async fn insert_partition_specs(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
-               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])
-               ON CONFLICT DO NOTHING"#,
+               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])"#,
         &spec_ids,
         tabular_id,
         &specs
@@ -350,8 +340,7 @@ pub(crate) async fn insert_sort_orders(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])
-           ON CONFLICT DO NOTHING"#,
+           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])"#,
         &sort_order_ids,
         tabular_id,
         &sort_orders
