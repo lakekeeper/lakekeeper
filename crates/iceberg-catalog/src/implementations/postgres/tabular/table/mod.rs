@@ -775,9 +775,6 @@ pub(crate) async fn drop_table<'a>(
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
 struct TableUpdates {
-    current_schema: bool,
-    default_spec: bool,
-    default_sort_order: bool,
     snapshot_refs: bool,
     properties: bool,
 }
@@ -787,9 +784,6 @@ impl From<&[TableUpdate]> for TableUpdates {
         let mut s = TableUpdates::default();
         for u in value {
             match u {
-                TableUpdate::SetCurrentSchema { .. } => s.current_schema = true,
-                TableUpdate::SetDefaultSpec { .. } => s.default_spec = true,
-                TableUpdate::SetDefaultSortOrder { .. } => s.default_sort_order = true,
                 TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {
                     s.snapshot_refs = true;
                 }
@@ -942,9 +936,6 @@ async fn handle_atomic_updates(
     diffs: Diffs,
 ) -> Result<()> {
     let TableUpdates {
-        current_schema,
-        default_spec,
-        default_sort_order,
         snapshot_refs,
         properties,
     } = table_updates;
@@ -965,9 +956,8 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    if current_schema {
-        create::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
-    }
+    create::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
+
     if !diffs.removed_partition_specs.is_empty() {
         create::remove_partition_specs(
             new_metadata.uuid(),
@@ -976,6 +966,7 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+
     if !diffs.added_partition_specs.is_empty() {
         create::insert_partition_specs(
             diffs
@@ -989,14 +980,14 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
-    if default_spec {
-        create::insert_default_partition_spec(
-            transaction,
-            new_metadata.uuid(),
-            new_metadata.default_partition_spec(),
-        )
-        .await?;
-    }
+
+    create::insert_default_partition_spec(
+        transaction,
+        new_metadata.uuid(),
+        new_metadata.default_partition_spec(),
+    )
+    .await?;
+
     if !diffs.removed_sort_orders.is_empty() {
         create::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
             .await?;
@@ -1015,12 +1006,13 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
-    if default_sort_order {
-        create::insert_default_sort_order(new_metadata, transaction).await?;
-    }
+
+    create::insert_default_sort_order(new_metadata, transaction).await?;
+
     if !diffs.removed_snapshots.is_empty() {
         create::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
     }
+
     if !diffs.added_snapshots.is_empty() {
         create::insert_snapshots(
             diffs
