@@ -1248,6 +1248,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         ProjectRelation,
         RoleAction,
         RoleAssignment,
+        RoleRelation,
         ServerAction,
         ServerAssignment,
         ServerRelation,

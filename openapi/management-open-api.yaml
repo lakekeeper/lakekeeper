@@ -2271,6 +2271,11 @@ components:
         title: RoleAssignmentOwnership
       discriminator:
         propertyName: type
+    RoleRelation:
+      type: string
+      enum:
+      - assignee
+      - ownership
     S3Credential:
       oneOf:
       - type: object
