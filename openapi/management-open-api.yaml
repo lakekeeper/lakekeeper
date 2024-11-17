@@ -57,7 +57,7 @@ paths:
       summary: Delete the default project
       operationId: delete_default_project
       responses:
-        '200':
+        '204':
           description: Project deleted successfully
   /management/v1/default-project/rename:
     post:
@@ -756,7 +756,7 @@ paths:
           type: string
           format: uuid
       responses:
-        '200':
+        '204':
           description: Project deleted successfully
   /management/v1/project/{project_id}/rename:
     post:
@@ -905,7 +905,7 @@ paths:
           type: string
           format: uuid
       responses:
-        '200':
+        '204':
           description: Role deleted successfully
   /management/v1/search/role:
     post:
@@ -1067,7 +1067,7 @@ paths:
           type: string
           format: uuid
       responses:
-        '200':
+        '204':
           description: User deleted successfully
   /management/v1/warehouse:
     get:
@@ -1163,7 +1163,7 @@ paths:
           type: string
           format: uuid
       responses:
-        '200':
+        '204':
           description: Warehouse deleted successfully
   /management/v1/warehouse/{warehouse_id}/activate:
     post:
