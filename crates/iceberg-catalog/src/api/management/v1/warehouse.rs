@@ -190,6 +190,8 @@ pub struct GetWarehouseResponse {
     pub project_id: uuid::Uuid,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
+    /// Delete profile used for the warehouse.
+    pub delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is active.
     pub status: WarehouseStatus,
 }
@@ -782,6 +784,7 @@ impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
             project_id: *warehouse.project_id,
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
+            delete_profile: warehouse.tabular_delete_profile,
         }
     }
 }

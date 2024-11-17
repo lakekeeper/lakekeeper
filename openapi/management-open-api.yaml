@@ -1815,8 +1815,11 @@ components:
       - name
       - project-id
       - storage-profile
+      - delete-profile
       - status
       properties:
+        delete-profile:
+          $ref: '#/components/schemas/TabularDeleteProfile'
         id:
           type: string
           format: uuid
