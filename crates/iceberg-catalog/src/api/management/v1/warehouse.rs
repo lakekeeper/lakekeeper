@@ -79,10 +79,12 @@ pub enum TabularDeleteProfile {
     #[schema(title = "TabularDeleteProfileHard")]
     Hard {},
     #[schema(title = "TabularDeleteProfileSoft")]
+    #[serde(rename_all = "kebab-case")]
     Soft {
         #[serde(
             deserialize_with = "crate::config::seconds_to_duration",
-            serialize_with = "crate::config::duration_to_seconds"
+            serialize_with = "crate::config::duration_to_seconds",
+            alias = "expiration_seconds"
         )]
         expiration_seconds: chrono::Duration,
     },
