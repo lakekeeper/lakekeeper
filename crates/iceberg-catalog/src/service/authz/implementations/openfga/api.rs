@@ -1277,49 +1277,49 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
 ) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
         .route(
-            "/permissions/role/{role_id}/access",
+            "/permissions/role/:role_id/access",
             get(get_role_access_by_id),
         )
         .route("/permissions/server/access", get(get_server_access))
         .route("/permissions/project/access", get(get_project_access))
         .route(
-            "/permissions/warehouse/{warehouse_id}/access",
+            "/permissions/warehouse/:warehouse_id/access",
             get(get_warehouse_access_by_id),
         )
         .route(
-            "/permissions/warehouse/{warehouse_id}",
+            "/permissions/warehouse/:warehouse_id",
             get(get_warehouse_by_id),
         )
         .route(
-            "/permissions/warehouse/{warehouse_id}/managed-access",
+            "/permissions/warehouse/:warehouse_id/managed-access",
             post(set_warehouse_managed_access),
         )
         .route(
-            "/permissions/project/{project_id}/access",
+            "/permissions/project/:project_id/access",
             get(get_project_access_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}/access",
+            "/permissions/namespace/:namespace_id/access",
             get(get_namespace_access_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}",
+            "/permissions/namespace/:namespace_id",
             get(get_namespace_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}/managed-access",
+            "/permissions/namespace/:namespace_id/managed-access",
             post(set_namespace_managed_access),
         )
         .route(
-            "/permissions/table/{table_id}/access",
+            "/permissions/table/:table_id/access",
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/view/{table_id}/access",
+            "/permissions/view/:table_id/access",
             get(get_view_access_by_id),
         )
         .route(
-            "/permissions/role/{role_id}/assignments",
+            "/permissions/role/:role_id/assignments",
             get(get_role_assignments_by_id).post(update_role_assignments_by_id),
         )
         .route(
@@ -1331,23 +1331,23 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_project_assignments).post(update_project_assignments),
         )
         .route(
-            "/permissions/project/{project_id}/assignments",
+            "/permissions/project/:project_id/assignments",
             get(get_project_assignments_by_id).post(update_project_assignments_by_id),
         )
         .route(
-            "/permissions/warehouse/{warehouse_id}/assignments",
+            "/permissions/warehouse/:warehouse_id/assignments",
             get(get_warehouse_assignments_by_id).post(update_warehouse_assignments_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}/assignments",
+            "/permissions/namespace/:namespace_id/assignments",
             get(get_namespace_assignments_by_id).post(update_namespace_assignments_by_id),
         )
         .route(
-            "/permissions/table/{table_id}/assignments",
+            "/permissions/table/:table_id/assignments",
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/view/{table_id}/assignments",
+            "/permissions/view/:table_id/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
         )
 }
