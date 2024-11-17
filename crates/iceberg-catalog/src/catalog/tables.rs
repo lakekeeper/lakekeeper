@@ -937,7 +937,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             );
 
             let added_metadata_log = (new_metadata.metadata_log().len() + n_expired)
-                - previous_table.table_metadata.metadata_log().len();
+                .saturating_sub(previous_table.table_metadata.metadata_log().len());
 
             Ok(CommitContext {
                 new_metadata,
