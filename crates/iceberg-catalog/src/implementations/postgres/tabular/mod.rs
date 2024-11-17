@@ -290,9 +290,7 @@ pub(crate) async fn create_tabular<'a>(
                JOIN namespace n ON ta.namespace_id = n.namespace_id
                JOIN warehouse w ON w.warehouse_id = n.warehouse_id
                WHERE (location = ANY($1) OR
-                      -- FIXME: this does not seem to make use of any index put on location
-                      -- e.g. a text_pattern_ops on location did not show up in EXPLAIN ANALYZE
-                      -- with set enable_seqscan = off;
+                      -- TODO: revisit this after knowing performance impact, may need an index
                       (length($3) < length(location) AND (location LIKE $3 || '%'))
                ) AND tabular_id != $2
            ) as "exists!""#,
