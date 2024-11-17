@@ -162,7 +162,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let id = Uuid::now_v7();
-        let table_id = TabularIdentUuid::Table(id);
+        let tabular_id = TabularIdentUuid::Table(id);
+        let table_id = TableIdentUuid::from(id);
 
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
@@ -172,7 +173,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let table_location = determine_tabular_location(
             &namespace,
             request.location.clone(),
-            TabularIdentUuid::Table(*table_id),
+            tabular_id,
             storage_profile,
         )?;
 
@@ -195,7 +196,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // serialize body before moving it
         let body = maybe_body_to_json(&request);
 
-        let table_metadata = create_table_request_into_table_metadata(id.into(), request)?;
+        let table_metadata = create_table_request_into_table_metadata(table_id, request)?;
 
         let CreateTableResponse { table_metadata } = C::create_table(
             TableCreation {
@@ -264,12 +265,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // Tables are the odd one out: If a staged table was created before,
         // we must be able to overwrite it.
         authorizer
-            .delete_table(TableIdentUuid::from(*table_id))
+            .delete_table(TableIdentUuid::from(*tabular_id))
             .await?;
         authorizer
             .create_table(
                 &request_metadata,
-                TableIdentUuid::from(*table_id),
+                TableIdentUuid::from(*tabular_id),
                 namespace_id,
             )
             .await?;
@@ -279,7 +280,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         emit_change_event(
             EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*table_id),
+                tabular_id: TabularIdentUuid::Table(*tabular_id),
                 warehouse_id: *warehouse_id,
                 name: table.name.clone(),
                 namespace: table.namespace.to_url_string(),
