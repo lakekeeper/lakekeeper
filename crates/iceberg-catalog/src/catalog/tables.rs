@@ -921,7 +921,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 &change.requirements,
                 change.updates.clone(),
             )?;
-            let n_expired = this_expired.len();
+            let number_expired_metadata_log_entries = this_expired.len();
             if get_delete_after_commit_enabled(new_metadata.properties()) {
                 expired_metadata_logs.extend(this_expired);
             } else {
@@ -936,7 +936,8 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 Uuid::now_v7(),
             );
 
-            let added_metadata_log = (new_metadata.metadata_log().len() + n_expired)
+            let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
+                + number_expired_metadata_log_entries)
                 .saturating_sub(previous_table.table_metadata.metadata_log().len());
 
             Ok(CommitContext {
@@ -945,8 +946,8 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 new_compression_codec,
                 updates: change.updates,
                 previous_metadata: previous_table.table_metadata,
-                expired_metadata_logs: n_expired,
-                added_metadata_log,
+                number_expired_metadata_log_entries,
+                number_added_metadata_log_entries,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1043,8 +1044,8 @@ struct CommitContext {
     pub previous_metadata: iceberg::spec::TableMetadata,
     pub updates: Vec<TableUpdate>,
     pub new_compression_codec: CompressionCodec,
-    pub expired_metadata_logs: usize,
-    pub added_metadata_log: usize,
+    pub number_expired_metadata_log_entries: usize,
+    pub number_added_metadata_log_entries: usize,
 }
 
 impl CommitContext {
@@ -1052,8 +1053,8 @@ impl CommitContext {
         let diffs = calculate_diffs(
             &self.new_metadata,
             &self.previous_metadata,
-            self.added_metadata_log,
-            self.expired_metadata_logs,
+            self.number_added_metadata_log_entries,
+            self.number_expired_metadata_log_entries,
         );
 
         TableCommit {
