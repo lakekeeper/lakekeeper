@@ -830,7 +830,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .iter()
         .filter_map(|change| change.identifier.as_ref())
         .collect::<HashSet<_>>();
-
+    let n_identifiers = identifiers.len();
     let table_ids = C::table_idents_to_ids(
         warehouse_id,
         identifiers,
@@ -868,6 +868,15 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .collect::<HashMap<_, _>>();
 
     // ------------------- BUSINESS LOGIC -------------------
+
+    if n_identifiers != request.table_changes.len() {
+        return Err(ErrorModel::bad_request(
+            "Table identifiers must be unique in the CommitTransactionRequest",
+            "UniqueTableIdentifiersRequiredForCommitTransaction",
+            None,
+        )
+        .into());
+    }
 
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
