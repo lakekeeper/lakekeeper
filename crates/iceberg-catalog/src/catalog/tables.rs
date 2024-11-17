@@ -797,15 +797,12 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             .transpose()?;
 
         if change.identifier.is_none() {
-            return Err(ErrorModel::builder()
-                .code(StatusCode::BAD_REQUEST.into())
-                .message(
-                    "Table identifier is required for each change in the CommitTransactionRequest"
-                        .to_string(),
-                )
-                .r#type("TableIdentifierRequiredForCommitTransaction".to_string())
-                .build()
-                .into());
+            return Err(ErrorModel::bad_request(
+                "Table identifier is required for each change in the CommitTransactionRequest",
+                "TableIdentifierRequiredForCommitTransaction",
+                None,
+            )
+            .into());
         };
     }
 
@@ -1709,41 +1706,7 @@ mod test {
         .await
         .unwrap();
 
-        pretty_assertions::assert_eq!(
-            tab.metadata.current_schema(),
-            table_metadata.metadata.current_schema()
-        );
-
-        pretty_assertions::assert_eq!(
-            tab.metadata
-                .schemas_iter()
-                .sorted_by_key(|s| s.schema_id())
-                .collect_vec(),
-            table_metadata
-                .metadata
-                .schemas_iter()
-                .sorted_by_key(|s| s.schema_id())
-                .collect_vec()
-        );
-
-        pretty_assertions::assert_eq!(
-            tab.metadata
-                .partition_specs_iter()
-                .sorted_by_key(|s| s.spec_id())
-                .collect_vec(),
-            table_metadata
-                .metadata
-                .partition_specs_iter()
-                .sorted_by_key(|s| s.spec_id())
-                .collect_vec()
-        );
-
-        pretty_assertions::assert_eq!(
-            tab.metadata.default_partition_spec(),
-            table_metadata.metadata.default_partition_spec()
-        );
-
-        pretty_assertions::assert_eq!(tab.metadata, table_metadata.metadata);
+        assert_eq!(tab.metadata, table_metadata.metadata);
     }
 
     #[sqlx::test]

@@ -1,6 +1,11 @@
-mod create_commit;
+mod commit;
+mod common;
+mod create;
+
+pub(crate) use commit::commit_table_transaction;
+pub(crate) use create::create_table;
+
 use crate::implementations::postgres::{dbutils::DBErrorHandler as _, CatalogState};
-use crate::service::TableCommit;
 use crate::{
     service::{
         storage::StorageProfile, ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result,
@@ -8,8 +13,6 @@ use crate::{
     },
     SecretIdent, WarehouseIdent,
 };
-pub(crate) use create_commit::create_table;
-
 use http::StatusCode;
 use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
 
@@ -24,14 +27,8 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
-use crate::catalog::tables::Diffs;
-use crate::implementations::postgres::tabular::table::create_commit::{
-    expire_metadata_log_entries, remove_snapshot_log_entries,
-};
 use iceberg::TableUpdate;
-use itertools::Itertools;
 use sqlx::types::Json;
-use sqlx::{Postgres, Transaction};
 use std::default::Default;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -228,6 +225,8 @@ where
 #[expect(dead_code)]
 #[derive(sqlx::FromRow)]
 struct TableQueryStruct {
+    // TODO: clean up the options below once we've released this and can assume that migrations
+    //       have happened
     table_id: Uuid,
     table_name: String,
     namespace_name: Vec<String>,
@@ -273,10 +272,6 @@ struct TableQueryStruct {
 impl TableQueryStruct {
     #[expect(clippy::too_many_lines)]
     fn into_table_metadata(self) -> Result<Option<TableMetadata>> {
-        // TODO: we're having a ton of options here, some are required, some are not, we're having
-        //       them all optional since we cannot depend on DB migration having already happened
-        //       we need to go through these lines once more and decide where the ? shortcut is
-        //       appropriate and where not.
         macro_rules! expect {
             ($e:expr) => {
                 match $e {
@@ -797,302 +792,6 @@ impl From<&[TableUpdate]> for TableUpdates {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-pub(crate) async fn commit_table_transaction<'a>(
-    // We do not need the warehouse_id here, because table_ids are unique across warehouses
-    _: WarehouseIdent,
-    commits: impl IntoIterator<Item = TableCommit> + Send,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let commits: Vec<TableCommit> = commits.into_iter().collect();
-    if commits.len() > (MAX_PARAMETERS / 4) {
-        return Err(ErrorModel::bad_request(
-            "Too updates in single commit",
-            "TooManyTablesForCommit".to_string(),
-            None,
-        )
-        .into());
-    }
-
-    let mut query_builder_table = sqlx::QueryBuilder::new(
-        r#"
-        UPDATE "table" as t
-        SET "metadata" = c."metadata",
-            table_format_version = c."table_format_version",
-            last_column_id = c."last_column_id",
-            last_sequence_number = c."last_sequence_number",
-            last_updated_ms = c."last_updated_ms",
-            last_partition_id = c."last_partition_id"
-        FROM (VALUES
-        "#,
-    );
-
-    let mut query_builder_tabular = sqlx::QueryBuilder::new(
-        r#"
-        UPDATE "tabular" as t
-        SET "metadata_location" = c."metadata_location",
-        "location" = c."location"
-        FROM (VALUES
-        "#,
-    );
-
-    let n_commits = commits.len();
-    for (
-        i,
-        TableCommit {
-            new_metadata,
-            new_metadata_location,
-            updates,
-            diffs,
-        },
-    ) in commits.into_iter().enumerate()
-    {
-        let updates = TableUpdates::from(updates.as_slice());
-        handle_atomic_updates(transaction, updates, &new_metadata, diffs).await?;
-
-        let metadata_ser = serde_json::to_value(&new_metadata).map_err(|e| {
-            ErrorModel::internal(
-                "Error serializing table metadata",
-                "TableMetadataSerializationError",
-                Some(Box::new(e)),
-            )
-        })?;
-
-        query_builder_table.push("(");
-        query_builder_table.push_bind(new_metadata.uuid());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(metadata_ser);
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(match new_metadata.format_version() {
-            FormatVersion::V1 => DbTableFormatVersion::V1,
-            FormatVersion::V2 => DbTableFormatVersion::V2,
-        });
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(new_metadata.last_column_id());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(new_metadata.last_sequence_number());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(new_metadata.last_updated_ms());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(new_metadata.last_partition_id());
-        query_builder_table.push(")");
-
-        query_builder_tabular.push("(");
-        query_builder_tabular.push_bind(new_metadata.uuid());
-        query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(new_metadata_location.to_string());
-        query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(new_metadata.location().to_string());
-        query_builder_tabular.push(")");
-
-        if i != n_commits - 1 {
-            query_builder_table.push(", ");
-            query_builder_tabular.push(", ");
-        }
-    }
-
-    query_builder_table
-        .push(") as c(table_id, metadata, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
-    query_builder_tabular.push(
-        ") as c(table_id, metadata_location, location) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
-    );
-
-    query_builder_table.push(" RETURNING t.table_id");
-    query_builder_tabular.push(" RETURNING t.tabular_id");
-
-    let query_meta_update = query_builder_table.build();
-    let query_meta_location_update = query_builder_tabular.build();
-
-    // futures::try_join didn't work due to concurrent mutable borrow of transaction
-    let updated_meta = query_meta_update
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|e| e.into_error_model("Error committing tablemetadata updates".to_string()))?;
-
-    let updated_meta_location = query_meta_location_update
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|e| {
-            e.into_error_model("Error committing tablemetadata location updates".to_string())
-        })?;
-
-    if updated_meta.len() != n_commits || updated_meta_location.len() != n_commits {
-        return Err(ErrorModel::builder()
-            .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-            .message("Error committing table updates".to_string())
-            .r#type("CommitTableUpdateError".to_string())
-            .build()
-            .into());
-    }
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_lines)]
-async fn handle_atomic_updates(
-    transaction: &mut Transaction<'_, Postgres>,
-    table_updates: TableUpdates,
-    new_metadata: &TableMetadata,
-    diffs: Diffs,
-) -> Result<()> {
-    let TableUpdates {
-        snapshot_refs,
-        properties,
-    } = table_updates;
-    if !&diffs.removed_schemas.is_empty() {
-        create_commit::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction)
-            .await?;
-    }
-    if !diffs.added_schemas.is_empty() {
-        create_commit::insert_schemas(
-            diffs
-                .added_schemas
-                .into_iter()
-                .filter_map(|s| new_metadata.schema_by_id(s))
-                .collect::<Vec<_>>()
-                .into_iter(),
-            transaction,
-            new_metadata.uuid(),
-        )
-        .await?;
-    }
-
-    create_commit::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
-
-    if !diffs.removed_partition_specs.is_empty() {
-        create_commit::remove_partition_specs(
-            new_metadata.uuid(),
-            diffs.removed_partition_specs,
-            transaction,
-        )
-        .await?;
-    }
-
-    if !diffs.added_partition_specs.is_empty() {
-        create_commit::insert_partition_specs(
-            diffs
-                .added_partition_specs
-                .into_iter()
-                .filter_map(|s| new_metadata.partition_spec_by_id(s))
-                .collect::<Vec<_>>()
-                .into_iter(),
-            transaction,
-            new_metadata.uuid(),
-        )
-        .await?;
-    }
-
-    create_commit::insert_default_partition_spec(
-        transaction,
-        new_metadata.uuid(),
-        new_metadata.default_partition_spec(),
-    )
-    .await?;
-
-    if !diffs.removed_sort_orders.is_empty() {
-        create_commit::remove_sort_orders(
-            new_metadata.uuid(),
-            diffs.removed_sort_orders,
-            transaction,
-        )
-        .await?;
-    }
-
-    if !diffs.added_sort_orders.is_empty() {
-        create_commit::insert_sort_orders(
-            diffs
-                .added_sort_orders
-                .into_iter()
-                .filter_map(|id| new_metadata.sort_order_by_id(id))
-                .collect_vec()
-                .into_iter(),
-            transaction,
-            new_metadata.uuid(),
-        )
-        .await?;
-    }
-
-    create_commit::insert_default_sort_order(new_metadata, transaction).await?;
-
-    if !diffs.removed_snapshots.is_empty() {
-        create_commit::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction)
-            .await?;
-    }
-
-    if !diffs.added_snapshots.is_empty() {
-        create_commit::insert_snapshots(
-            new_metadata.uuid(),
-            diffs
-                .added_snapshots
-                .into_iter()
-                .filter_map(|s| new_metadata.snapshot_by_id(s))
-                .collect::<Vec<_>>()
-                .into_iter(),
-            transaction,
-        )
-        .await?;
-    }
-
-    create_commit::set_current_snapshot(new_metadata, transaction).await?;
-
-    if snapshot_refs {
-        create_commit::insert_snapshot_refs(new_metadata, transaction).await?;
-    }
-
-    if diffs.head_of_snapshot_log_changed {
-        if let Some(snap) = new_metadata.history().last() {
-            create_commit::insert_snapshot_log(
-                [snap].into_iter(),
-                transaction,
-                new_metadata.uuid(),
-            )
-            .await?;
-        }
-    }
-
-    if diffs.n_removed_snapshot_log > 0 {
-        remove_snapshot_log_entries(
-            diffs.n_removed_snapshot_log,
-            transaction,
-            new_metadata.uuid(),
-        )
-        .await?;
-    }
-
-    if diffs.expired_metadata_logs > 0 {
-        expire_metadata_log_entries(
-            new_metadata.uuid(),
-            diffs.expired_metadata_logs,
-            transaction,
-        )
-        .await?;
-    }
-    if diffs.added_metadata_log > 0 {
-        create_commit::insert_metadata_log(
-            new_metadata.uuid(),
-            new_metadata
-                .metadata_log()
-                .iter()
-                .rev()
-                .take(diffs.added_metadata_log)
-                .rev()
-                .cloned(),
-            transaction,
-        )
-        .await?;
-    }
-
-    if properties {
-        create_commit::set_table_properties(
-            new_metadata.uuid(),
-            new_metadata.properties(),
-            transaction,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     // Desired behaviour:
@@ -1113,7 +812,7 @@ pub(crate) mod tests {
 
     use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
-    use crate::implementations::postgres::tabular::table::create_commit::create_table;
+    use crate::implementations::postgres::tabular::table::create::create_table;
     use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
