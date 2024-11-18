@@ -78,3 +78,18 @@ jobs:
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
+      - name: Dump DB
+        if: '!cancelled()'
+        uses: tj-actions/pg-dump@v3
+        with:
+          database_url: "postgresql://postgres:postgres@localhost:31102/postgres"
+          path: dump.sql
+      - name: compress
+        if: '!cancelled()'
+        run: cat dump.sql | gzip -9 > dump.sql.gz
+      - name: Upload dump
+        if: '!cancelled()'
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-dump
+          path: dump.sql.gz

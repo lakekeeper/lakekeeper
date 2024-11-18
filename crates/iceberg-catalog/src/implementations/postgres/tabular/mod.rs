@@ -14,6 +14,7 @@ use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::DeletionDetails;
 use crate::service::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
+use chrono::Utc;
 use iceberg_ext::configs::Location;
 use sqlx::postgres::PgArguments;
 use sqlx::{Arguments, Execute, FromRow, Postgres, QueryBuilder};
@@ -574,16 +575,18 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 
 pub(crate) async fn mark_tabular_as_deleted(
     tabular_id: TabularIdentUuid,
+    delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     let _ = sqlx::query!(
         r#"
         UPDATE tabular
-        SET deleted_at = now()
+        SET deleted_at = $2
         WHERE tabular_id = $1
         RETURNING tabular_id
         "#,
-        *tabular_id
+        *tabular_id,
+        delete_date.unwrap_or(Utc::now())
     )
     .fetch_one(&mut **transaction)
     .await
