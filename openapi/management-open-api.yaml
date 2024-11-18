@@ -180,7 +180,7 @@ paths:
               $ref: '#/components/schemas/UpdateNamespaceAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/namespace/{namespace_id}/managed-access:
     post:
@@ -255,7 +255,7 @@ paths:
               $ref: '#/components/schemas/UpdateProjectAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/project/{project_id}/access:
     get:
@@ -328,7 +328,7 @@ paths:
               $ref: '#/components/schemas/UpdateProjectAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/role/{role_id}/access:
     get:
@@ -401,7 +401,7 @@ paths:
               $ref: '#/components/schemas/UpdateRoleAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/server/access:
     get:
@@ -452,7 +452,7 @@ paths:
               $ref: '#/components/schemas/UpdateServerAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/table/{namespace_id}/assignments:
     get:
@@ -526,7 +526,7 @@ paths:
               $ref: '#/components/schemas/UpdateTableAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/view/{view_id}/access:
     get:
@@ -570,7 +570,7 @@ paths:
               $ref: '#/components/schemas/UpdateViewAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
@@ -664,7 +664,7 @@ paths:
               $ref: '#/components/schemas/UpdateWarehouseAssignmentsRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:

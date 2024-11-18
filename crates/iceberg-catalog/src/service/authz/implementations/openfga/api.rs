@@ -931,14 +931,14 @@ async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/server/assignments",
     request_body = UpdateServerAssignmentsRequest,
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_server_assignments<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateServerAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -949,7 +949,7 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for the default project
@@ -959,14 +959,14 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_project_assignments<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
@@ -982,7 +982,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a project
@@ -995,7 +995,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
         ("project_id" = uuid::Uuid, Path, description = "Project ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1003,7 +1003,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1014,7 +1014,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a project
@@ -1027,7 +1027,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1035,7 +1035,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1046,7 +1046,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a namespace
@@ -1059,7 +1059,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1067,7 +1067,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1078,7 +1078,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a table
@@ -1091,7 +1091,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
         ("table_id" = uuid::Uuid, Path, description = "Table ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1099,7 +1099,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateTableAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1110,7 +1110,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a view
@@ -1123,7 +1123,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
         ("view_id" = uuid::Uuid, Path, description = "View ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1131,7 +1131,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateViewAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1142,7 +1142,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a role
@@ -1155,7 +1155,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1163,7 +1163,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateRoleAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1174,7 +1174,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, OpenApi)]
@@ -1676,6 +1676,47 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_assign_to_role() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id_owner = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let role_id_1 = RoleId::new(uuid::Uuid::nil());
+            let role_id_2 = RoleId::new(uuid::Uuid::now_v7());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_owner.to_openfga(),
+                        relation: RoleRelation::Ownership.to_openfga().to_string(),
+                        object: role_id_1.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id_owner.clone()),
+                vec![
+                    RoleAssignment::Assignee(user_id_owner.clone().into()),
+                    RoleAssignment::Assignee(role_id_2.clone().into()),
+                ],
+                vec![],
+                &role_id_1.to_openfga(),
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<RoleAssignment> =
+                get_relations(authorizer.clone(), None, &role_id_1.to_openfga())
+                    .await
+                    .unwrap();
+            assert_eq!(relations.len(), 3);
         }
 
         #[tokio::test]
