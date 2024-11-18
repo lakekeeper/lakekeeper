@@ -28,11 +28,9 @@ use iceberg::spec::{
 use iceberg_ext::configs::Location;
 
 use crate::api::iceberg::types::PageToken;
-use crate::implementations::postgres::namespace::list_namespaces;
 use crate::implementations::postgres::warehouse::{list_projects, list_warehouses};
-use crate::service::{ListFlags, ListNamespacesQuery, TableCreation, WarehouseStatus};
+use crate::service::{ListFlags, TableCreation, WarehouseStatus};
 use iceberg::TableUpdate;
-use itertools::Itertools;
 use sqlx::types::Json;
 use std::default::Default;
 use std::str::FromStr;
@@ -797,7 +795,7 @@ impl From<&[TableUpdate]> for TableUpdates {
     }
 }
 
-pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
+pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
     let projects = list_projects(None, catalog_state.clone()).await?;
     for project in projects {
         tracing::info!("Migrating tables for project {}", project.project_id);
@@ -827,7 +825,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                         include_deleted: true,
                         include_staged: true,
                     },
-                    &mut transaction,
+                    &mut *transaction,
                     Some(TabularType::Table),
                     PaginationQuery {
                         page_token: match token {
@@ -842,9 +840,9 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                 token = tabs.next_token().map(ToString::to_string);
                 let tabs = tabs.into_hashmap();
                 let ids = tabs
-                    .iter()
-                    .map(|k| match k {
-                        TabularIdentUuid::Table(t) => Ok((TableIdentUuid::from(*t))),
+                    .keys()
+                    .map(|k| match *k {
+                        TabularIdentUuid::Table(t) => Ok(TableIdentUuid::from(t)),
                         TabularIdentUuid::View(_) => Err(ErrorModel::internal(
                             "DB returned a view when filtering for tables.",
                             "InternalDatabaseError",
@@ -869,12 +867,12 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                             {
                                 TabularIdentOwned::Table(t) => t,
                                 TabularIdentOwned::View(_) => {
-                                    return ErrorModel::internal(
+                                    return Err(ErrorModel::internal(
                                         "DB returned a view when filtering for tables.",
                                         "InternalDatabaseError",
                                         None,
                                     )
-                                    .into()
+                                    .into())
                                 }
                             },
                             metadata_location: table.metadata_location.as_ref(),
@@ -1898,6 +1896,52 @@ pub(crate) mod tests {
             .unwrap();
         }
 
+        for js in jsons {
+            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
+                .await
+                .unwrap();
+            let table = tables.get(&(js.uuid().into())).unwrap();
+            pretty_assertions::assert_eq!(table.table_metadata, js);
+        }
+        trx.commit().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_migrate_tables_with_no_old_tables(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
+
+        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<Vec<TableMetadata>, _>>()
+            .unwrap();
+        let mut trx = pool.begin().await.unwrap();
+        for js in jsons.clone() {
+            create_table(
+                TableCreation {
+                    namespace_id,
+                    table_ident: &TableIdent {
+                        namespace: namespace.clone(),
+                        name: js.uuid().to_string(),
+                    },
+                    table_metadata: js,
+                    metadata_location: None,
+                },
+                &mut trx,
+            )
+            .await
+            .unwrap();
+        }
+        trx.commit().await.unwrap();
+
+        migrate_tables(state.clone()).await.unwrap();
+
+        let mut trx = pool.begin().await.unwrap();
         for js in jsons {
             let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
