@@ -264,11 +264,11 @@ pub(crate) async fn create_tabular<'a>(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    let r = sqlx::query!(
+    let tabular_id = sqlx::query_scalar!(
         r#"
         INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)
         VALUES ($1, $2, $3, $4, $5, $6, 'true')
-        RETURNING tabular_id, table_migrated
+        RETURNING tabular_id
         "#,
         id,
         name,
@@ -283,8 +283,7 @@ pub(crate) async fn create_tabular<'a>(
         tracing::warn!("Error creating new {typ}: {e}");
         e.into_error_model(format!("Error creating {typ}"))
     })?;
-    let tabular_id = r.tabular_id;
-    let mig = dbg!(r.table_migrated);
+
     let location_is_taken = sqlx::query_scalar!(
         r#"SELECT EXISTS (
                SELECT 1

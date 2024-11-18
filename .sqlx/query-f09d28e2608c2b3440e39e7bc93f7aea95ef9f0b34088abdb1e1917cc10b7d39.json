@@ -1,17 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)\n        VALUES ($1, $2, $3, $4, $5, $6, 'true')\n        RETURNING tabular_id, table_migrated\n        ",
+  "query": "\n        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)\n        VALUES ($1, $2, $3, $4, $5, $6, 'true')\n        RETURNING tabular_id\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
         "name": "tabular_id",
         "type_info": "Uuid"
-      },
-      {
-        "ordinal": 1,
-        "name": "table_migrated",
-        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -35,9 +30,8 @@
       ]
     },
     "nullable": [
-      false,
       false
     ]
   },
-  "hash": "62e99cd7820cc32233f72978abae0fcf1d83127ba6f27a4fa85bed8401488dc4"
+  "hash": "f09d28e2608c2b3440e39e7bc93f7aea95ef9f0b34088abdb1e1917cc10b7d39"
 }

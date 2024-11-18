@@ -92,14 +92,6 @@ fn build_queries(
         "#,
     );
     for (i, (new_metadata, new_metadata_location)) in meta.into_iter().enumerate() {
-        let metadata_ser = serde_json::to_value(&new_metadata).map_err(|e| {
-            ErrorModel::internal(
-                "Error serializing table metadata",
-                "TableMetadataSerializationError",
-                Some(Box::new(e)),
-            )
-        })?;
-
         query_builder_table.push("(");
         query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");

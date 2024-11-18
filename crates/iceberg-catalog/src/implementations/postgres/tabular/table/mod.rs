@@ -875,7 +875,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                             None,
                         ))?;
                     drop_table(table_id, &mut transaction).await?;
-                    eprintln!("Creating table: {}", table_id);
+
                     create_table(
                         TableCreation {
                             namespace_id: table.namespace_id,
@@ -927,7 +927,7 @@ pub(crate) mod tests {
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::warehouse::set_warehouse_status;
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::service::{ListFlags, NamespaceIdentUuid, TableCreation, Transaction};
+    use crate::service::{ListFlags, NamespaceIdentUuid, TableCreation};
     use std::default::Default;
     use std::time::SystemTime;
 
