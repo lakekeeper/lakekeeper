@@ -9,8 +9,30 @@ alter table "table"
     add column last_updated_ms      bigint,
     add column last_partition_id    int,
     drop constraint "tabular_ident_fk",
-    add constraint "tabular_ident_fk" foreign key (table_id) references tabular (tabular_id) on delete cascade
-;
+    add constraint "tabular_ident_fk" foreign key (table_id) references tabular (tabular_id) on delete cascade,
+    alter column metadata drop not null;
+
+alter table tabular
+    add column table_migrated boolean not null default false;
+
+-- Create the function
+CREATE OR REPLACE FUNCTION check_metadata_not_null()
+    RETURNS TRIGGER AS
+$$
+BEGIN
+    IF NEW.metadata IS NOT NULL THEN
+        RAISE EXCEPTION 'Insert failed: metadata must be null';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger
+CREATE TRIGGER before_insert_check_metadata
+    BEFORE INSERT OR UPDATE
+    ON "table"
+    FOR EACH ROW
+EXECUTE FUNCTION check_metadata_not_null();
 
 alter table "view"
     drop constraint "tabular_ident_fk",
@@ -145,9 +167,3 @@ create table table_refs
 
 call add_time_columns('table_refs');
 select trigger_updated_at('table_refs');
-
-alter table tabular
-    add column server_version text;
-update tabular
-set server_version = '0.4.3';
-create index tabular_server_version_idx on tabular (server_version);

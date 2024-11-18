@@ -30,6 +30,7 @@
 --     new_lines[-1] = new_lines[-1].rstrip(",") + ";"
 -- with open("fixture.sql", "w") as outf:
 --     outf.write("\n".join(new_lines))
+drop trigger before_insert_check_metadata ON "table";
 
 INSERT INTO public.project (project_id, project_name, created_at, updated_at)
 VALUES ('00000000-0000-0000-0000-000000000000', 'Default Project', '2024-11-18 09:59:17.913433+00', NULL),
@@ -13869,3 +13870,23 @@ VALUES ('01933eb6-c946-7122-bb89-62cb91175c86', 'v1', '2024-11-18 09:59:46.75799
        ('01933eb8-2725-72f0-a1f7-52bc3286dbaa', 'v1', '2024-11-18 10:01:17.719835+00', NULL),
        ('01933eb8-35dc-7371-a7f8-bc6612db859e', 'v1', '2024-11-18 10:01:20.09161+00', NULL),
        ('01933eb8-4c09-7ae0-ba19-5a54ce4307a5', 'v1', '2024-11-18 10:01:25.769196+00', NULL);
+
+
+-- Create the function
+CREATE OR REPLACE FUNCTION check_metadata_not_null()
+    RETURNS TRIGGER AS
+$$
+BEGIN
+    IF NEW.metadata IS NOT NULL THEN
+        RAISE EXCEPTION 'Insert failed: metadata must be null';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger
+CREATE TRIGGER before_insert_check_metadata
+    BEFORE INSERT OR UPDATE
+    ON "table"
+    FOR EACH ROW
+EXECUTE FUNCTION check_metadata_not_null();

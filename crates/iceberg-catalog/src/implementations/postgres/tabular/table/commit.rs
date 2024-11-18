@@ -74,8 +74,7 @@ fn build_queries(
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
-        SET "metadata" = c."metadata",
-            table_format_version = c."table_format_version",
+        SET table_format_version = c."table_format_version",
             last_column_id = c."last_column_id",
             last_sequence_number = c."last_sequence_number",
             last_updated_ms = c."last_updated_ms",
@@ -103,8 +102,6 @@ fn build_queries(
 
         query_builder_table.push("(");
         query_builder_table.push_bind(new_metadata.uuid());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(metadata_ser);
         query_builder_table.push(", ");
         query_builder_table.push_bind(match new_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
@@ -135,7 +132,7 @@ fn build_queries(
     }
 
     query_builder_table
-        .push(") as c(table_id, metadata, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
+        .push(") as c(table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
     query_builder_tabular.push(
         ") as c(table_id, metadata_location, location) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
     );

@@ -1,4 +1,4 @@
-pub(crate) mod table;
+pub mod table;
 pub(crate) mod view;
 
 use super::dbutils::DBErrorHandler as _;
@@ -264,11 +264,11 @@ pub(crate) async fn create_tabular<'a>(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    let tabular_id = sqlx::query_scalar!(
+    let r = sqlx::query!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, server_version)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING tabular_id
+        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)
+        VALUES ($1, $2, $3, $4, $5, $6, 'true')
+        RETURNING tabular_id, table_migrated
         "#,
         id,
         name,
@@ -276,7 +276,6 @@ pub(crate) async fn create_tabular<'a>(
         typ as _,
         metadata_location.map(iceberg_ext::configs::Location::as_str),
         location.as_str(),
-        env!("CARGO_PKG_VERSION").to_string()
     )
     .fetch_one(&mut **transaction)
     .await
@@ -284,7 +283,8 @@ pub(crate) async fn create_tabular<'a>(
         tracing::warn!("Error creating new {typ}: {e}");
         e.into_error_model(format!("Error creating {typ}"))
     })?;
-
+    let tabular_id = r.tabular_id;
+    let mig = dbg!(r.table_migrated);
     let location_is_taken = sqlx::query_scalar!(
         r#"SELECT EXISTS (
                SELECT 1
@@ -319,7 +319,7 @@ pub(crate) async fn create_tabular<'a>(
     Ok(tabular_id)
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) async fn list_tabulars<'e, 'c, E>(
     warehouse_id: WarehouseIdent,
     namespace: Option<&NamespaceIdent>,
@@ -328,7 +328,9 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-    server_version: Option<String>,
+    // FIXME: remove with 0.6
+    // TODO: make an enum
+    only_unmigrated: bool,
 ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
@@ -378,7 +380,7 @@ where
             AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)
             AND (t.deleted_at IS NULL OR $5)
             AND (t.metadata_location IS NOT NULL OR $6)
-            AND (t.server_version = $7 OR $7 IS NULL)
+            AND (t.table_migrated != $7)
             AND ((t.created_at > $8 OR $8 IS NULL) OR (t.created_at = $8 AND t.tabular_id > $9))
             ORDER BY t.created_at, t.tabular_id ASC
             LIMIT $10
@@ -389,7 +391,7 @@ where
         list_flags.include_active,
         list_flags.include_deleted,
         list_flags.include_staged,
-        server_version,
+        only_unmigrated,
         token_ts,
         token_id,
         page_size,

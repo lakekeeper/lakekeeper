@@ -1,3 +1,5 @@
+drop trigger before_insert_check_metadata ON "table";
+
 INSERT INTO public.project (project_id, project_name, created_at, updated_at)
 VALUES ('01933eb6-589e-7840-8460-328e1c6d186d', 'project-c2f2a268-5028-43ff-81c1-b4a210b03d85',
         '2024-11-18 09:59:17.918681+00', NULL);
@@ -147,3 +149,23 @@ VALUES ('01933eb6-720a-7f50-abc8-2bd8119129cf', 'c66b1372-a593-11ef-8d1a-eb80a06
 INSERT INTO tabular_expirations (tabular_id, warehouse_id, typ, deletion_kind, task_id)
 VALUES ('01933eb6-720a-7f50-abc8-2bd8119129cf', 'c66b1372-a593-11ef-8d1a-eb80a0602bd7', 'table', 'purge',
         '01933eb6-720a-7f50-abc8-2bd8119129cf');
+
+
+-- Create the function
+CREATE OR REPLACE FUNCTION check_metadata_not_null()
+    RETURNS TRIGGER AS
+$$
+BEGIN
+    IF NEW.metadata IS NOT NULL THEN
+        RAISE EXCEPTION 'Insert failed: metadata must be null';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger
+CREATE TRIGGER before_insert_check_metadata
+    BEFORE INSERT OR UPDATE
+    ON "table"
+    FOR EACH ROW
+EXECUTE FUNCTION check_metadata_not_null();

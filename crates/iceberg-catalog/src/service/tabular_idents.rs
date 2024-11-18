@@ -79,6 +79,7 @@ impl TabularIdentOwned {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn as_table(&self) -> crate::api::Result<&TableIdent> {
         match self {
             TabularIdentOwned::Table(ident) => Ok(ident),
@@ -91,6 +92,7 @@ impl TabularIdentOwned {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn as_view(&self) -> crate::api::Result<&TableIdent> {
         match self {
             TabularIdentOwned::Table(_) => Err(ErrorModel::internal(

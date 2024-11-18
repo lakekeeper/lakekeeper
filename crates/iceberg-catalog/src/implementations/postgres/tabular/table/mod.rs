@@ -27,7 +27,6 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
-use crate::api::iceberg::types::PageToken;
 use crate::implementations::postgres::warehouse::{list_projects, list_warehouses};
 use crate::service::{ListFlags, TableCreation, WarehouseStatus};
 use iceberg::TableUpdate;
@@ -123,7 +122,7 @@ impl From<DbTableFormatVersion> for FormatVersion {
     }
 }
 
-pub(crate) async fn load_tables_fallback(
+pub(crate) async fn load_tables_old(
     warehouse_id: WarehouseIdent,
     tables: impl IntoIterator<Item = TableIdentUuid>,
     include_deleted: bool,
@@ -172,12 +171,20 @@ pub(crate) async fn load_tables_fallback(
                         Some(Box::new(e)),
                     )
                 })?;
+
             Ok((
                 table_id,
                 LoadTableResponse {
                     table_id,
                     namespace_id: table.namespace_id.into(),
-                    table_metadata: table.metadata.deref().clone(),
+                    table_metadata: table
+                        .metadata
+                        .ok_or(ErrorModel::internal(
+                            "Table metadata jsonb not found",
+                            "InternalTableMetadataNotFound",
+                            None,
+                        ))?
+                        .0,
                     metadata_location,
                     storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
                     storage_profile: table.storage_profile.deref().clone(),
@@ -205,7 +212,7 @@ where
         transaction,
         Some(TabularType::Table),
         pagination_query,
-        None,
+        false,
     )
     .await?;
 
@@ -235,7 +242,6 @@ struct TableQueryStruct {
     table_name: String,
     namespace_name: Vec<String>,
     namespace_id: Uuid,
-    metadata: Json<TableMetadata>,
     table_ref_names: Option<Vec<String>>,
     table_ref_snapshot_ids: Option<Vec<i64>>,
     table_ref_retention: Option<Vec<Json<SnapshotRetention>>>,
@@ -443,8 +449,6 @@ pub(crate) async fn load_tables(
     tables: impl IntoIterator<Item = TableIdentUuid>,
     include_deleted: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    // FIXME: remove me once the migration is done
-    with_fallback: bool,
 ) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
     let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
 
@@ -462,7 +466,6 @@ pub(crate) async fn load_tables(
             ti.location as "table_location",
             namespace_name,
             ti.namespace_id,
-            t."metadata" as "metadata: Json<TableMetadata>",
             ti."metadata_location",
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id",
@@ -608,13 +611,11 @@ pub(crate) async fn load_tables(
         }
     }
 
-    // not all tables may have been migrated so we try to fetch by table_metadata if we failed previously
-    if with_fallback && !failed_to_fetch.is_empty() {
-        tables.extend(
-            load_tables_fallback(warehouse_id, failed_to_fetch, include_deleted, transaction)
-                .await?,
-        );
-    }
+    tracing::error!(
+        "Failed to fetch the following tables: '{:?}'",
+        failed_to_fetch
+    );
+
     Ok(tables)
 }
 
@@ -811,7 +812,17 @@ impl From<&[TableUpdate]> for TableUpdates {
 
 // FIXME: delete after migration period is done
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
+/// Migrate tables from the old table schema to the new one.
+///
+/// # Errors
+/// This function fails if:
+///  - the transaction fails
+///  - tables that could be listed cannot be loaded
+///  - tables that could be loaded cannot be dropped
+///  - tables that could be dropped cannot be re-created
+///  - deleted tables that could be re-created cannot be marked as deleted
+///
+pub async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
     let projects = list_projects(None, catalog_state.clone()).await?;
     for project in projects {
         tracing::info!("Migrating tables for project {}", project.project_id);
@@ -840,45 +851,43 @@ pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                     &mut *transaction,
                     Some(TabularType::Table),
                     PaginationQuery::new(token.into(), Some(100)),
-                    None,
+                    true,
                 )
                 .await?;
+
                 token = tabs.next_token().map(ToString::to_string);
                 let tabs = tabs.into_hashmap();
                 let ids = tabs
                     .keys()
-                    .map(|k| k.try_into())
+                    .map(|k| (*k).try_into())
                     .collect::<Result<Vec<_>>>()?;
 
-                let tables = load_tables(warehouse_id, ids, true, &mut transaction, true).await?;
+                let tables = load_tables_old(warehouse_id, ids, true, &mut transaction).await?;
                 let n_tables = tables.len();
                 for (idx, (table_id, table)) in tables.into_iter().enumerate() {
                     tracing::info!("Migrating table '{table_id}', {idx}/{n_tables}");
+                    let tab = *tabs
+                        .get(&TabularIdentUuid::Table(*table_id))
+                        .as_ref()
+                        .ok_or(ErrorModel::internal(
+                            "Table not found in tabulars",
+                            "InternalTableNotFound",
+                            None,
+                        ))?;
                     drop_table(table_id, &mut transaction).await?;
+                    eprintln!("Creating table: {}", table_id);
                     create_table(
                         TableCreation {
                             namespace_id: table.namespace_id,
-                            table_ident: &tabs
-                                .get(&TabularIdentUuid::Table(*table_id))
-                                .as_ref()
-                                .ok_or(ErrorModel::internal(
-                                    "Table not found in tabulars",
-                                    "InternalTableNotFound",
-                                    None,
-                                ))?
-                                .1
-                                .clone()
-                                .try_into(),
+                            table_ident: tab.0.clone().as_table()?,
                             metadata_location: table.metadata_location.as_ref(),
                             table_metadata: table.table_metadata,
                         },
                         &mut transaction,
                     )
                     .await?;
-                    let deletion_details =
-                        &tabs.get(&TabularIdentUuid::Table(*table_id)).unwrap().1;
 
-                    if let Some(del) = deletion_details {
+                    if let Some(del) = tab.1.as_ref() {
                         mark_tabular_as_deleted(
                             TabularIdentUuid::Table(*table_id),
                             Some(del.deleted_at),
@@ -925,7 +934,6 @@ pub(crate) mod tests {
     use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
     use crate::implementations::postgres::tabular::table::create::create_table;
-    use crate::implementations::postgres::PostgresTransaction;
     use iceberg::spec::{
         NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
         UnboundPartitionSpec,
@@ -1160,7 +1168,7 @@ pub(crate) mod tests {
 
         // Load should succeed
         let mut t = pool.begin().await.unwrap();
-        let load_result = load_tables(warehouse_id, vec![table_id], false, &mut t, true)
+        let load_result = load_tables(warehouse_id, vec![table_id], false, &mut t)
             .await
             .unwrap();
         assert_eq!(load_result.len(), 1);
@@ -1207,7 +1215,6 @@ pub(crate) mod tests {
             vec![table_id],
             false,
             &mut pool.begin().await.unwrap(),
-            true,
         )
         .await
         .unwrap();
@@ -1249,7 +1256,6 @@ pub(crate) mod tests {
             vec![table_id],
             false,
             &mut pool.begin().await.unwrap(),
-            true,
         )
         .await
         .unwrap();
@@ -1844,44 +1850,6 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
-    async fn test_get_by_id_2(pool: sqlx::PgPool) {
-        let state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
-        let table2 = initialize_table(
-            warehouse_id,
-            state.clone(),
-            false,
-            None,
-            Some("tab2".into()),
-        )
-        .await;
-        let mut transaction = PostgresTransaction::begin_read(state).await.unwrap();
-        let tt1 = load_tables_fallback(
-            warehouse_id,
-            [table.table_id, table2.table_id],
-            false,
-            transaction.transaction(),
-        )
-        .await
-        .unwrap();
-
-        let tt2 = load_tables(
-            warehouse_id,
-            [table.table_id, table2.table_id],
-            false,
-            transaction.transaction(),
-            true,
-        )
-        .await
-        .unwrap();
-        transaction.commit().await.unwrap();
-
-        assert_eq!(tt1, tt2);
-    }
-
-    #[sqlx::test]
     async fn test_load_is_equal_to_deserialized_jsons(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1914,7 +1882,7 @@ pub(crate) mod tests {
         }
 
         for js in jsons {
-            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx, true)
+            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
                 .unwrap();
             let table = tables.get(&(js.uuid().into())).unwrap();
@@ -1960,7 +1928,7 @@ pub(crate) mod tests {
 
         let mut trx = pool.begin().await.unwrap();
         for js in jsons {
-            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx, true)
+            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
                 .unwrap();
             let table = tables.get(&(js.uuid().into())).unwrap();
@@ -1985,7 +1953,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|t| {
                     let table_id = t.table_id;
-                    let metadata = serde_json::from_value(t.metadata).unwrap();
+                    let metadata = serde_json::from_value(t.metadata.unwrap()).unwrap();
                     ((t.warehouse_id,t.namespace_id, table_id), metadata)
                 })
                 .collect::<HashMap<_, _>>();
@@ -1995,7 +1963,7 @@ pub(crate) mod tests {
         let mut trx = pool.begin().await.unwrap();
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
-            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx, false)
+            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
                 .await
                 .unwrap();
 
@@ -2022,7 +1990,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|t| {
                     let table_id = t.table_id;
-                    let metadata = serde_json::from_value(t.metadata).unwrap();
+                    let metadata = serde_json::from_value(t.metadata.unwrap()).unwrap();
                     ((t.warehouse_id,t.namespace_id, table_id), metadata)
                 })
                 .collect::<HashMap<_, _>>();
@@ -2055,7 +2023,7 @@ pub(crate) mod tests {
 
         let mut trx = pool.begin().await.unwrap();
         for js in jsons {
-            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx, true)
+            let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
                 .unwrap();
             let table = tables.get(&(js.uuid().into())).unwrap();
@@ -2063,7 +2031,7 @@ pub(crate) mod tests {
         }
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
-            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx, false)
+            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
                 .await
                 .unwrap();
 
@@ -2086,7 +2054,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|t| {
                     let table_id = t.table_id;
-                    let metadata = serde_json::from_value(t.metadata).unwrap();
+                    let metadata = serde_json::from_value(t.metadata.unwrap()).unwrap();
                     ((t.warehouse_id,t.namespace_id, table_id), metadata)
                 })
                 .collect::<HashMap<_, _>>();
@@ -2102,7 +2070,7 @@ pub(crate) mod tests {
             &pool,
             None,
             PaginationQuery::empty(),
-            None,
+            true,
         )
         .await
         .unwrap();
@@ -2118,7 +2086,7 @@ pub(crate) mod tests {
             &pool,
             None,
             PaginationQuery::empty(),
-            None,
+            false,
         )
         .await
         .unwrap();
@@ -2131,7 +2099,7 @@ pub(crate) mod tests {
         assert_eq!(t.deleted_at, t2.deleted_at);
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
-            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx, false)
+            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
                 .await
                 .unwrap();
 

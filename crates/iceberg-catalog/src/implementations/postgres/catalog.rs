@@ -297,7 +297,7 @@ impl Catalog for super::PostgresCatalog {
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
-        load_tables(warehouse_id, tables, include_deleted, transaction, true).await
+        load_tables(warehouse_id, tables, include_deleted, transaction).await
     }
 
     async fn get_table_metadata_by_id(
@@ -576,7 +576,7 @@ impl Catalog for super::PostgresCatalog {
             &catalog_state.read_pool(),
             None,
             pagination_query,
-            None,
+            false,
         )
         .await
     }

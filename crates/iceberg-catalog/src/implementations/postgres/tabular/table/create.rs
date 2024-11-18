@@ -128,18 +128,9 @@ async fn insert_table(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> Result<()> {
-    let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
-        ErrorModel::internal(
-            "Error serializing table metadata",
-            "TableMetadataSerializationError",
-            Some(Box::new(e)),
-        )
-    })?;
-
     let _ = sqlx::query!(
         r#"
         INSERT INTO "table" (table_id,
-                             metadata,
                              table_format_version,
                              last_column_id,
                              last_sequence_number,
@@ -147,14 +138,13 @@ async fn insert_table(
                              last_partition_id
                              )
         (
-            SELECT $1, $2, $3, $4, $5, $6, $7
+            SELECT $1, $2, $3, $4, $5, $6
             WHERE EXISTS (SELECT 1
                 FROM active_tables
                 WHERE active_tables.table_id = $1))
         RETURNING "table_id"
         "#,
         tabular_id,
-        table_metadata_ser,
         match table_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
             FormatVersion::V2 => DbTableFormatVersion::V2,
