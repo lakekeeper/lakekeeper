@@ -1703,8 +1703,8 @@ mod tests {
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
-                    RoleAssignment::Assignee(user_id_owner.clone().into()),
-                    RoleAssignment::Assignee(role_id_2.clone().into()),
+                    RoleAssignment::Assignee(user_id_owner.into()),
+                    RoleAssignment::Assignee(role_id_2.into()),
                 ],
                 vec![],
                 &role_id_1.to_openfga(),
@@ -1746,11 +1746,9 @@ mod tests {
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     ProjectAssignment::Describe {
-                        role: role_id.clone().into_assignees(),
+                        role: role_id.into_assignees(),
                     },
-                    ProjectAssignment::DataAdmin(UserOrRole::Role(
-                        role_id.clone().into_assignees(),
-                    )),
+                    ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_assignees())),
                     ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
                 ],
                 vec![],
