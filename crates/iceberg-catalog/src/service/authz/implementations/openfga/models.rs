@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::service::authz::implementations::FgaType;
+use crate::service::{authz::implementations::FgaType, RoleId};
 use openfga_rs::{Condition, TypeDefinition};
 
 lazy_static::lazy_static! {
@@ -8,6 +8,30 @@ lazy_static::lazy_static! {
     static ref MODEL: CollaborationModels = CollaborationModels {
         v1: serde_json::from_value(MODEL_V1_JSON.clone()).expect("Failed to parse OpenFGA model V1 from JSON"),
     };
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RoleAssignees(RoleId);
+
+impl RoleAssignees {
+    #[must_use]
+    pub(crate) fn from_role(role: RoleId) -> Self {
+        RoleAssignees(role)
+    }
+
+    #[must_use]
+    pub(crate) fn role(&self) -> &RoleId {
+        &self.0
+    }
+}
+
+impl RoleId {
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn into_assignees(self) -> RoleAssignees {
+        RoleAssignees::from_role(self)
+    }
 }
 
 pub(crate) trait OpenFgaType {

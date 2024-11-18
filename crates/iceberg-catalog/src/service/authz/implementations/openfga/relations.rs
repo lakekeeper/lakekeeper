@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 
 use super::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
-    OpenFGAError, OpenFGAResult,
+    OpenFGAError, OpenFGAResult, RoleAssignees,
 };
 use crate::service::authz::{
     CatalogNamespaceAction, CatalogRoleAction, CatalogTableAction, CatalogViewAction,
@@ -53,7 +53,7 @@ pub(super) enum UserOrRole {
     #[schema(value_type = uuid::Uuid)]
     #[schema(title = "UserOrRoleRole")]
     /// Id of the role
-    Role(RoleId),
+    Role(RoleAssignees),
 }
 
 impl From<UserId> for UserOrRole {
@@ -64,19 +64,17 @@ impl From<UserId> for UserOrRole {
 
 impl From<RoleId> for UserOrRole {
     fn from(role: RoleId) -> Self {
-        UserOrRole::Role(role)
+        UserOrRole::Role(RoleAssignees::from_role(role))
     }
 }
 
 impl ParseOpenFgaEntity for UserOrRole {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
         match r#type {
-            FgaType::User => Ok(UserOrRole::User(UserId::new(id).map_err(|_e| {
-                OpenFGAError::unexpected_entity(vec![FgaType::User], id.to_string())
-            })?)),
-            FgaType::Role => Ok(UserOrRole::Role(id.parse().map_err(|_e| {
-                OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string())
-            })?)),
+            FgaType::User => Ok(UserOrRole::User(UserId::try_from_openfga_id(r#type, id)?)),
+            FgaType::Role => Ok(UserOrRole::Role(RoleAssignees::try_from_openfga_id(
+                r#type, id,
+            )?)),
             _ => Err(OpenFGAError::UnexpectedEntity {
                 r#type: vec![FgaType::User],
                 value: id.to_string(),
@@ -88,8 +86,8 @@ impl ParseOpenFgaEntity for UserOrRole {
 impl OpenFgaEntity for UserOrRole {
     fn to_openfga(&self) -> String {
         match self {
-            UserOrRole::User(user) => format!("{}:{user}", FgaType::User),
-            UserOrRole::Role(role) => format!("{}:{role}", FgaType::Role),
+            UserOrRole::User(user) => user.to_openfga(),
+            UserOrRole::Role(role) => role.to_openfga(),
         }
     }
 
@@ -421,22 +419,22 @@ pub(super) enum ProjectAssignment {
     #[schema(title = "ProjectAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "ProjectAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "ProjectAssignmentCreate")]
     Create {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "ProjectAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
 }
 
@@ -472,18 +470,14 @@ impl Assignment for ProjectAssignment {
             APIProjectRelation::RoleCreator => {
                 UserOrRole::parse_from_openfga(user).map(ProjectAssignment::RoleCreator)
             }
-            APIProjectRelation::Describe => {
-                RoleId::parse_from_openfga(user).map(|role| ProjectAssignment::Describe { role })
-            }
-            APIProjectRelation::Select => {
-                RoleId::parse_from_openfga(user).map(|role| ProjectAssignment::Select { role })
-            }
-            APIProjectRelation::Create => {
-                RoleId::parse_from_openfga(user).map(|role| ProjectAssignment::Create { role })
-            }
-            APIProjectRelation::Modify => {
-                RoleId::parse_from_openfga(user).map(|role| ProjectAssignment::Modify { role })
-            }
+            APIProjectRelation::Describe => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ProjectAssignment::Describe { role }),
+            APIProjectRelation::Select => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ProjectAssignment::Select { role }),
+            APIProjectRelation::Create => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ProjectAssignment::Create { role }),
+            APIProjectRelation::Modify => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ProjectAssignment::Modify { role }),
         }
     }
 
@@ -661,32 +655,32 @@ pub(super) enum WarehouseAssignment {
     #[schema(title = "WarehouseAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "WarehouseAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "WarehouseAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "WarehouseAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "WarehouseAssignmentCreate")]
     Create {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "WarehouseAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
 }
 
@@ -712,22 +706,18 @@ impl Assignment for WarehouseAssignment {
             APIWarehouseRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(WarehouseAssignment::Ownership)
             }
-            APIWarehouseRelation::PassGrants => RoleId::parse_from_openfga(user)
+            APIWarehouseRelation::PassGrants => RoleAssignees::parse_from_openfga(user)
                 .map(|role| WarehouseAssignment::PassGrants { role }),
-            APIWarehouseRelation::ManageGrants => RoleId::parse_from_openfga(user)
+            APIWarehouseRelation::ManageGrants => RoleAssignees::parse_from_openfga(user)
                 .map(|role| WarehouseAssignment::ManageGrants { role }),
-            APIWarehouseRelation::Describe => {
-                RoleId::parse_from_openfga(user).map(|role| WarehouseAssignment::Describe { role })
-            }
-            APIWarehouseRelation::Select => {
-                RoleId::parse_from_openfga(user).map(|role| WarehouseAssignment::Select { role })
-            }
-            APIWarehouseRelation::Create => {
-                RoleId::parse_from_openfga(user).map(|role| WarehouseAssignment::Create { role })
-            }
-            APIWarehouseRelation::Modify => {
-                RoleId::parse_from_openfga(user).map(|role| WarehouseAssignment::Modify { role })
-            }
+            APIWarehouseRelation::Describe => RoleAssignees::parse_from_openfga(user)
+                .map(|role| WarehouseAssignment::Describe { role }),
+            APIWarehouseRelation::Select => RoleAssignees::parse_from_openfga(user)
+                .map(|role| WarehouseAssignment::Select { role }),
+            APIWarehouseRelation::Create => RoleAssignees::parse_from_openfga(user)
+                .map(|role| WarehouseAssignment::Create { role }),
+            APIWarehouseRelation::Modify => RoleAssignees::parse_from_openfga(user)
+                .map(|role| WarehouseAssignment::Modify { role }),
         }
     }
 
@@ -919,32 +909,32 @@ pub(super) enum NamespaceAssignment {
     #[schema(title = "NamespaceAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "NamespaceAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "NamespaceAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "NamespaceAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "NamespaceAssignmentCreate")]
     Create {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "NamespaceAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
 }
 
@@ -970,22 +960,18 @@ impl Assignment for NamespaceAssignment {
             APINamespaceRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(NamespaceAssignment::Ownership)
             }
-            APINamespaceRelation::PassGrants => RoleId::parse_from_openfga(user)
+            APINamespaceRelation::PassGrants => RoleAssignees::parse_from_openfga(user)
                 .map(|role| NamespaceAssignment::PassGrants { role }),
-            APINamespaceRelation::ManageGrants => RoleId::parse_from_openfga(user)
+            APINamespaceRelation::ManageGrants => RoleAssignees::parse_from_openfga(user)
                 .map(|role| NamespaceAssignment::ManageGrants { role }),
-            APINamespaceRelation::Describe => {
-                RoleId::parse_from_openfga(user).map(|role| NamespaceAssignment::Describe { role })
-            }
-            APINamespaceRelation::Select => {
-                RoleId::parse_from_openfga(user).map(|role| NamespaceAssignment::Select { role })
-            }
-            APINamespaceRelation::Create => {
-                RoleId::parse_from_openfga(user).map(|role| NamespaceAssignment::Create { role })
-            }
-            APINamespaceRelation::Modify => {
-                RoleId::parse_from_openfga(user).map(|role| NamespaceAssignment::Modify { role })
-            }
+            APINamespaceRelation::Describe => RoleAssignees::parse_from_openfga(user)
+                .map(|role| NamespaceAssignment::Describe { role }),
+            APINamespaceRelation::Select => RoleAssignees::parse_from_openfga(user)
+                .map(|role| NamespaceAssignment::Select { role }),
+            APINamespaceRelation::Create => RoleAssignees::parse_from_openfga(user)
+                .map(|role| NamespaceAssignment::Create { role }),
+            APINamespaceRelation::Modify => RoleAssignees::parse_from_openfga(user)
+                .map(|role| NamespaceAssignment::Modify { role }),
         }
     }
 
@@ -1140,27 +1126,27 @@ pub(super) enum TableAssignment {
     #[schema(title = "TableAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "TableAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "TableAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "TableAssignmentSelect")]
     Select {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "TableAssignmentCreate")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
 }
 
@@ -1185,20 +1171,17 @@ impl Assignment for TableAssignment {
             APITableRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(TableAssignment::Ownership)
             }
-            APITableRelation::PassGrants => {
-                RoleId::parse_from_openfga(user).map(|role| TableAssignment::PassGrants { role })
-            }
-            APITableRelation::ManageGrants => {
-                RoleId::parse_from_openfga(user).map(|role| TableAssignment::ManageGrants { role })
-            }
-            APITableRelation::Describe => {
-                RoleId::parse_from_openfga(user).map(|role| TableAssignment::Describe { role })
-            }
+            APITableRelation::PassGrants => RoleAssignees::parse_from_openfga(user)
+                .map(|role| TableAssignment::PassGrants { role }),
+            APITableRelation::ManageGrants => RoleAssignees::parse_from_openfga(user)
+                .map(|role| TableAssignment::ManageGrants { role }),
+            APITableRelation::Describe => RoleAssignees::parse_from_openfga(user)
+                .map(|role| TableAssignment::Describe { role }),
             APITableRelation::Select => {
-                RoleId::parse_from_openfga(user).map(|role| TableAssignment::Select { role })
+                RoleAssignees::parse_from_openfga(user).map(|role| TableAssignment::Select { role })
             }
             APITableRelation::Modify => {
-                RoleId::parse_from_openfga(user).map(|role| TableAssignment::Modify { role })
+                RoleAssignees::parse_from_openfga(user).map(|role| TableAssignment::Modify { role })
             }
         }
     }
@@ -1344,22 +1327,22 @@ pub(super) enum ViewAssignment {
     #[schema(title = "ViewAssignmentPassGrants")]
     PassGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "ViewAssignmentManageGrants")]
     ManageGrants {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "ViewAssignmentDescribe")]
     Describe {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
     #[schema(title = "ViewAssignmentModify")]
     Modify {
         #[schema(value_type = uuid::Uuid)]
-        role: RoleId,
+        role: RoleAssignees,
     },
 }
 
@@ -1383,17 +1366,14 @@ impl Assignment for ViewAssignment {
             APIViewRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Ownership)
             }
-            APIViewRelation::PassGrants => {
-                RoleId::parse_from_openfga(user).map(|role| ViewAssignment::PassGrants { role })
-            }
-            APIViewRelation::ManageGrants => {
-                RoleId::parse_from_openfga(user).map(|role| ViewAssignment::ManageGrants { role })
-            }
-            APIViewRelation::Describe => {
-                RoleId::parse_from_openfga(user).map(|role| ViewAssignment::Describe { role })
-            }
+            APIViewRelation::PassGrants => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ViewAssignment::PassGrants { role }),
+            APIViewRelation::ManageGrants => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ViewAssignment::ManageGrants { role }),
+            APIViewRelation::Describe => RoleAssignees::parse_from_openfga(user)
+                .map(|role| ViewAssignment::Describe { role }),
             APIViewRelation::Modify => {
-                RoleId::parse_from_openfga(user).map(|role| ViewAssignment::Modify { role })
+                RoleAssignees::parse_from_openfga(user).map(|role| ViewAssignment::Modify { role })
             }
         }
     }

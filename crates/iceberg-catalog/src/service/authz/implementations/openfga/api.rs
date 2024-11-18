@@ -1720,6 +1720,53 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_assign_to_project() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id_owner = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id_assignee = UserId::new(&uuid::Uuid::nil().to_string()).unwrap();
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+            let project_id = ProjectIdent::from(uuid::Uuid::nil());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_owner.to_openfga(),
+                        relation: ProjectRelation::ProjectAdmin.to_openfga().to_string(),
+                        object: project_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id_owner.clone()),
+                vec![
+                    ProjectAssignment::Describe {
+                        role: role_id.clone().into_assignees(),
+                    },
+                    ProjectAssignment::DataAdmin(UserOrRole::Role(
+                        role_id.clone().into_assignees(),
+                    )),
+                    ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
+                ],
+                vec![],
+                &project_id.to_openfga(),
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<ProjectAssignment> =
+                get_relations(authorizer.clone(), None, &project_id.to_openfga())
+                    .await
+                    .unwrap();
+            assert_eq!(relations.len(), 4);
+        }
+
+        #[tokio::test]
         async fn test_set_namespace_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 

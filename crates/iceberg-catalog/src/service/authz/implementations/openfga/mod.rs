@@ -55,7 +55,7 @@ use entities::OpenFgaEntity;
 pub use error::{OpenFGAError, OpenFGAResult};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
-pub(crate) use models::{ModelVersion, OpenFgaType};
+pub(crate) use models::{ModelVersion, OpenFgaType, RoleAssignees};
 use relations::{
     NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
     WarehouseRelation,
