@@ -23,13 +23,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Migrate the database
-    Migrate {
-        #[clap(
-            default_value = "false",
-            help = "Do not migrate tables from jsonb column to postgres tables."
-        )]
-        no_table_migration: bool,
-    },
+    Migrate {},
     /// Wait for the database to be up and migrated
     WaitForDB {
         #[clap(
@@ -118,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
 
             wait_for_db::wait_for_db(check_migrations, retries, backoff, check_db).await?;
         }
-        Some(Commands::Migrate { no_table_migration }) => {
+        Some(Commands::Migrate {}) => {
             print_info();
             println!("Migrating authorizer...");
             iceberg_catalog::service::authz::implementations::migrate_default_authorizer().await?;
@@ -136,16 +130,15 @@ async fn main() -> anyhow::Result<()> {
             // is migrated correctly on startup
             iceberg_catalog::implementations::postgres::migrate(&write_pool).await?;
             println!("Database migration complete.");
-            if !no_table_migration {
-                println!("Migrating old tables");
-                let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
-                iceberg_catalog::implementations::postgres::tabular::table::migrate_tables(
-                    catalog_state,
-                )
-                .await
-                .map_err(|e| e.error)?;
-                println!("Table migration complete.");
-            }
+
+            println!("Migrating old tables");
+            let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
+            iceberg_catalog::implementations::postgres::tabular::table::migration::migrate_tables(
+                catalog_state,
+            )
+            .await
+            .map_err(|e| e.error)?;
+            println!("Table migration complete.");
         }
         Some(Commands::Serve {}) => {
             print_info();

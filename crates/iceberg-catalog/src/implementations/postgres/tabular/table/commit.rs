@@ -1,5 +1,4 @@
 use crate::catalog::tables::Diffs;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::table::common::{
     expire_metadata_log_entries, remove_snapshot_log_entries,
 };
@@ -13,6 +12,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
 use itertools::Itertools;
 use sqlx::{Postgres, Transaction};
+use crate::implementations::postgres::dbutils::DBErrorHandler;
 
 pub(crate) async fn commit_table_transaction<'a>(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses
@@ -42,7 +42,7 @@ pub(crate) async fn commit_table_transaction<'a>(
         handle_atomic_updates(transaction, updates, meta, diffs).await?;
     }
 
-    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta)?;
+    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta);
 
     // futures::try_join didn't work due to concurrent mutable borrow of transaction
     let updated_meta = query_meta_update
@@ -67,10 +67,10 @@ pub(crate) async fn commit_table_transaction<'a>(
 fn build_queries(
     n_commits: usize,
     meta: Vec<(TableMetadata, Location)>,
-) -> api::Result<(
+) -> (
     sqlx::QueryBuilder<'static, Postgres>,
     sqlx::QueryBuilder<'static, Postgres>,
-)> {
+) {
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
@@ -132,7 +132,7 @@ fn build_queries(
     query_builder_table.push(" RETURNING t.table_id");
     query_builder_tabular.push(" RETURNING t.tabular_id");
 
-    Ok((query_builder_table, query_builder_tabular))
+    (query_builder_table, query_builder_tabular)
 }
 
 fn check_post_conditions(
