@@ -2323,7 +2323,7 @@ mod test {
         )
         .await
         .expect_err("Table was created at same location which should not be possible");
-        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
@@ -2388,7 +2388,7 @@ mod test {
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
-        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
