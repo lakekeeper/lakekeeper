@@ -809,6 +809,7 @@ impl From<&[TableUpdate]> for TableUpdates {
     }
 }
 
+// FIXME: delete after migration period is done
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
     let projects = list_projects(None, catalog_state.clone()).await?;
@@ -835,20 +836,10 @@ pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                     warehouse_id,
                     None,
                     None,
-                    ListFlags {
-                        include_active: true,
-                        include_deleted: true,
-                        include_staged: true,
-                    },
+                    ListFlags::all(),
                     &mut *transaction,
                     Some(TabularType::Table),
-                    PaginationQuery {
-                        page_token: match token {
-                            Some(token) => PageToken::Present(token),
-                            None => PageToken::NotSpecified,
-                        },
-                        page_size: Some(100),
-                    },
+                    PaginationQuery::new(token.into(), Some(100)),
                     None,
                 )
                 .await?;
@@ -856,15 +847,7 @@ pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                 let tabs = tabs.into_hashmap();
                 let ids = tabs
                     .keys()
-                    .map(|k| match *k {
-                        TabularIdentUuid::Table(t) => Ok(TableIdentUuid::from(t)),
-                        TabularIdentUuid::View(_) => Err(ErrorModel::internal(
-                            "DB returned a view when filtering for tables.",
-                            "InternalDatabaseError",
-                            None,
-                        )
-                        .into()),
-                    })
+                    .map(|k| k.try_into())
                     .collect::<Result<Vec<_>>>()?;
 
                 let tables = load_tables(warehouse_id, ids, true, &mut transaction, true).await?;
@@ -875,21 +858,17 @@ pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                     create_table(
                         TableCreation {
                             namespace_id: table.namespace_id,
-                            table_ident: match &tabs
+                            table_ident: &tabs
                                 .get(&TabularIdentUuid::Table(*table_id))
-                                .unwrap()
-                                .0
-                            {
-                                TabularIdentOwned::Table(t) => t,
-                                TabularIdentOwned::View(_) => {
-                                    return Err(ErrorModel::internal(
-                                        "DB returned a view when filtering for tables.",
-                                        "InternalDatabaseError",
-                                        None,
-                                    )
-                                    .into())
-                                }
-                            },
+                                .as_ref()
+                                .ok_or(ErrorModel::internal(
+                                    "Table not found in tabulars",
+                                    "InternalTableNotFound",
+                                    None,
+                                ))?
+                                .1
+                                .clone()
+                                .try_into(),
                             metadata_location: table.metadata_location.as_ref(),
                             table_metadata: table.table_metadata,
                         },
@@ -899,7 +878,6 @@ pub(crate) async fn migrate_tables(catalog_state: CatalogState) -> Result<()> {
                     let deletion_details =
                         &tabs.get(&TabularIdentUuid::Table(*table_id)).unwrap().1;
 
-                    // TODO: add a test for this
                     if let Some(del) = deletion_details {
                         mark_tabular_as_deleted(
                             TabularIdentUuid::Table(*table_id),
@@ -1063,9 +1041,7 @@ pub(crate) mod tests {
         };
         let table_id = Uuid::now_v7().into();
 
-        let table_metadata =
-            crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
-                .unwrap();
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
         let schema = table_metadata.current_schema_id();
         let table_metadata = table_metadata
             .into_builder(None)
@@ -1993,7 +1969,7 @@ pub(crate) mod tests {
         trx.commit().await.unwrap();
     }
 
-    #[sqlx::test(fixtures("test"))]
+    #[sqlx::test(fixtures("metadata_migration"))]
     async fn test_migrate_tables_with_old_tables(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2030,7 +2006,7 @@ pub(crate) mod tests {
         trx.commit().await.unwrap();
     }
 
-    #[sqlx::test(fixtures("test"))]
+    #[sqlx::test(fixtures("metadata_migration"))]
     async fn test_migrate_tables_with_old_and_new_tables(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -2085,6 +2061,74 @@ pub(crate) mod tests {
             let table = tables.get(&(js.uuid().into())).unwrap();
             pretty_assertions::assert_eq!(table.table_metadata, js);
         }
+
+        for ((warehouse_id, _, tid), metadata) in old_tables {
+            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx, false)
+                .await
+                .unwrap();
+
+            let table = tables.get(&(tid.into())).unwrap();
+            pretty_assertions::assert_eq!(table.table_metadata, metadata);
+        }
+
+        trx.commit().await.unwrap();
+    }
+
+    #[sqlx::test(fixtures("deleted_metadata_migration"))]
+    async fn test_migrate_deleted_table(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let old_tables: HashMap<_, TableMetadata> =
+            sqlx::query!(r#"select w.warehouse_id, n.namespace_id, table_id, metadata from "table" t JOIN tabular ta on ta.tabular_id = t.table_id join namespace n on n.namespace_id = ta.namespace_id join warehouse w on n.warehouse_id = w.warehouse_id"#)
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|t| {
+                    let table_id = t.table_id;
+                    let metadata = serde_json::from_value(t.metadata).unwrap();
+                    ((t.warehouse_id,t.namespace_id, table_id), metadata)
+                })
+                .collect::<HashMap<_, _>>();
+
+        let (whid, nsid, tid) = old_tables.keys().next().unwrap();
+        let tab = TabularIdentUuid::Table(*tid);
+
+        let tabs_before = list_tabulars(
+            (*whid).into(),
+            None,
+            Some((*nsid).into()),
+            ListFlags::only_deleted(),
+            &pool,
+            None,
+            PaginationQuery::empty(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        migrate_tables(state.clone()).await.unwrap();
+
+        let mut trx = pool.begin().await.unwrap();
+        let tabs = list_tabulars(
+            (*whid).into(),
+            None,
+            Some((*nsid).into()),
+            ListFlags::only_deleted(),
+            &pool,
+            None,
+            PaginationQuery::empty(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(tabs.len(), tabs_before.len());
+        let t = tabs.get(&tab).unwrap().1.unwrap();
+        let t2 = tabs_before.get(&tab).unwrap().1.unwrap();
+        assert_eq!(t.expiration_task_id, t2.expiration_task_id);
+        assert_eq!(t.expiration_date, t2.expiration_date);
+        assert_eq!(t.deleted_at, t2.deleted_at);
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
             let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx, false)

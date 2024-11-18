@@ -690,7 +690,7 @@ pub struct ViewMetadataWithLocation {
     pub metadata: ViewMetadata,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeletionDetails {
     pub expiration_task_id: uuid::Uuid,
     pub expiration_date: chrono::DateTime<chrono::Utc>,
