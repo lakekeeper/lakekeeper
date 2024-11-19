@@ -53,6 +53,22 @@ jobs:
               AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
               AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
               AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
+          - name: Dump DB
+            if: always()
+            uses: tj-actions/pg-dump@v3
+            with:
+              database_url: "postgresql://postgres:postgres@localhost:31102/postgres"
+              postgresql_version: "16"
+              path: dump.sql
+          - name: compress
+            if: always()
+            run: cat dump.sql | gzip -9 > dump.sql.gz
+          - name: Upload dump
+            if: always()
+            uses: actions/upload-artifact@v4
+            with:
+              name: db-dump.sql.gz
+              path: dump.sql.gz
           - name: Dump docker logs on failure
             if: failure()
             uses: jwalton/gh-docker-logs@v2

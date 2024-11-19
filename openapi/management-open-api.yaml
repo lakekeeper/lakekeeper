@@ -1,8 +1,7 @@
 openapi: 3.0.3
 info:
-  title: iceberg-catalog
-  description: |
-    Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
+  title: Lakekeeper Management API
+  description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage users, roles, projects, and warehouses.
   license:
     name: Apache-2.0
   version: 0.4.3

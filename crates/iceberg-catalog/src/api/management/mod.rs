@@ -53,6 +53,10 @@ pub mod v1 {
 
     #[derive(Debug, OpenApi)]
     #[openapi(
+        info(
+            title = "Lakekeeper Management API",
+            description = "Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage users, roles, projects, and warehouses.",
+        ),
         tags(
             (name = "server", description = "Manage Server"),
             (name = "project", description = "Manage Projects"),
