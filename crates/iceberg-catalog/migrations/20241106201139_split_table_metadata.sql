@@ -32,7 +32,7 @@ CREATE TRIGGER before_insert_check_metadata
     BEFORE INSERT OR UPDATE
     ON "table"
     FOR EACH ROW
-EXECUTE FUNCTION check_metadata_not_null();
+EXECUTE FUNCTION prohibit_updates_of_metadata_blob();
 
 alter table "view"
     drop constraint "tabular_ident_fk",
