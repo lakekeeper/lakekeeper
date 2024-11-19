@@ -16,7 +16,7 @@ alter table tabular
     add column table_migrated boolean not null default false;
 
 -- Create the function
-CREATE OR REPLACE FUNCTION check_metadata_not_null()
+CREATE OR REPLACE FUNCTION prohibit_updates_of_metadata_blob()
     RETURNS TRIGGER AS
 $$
 BEGIN
