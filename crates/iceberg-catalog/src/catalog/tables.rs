@@ -1188,9 +1188,9 @@ pub(crate) fn extract_count_from_metadata_location(location: Location) -> Result
     ))?;
     usize::from_str(front).map_err(|e| {
         ErrorModel::internal(
-            format!("Failed to parse integer counter in filename: {}", e),
+            format!("Failed to parse integer counter in filename: {e}"),
             "InvalidTableFileName",
-            None,
+            Some(Box::new(e)),
         )
         .into()
     })
