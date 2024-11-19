@@ -1168,8 +1168,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     // Improve error message of role beeing assigned to itself
     for assignment in &request.writes {
         let assignee = match assignment {
-            RoleAssignment::Ownership(r) => r,
-            RoleAssignment::Assignee(r) => r,
+            RoleAssignment::Ownership(r) | RoleAssignment::Assignee(r) => r,
         };
         if assignee == &UserOrRole::Role(role_id.into_assignees()) {
             return Err(OpenFGAError::SelfAssignment(role_id.to_string()).into());
