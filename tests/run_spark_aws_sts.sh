@@ -10,4 +10,4 @@ setup_python
 # Running tests
 echo "Running tests ..."
 cd python
-tox -qe spark_aws_remote_signing,spark_aws_sts
+tox -qe spark_aws_sts
