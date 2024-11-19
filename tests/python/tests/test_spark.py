@@ -262,6 +262,8 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
         ]
         if "endpoint" in storage_config["storage-profile"]:
             properties["s3.endpoint"] = storage_config["storage-profile"]["endpoint"]
+        if "region" in storage_config["storage-profile"]:
+            properties["s3.region"] = storage_config["storage-profile"]["region"]
     else:
         properties = table_0.io.properties
 
