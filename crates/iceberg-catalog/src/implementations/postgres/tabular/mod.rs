@@ -280,7 +280,7 @@ pub(crate) async fn create_tabular<'a>(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| {
-        tracing::warn!("Error creating new {typ}: {e}");
+        tracing::warn!(?e, "Error creating new {typ}");
         e.into_error_model(format!("Error creating {typ}"))
     })?;
 
@@ -302,7 +302,7 @@ pub(crate) async fn create_tabular<'a>(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| {
-        tracing::warn!("Error checking for conflicting locations: {e}");
+        tracing::warn!(?e, "Error checking for conflicting locations");
         e.into_error_model("Error checking for conflicting locations".to_string())
     })?;
 

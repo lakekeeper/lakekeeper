@@ -47,7 +47,7 @@ pub(crate) async fn create_table(
     insert_table(&table_metadata, transaction, tabular_id).await?;
 
     common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
-    common::insert_current_schema(&table_metadata, transaction, tabular_id).await?;
+    common::set_current_schema(table_metadata.current_schema_id(), transaction, tabular_id).await?;
 
     common::insert_partition_specs(
         table_metadata.partition_specs_iter(),
@@ -55,10 +55,10 @@ pub(crate) async fn create_table(
         tabular_id,
     )
     .await?;
-    common::insert_default_partition_spec(
+    common::set_default_partition_spec(
         transaction,
         tabular_id,
-        table_metadata.default_partition_spec(),
+        table_metadata.default_partition_spec().spec_id(),
     )
     .await?;
 
@@ -67,7 +67,12 @@ pub(crate) async fn create_table(
     common::insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
 
     common::insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
-    common::insert_default_sort_order(&table_metadata, transaction).await?;
+    common::set_default_sort_order(
+        table_metadata.default_sort_order_id(),
+        transaction,
+        tabular_id,
+    )
+    .await?;
 
     common::set_table_properties(tabular_id, table_metadata.properties(), transaction).await?;
 

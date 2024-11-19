@@ -1080,7 +1080,7 @@ fn calculate_diffs(
     previous_metadata: &TableMetadata,
     added_metadata_log: usize,
     expired_metadata_logs: usize,
-) -> Diffs {
+) -> TableMetadataDiffs {
     let new_snaps = new_metadata
         .snapshots()
         .map(|s| s.snapshot_id())
@@ -1106,7 +1106,6 @@ fn calculate_diffs(
         .schemas_iter()
         .map(|s| s.schema_id())
         .collect::<FxHashSet<SchemaId>>();
-
     let removed_schemas = old_schemas
         .difference(&new_schemas)
         .copied()
@@ -1115,6 +1114,9 @@ fn calculate_diffs(
         .difference(&old_schemas)
         .copied()
         .collect::<Vec<SchemaId>>();
+    let new_current_schema_id = (previous_metadata.current_schema_id()
+        != new_metadata.current_schema_id())
+    .then_some(new_metadata.current_schema_id());
 
     let old_specs = previous_metadata
         .partition_specs_iter()
@@ -1124,7 +1126,6 @@ fn calculate_diffs(
         .partition_specs_iter()
         .map(|s| s.spec_id())
         .collect::<FxHashSet<i32>>();
-
     let removed_specs = old_specs
         .difference(&new_specs)
         .copied()
@@ -1133,6 +1134,9 @@ fn calculate_diffs(
         .difference(&old_specs)
         .copied()
         .collect::<Vec<i32>>();
+    let default_partition_spec_id = (previous_metadata.default_partition_spec_id()
+        != new_metadata.default_partition_spec_id())
+    .then_some(new_metadata.default_partition_spec_id());
 
     let old_sort_orders = previous_metadata
         .sort_orders_iter()
@@ -1142,7 +1146,6 @@ fn calculate_diffs(
         .sort_orders_iter()
         .map(|s| s.order_id)
         .collect::<FxHashSet<i64>>();
-
     let removed_sort_orders = old_sort_orders
         .difference(&new_sort_orders)
         .copied()
@@ -1151,6 +1154,9 @@ fn calculate_diffs(
         .difference(&old_sort_orders)
         .copied()
         .collect::<Vec<i64>>();
+    let default_sort_order_id = (previous_metadata.default_sort_order_id()
+        != new_metadata.default_sort_order_id())
+    .then_some(new_metadata.default_sort_order_id());
 
     let head_of_snapshot_log_changed =
         previous_metadata.history().last() != new_metadata.history().last();
@@ -1162,15 +1168,18 @@ fn calculate_diffs(
             .saturating_sub(usize::from(head_of_snapshot_log_changed)),
     );
 
-    Diffs {
+    TableMetadataDiffs {
         removed_snapshots: removed_snaps,
         added_snapshots,
         removed_schemas,
         added_schemas,
+        new_current_schema_id,
         removed_partition_specs: removed_specs,
         added_partition_specs,
+        default_partition_spec_id,
         removed_sort_orders,
         added_sort_orders,
+        default_sort_order_id,
         head_of_snapshot_log_changed,
         n_removed_snapshot_log,
         expired_metadata_logs,
@@ -1179,15 +1188,18 @@ fn calculate_diffs(
 }
 
 #[derive(Debug, Clone)]
-pub struct Diffs {
+pub(crate) struct TableMetadataDiffs {
     pub(crate) removed_snapshots: Vec<i64>,
     pub(crate) added_snapshots: Vec<i64>,
     pub(crate) removed_schemas: Vec<i32>,
     pub(crate) added_schemas: Vec<i32>,
+    pub(crate) new_current_schema_id: Option<i32>,
     pub(crate) removed_partition_specs: Vec<i32>,
     pub(crate) added_partition_specs: Vec<i32>,
+    pub(crate) default_partition_spec_id: Option<i32>,
     pub(crate) removed_sort_orders: Vec<i64>,
     pub(crate) added_sort_orders: Vec<i64>,
+    pub(crate) default_sort_order_id: Option<i64>,
     pub(crate) head_of_snapshot_log_changed: bool,
     pub(crate) n_removed_snapshot_log: usize,
     pub(crate) expired_metadata_logs: usize,
