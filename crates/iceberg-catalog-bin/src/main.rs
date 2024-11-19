@@ -53,7 +53,15 @@ enum Commands {
         backoff: u64,
     },
     /// Run the server - The database must be migrated before running the server
-    Serve {},
+    Serve {
+        #[clap(
+            default_value = "true",
+            short = 'f',
+            long = "force-start",
+            help = "Start server even if DB is not up or migrations aren't complete."
+        )]
+        force_start: bool,
+    },
     /// Check the health of the server
     Healthcheck {
         #[clap(
@@ -130,10 +138,13 @@ async fn main() -> anyhow::Result<()> {
             iceberg_catalog::implementations::postgres::migrate(&write_pool).await?;
             println!("Database migration complete.");
         }
-        Some(Commands::Serve {}) => {
+        Some(Commands::Serve { force_start }) => {
             print_info();
             tracing::info!("Starting server on 0.0.0.0:{}...", CONFIG.listen_port);
             let bind_addr = std::net::SocketAddr::from(([0, 0, 0, 0], CONFIG.listen_port));
+            if !force_start {
+                wait_for_db::wait_for_db(true, 0, 0, true).await?;
+            }
             serve::serve(bind_addr).await?;
         }
         Some(Commands::Healthcheck {
