@@ -1,8 +1,8 @@
 use crate::api;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use iceberg::spec::{
-    BoundPartitionSpecRef, MetadataLog, SchemaRef, SchemalessPartitionSpecRef, SnapshotLog,
-    SnapshotRef, SortOrderRef, TableMetadata,
+    MetadataLog, SchemaRef, SchemalessPartitionSpecRef, SnapshotLog, SnapshotRef, SortOrderRef,
+    TableMetadata,
 };
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::{PgConnection, Postgres, Transaction};
@@ -69,16 +69,17 @@ pub(super) async fn insert_schemas(
     Ok(())
 }
 
-pub(super) async fn insert_current_schema(
-    table_metadata: &TableMetadata,
+pub(super) async fn set_current_schema(
+    new_schema_id: i32,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
         r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)
-           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id"#,
+           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id
+        "#,
         tabular_id,
-        table_metadata.current_schema_id()
+        new_schema_id
     )
     .execute(&mut **transaction)
     .await
@@ -145,16 +146,16 @@ pub(crate) async fn insert_partition_specs(
     Ok(())
 }
 
-pub(crate) async fn insert_default_partition_spec(
+pub(crate) async fn set_default_partition_spec(
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
-    default_spec: &BoundPartitionSpecRef,
+    default_spec_id: i32,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
         r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id)
            VALUES ($1, $2)
            ON CONFLICT (table_id) DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
-        default_spec.spec_id(),
+        default_spec_id,
         tabular_id,
     )
     .execute(&mut **transaction)
@@ -223,16 +224,17 @@ pub(crate) async fn insert_sort_orders(
     Ok(())
 }
 
-pub(crate) async fn insert_default_sort_order(
-    table_metadata: &TableMetadata,
+pub(crate) async fn set_default_sort_order(
+    default_sort_order_id: i64,
     transaction: &mut Transaction<'_, Postgres>,
+    tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
         r#"INSERT INTO table_default_sort_order(table_id, sort_order_id)
            VALUES ($1, $2)
            ON CONFLICT (table_id) DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
-        table_metadata.uuid(),
-        table_metadata.default_sort_order_id(),
+        tabular_id,
+        default_sort_order_id,
     )
     .execute(&mut **transaction)
     .await

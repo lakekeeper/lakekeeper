@@ -1,4 +1,4 @@
-use crate::catalog::tables::Diffs;
+use crate::catalog::tables::TableMetadataDiffs;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::table::common::{
     expire_metadata_log_entries, remove_snapshot_log_entries,
@@ -165,7 +165,7 @@ fn check_post_conditions(
 fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
     if commits.len() > (MAX_PARAMETERS / 4) {
         return Err(ErrorModel::bad_request(
-            "Too updates in single commit",
+            "Too many updates in single commit",
             "TooManyTablesForCommit".to_string(),
             None,
         )
@@ -179,7 +179,7 @@ async fn handle_atomic_updates(
     transaction: &mut Transaction<'_, Postgres>,
     table_updates: TableUpdates,
     new_metadata: &TableMetadata,
-    diffs: Diffs,
+    diffs: TableMetadataDiffs,
 ) -> api::Result<()> {
     let TableUpdates {
         snapshot_refs,
@@ -202,7 +202,9 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    common::insert_current_schema(new_metadata, transaction, new_metadata.uuid()).await?;
+    if let Some(schema_id) = diffs.new_current_schema_id {
+        common::set_current_schema(schema_id, transaction, new_metadata.uuid()).await?;
+    }
 
     if !diffs.removed_partition_specs.is_empty() {
         common::remove_partition_specs(
@@ -227,12 +229,10 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    common::insert_default_partition_spec(
-        transaction,
-        new_metadata.uuid(),
-        new_metadata.default_partition_spec(),
-    )
-    .await?;
+    if let Some(default_spec_id) = diffs.default_partition_spec_id {
+        common::set_default_partition_spec(transaction, new_metadata.uuid(), default_spec_id)
+            .await?;
+    }
 
     if !diffs.removed_sort_orders.is_empty() {
         common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
@@ -253,7 +253,10 @@ async fn handle_atomic_updates(
         .await?;
     }
 
-    common::insert_default_sort_order(new_metadata, transaction).await?;
+    if let Some(default_sort_order_id) = diffs.default_sort_order_id {
+        common::set_default_sort_order(default_sort_order_id, transaction, new_metadata.uuid())
+            .await?;
+    }
 
     if !diffs.removed_snapshots.is_empty() {
         common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
