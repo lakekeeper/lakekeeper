@@ -5,7 +5,7 @@ use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, UserId, ViewIde
 use crate::{ProjectIdent, WarehouseIdent};
 use std::str::FromStr;
 
-use super::RoleAssignees;
+use super::RoleAssignee;
 
 pub(super) trait ParseOpenFgaEntity: Sized {
     fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {
@@ -40,7 +40,7 @@ impl OpenFgaEntity for RoleId {
     }
 }
 
-impl OpenFgaEntity for RoleAssignees {
+impl OpenFgaEntity for RoleAssignee {
     fn to_openfga(&self) -> String {
         format!("{}#assignee", self.role().to_openfga())
     }
@@ -64,7 +64,7 @@ impl ParseOpenFgaEntity for RoleId {
     }
 }
 
-impl ParseOpenFgaEntity for RoleAssignees {
+impl ParseOpenFgaEntity for RoleAssignee {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
         if r#type != FgaType::Role {
             return Err(OpenFGAError::unexpected_entity(
@@ -82,7 +82,7 @@ impl ParseOpenFgaEntity for RoleAssignees {
 
         let id = &id[..id.len() - "#assignee".len()];
 
-        Ok(RoleAssignees::from_role(id.parse().map_err(|_e| {
+        Ok(RoleAssignee::from_role(id.parse().map_err(|_e| {
             OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string())
         })?))
     }

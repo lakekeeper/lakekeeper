@@ -12,12 +12,12 @@ lazy_static::lazy_static! {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(crate) struct RoleAssignees(RoleId);
+pub(crate) struct RoleAssignee(RoleId);
 
-impl RoleAssignees {
+impl RoleAssignee {
     #[must_use]
     pub(crate) fn from_role(role: RoleId) -> Self {
-        RoleAssignees(role)
+        RoleAssignee(role)
     }
 
     #[must_use]
@@ -29,8 +29,8 @@ impl RoleAssignees {
 impl RoleId {
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn into_assignees(self) -> RoleAssignees {
-        RoleAssignees::from_role(self)
+    pub(crate) fn into_assignees(self) -> RoleAssignee {
+        RoleAssignee::from_role(self)
     }
 }
 
