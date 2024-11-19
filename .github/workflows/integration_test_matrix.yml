@@ -1,4 +1,4 @@
-name: IntegrationTestSpawner
+name: integration tests
 
 on:
   push:
@@ -40,13 +40,13 @@ jobs:
         with:
           name: iceberg-catalog-image
           path: /tmp/*.tar
-  test_matrix:
+  tests:
     needs: docker
     strategy:
       fail-fast: false
       matrix:
         names: [ openfga, pyiceberg, spark_adls, spark_aws, spark_gcs, spark_minio, starrocks, trino ]
-    uses: ./.github/workflows/integration_tests.yml
+    uses: ./.github/workflows/integration_test_workflow.yml
     with:
         test_name: ${{ matrix.names }}
     secrets: inherit

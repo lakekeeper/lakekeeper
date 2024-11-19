@@ -1,4 +1,4 @@
-name: Common
+name: integration test workflow
 
 on:
   workflow_call:
