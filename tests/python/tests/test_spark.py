@@ -249,7 +249,6 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
 
-    properties = table_0.properties
     if storage_config["storage-profile"]["type"] == "s3":
         # Gotta use the s3 creds here since the prefix no longer exists after deletion & at least minio will not allow
         # listing a location that doesn't exist with our downscoped cred

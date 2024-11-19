@@ -197,16 +197,19 @@ def io_fsspec(storage_config: dict):
     import fsspec
 
     if storage_config["storage-profile"]["type"] == "s3":
+        client_kwargs = {
+            "region_name": storage_config["storage-profile"]["region"],
+            "use_ssl": False,
+        }
+        if "endpoint" in storage_config["storage-profile"]:
+            client_kwargs["endpoint_url"] = storage_config["storage-profile"]["endpoint"]
+
         fs = fsspec.filesystem(
             "s3",
             anon=False,
             key=storage_config["storage-credential"]["aws-access-key-id"],
             secret=storage_config["storage-credential"]["aws-secret-access-key"],
-            client_kwargs={
-                "region_name": storage_config["storage-profile"]["region"],
-                "endpoint_url": storage_config["storage-profile"]["endpoint"],
-                "use_ssl": False,
-            },
+            client_kwargs=client_kwargs,
         )
 
         return fs
