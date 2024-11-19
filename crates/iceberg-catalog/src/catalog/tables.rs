@@ -186,6 +186,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &table_location,
                 &CompressionCodec::try_from_maybe_properties(request.properties.as_ref())?,
                 metadata_id,
+                0,
             ))
         };
 
@@ -535,6 +536,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &requirements,
             updates,
         )?;
+        let location = previous_table.metadata_location;
+        let next_metadata_count = if let Some(loc) = location {
+            extract_count_from_metadata_location(loc)? + 1
+        } else {
+            0
+        };
         let new_table_location =
             parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
         let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
@@ -542,7 +549,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &new_table_location,
             &new_compression_codec,
             uuid::Uuid::now_v7(),
+            next_metadata_count,
         );
+
         let commit = TableCommit {
             new_metadata,
             new_metadata_location,
@@ -1029,6 +1038,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     require_table_id(&table_ident, table_ids.get(&table_ident).copied())?;
                 let previous_table =
                     remove_table(&table_id, &table_ident, &mut previous_metadatas)?;
+
                 let TableMetadataBuildResult {
                     metadata: new_metadata,
                     changes: _,
@@ -1039,9 +1049,17 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     &change.requirements,
                     change.updates.clone(),
                 )?;
+
                 if get_delete_after_commit_enabled(new_metadata.properties()) {
                     expired_metadata_logs.extend(this_expired);
                 }
+
+                let next_metadata_count = if let Some(loc) = previous_table.metadata_location {
+                    extract_count_from_metadata_location(loc)? + 1
+                } else {
+                    0
+                };
+
                 let new_table_location =
                     parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
                 let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
@@ -1050,6 +1068,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         &new_table_location,
                         &new_compression_codec,
                         uuid::Uuid::now_v7(),
+                        next_metadata_count,
                     );
                 Ok(CommitContext {
                     new_metadata,
@@ -1147,6 +1166,34 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         Ok(())
     }
+}
+
+pub(crate) fn extract_count_from_metadata_location(location: Location) -> Result<usize> {
+    let last_segment = location.as_str().trim_end_matches('/').split('/').last();
+    let Some(last_segment) = last_segment else {
+        return Err(ErrorModel::internal(
+            "Invalid metadata location",
+            "InvalidMetadataLocation",
+            None,
+        )
+        .into());
+    };
+    if last_segment.len() == 36 {
+        return Ok(0);
+    };
+    let (front, _) = last_segment.split_once('-').ok_or(ErrorModel::internal(
+        "Table file name neither prepended with 5 digits nor a hypenated uuid",
+        "InvalidTableFileName",
+        None,
+    ))?;
+    usize::from_str(front).map_err(|e| {
+        ErrorModel::internal(
+            format!("Failed to parse integer counter in filename: {}", e),
+            "InvalidTableFileName",
+            None,
+        )
+        .into()
+    })
 }
 
 struct CommitContext {
