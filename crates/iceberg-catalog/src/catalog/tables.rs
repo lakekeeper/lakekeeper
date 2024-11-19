@@ -537,7 +537,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             updates,
         )?;
         let location = previous_table.metadata_location;
-        let next_metadata_count = if let Some(loc) = location {
+        let next_metadata_count = if let Some(loc) = location.as_ref() {
             extract_count_from_metadata_location(loc)? + 1
         } else {
             0
@@ -1054,11 +1054,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     expired_metadata_logs.extend(this_expired);
                 }
 
-                let next_metadata_count = if let Some(loc) = previous_table.metadata_location {
-                    extract_count_from_metadata_location(loc)? + 1
-                } else {
-                    0
-                };
+                let next_metadata_count =
+                    if let Some(loc) = previous_table.metadata_location.as_ref() {
+                        extract_count_from_metadata_location(loc)? + 1
+                    } else {
+                        0
+                    };
 
                 let new_table_location =
                     parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1168,7 +1169,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-pub(crate) fn extract_count_from_metadata_location(location: Location) -> Result<usize> {
+pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Result<usize> {
     let last_segment = location.as_str().trim_end_matches('/').split('/').last();
     let Some(last_segment) = last_segment else {
         return Err(ErrorModel::internal(
