@@ -2643,10 +2643,10 @@ components:
       - type: object
         title: TabularDeleteProfileSoft
         required:
-        - expiration_seconds
+        - expiration-seconds
         - type
         properties:
-          expiration_seconds:
+          expiration-seconds:
             type: integer
             format: int32
           type:

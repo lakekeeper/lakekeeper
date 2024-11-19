@@ -342,8 +342,12 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         let compression_codec = CompressionCodec::Gzip;
 
-        let mut test_file_write =
-            self.default_metadata_location(test_location, &compression_codec, uuid::Uuid::now_v7());
+        let mut test_file_write = self.default_metadata_location(
+            test_location,
+            &compression_codec,
+            uuid::Uuid::now_v7(),
+            0,
+        );
         if is_vended_credentials {
             let f = test_file_write
                 .url()
@@ -454,9 +458,12 @@ pub trait StorageLocations {
         table_location: &Location,
         compression_codec: &CompressionCodec,
         metadata_id: uuid::Uuid,
+        metadata_count: usize,
     ) -> Location {
         let filename_extension_compression = compression_codec.as_file_extension();
-        let filename = format!("{metadata_id}{filename_extension_compression}.metadata.json",);
+        let filename = format!(
+            "{metadata_count:05}-{metadata_id}{filename_extension_compression}.metadata.json",
+        );
         let mut l = table_location.clone();
 
         l.without_trailing_slash().extend(&["metadata", &filename]);

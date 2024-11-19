@@ -20,7 +20,7 @@ use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
     Transaction,
 };
-use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
+use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -79,10 +79,12 @@ pub enum TabularDeleteProfile {
     #[schema(title = "TabularDeleteProfileHard")]
     Hard {},
     #[schema(title = "TabularDeleteProfileSoft")]
+    #[serde(rename_all = "kebab-case")]
     Soft {
         #[serde(
             deserialize_with = "seconds_to_duration",
-            serialize_with = "duration_to_seconds"
+            serialize_with = "duration_to_seconds",
+            alias = "expiration_seconds"
         )]
         #[schema(value_type=i32)]
         expiration_seconds: chrono::Duration,
@@ -116,9 +118,7 @@ impl TabularDeleteProfile {
 
 impl Default for TabularDeleteProfile {
     fn default() -> Self {
-        Self::Soft {
-            expiration_seconds: CONFIG.default_tabular_expiration_delay_seconds,
-        }
+        Self::Hard {}
     }
 }
 

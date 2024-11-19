@@ -948,6 +948,12 @@ impl OpenFGAAuthorizer {
     }
 
     async fn delete_own_relations(&self, object: &impl OpenFgaEntity) -> Result<()> {
+        self.delete_own_relations_inner(object).await?;
+        // OpenFGA does not guarantee transactional consistency, by running a second delete, we have a higher chance of deleting all relations.
+        self.delete_own_relations_inner(object).await
+    }
+
+    async fn delete_own_relations_inner(&self, object: &impl OpenFgaEntity) -> Result<()> {
         let fga_object = object.to_openfga();
 
         let read_stream: AsyncStream<_, _> = stream! {

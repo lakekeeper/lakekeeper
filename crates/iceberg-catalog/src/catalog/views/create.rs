@@ -92,6 +92,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         &view_location,
         &CompressionCodec::try_from_properties(&request.properties)?,
         *view_id,
+        0,
     );
 
     // serialize body before moving it

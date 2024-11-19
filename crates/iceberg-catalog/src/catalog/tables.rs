@@ -186,6 +186,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &table_location,
                 &CompressionCodec::try_from_maybe_properties(request.properties.as_ref())?,
                 metadata_id,
+                0,
             ))
         };
 
@@ -535,6 +536,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &requirements,
             updates,
         )?;
+        let location = previous_table.metadata_location;
+        let next_metadata_count = location
+            .as_ref()
+            .and_then(extract_count_from_metadata_location)
+            .map_or(0, |v| v + 1);
         let new_table_location =
             parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
         let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
@@ -542,7 +548,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &new_table_location,
             &new_compression_codec,
             uuid::Uuid::now_v7(),
+            next_metadata_count,
         );
+
         let commit = TableCommit {
             new_metadata,
             new_metadata_location,
@@ -1029,6 +1037,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     require_table_id(&table_ident, table_ids.get(&table_ident).copied())?;
                 let previous_table =
                     remove_table(&table_id, &table_ident, &mut previous_metadatas)?;
+
                 let TableMetadataBuildResult {
                     metadata: new_metadata,
                     changes: _,
@@ -1039,9 +1048,17 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     &change.requirements,
                     change.updates.clone(),
                 )?;
+
                 if get_delete_after_commit_enabled(new_metadata.properties()) {
                     expired_metadata_logs.extend(this_expired);
                 }
+
+                let next_metadata_count = previous_table
+                    .metadata_location
+                    .as_ref()
+                    .and_then(extract_count_from_metadata_location)
+                    .map_or(0, |v| v + 1);
+
                 let new_table_location =
                     parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
                 let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
@@ -1050,6 +1067,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         &new_table_location,
                         &new_compression_codec,
                         uuid::Uuid::now_v7(),
+                        next_metadata_count,
                     );
                 Ok(CommitContext {
                     new_metadata,
@@ -1146,6 +1164,24 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         }
 
         Ok(())
+    }
+}
+
+pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
+    let last_segment = location
+        .as_str()
+        .trim_end_matches('/')
+        .split('/')
+        .last()
+        .unwrap_or(location.as_str());
+
+    if let Some((_whole, version, _metadata_id)) = lazy_regex::regex_captures!(
+        r"^(\d+)-([\w-]{36})(?:\.\w+)?\.metadata\.json",
+        last_segment
+    ) {
+        version.parse().ok()
+    } else {
+        None
     }
 }
 
@@ -1433,8 +1469,51 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
 
 #[cfg(test)]
 mod test {
+    use iceberg_ext::configs::Location;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_extract_count_from_metadata_location() {
+        let location = Location::from_str("s3://path/to/table/metadata/00000-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json").unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 0);
+
+        let location = Location::from_str("s3://path/to/table/metadata/00010-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json").unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/1-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 1);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/10000010-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10_000_010);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/10000010-d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10_000_010);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location);
+        assert!(count.is_none());
+    }
+
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
     mod minio {
+
         use crate::api::iceberg::types::{PageToken, Prefix};
         use crate::api::iceberg::v1::tables::Service;
         use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
@@ -1474,6 +1553,7 @@ mod test {
                 properties: None,
             }
         }
+
         #[sqlx::test]
         async fn test_table_pagination(pool: sqlx::PgPool) {
             let (prof, cred) = crate::catalog::test::minio_profile();
