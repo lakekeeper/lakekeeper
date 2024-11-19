@@ -147,7 +147,7 @@ def storage_config(request) -> dict:
                 "sts-role-arn": AWS_S3_STS_ROLE_ARN if request.param["sts-enabled"] else None,
             },
             "storage-credential": {
-                "type": "aws",
+                "type": "s3",
                 "credential-type": "access-key",
                 "aws-access-key-id": AWS_S3_ACCESS_KEY,
                 "aws-secret-access-key": AWS_S3_SECRET_KEY,
