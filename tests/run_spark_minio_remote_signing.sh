@@ -9,4 +9,4 @@ setup_python
 # Running tests
 echo "Running tests ..."
 cd python
-tox -qe spark_minio_remote_signing,spark_minio_sts
+tox -qe spark_minio_remote_signing
