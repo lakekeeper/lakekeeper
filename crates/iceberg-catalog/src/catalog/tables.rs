@@ -1106,7 +1106,6 @@ fn calculate_diffs(
         .schemas_iter()
         .map(|s| s.schema_id())
         .collect::<FxHashSet<SchemaId>>();
-
     let removed_schemas = old_schemas
         .difference(&new_schemas)
         .copied()
@@ -1115,13 +1114,9 @@ fn calculate_diffs(
         .difference(&old_schemas)
         .copied()
         .collect::<Vec<SchemaId>>();
-
-    let new_current_schema_id =
-        if previous_metadata.current_schema_id() != new_metadata.current_schema_id() {
-            Some(new_metadata.current_schema_id())
-        } else {
-            None
-        };
+    let new_current_schema_id = (previous_metadata.current_schema_id()
+        != new_metadata.current_schema_id())
+    .then_some(new_metadata.current_schema_id());
 
     let old_specs = previous_metadata
         .partition_specs_iter()
@@ -1131,7 +1126,6 @@ fn calculate_diffs(
         .partition_specs_iter()
         .map(|s| s.spec_id())
         .collect::<FxHashSet<i32>>();
-
     let removed_specs = old_specs
         .difference(&new_specs)
         .copied()
@@ -1140,14 +1134,9 @@ fn calculate_diffs(
         .difference(&old_specs)
         .copied()
         .collect::<Vec<i32>>();
-
-    let default_partition_spec_id = if previous_metadata.default_partition_spec_id()
-        != new_metadata.default_partition_spec_id()
-    {
-        Some(new_metadata.default_partition_spec_id())
-    } else {
-        None
-    };
+    let default_partition_spec_id = (previous_metadata.default_partition_spec_id()
+        != new_metadata.default_partition_spec_id())
+    .then_some(new_metadata.default_partition_spec_id());
 
     let old_sort_orders = previous_metadata
         .sort_orders_iter()
@@ -1157,7 +1146,6 @@ fn calculate_diffs(
         .sort_orders_iter()
         .map(|s| s.order_id)
         .collect::<FxHashSet<i64>>();
-
     let removed_sort_orders = old_sort_orders
         .difference(&new_sort_orders)
         .copied()
@@ -1166,12 +1154,9 @@ fn calculate_diffs(
         .difference(&old_sort_orders)
         .copied()
         .collect::<Vec<i64>>();
-    let default_sort_order_id =
-        if previous_metadata.default_sort_order_id() != new_metadata.default_sort_order_id() {
-            Some(new_metadata.default_sort_order_id())
-        } else {
-            None
-        };
+    let default_sort_order_id = (previous_metadata.default_sort_order_id()
+        != new_metadata.default_sort_order_id())
+    .then_some(new_metadata.default_sort_order_id());
 
     let head_of_snapshot_log_changed =
         previous_metadata.history().last() != new_metadata.history().last();

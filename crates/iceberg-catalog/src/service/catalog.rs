@@ -132,7 +132,7 @@ pub struct TableCommit {
     pub new_metadata: TableMetadata,
     pub new_metadata_location: Location,
     pub updates: Vec<TableUpdate>,
-    pub diffs: TableMetadataDiffs,
+    pub(crate) diffs: TableMetadataDiffs,
 }
 
 #[derive(Debug, Clone)]
