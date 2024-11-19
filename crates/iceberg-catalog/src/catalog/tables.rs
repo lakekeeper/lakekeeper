@@ -537,11 +537,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             updates,
         )?;
         let location = previous_table.metadata_location;
-        let next_metadata_count = if let Some(loc) = location.as_ref() {
-            extract_count_from_metadata_location(loc)? + 1
-        } else {
-            0
-        };
+        let next_metadata_count = location
+            .as_ref()
+            .and_then(extract_count_from_metadata_location)
+            .map_or(0, |v| v + 1);
         let new_table_location =
             parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
         let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
@@ -1054,12 +1053,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     expired_metadata_logs.extend(this_expired);
                 }
 
-                let next_metadata_count =
-                    if let Some(loc) = previous_table.metadata_location.as_ref() {
-                        extract_count_from_metadata_location(loc)? + 1
-                    } else {
-                        0
-                    };
+                let next_metadata_count = previous_table
+                    .metadata_location
+                    .as_ref()
+                    .and_then(extract_count_from_metadata_location)
+                    .map_or(0, |v| v + 1);
 
                 let new_table_location =
                     parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -1169,32 +1167,22 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Result<usize> {
-    let last_segment = location.as_str().trim_end_matches('/').split('/').last();
-    let Some(last_segment) = last_segment else {
-        return Err(ErrorModel::internal(
-            "Invalid metadata location",
-            "InvalidMetadataLocation",
-            None,
-        )
-        .into());
-    };
-    if last_segment.len() == 36 {
-        return Ok(0);
-    };
-    let (front, _) = last_segment.split_once('-').ok_or(ErrorModel::internal(
-        "Table file name neither prepended with 5 digits nor a hypenated uuid",
-        "InvalidTableFileName",
-        None,
-    ))?;
-    usize::from_str(front).map_err(|e| {
-        ErrorModel::internal(
-            format!("Failed to parse integer counter in filename: {e}"),
-            "InvalidTableFileName",
-            Some(Box::new(e)),
-        )
-        .into()
-    })
+pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
+    let last_segment = location
+        .as_str()
+        .trim_end_matches('/')
+        .split('/')
+        .last()
+        .unwrap_or(location.as_str());
+
+    if let Some((_whole, version, _metadata_id)) = lazy_regex::regex_captures!(
+        r"^(\d+)-([\w-]{36})(?:\.\w+)?\.metadata\.json",
+        last_segment
+    ) {
+        version.parse().ok()
+    } else {
+        None
+    }
 }
 
 struct CommitContext {
@@ -1481,8 +1469,51 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
 
 #[cfg(test)]
 mod test {
+    use iceberg_ext::configs::Location;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_extract_count_from_metadata_location() {
+        let location = Location::from_str("s3://path/to/table/metadata/00000-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json").unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 0);
+
+        let location = Location::from_str("s3://path/to/table/metadata/00010-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json").unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/1-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 1);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/10000010-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10_000_010);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/10000010-d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10_000_010);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
+        )
+        .unwrap();
+        let count = super::extract_count_from_metadata_location(&location);
+        assert!(count.is_none());
+    }
+
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
     mod minio {
+
         use crate::api::iceberg::types::{PageToken, Prefix};
         use crate::api::iceberg::v1::tables::Service;
         use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
@@ -1522,6 +1553,7 @@ mod test {
                 properties: None,
             }
         }
+
         #[sqlx::test]
         async fn test_table_pagination(pool: sqlx::PgPool) {
             let (prof, cred) = crate::catalog::test::minio_profile();

@@ -116,7 +116,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         &view_location,
         &CompressionCodec::try_from_properties(requested_update_metadata.properties())?,
         Uuid::now_v7(),
-        extract_count_from_metadata_location(&before_update_metadata_location)? + 1,
+        extract_count_from_metadata_location(&before_update_metadata_location).map_or(0, |v| v + 1),
     );
 
     C::update_view_metadata(
