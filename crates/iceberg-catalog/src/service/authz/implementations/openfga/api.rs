@@ -1165,6 +1165,16 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateRoleAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    // Improve error message of role beeing assigned to itself
+    for assignment in &request.writes {
+        let assignee = match assignment {
+            RoleAssignment::Ownership(r) => r,
+            RoleAssignment::Assignee(r) => r,
+        };
+        if assignee == &UserOrRole::Role(role_id.into_assignees()) {
+            return Err(OpenFGAError::SelfAssignment(role_id.to_string()).into());
+        }
+    }
     checked_write(
         authorizer,
         metadata.actor(),
@@ -1572,6 +1582,37 @@ mod tests {
         use crate::service::authz::implementations::openfga::migration::tests::authorizer_for_empty_store;
         use crate::service::UserId;
         use openfga_rs::TupleKey;
+
+        #[tokio::test]
+        async fn test_cannot_assign_role_to_itself() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let role_id = RoleId::new(uuid::Uuid::nil());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id.to_openfga(),
+                        relation: RoleRelation::Ownership.to_openfga().to_string(),
+                        object: role_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let result = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id.clone()),
+                vec![RoleAssignment::Assignee(role_id.into())],
+                vec![],
+                &role_id.to_openfga(),
+            )
+            .await;
+            result.unwrap_err();
+        }
 
         #[tokio::test]
         async fn test_get_relations() {

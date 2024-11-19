@@ -27,7 +27,6 @@ impl RoleAssignee {
 }
 
 impl RoleId {
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn into_assignees(self) -> RoleAssignee {
         RoleAssignee::from_role(self)

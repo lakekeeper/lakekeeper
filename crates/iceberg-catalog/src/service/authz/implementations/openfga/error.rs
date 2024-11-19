@@ -76,6 +76,8 @@ pub enum OpenFGAError {
         relation: String,
         object: String,
     },
+    #[error("Cannot assign {0} to itself")]
+    SelfAssignment(String),
 }
 
 impl OpenFGAError {
