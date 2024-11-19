@@ -21,7 +21,7 @@ CREATE OR REPLACE FUNCTION prohibit_updates_of_metadata_blob()
 $$
 BEGIN
     IF NEW.metadata IS NOT NULL THEN
-        RAISE EXCEPTION 'Insert failed: metadata must be null';
+        RAISE EXCEPTION 'Insert or Update failed: metadata must be null';
     END IF;
     RETURN NEW;
 END;
