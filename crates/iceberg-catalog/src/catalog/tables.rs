@@ -1607,7 +1607,7 @@ mod test {
         let location = Location::from_str(
             "s3://path/to/table/metadata/1-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
         )
-            .unwrap();
+        .unwrap();
         let count = super::extract_count_from_metadata_location(&location).unwrap();
         assert_eq!(count, 1);
 
@@ -1628,11 +1628,10 @@ mod test {
         let location = Location::from_str(
             "s3://path/to/table/metadata/d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
         )
-            .unwrap();
+        .unwrap();
         let count = super::extract_count_from_metadata_location(&location);
         assert!(count.is_none());
     }
-
 
     fn create_request(table_name: Option<String>) -> CreateTableRequest {
         CreateTableRequest {
