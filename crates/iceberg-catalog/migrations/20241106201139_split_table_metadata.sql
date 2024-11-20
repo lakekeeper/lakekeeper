@@ -9,8 +9,30 @@ alter table "table"
     add column last_updated_ms      bigint,
     add column last_partition_id    int,
     drop constraint "tabular_ident_fk",
-    add constraint "tabular_ident_fk" foreign key (table_id) references tabular (tabular_id) on delete cascade
-;
+    add constraint "tabular_ident_fk" foreign key (table_id) references tabular (tabular_id) on delete cascade,
+    alter column metadata drop not null;
+
+alter table tabular
+    add column table_migrated boolean not null default false;
+
+-- Create the function
+CREATE OR REPLACE FUNCTION prohibit_updates_of_metadata_blob()
+    RETURNS TRIGGER AS
+$$
+BEGIN
+    IF NEW.metadata IS NOT NULL THEN
+        RAISE EXCEPTION 'Insert or Update failed: metadata must be null';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger
+CREATE TRIGGER before_insert_check_metadata
+    BEFORE INSERT OR UPDATE
+    ON "table"
+    FOR EACH ROW
+EXECUTE FUNCTION prohibit_updates_of_metadata_blob();
 
 alter table "view"
     drop constraint "tabular_ident_fk",

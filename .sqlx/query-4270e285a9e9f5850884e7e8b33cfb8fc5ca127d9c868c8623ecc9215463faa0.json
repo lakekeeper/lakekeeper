@@ -49,7 +49,7 @@
     "nullable": [
       false,
       false,
-      false,
+      true,
       true,
       false,
       false,

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use iceberg_catalog::api::management::v1::api_doc as v1_api_doc;
+use iceberg_catalog::implementations::postgres::CatalogState;
 use iceberg_catalog::service::authz::implementations::openfga::UnauthenticatedOpenFGAAuthorizer;
 use iceberg_catalog::service::authz::AllowAllAuthorizer;
 use iceberg_catalog::{AuthZBackend, CONFIG};
@@ -129,6 +130,15 @@ async fn main() -> anyhow::Result<()> {
             // is migrated correctly on startup
             iceberg_catalog::implementations::postgres::migrate(&write_pool).await?;
             println!("Database migration complete.");
+
+            println!("Migrating old tables");
+            let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
+            iceberg_catalog::implementations::postgres::tabular::table::migration::migrate_tables(
+                catalog_state,
+            )
+            .await
+            .map_err(|e| e.error)?;
+            println!("Table migration complete.");
         }
         Some(Commands::Serve {}) => {
             print_info();

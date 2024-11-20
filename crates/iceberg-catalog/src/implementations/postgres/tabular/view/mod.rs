@@ -435,6 +435,7 @@ where
         transaction,
         Some(TabularType::View),
         paginate_query,
+        false,
     )
     .await?;
     let views = page.map::<ViewIdentUuid, TableIdent>(
@@ -746,9 +747,13 @@ pub(crate) mod tests {
     async fn soft_drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        mark_tabular_as_deleted(TabularIdentUuid::View(created_meta.view_uuid), &mut tx)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            TabularIdentUuid::View(created_meta.view_uuid),
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.view_uuid.into(),

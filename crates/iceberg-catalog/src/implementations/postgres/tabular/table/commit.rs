@@ -42,7 +42,7 @@ pub(crate) async fn commit_table_transaction<'a>(
         handle_atomic_updates(transaction, updates, meta, diffs).await?;
     }
 
-    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta)?;
+    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta);
 
     // futures::try_join didn't work due to concurrent mutable borrow of transaction
     let updated_meta = query_meta_update
@@ -67,15 +67,14 @@ pub(crate) async fn commit_table_transaction<'a>(
 fn build_queries(
     n_commits: usize,
     meta: Vec<(TableMetadata, Location)>,
-) -> api::Result<(
+) -> (
     sqlx::QueryBuilder<'static, Postgres>,
     sqlx::QueryBuilder<'static, Postgres>,
-)> {
+) {
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
-        SET "metadata" = c."metadata",
-            table_format_version = c."table_format_version",
+        SET table_format_version = c."table_format_version",
             last_column_id = c."last_column_id",
             last_sequence_number = c."last_sequence_number",
             last_updated_ms = c."last_updated_ms",
@@ -93,18 +92,8 @@ fn build_queries(
         "#,
     );
     for (i, (new_metadata, new_metadata_location)) in meta.into_iter().enumerate() {
-        let metadata_ser = serde_json::to_value(&new_metadata).map_err(|e| {
-            ErrorModel::internal(
-                "Error serializing table metadata",
-                "TableMetadataSerializationError",
-                Some(Box::new(e)),
-            )
-        })?;
-
         query_builder_table.push("(");
         query_builder_table.push_bind(new_metadata.uuid());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(metadata_ser);
         query_builder_table.push(", ");
         query_builder_table.push_bind(match new_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
@@ -135,7 +124,7 @@ fn build_queries(
     }
 
     query_builder_table
-        .push(") as c(table_id, metadata, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
+        .push(") as c(table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
     query_builder_tabular.push(
         ") as c(table_id, metadata_location, location) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
     );
@@ -143,7 +132,7 @@ fn build_queries(
     query_builder_table.push(" RETURNING t.table_id");
     query_builder_tabular.push(" RETURNING t.tabular_id");
 
-    Ok((query_builder_table, query_builder_tabular))
+    (query_builder_table, query_builder_tabular)
 }
 
 fn check_post_conditions(

@@ -339,7 +339,7 @@ impl Catalog for super::PostgresCatalog {
         table_id: TabularIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        mark_tabular_as_deleted(table_id, transaction).await
+        mark_tabular_as_deleted(table_id, None, transaction).await
     }
 
     async fn commit_table_transaction<'a>(
@@ -576,6 +576,7 @@ impl Catalog for super::PostgresCatalog {
             &catalog_state.read_pool(),
             None,
             pagination_query,
+            false,
         )
         .await
     }

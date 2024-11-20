@@ -323,6 +323,22 @@ impl From<TableIdentUuid> for uuid::Uuid {
     }
 }
 
+impl TryFrom<TabularIdentUuid> for TableIdentUuid {
+    type Error = IcebergErrorResponse;
+
+    fn try_from(value: TabularIdentUuid) -> Result<Self, Self::Error> {
+        match value {
+            TabularIdentUuid::Table(value) => Ok(value.into()),
+            TabularIdentUuid::View(_) => Err(ErrorModel::internal(
+                "Provided identifier is not a table id",
+                "IdentifierIsNotTableID",
+                None,
+            )
+            .into()),
+        }
+    }
+}
+
 // ---------------- Identifier ----------------
 
 impl Deref for ProjectIdent {
