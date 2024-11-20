@@ -37,6 +37,7 @@ jobs:
           name: iceberg-catalog-image
           path: /tmp/*.tar
   kube_auth:
+    needs: docker
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
