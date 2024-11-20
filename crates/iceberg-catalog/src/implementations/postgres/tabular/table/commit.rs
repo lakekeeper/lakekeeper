@@ -13,7 +13,6 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::Location;
 use itertools::Itertools;
 use sqlx::{Postgres, Transaction};
-use crate::implementations::postgres::dbutils::DBErrorHandler;
 
 pub(crate) async fn commit_table_transaction<'a>(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses
