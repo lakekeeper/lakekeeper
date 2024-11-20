@@ -51,8 +51,8 @@ pub(crate) async fn wait_for_db(
 
             counter += 1;
             if counter > retries {
-                tracing::error!("Database is not up to date with binary.");
-                anyhow::bail!("Database is not up to date with binary.");
+                tracing::error!("Database is not up to date with binary, make sure to run the migrate command before starting the server.");
+                anyhow::bail!("Database is not up to date with binary, make sure to run the migrate command before starting the server.");
             }
             tracing::info!(
                         "DB not up to date with binary yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",
