@@ -6,8 +6,8 @@ use crate::catalog::compression_codec::CompressionCodec;
 use crate::catalog::io::write_metadata_file;
 use crate::catalog::require_warehouse_id;
 use crate::catalog::tables::{
-    determine_table_ident, maybe_body_to_json, require_active_warehouse,
-    validate_table_or_view_ident,
+    determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
+    require_active_warehouse, validate_table_or_view_ident,
 };
 use crate::catalog::views::{parse_view_location, validate_view_updates};
 use crate::request_metadata::RequestMetadata;
@@ -94,10 +94,11 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     check_asserts(requirements, view_id)?;
 
     let ViewMetadataWithLocation {
-        metadata_location: _,
+        metadata_location: before_update_metadata_location,
         metadata: before_update_metadata,
     } = C::load_view(view_id, false, t.transaction()).await?;
     let view_location = parse_view_location(&before_update_metadata.location)?;
+    let before_update_metadata_location = parse_view_location(&before_update_metadata_location)?;
 
     state
         .v1_state
@@ -115,6 +116,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         &view_location,
         &CompressionCodec::try_from_properties(requested_update_metadata.properties())?,
         Uuid::now_v7(),
+        extract_count_from_metadata_location(&before_update_metadata_location).map_or(0, |v| v + 1),
     );
 
     C::update_view_metadata(

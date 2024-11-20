@@ -190,6 +190,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &table_location,
                 &CompressionCodec::try_from_maybe_properties(request.properties.as_ref())?,
                 metadata_id,
+                0,
             ))
         };
 
@@ -930,12 +931,21 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 &change.requirements,
                 change.updates.clone(),
             )?;
+
             let number_expired_metadata_log_entries = this_expired.len();
+
             if get_delete_after_commit_enabled(new_metadata.properties()) {
                 expired_metadata_logs.extend(this_expired);
             } else {
                 this_expired.clear();
             }
+
+            let next_metadata_count = previous_table
+                .metadata_location
+                .as_ref()
+                .and_then(extract_count_from_metadata_location)
+                .map_or(0, |v| v + 1);
+
             let new_table_location =
                 parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
             let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
@@ -943,6 +953,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 &new_table_location,
                 &new_compression_codec,
                 Uuid::now_v7(),
+                next_metadata_count,
             );
 
             let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
@@ -1045,6 +1056,24 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .await;
     }
     Ok(commits)
+}
+
+pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
+    let last_segment = location
+        .as_str()
+        .trim_end_matches('/')
+        .split('/')
+        .last()
+        .unwrap_or(location.as_str());
+
+    if let Some((_whole, version, _metadata_id)) = lazy_regex::regex_captures!(
+        r"^(\d+)-([\w-]{36})(?:\.\w+)?\.metadata\.json",
+        last_segment
+    ) {
+        version.parse().ok()
+    } else {
+        None
+    }
 }
 
 struct CommitContext {
@@ -1561,6 +1590,49 @@ mod test {
     use sqlx::PgPool;
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    use iceberg_ext::configs::Location;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_extract_count_from_metadata_location() {
+        let location = Location::from_str("s3://path/to/table/metadata/00000-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json").unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 0);
+
+        let location = Location::from_str("s3://path/to/table/metadata/00010-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json").unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/1-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
+        )
+            .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 1);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/10000010-d0407fb2-1112-4944-bb88-c68ae697e2b4.gz.metadata.json",
+        )
+            .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10_000_010);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/10000010-d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
+        )
+            .unwrap();
+        let count = super::extract_count_from_metadata_location(&location).unwrap();
+        assert_eq!(count, 10_000_010);
+
+        let location = Location::from_str(
+            "s3://path/to/table/metadata/d0407fb2-1112-4944-bb88-c68ae697e2b4.metadata.json",
+        )
+            .unwrap();
+        let count = super::extract_count_from_metadata_location(&location);
+        assert!(count.is_none());
+    }
+
 
     fn create_request(table_name: Option<String>) -> CreateTableRequest {
         CreateTableRequest {

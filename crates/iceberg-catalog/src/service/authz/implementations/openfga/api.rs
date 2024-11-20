@@ -649,13 +649,13 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments to the current project
+/// Get user and role assignments of a role
 #[utoipa::path(
     get,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/assignments",
     params(
-        GetProjectAssignmentsQuery,
+        GetRoleAssignmentsQuery,
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
     responses(
@@ -684,7 +684,7 @@ async fn get_role_assignments_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments to the current project
+/// Get user and role assignments of the server
 #[utoipa::path(
     get,
     tag = "permissions",
@@ -715,7 +715,7 @@ async fn get_server_assignments<C: Catalog, S: SecretStore>(
     ))
 }
 
-/// Get user and role assignments to the current project
+/// Get user and role assignments of a project
 #[utoipa::path(
     get,
     tag = "permissions",
@@ -931,14 +931,14 @@ async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/server/assignments",
     request_body = UpdateServerAssignmentsRequest,
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_server_assignments<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateServerAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -949,7 +949,7 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for the default project
@@ -959,14 +959,14 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_project_assignments<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
@@ -982,7 +982,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a project
@@ -995,7 +995,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
         ("project_id" = uuid::Uuid, Path, description = "Project ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1003,7 +1003,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1014,7 +1014,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a project
@@ -1027,7 +1027,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1035,7 +1035,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1046,7 +1046,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a namespace
@@ -1059,7 +1059,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1067,7 +1067,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1078,7 +1078,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a table
@@ -1091,7 +1091,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
         ("table_id" = uuid::Uuid, Path, description = "Table ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1099,7 +1099,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateTableAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1110,7 +1110,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Update permissions for a view
@@ -1123,7 +1123,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
         ("view_id" = uuid::Uuid, Path, description = "View ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1131,7 +1131,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateViewAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     checked_write(
         authorizer,
@@ -1142,10 +1142,10 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update permissions for a view
+/// Update permissions for a role
 #[utoipa::path(
     post,
     tag = "permissions",
@@ -1155,7 +1155,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
     responses(
-            (status = 200, description = "Permissions updated successfully"),
+            (status = 204, description = "Permissions updated successfully"),
     )
 )]
 async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
@@ -1163,8 +1163,17 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateRoleAssignmentsRequest>,
-) -> Result<()> {
+) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    // Improve error message of role beeing assigned to itself
+    for assignment in &request.writes {
+        let assignee = match assignment {
+            RoleAssignment::Ownership(r) | RoleAssignment::Assignee(r) => r,
+        };
+        if assignee == &UserOrRole::Role(role_id.into_assignees()) {
+            return Err(OpenFGAError::SelfAssignment(role_id.to_string()).into());
+        }
+    }
     checked_write(
         authorizer,
         metadata.actor(),
@@ -1174,7 +1183,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     )
     .await?;
 
-    Ok(())
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, OpenApi)]
@@ -1248,6 +1257,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         ProjectRelation,
         RoleAction,
         RoleAssignment,
+        RoleRelation,
         ServerAction,
         ServerAssignment,
         ServerRelation,
@@ -1277,49 +1287,49 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
 ) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
         .route(
-            "/permissions/role/{role_id}/access",
+            "/permissions/role/:role_id/access",
             get(get_role_access_by_id),
         )
         .route("/permissions/server/access", get(get_server_access))
         .route("/permissions/project/access", get(get_project_access))
         .route(
-            "/permissions/warehouse/{warehouse_id}/access",
+            "/permissions/warehouse/:warehouse_id/access",
             get(get_warehouse_access_by_id),
         )
         .route(
-            "/permissions/warehouse/{warehouse_id}",
+            "/permissions/warehouse/:warehouse_id",
             get(get_warehouse_by_id),
         )
         .route(
-            "/permissions/warehouse/{warehouse_id}/managed-access",
+            "/permissions/warehouse/:warehouse_id/managed-access",
             post(set_warehouse_managed_access),
         )
         .route(
-            "/permissions/project/{project_id}/access",
+            "/permissions/project/:project_id/access",
             get(get_project_access_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}/access",
+            "/permissions/namespace/:namespace_id/access",
             get(get_namespace_access_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}",
+            "/permissions/namespace/:namespace_id",
             get(get_namespace_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}/managed-access",
+            "/permissions/namespace/:namespace_id/managed-access",
             post(set_namespace_managed_access),
         )
         .route(
-            "/permissions/table/{table_id}/access",
+            "/permissions/table/:table_id/access",
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/view/{table_id}/access",
+            "/permissions/view/:table_id/access",
             get(get_view_access_by_id),
         )
         .route(
-            "/permissions/role/{role_id}/assignments",
+            "/permissions/role/:role_id/assignments",
             get(get_role_assignments_by_id).post(update_role_assignments_by_id),
         )
         .route(
@@ -1331,23 +1341,23 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_project_assignments).post(update_project_assignments),
         )
         .route(
-            "/permissions/project/{project_id}/assignments",
+            "/permissions/project/:project_id/assignments",
             get(get_project_assignments_by_id).post(update_project_assignments_by_id),
         )
         .route(
-            "/permissions/warehouse/{warehouse_id}/assignments",
+            "/permissions/warehouse/:warehouse_id/assignments",
             get(get_warehouse_assignments_by_id).post(update_warehouse_assignments_by_id),
         )
         .route(
-            "/permissions/namespace/{namespace_id}/assignments",
+            "/permissions/namespace/:namespace_id/assignments",
             get(get_namespace_assignments_by_id).post(update_namespace_assignments_by_id),
         )
         .route(
-            "/permissions/table/{table_id}/assignments",
+            "/permissions/table/:table_id/assignments",
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/view/{table_id}/assignments",
+            "/permissions/view/:table_id/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
         )
 }
@@ -1573,6 +1583,37 @@ mod tests {
         use openfga_rs::TupleKey;
 
         #[tokio::test]
+        async fn test_cannot_assign_role_to_itself() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let role_id = RoleId::new(uuid::Uuid::nil());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id.to_openfga(),
+                        relation: RoleRelation::Ownership.to_openfga().to_string(),
+                        object: role_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let result = checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id.clone()),
+                vec![RoleAssignment::Assignee(role_id.into())],
+                vec![],
+                &role_id.to_openfga(),
+            )
+            .await;
+            result.unwrap_err();
+        }
+
+        #[tokio::test]
         async fn test_get_relations() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
@@ -1675,6 +1716,92 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn test_assign_to_role() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id_owner = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let role_id_1 = RoleId::new(uuid::Uuid::nil());
+            let role_id_2 = RoleId::new(uuid::Uuid::now_v7());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_owner.to_openfga(),
+                        relation: RoleRelation::Ownership.to_openfga().to_string(),
+                        object: role_id_1.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id_owner.clone()),
+                vec![
+                    RoleAssignment::Assignee(user_id_owner.into()),
+                    RoleAssignment::Assignee(role_id_2.into()),
+                ],
+                vec![],
+                &role_id_1.to_openfga(),
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<RoleAssignment> =
+                get_relations(authorizer.clone(), None, &role_id_1.to_openfga())
+                    .await
+                    .unwrap();
+            assert_eq!(relations.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn test_assign_to_project() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id_owner = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id_assignee = UserId::new(&uuid::Uuid::nil().to_string()).unwrap();
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+            let project_id = ProjectIdent::from(uuid::Uuid::nil());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_owner.to_openfga(),
+                        relation: ProjectRelation::ProjectAdmin.to_openfga().to_string(),
+                        object: project_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id_owner.clone()),
+                vec![
+                    ProjectAssignment::Describe {
+                        role: role_id.into_assignees(),
+                    },
+                    ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_assignees())),
+                    ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
+                ],
+                vec![],
+                &project_id.to_openfga(),
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<ProjectAssignment> =
+                get_relations(authorizer.clone(), None, &project_id.to_openfga())
+                    .await
+                    .unwrap();
+            assert_eq!(relations.len(), 4);
         }
 
         #[tokio::test]

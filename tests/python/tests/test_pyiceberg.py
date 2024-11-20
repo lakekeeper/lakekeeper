@@ -22,6 +22,26 @@ def test_list_namespaces(warehouse: conftest.Warehouse):
     assert ("test_list_namespaces_2",) in namespaces
 
 
+def test_list_hierarchical_namespaces(warehouse: conftest.Warehouse):
+    catalog = warehouse.pyiceberg_catalog
+    catalog.create_namespace(("test_list_hierarchical_namespaces_1",))
+    catalog.create_namespace(
+        ("test_list_hierarchical_namespaces_1", "test_list_hierarchical_namespaces_2")
+    )
+    namespaces = catalog.list_namespaces()
+    assert ("test_list_hierarchical_namespaces_1",) in namespaces
+    assert all([len(namespace) == 1 for namespace in namespaces])
+    namespaces = catalog.list_namespaces(
+        namespace=("test_list_hierarchical_namespaces_1",)
+    )
+    print(namespaces)
+    assert (
+        "test_list_hierarchical_namespaces_1",
+        "test_list_hierarchical_namespaces_2",
+    ) in namespaces
+    assert len(namespaces) == 1
+
+
 def test_default_location_for_namespace_is_set(warehouse: conftest.Warehouse):
     catalog = warehouse.pyiceberg_catalog
     namespace = ("test_default_location_for_namespace",)

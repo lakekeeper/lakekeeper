@@ -97,8 +97,8 @@ tuples:
     relation: security_admin
     object: project:project_1
   # Roles (Project 1 warehouse admin)
-  - user: user:project_1_warehouse_admin
-    relation: warehouse_admin
+  - user: user:project_1_data_admin
+    relation: data_admin
     object: project:project_1
   # Roles (Warehouse 1 owner)
   - user: user:warehouse_1_owner
@@ -147,90 +147,90 @@ tests:
       - user: user:global_admin
         object: project:project_1
         assertions:
-          can_create_warehouse: true
-          can_delete: true
+          can_create_warehouse: false
+          can_delete: false
           can_get_metadata: true
           can_list_warehouses: true
           can_include_in_list: true
-          can_rename: true
+          can_rename: false
           can_grant_create: true
           can_grant_describe: true
           can_grant_modify: true
           can_grant_select: true
           can_grant_project_admin: true
           can_grant_security_admin: true
-          can_grant_warehouse_admin: true
+          can_grant_data_admin: true
       - user: user:global_admin
         object: warehouse:warehouse_1
         assertions:
-          can_create_namespace: true
-          can_delete: true
-          can_update_storage: true
-          can_update_storage_credential: true
-          can_get_metadata: true
-          can_get_config: true
-          can_list_namespaces: true
-          can_use: true
-          can_include_in_list: true
-          can_deactivate: true
-          can_activate: true
-          can_rename: true
-          can_list_deleted_tabulars: true
-          can_grant_create: true
-          can_grant_describe: true
-          can_grant_modify: true
-          can_grant_select: true
-          can_grant_pass_grants: true
-          can_grant_manage_grants: true
-          can_change_ownership: true
+          can_create_namespace: false
+          can_delete: false
+          can_update_storage: false
+          can_update_storage_credential: false
+          can_get_metadata: false
+          can_get_config: false
+          can_list_namespaces: false
+          can_use: false
+          can_include_in_list: false
+          can_deactivate: false
+          can_activate: false
+          can_rename: false
+          can_list_deleted_tabulars: false
+          can_grant_create: false
+          can_grant_describe: false
+          can_grant_modify: false
+          can_grant_select: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_change_ownership: false
       - user: user:global_admin
         object: namespace:namespace_1
         assertions:
-          can_create_table: true
-          can_create_view: true
-          can_create_namespace: true
-          can_delete: true
-          can_update_properties: true
-          can_get_metadata: true
-          can_list_tables: true
-          can_list_views: true
-          can_list_namespaces: true
-          can_grant_create: true
-          can_grant_describe: true
-          can_grant_modify: true
-          can_grant_select: true
-          can_grant_pass_grants: true
-          can_grant_manage_grants: true
-          can_change_ownership: true
+          can_create_table: false
+          can_create_view: false
+          can_create_namespace: false
+          can_delete: false
+          can_update_properties: false
+          can_get_metadata: false
+          can_list_tables: false
+          can_list_views: false
+          can_list_namespaces: false
+          can_grant_create: false
+          can_grant_describe: false
+          can_grant_modify: false
+          can_grant_select: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_change_ownership: false
       - user: user:global_admin
         object: table:table_3
         assertions:
-          can_drop: true
-          can_write_data: true
-          can_read_data: true
-          can_get_metadata: true
-          can_commit: true
-          can_rename: true
-          can_include_in_list: true
-          can_grant_pass_grants: true
-          can_grant_manage_grants: true
-          can_grant_describe: true
-          can_grant_select: true
-          can_grant_modify: true
-          can_change_ownership: true
+          can_drop: false
+          can_write_data: false
+          can_read_data: false
+          can_get_metadata: false
+          can_commit: false
+          can_rename: false
+          can_include_in_list: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_grant_describe: false
+          can_grant_select: false
+          can_grant_modify: false
+          can_change_ownership: false
       - user: user:global_admin
         object: view:view_1
         assertions:
-          can_drop: true
-          can_commit: true
-          can_get_metadata: true
-          can_rename: true
-          can_include_in_list: true
-          can_grant_pass_grants: true
-          can_grant_manage_grants: true
-          can_grant_describe: true
-          can_grant_modify: true
-          can_change_ownership: true
+          can_drop: false
+          can_commit: false
+          can_get_metadata: false
+          can_rename: false
+          can_include_in_list: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_grant_describe: false
+          can_grant_modify: false
+          can_change_ownership: false
   - name: Project Admin has full access in project and below
     check:
       - user: user:project_1_project_admin
@@ -248,7 +248,7 @@ tests:
           can_grant_select: true
           can_grant_project_admin: true
           can_grant_security_admin: true
-          can_grant_warehouse_admin: true
+          can_grant_data_admin: true
       - user: user:project_1_project_admin
         object: warehouse:warehouse_1
         assertions:
@@ -337,7 +337,7 @@ tests:
           can_grant_select: true
           can_grant_project_admin: false
           can_grant_security_admin: true
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: user:project_1_security_admin
         object: warehouse:warehouse_1
         assertions:
@@ -412,7 +412,7 @@ tests:
           can_change_ownership: true
   - name: Warehouse Admin can manage data and objects but not grants
     check:
-      - user: user:project_1_warehouse_admin
+      - user: user:project_1_data_admin
         object: project:project_1
         assertions:
           can_create_warehouse: true
@@ -427,8 +427,8 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: true
-      - user: user:project_1_warehouse_admin
+          can_grant_data_admin: true
+      - user: user:project_1_data_admin
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: true
@@ -451,7 +451,7 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: user:project_1_warehouse_admin
+      - user: user:project_1_data_admin
         object: namespace:namespace_1
         assertions:
           can_create_table: true
@@ -471,7 +471,7 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: user:project_1_warehouse_admin
+      - user: user:project_1_data_admin
         object: table:table_3
         assertions:
           can_drop: true
@@ -487,7 +487,7 @@ tests:
           can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
-      - user: user:project_1_warehouse_admin
+      - user: user:project_1_data_admin
         object: view:view_1
         assertions:
           can_drop: true
@@ -591,7 +591,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: user:namespace_1_1_owner
         object: namespace:namespace_1_1
         assertions:
@@ -678,7 +678,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: user:select_table_3
         object: warehouse:warehouse_1
         assertions:
@@ -856,7 +856,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: user:namespace_2_1_owner
         object: warehouse:warehouse_2
         assertions:
@@ -933,7 +933,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: user:namespace_2_2_owner
         object: warehouse:warehouse_2
         assertions:
@@ -1046,7 +1046,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: role:namespace_2_1_owner#assignee
         object: project:project_1
         assertions:
@@ -1062,7 +1062,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_warehouse_admin: false
+          can_grant_data_admin: false
       - user: user:namespace_2_1_role_owner
         object: warehouse:warehouse_2
         assertions:

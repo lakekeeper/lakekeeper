@@ -20,7 +20,7 @@ use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
     Transaction,
 };
-use crate::{ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
+use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
 use utoipa::ToSchema;
@@ -79,13 +79,32 @@ pub enum TabularDeleteProfile {
     #[schema(title = "TabularDeleteProfileHard")]
     Hard {},
     #[schema(title = "TabularDeleteProfileSoft")]
+    #[serde(rename_all = "kebab-case")]
     Soft {
         #[serde(
-            deserialize_with = "crate::config::seconds_to_duration",
-            serialize_with = "crate::config::duration_to_seconds"
+            deserialize_with = "seconds_to_duration",
+            serialize_with = "duration_to_seconds",
+            alias = "expiration_seconds"
         )]
+        #[schema(value_type=i32)]
         expiration_seconds: chrono::Duration,
     },
+}
+
+fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let buf = i64::deserialize(deserializer)?;
+
+    Ok(chrono::Duration::seconds(buf))
+}
+
+fn duration_to_seconds<S>(duration: &chrono::Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_i64(duration.num_seconds())
 }
 
 impl TabularDeleteProfile {
@@ -99,9 +118,7 @@ impl TabularDeleteProfile {
 
 impl Default for TabularDeleteProfile {
     fn default() -> Self {
-        Self::Soft {
-            expiration_seconds: CONFIG.default_tabular_expiration_delay_seconds,
-        }
+        Self::Hard {}
     }
 }
 
@@ -173,6 +190,8 @@ pub struct GetWarehouseResponse {
     pub project_id: uuid::Uuid,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
+    /// Delete profile used for the warehouse.
+    pub delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is active.
     pub status: WarehouseStatus,
 }
@@ -765,6 +784,7 @@ impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
             project_id: *warehouse.project_id,
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
+            delete_profile: warehouse.tabular_delete_profile,
         }
     }
 }

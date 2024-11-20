@@ -5,6 +5,8 @@ use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, UserId, ViewIde
 use crate::{ProjectIdent, WarehouseIdent};
 use std::str::FromStr;
 
+use super::RoleAssignee;
+
 pub(super) trait ParseOpenFgaEntity: Sized {
     fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {
         let parts = s.split(':').collect::<Vec<&str>>();
@@ -38,6 +40,16 @@ impl OpenFgaEntity for RoleId {
     }
 }
 
+impl OpenFgaEntity for RoleAssignee {
+    fn to_openfga(&self) -> String {
+        format!("{}#assignee", self.role().to_openfga())
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Role
+    }
+}
+
 impl ParseOpenFgaEntity for RoleId {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
         if r#type != FgaType::Role {
@@ -49,6 +61,30 @@ impl ParseOpenFgaEntity for RoleId {
 
         id.parse()
             .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string()))
+    }
+}
+
+impl ParseOpenFgaEntity for RoleAssignee {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+        if r#type != FgaType::Role {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Role],
+                id.to_string(),
+            ));
+        }
+
+        if !id.ends_with("#assignee") {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Role],
+                id.to_string(),
+            ));
+        }
+
+        let id = &id[..id.len() - "#assignee".len()];
+
+        Ok(RoleAssignee::from_role(id.parse().map_err(|_e| {
+            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string())
+        })?))
     }
 }
 

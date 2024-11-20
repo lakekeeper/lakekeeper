@@ -63,19 +63,19 @@ type project
     # Project Admin has two purposes:
     # 1. Lock-out protection: Checked to never be empty
     # 2. Granting new privileges, such as billing, which might require separate permissions / admin roles
-    define project_admin: [user, role#assignee] or global_admin from server
+    define project_admin: [user, role#assignee]
     # Security Admins can manage all security aspects (grants, ownership) but not modify, create or access objects
     define security_admin: [user, role#assignee] or project_admin
-    # Warehouse Admins can manage all warehouse aspects but not grant privileges
-    define warehouse_admin: [user, role#assignee] or project_admin
+    # Data Admins can manage all warehouse aspects but not grant privileges
+    define data_admin: [user, role#assignee] or project_admin
     # Can create new roles - cannot add assignees to existing roles
     define role_creator: [user, role#assignee] or security_admin
 
     # ------------------ Assignable Privileges ------------------
     # Privileges relevant for the warehouse and sub-objects
-    define describe: [role#assignee] or select or create or warehouse_admin or security_admin
+    define describe: [role#assignee] or select or create or data_admin or security_admin
     define select: [role#assignee] or modify
-    define create: [role#assignee] or warehouse_admin
+    define create: [role#assignee] or data_admin
     define modify: [role#assignee] or project_admin
 
     # ------------------ Actions ------------------
@@ -84,26 +84,26 @@ type project
     # Drop this project
     define can_delete: modify
     define can_rename: modify
-    define can_get_metadata: describe or can_get_metadata from warehouse
+    define can_get_metadata: describe or can_get_metadata from warehouse or global_admin from server
     # Can list elements in this projects - will be filtered subsequently
     define can_list_warehouses: can_get_metadata
     define can_include_in_list: can_get_metadata
     # Roles
     define can_create_role: role_creator
-    define can_list_roles: can_get_metadata
-    define can_search_roles: can_list_roles
+    define can_list_roles: can_get_metadata or global_admin from server
+    define can_search_roles: can_list_roles or global_admin from server
     # Only if we can GRANT a privilege, we can LIST them for now
-    define can_read_assignments: security_admin or project_admin
+    define can_read_assignments: security_admin or project_admin or global_admin from server
 
     # GRANT Permissions
-    define can_grant_role_creator: security_admin
-    define can_grant_create: security_admin
-    define can_grant_describe: security_admin
-    define can_grant_modify: security_admin
-    define can_grant_select: security_admin
-    define can_grant_project_admin: project_admin
-    define can_grant_security_admin: security_admin
-    define can_grant_warehouse_admin: warehouse_admin
+    define can_grant_role_creator: security_admin or global_admin from server
+    define can_grant_create: security_admin or global_admin from server
+    define can_grant_describe: security_admin or global_admin from server
+    define can_grant_modify: security_admin or global_admin from server
+    define can_grant_select: security_admin or global_admin from server
+    define can_grant_project_admin: project_admin or global_admin from server
+    define can_grant_security_admin: security_admin or global_admin from server
+    define can_grant_data_admin: data_admin or global_admin from server
 
 type warehouse
   relations
@@ -122,7 +122,7 @@ type warehouse
     define describe: [role#assignee] or ownership or select or create or describe from project
     define select: [role#assignee] or ownership or modify or select from project
     define create: [role#assignee] or ownership or create from project
-    define modify: [role#assignee] or ownership or modify from project or warehouse_admin from project
+    define modify: [role#assignee] or ownership or modify from project or data_admin from project
 
     # ------------------ Actions ------------------
     define can_create_namespace: create
