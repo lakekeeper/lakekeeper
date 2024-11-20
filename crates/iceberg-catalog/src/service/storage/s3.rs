@@ -14,9 +14,16 @@ use iceberg_ext::configs::{self, ConfigProperty, Location};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use veil::Redact;
 
 use super::StorageType;
+
+static S3_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn get_client() -> reqwest::Client {
+    S3_CLIENT.get_or_init(reqwest::Client::new).clone()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -97,7 +104,7 @@ impl S3Profile {
         &self,
         credential: Option<&aws_credential_types::Credentials>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("s3");
+        let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client(get_client());
 
         builder = builder.with_prop(iceberg::io::S3_REGION, self.region.clone());
 
