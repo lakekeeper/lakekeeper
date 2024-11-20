@@ -14,6 +14,7 @@ use jwks_client_rs::{JsonWebKey, JwksClient};
 
 use super::{ProjectIdent, RoleId, WarehouseIdent};
 use crate::api::management::v1::user::UserType;
+
 use crate::api::Result;
 use crate::request_metadata::RequestMetadata;
 use axum::Extension;
@@ -337,41 +338,106 @@ pub enum Aud {
     Vec(Vec<String>),
 }
 
+#[derive(Clone, Debug)]
+pub struct VerifierChain {
+    idp_verifier: Option<Verifier>,
+    k8s_verifier: Option<K8sVerifier>,
+}
+
+impl VerifierChain {
+    /// Create a new verifier chain with the idp and k8s verifier
+    ///
+    /// You must provide at least one verifier. The authentication middleware will first try to
+    /// decode the token using the idp provider and then the k8s provider.
+    ///
+    /// # Errors
+    /// - If neither `idp_verifier` nor `k8s_verifier` is provided
+    pub fn try_new(
+        idp_verifier: Option<Verifier>,
+        k8s_verifier: Option<K8sVerifier>,
+    ) -> anyhow::Result<Self> {
+        if idp_verifier.is_none() && k8s_verifier.is_none() {
+            return Err(anyhow::anyhow!("At least one verifier must be provided"));
+        }
+        Ok(Self {
+            idp_verifier,
+            k8s_verifier,
+        })
+    }
+    fn into_vec(self) -> Vec<Verifier> {
+        let mut verifiers = vec![];
+        if let Some(verifier) = self.idp_verifier {
+            verifiers.push(verifier);
+        }
+        if let Some(K8sVerifier(k8s_verifier)) = self.k8s_verifier {
+            verifiers.push(k8s_verifier);
+        }
+        verifiers
+    }
+}
+
 pub(crate) async fn auth_middleware_fn(
-    State(verifier): State<Verifier>,
+    State(verifiers): State<VerifierChain>,
     authorization: Option<TypedHeader<Authorization<Bearer>>>,
     Extension(mut metadata): Extension<RequestMetadata>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    if let Some(authorization) = authorization {
-        match verifier.decode::<Claims>(authorization.token()).await {
-            Ok(val) => {
-                match AuthDetails::try_from_jwt_claims(val) {
-                    Ok(details) => {
-                        metadata.auth_details = details;
-                    }
-                    Err(err) => return err.into_response(),
-                }
-                request.extensions_mut().insert(metadata);
-            }
-            Err(err) => {
-                tracing::debug!("Failed to verify token: {:?}", err);
-                return IcebergErrorResponse::from(err).into_response();
-            }
-        };
-    } else {
-        return IcebergErrorResponse::from(
-            ErrorModel::builder()
-                .message("Missing authorization header")
-                .code(StatusCode::UNAUTHORIZED.into())
-                .r#type("UnauthorizedError")
-                .build(),
-        )
+    let Some(authorization) = authorization else {
+        return IcebergErrorResponse::from(ErrorModel::unauthorized(
+            "Missing authorization header.",
+            "UnauthorizedError",
+            None,
+        ))
         .into_response();
+    };
+
+    for verifier in verifiers.into_vec() {
+        let Ok(val) = verifier
+            .decode::<Claims>(authorization.token())
+            .await
+            .map_err(|e| {
+                tracing::debug!(
+                    "Failed to decode token with verifier: '{}' due to: '{e}'",
+                    verifier.issuer
+                );
+            })
+        else {
+            continue;
+        };
+
+        let details = match AuthDetails::try_from_jwt_claims(val) {
+            Ok(details) => details,
+            Err(err) => return err.into_response(),
+        };
+        metadata.auth_details = details;
+        request.extensions_mut().insert(metadata);
+        return next.run(request).await;
     }
 
-    next.run(request).await
+    IcebergErrorResponse::from(ErrorModel::unauthorized(
+        "Unauthorized",
+        "UnauthorizedError",
+        None,
+    ))
+    .into_response()
+}
+
+#[derive(Clone, Debug)]
+pub struct K8sVerifier(Verifier);
+
+impl K8sVerifier {
+    /// Create a new k8s verifier
+    ///
+    /// Assumes that the openid configuration is at the default k8s url
+    ///
+    /// # Errors
+    /// - If the openid configuration cannot be fetched or parsed at the default k8s url (<https://kubernetes.default.svc.cluster.local>)
+    pub async fn try_new() -> anyhow::Result<Self> {
+        let url = Url::parse("https://kubernetes.default.svc.cluster.local")?;
+        let verifier = Verifier::new(url).await?;
+        Ok(Self(verifier))
+    }
 }
 
 #[derive(Clone)]
@@ -527,7 +593,6 @@ pub struct WellKnownConfig {
     pub jwks_uri: Url,
     pub issuer: String,
     pub userinfo_endpoint: Option<Url>,
-    pub token_endpoint: Url,
 }
 
 #[cfg(test)]
