@@ -67,7 +67,7 @@ jobs:
             if: always()
             uses: actions/upload-artifact@v4
             with:
-              name: db-dump.sql.gz
+              name: db-dump-${{ inputs.test_name }}
               path: dump.sql.gz
           - name: Dump docker logs on failure
             if: failure()
