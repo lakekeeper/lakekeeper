@@ -1,6 +1,6 @@
 use super::authz::TableUuid;
 use super::{
-    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid, UserId,
+    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid,
     ViewIdentUuid, WarehouseIdent, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
@@ -22,6 +22,7 @@ use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::configs::Location;
 
+use crate::service::authn::UserId;
 use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]

@@ -3,10 +3,12 @@ use crate::tracing::{MakeRequestUuid7, RestMakeSpan};
 
 use crate::api::management::v1::{api_doc as v1_api_doc, ApiServer};
 use crate::api::{iceberg::v1::new_v1_full_router, shutdown_signal, ApiContext};
+use crate::service::authn::IdpVerifier;
+use crate::service::authn::K8sVerifier;
+use crate::service::authn::VerifierChain;
 use crate::service::contract_verification::ContractVerifiers;
 use crate::service::health::ServiceHealthProvider;
 use crate::service::task_queue::TaskQueues;
-use crate::service::token_verification::{K8sVerifier, Verifier, VerifierChain};
 use crate::service::{authz::Authorizer, Catalog, SecretStore, State};
 use axum::response::IntoResponse;
 use axum::{routing::get, Json, Router};
@@ -36,7 +38,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
     pub queues: TaskQueues,
     pub publisher: CloudEventsPublisher,
     pub table_change_checkers: ContractVerifiers,
-    pub token_verifier: Option<Verifier>,
+    pub token_verifier: Option<IdpVerifier>,
     pub k8s_token_verifier: Option<K8sVerifier>,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
@@ -78,7 +80,7 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         table_change_checkers,
         token_verifier,
         k8s_token_verifier,
-        service_health_provider: svhp,
+        service_health_provider,
         cors_origins,
         metrics_layer,
     }: RouterArgs<C, A, S>,
@@ -116,7 +118,7 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         (None, None) => option_layer(None),
         (idp_verifier, k8s_verifier) => option_layer(Some(axum::middleware::from_fn_with_state(
             VerifierChain::try_new(idp_verifier, k8s_verifier)?,
-            crate::service::token_verification::auth_middleware_fn,
+            crate::service::authn::auth_middleware_fn,
         ))),
     };
 
@@ -127,7 +129,7 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         .route(
             "/health",
             get(|| async move {
-                let health = svhp.collect_health().await;
+                let health = service_health_provider.collect_health().await;
                 Json(health).into_response()
             }),
         )

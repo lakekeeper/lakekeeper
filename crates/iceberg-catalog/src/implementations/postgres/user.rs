@@ -4,7 +4,8 @@ use crate::api::management::v1::user::{
     ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
 };
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::{CreateOrUpdateUserResponse, Result, UserId};
+use crate::service::authn::UserId;
+use crate::service::{CreateOrUpdateUserResponse, Result};
 use itertools::Itertools;
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]

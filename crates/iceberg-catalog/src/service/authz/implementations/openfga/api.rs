@@ -1639,8 +1639,8 @@ mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use super::super::*;
+        use crate::service::authn::UserId;
         use crate::service::authz::implementations::openfga::migration::tests::authorizer_for_empty_store;
-        use crate::service::UserId;
         use openfga_rs::TupleKey;
 
         #[tokio::test]

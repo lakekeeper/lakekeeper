@@ -14,9 +14,10 @@ pub mod v1 {
     use std::marker::PhantomData;
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
+    use crate::service::authn::UserId;
     use crate::service::{
         authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
-        SecretStore, State, TabularIdentUuid, UserId,
+        SecretStore, State, TabularIdentUuid,
     };
     use crate::ProjectIdent;
     use axum::extract::{Path, Query, State as AxumState};

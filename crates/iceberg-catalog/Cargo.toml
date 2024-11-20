@@ -56,6 +56,8 @@ iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 itertools = { workspace = true }
 jsonwebtoken = "9.3.0"
 jwks_client_rs = { workspace = true }
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
 lru = { workspace = true }

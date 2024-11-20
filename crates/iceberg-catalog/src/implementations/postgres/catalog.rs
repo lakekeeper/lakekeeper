@@ -26,13 +26,14 @@ use crate::implementations::postgres::tabular::{list_tabulars, mark_tabular_as_d
 use crate::implementations::postgres::user::{
     create_or_update_user, delete_user, list_users, search_user,
 };
+use crate::service::authn::UserId;
 use crate::service::{
     storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
     GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse, ListFlags,
     ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid, ProjectIdent,
     Result, RoleId, StartupValidationData, TableCreation, TableIdent, TableIdentUuid, Transaction,
-    UserId, WarehouseIdent, WarehouseStatus,
+    WarehouseIdent, WarehouseStatus,
 };
 use crate::SecretIdent;
 use crate::{

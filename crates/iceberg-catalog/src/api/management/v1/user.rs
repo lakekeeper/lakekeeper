@@ -3,10 +3,10 @@ use crate::api::iceberg::v1::{PageToken, PaginationQuery};
 use crate::api::management::v1::ApiServer;
 use crate::api::ApiContext;
 use crate::request_metadata::RequestMetadata;
+use crate::service::authn::UserId;
 use crate::service::authz::{Authorizer, CatalogServerAction, CatalogUserAction};
 use crate::service::{
     AuthDetails, Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction,
-    UserId,
 };
 use axum::response::IntoResponse;
 use axum::Json;

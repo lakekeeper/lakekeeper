@@ -1,6 +1,6 @@
 use super::health::HealthExt;
 use super::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid, UserId,
+    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
     ViewIdentUuid, WarehouseIdent,
 };
 use crate::api::iceberg::v1::Result;
@@ -12,6 +12,7 @@ use strum::EnumIter;
 pub mod implementations;
 
 use crate::api::ApiContext;
+use crate::service::authn::UserId;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use implementations::allow_all::AllowAllAuthorizer;
 

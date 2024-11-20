@@ -12,7 +12,6 @@ use iceberg_catalog::service::event_publisher::{
     NatsBackend,
 };
 use iceberg_catalog::service::health::ServiceHealthProvider;
-use iceberg_catalog::service::token_verification::{K8sVerifier, Verifier};
 use iceberg_catalog::service::{Catalog, StartupValidationData};
 use iceberg_catalog::{SecretBackend, CONFIG};
 use reqwest::Url;
@@ -20,6 +19,8 @@ use reqwest::Url;
 use iceberg_catalog::implementations::postgres::task_queues::{
     TabularExpirationQueue, TabularPurgeQueue,
 };
+use iceberg_catalog::service::authn::IdpVerifier;
+use iceberg_catalog::service::authn::K8sVerifier;
 use iceberg_catalog::service::task_queue::TaskQueues;
 use std::sync::Arc;
 
@@ -159,6 +160,7 @@ async fn serve_inner<A: Authorizer>(
             )
         })
         .ok();
+    eprintln!("{k8s_token_verifier:?}");
 
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
         authorizer: authorizer.clone(),
@@ -168,7 +170,7 @@ async fn serve_inner<A: Authorizer>(
         publisher: CloudEventsPublisher::new(tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         token_verifier: if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-            Some(Verifier::new(uri).await?)
+            Some(IdpVerifier::new(uri).await?)
         } else {
             None
         },

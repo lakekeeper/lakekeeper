@@ -1,11 +1,11 @@
+use super::RoleAssignee;
+use crate::service::authn::Actor;
+use crate::service::authn::UserId;
 use crate::service::authz::implementations::openfga::{OpenFGAError, OpenFGAResult};
 use crate::service::authz::implementations::FgaType;
-use crate::service::token_verification::Actor;
-use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, UserId, ViewIdentUuid};
+use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, ViewIdentUuid};
 use crate::{ProjectIdent, WarehouseIdent};
 use std::str::FromStr;
-
-use super::RoleAssignee;
 
 pub(super) trait ParseOpenFgaEntity: Sized {
     fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {

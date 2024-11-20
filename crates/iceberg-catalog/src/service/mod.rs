@@ -1,3 +1,4 @@
+pub mod authn;
 pub mod authz;
 mod catalog;
 pub mod contract_verification;
@@ -7,8 +8,8 @@ pub mod secrets;
 pub mod storage;
 mod tabular_idents;
 pub mod task_queue;
-pub mod token_verification;
 
+pub use authn::{Actor, AuthDetails};
 pub use catalog::{
     Catalog, CommitTableResponse, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse, DeletionDetails,
@@ -21,7 +22,6 @@ pub use catalog::{
 use std::ops::Deref;
 pub(crate) use tabular_idents::TabularIdentBorrowed;
 pub use tabular_idents::{TabularIdentOwned, TabularIdentUuid};
-pub use token_verification::{Actor, AuthDetails, UserId};
 
 use self::authz::Authorizer;
 use crate::api::iceberg::v1::Prefix;
@@ -31,9 +31,11 @@ use crate::service::contract_verification::ContractVerifiers;
 use crate::service::event_publisher::CloudEventsPublisher;
 use crate::service::task_queue::TaskQueues;
 use http::StatusCode;
-pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+
+pub use authn::{IdpVerifier, K8sVerifier, UserId};
+pub use secrets::{SecretIdent, SecretStore};
 
 // ---------------- State ----------------
 #[derive(Clone, Debug)]
