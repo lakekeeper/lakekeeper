@@ -1,4 +1,4 @@
-name: AuthZ Unittests
+name: Kubernetes auth integration test
 
 on:
   push:
