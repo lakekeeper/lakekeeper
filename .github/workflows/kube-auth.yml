@@ -60,8 +60,8 @@ jobs:
         id: install
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
-      - name: Install lakekeeper
-        run: helm install -f tests/kube-auth/values.yaml my-lakekeeper lakekeeper/lakekeeper --version 0.1.5 --wait --timeout 720s
+      - name: Install lakekeeper (wait 300s)
+        run: helm install -f tests/kube-auth/values.yaml my-lakekeeper lakekeeper/lakekeeper --version 0.1.5 && sleep 300
       - name: Apply auth role
         run: kubectl describe pods && kubectl apply -f tests/kube-auth/auth_role.yaml
       - name: Run tests
