@@ -63,7 +63,7 @@ jobs:
       - name: Install lakekeeper
         run: helm install -f tests/kube-auth/values.yaml my-lakekeeper lakekeeper/lakekeeper --version 0.1.5 --wait --timeout 720s
       - name: Apply auth role
-        run: kubectl apply -f tests/kube-auth/auth_role.yaml
+        run: kubectl describe pods && kubectl apply -f tests/kube-auth/auth_role.yaml
       - name: Run tests
         run: kubectl run bootstrap-test --image=curlimages/curl -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)"
       - name: bootstrap-logs
