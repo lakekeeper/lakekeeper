@@ -160,7 +160,6 @@ async fn serve_inner<A: Authorizer>(
             )
         })
         .ok();
-    eprintln!("{k8s_token_verifier:?}");
 
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
         authorizer: authorizer.clone(),
