@@ -18,15 +18,12 @@ use crate::service::health::{Health, HealthExt, HealthStatus};
 use crate::CONFIG;
 use anyhow::anyhow;
 use async_trait::async_trait;
-use sqlx::migrate::{Migrate, MigrateError};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{ConnectOptions, Error, Executor, PgPool};
-use std::collections::HashSet;
+use sqlx::{ConnectOptions, Executor, PgPool};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::service::Transaction;
 pub use secrets::SecretsState;
 pub use tabular::DeletionKind;
 

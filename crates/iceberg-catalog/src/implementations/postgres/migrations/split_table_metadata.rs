@@ -21,7 +21,7 @@ use sqlx::Postgres;
 ///  - tables that could be dropped cannot be re-created
 ///  - deleted tables that could be re-created cannot be marked as deleted
 ///
-pub async fn split_table_metadata(
+pub(super) async fn split_table_metadata(
     transaction: &mut sqlx::Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let projects = list_projects(None, &mut **transaction).await?;
