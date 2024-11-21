@@ -85,7 +85,7 @@ jobs:
       - name: Regenerate management openapi
         run: just update-management-openapi
       - name: Fail on diff
-        run: git diff -w --ignore-blank-lines --exit-code Cargo.lock openapi/
+        run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock openapi/
       - name: Build TS Client
         run: npx @hey-api/openapi-ts -i openapi/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 

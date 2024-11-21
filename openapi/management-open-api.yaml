@@ -4,7 +4,7 @@ info:
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage users, roles, projects, and warehouses.
   license:
     name: Apache-2.0
-  version: 0.4.3
+  version: 0.4.4
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -3119,5 +3119,6 @@ tags:
   description: Manage Roles
 - name: permissions
   description: Manage Permissions
+
 
 
