@@ -73,10 +73,10 @@ type project
 
     # ------------------ Assignable Privileges ------------------
     # Privileges relevant for the warehouse and sub-objects
-    define describe: [role#assignee] or select or create or data_admin or security_admin
-    define select: [role#assignee] or modify
-    define create: [role#assignee] or data_admin
-    define modify: [role#assignee] or project_admin
+    define describe: [user, role#assignee] or select or create or data_admin or security_admin
+    define select: [user, role#assignee] or modify
+    define create: [user, role#assignee] or data_admin
+    define modify: [user, role#assignee] or project_admin
 
     # ------------------ Actions ------------------
     # Create stuff inside the project / create new warehouses
@@ -117,12 +117,12 @@ type warehouse
     define managed_access_inheritance: managed_access
 
     # ------------------ Assignable Privileges ------------------
-    define pass_grants: [role#assignee]
-    define manage_grants: [role#assignee] or ownership or security_admin from project
-    define describe: [role#assignee] or ownership or select or create or describe from project
-    define select: [role#assignee] or ownership or modify or select from project
-    define create: [role#assignee] or ownership or create from project
-    define modify: [role#assignee] or ownership or modify from project or data_admin from project
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or ownership or security_admin from project
+    define describe: [user, role#assignee] or ownership or select or create or describe from project
+    define select: [user, role#assignee] or ownership or modify or select from project
+    define create: [user, role#assignee] or ownership or create from project
+    define modify: [user, role#assignee] or ownership or modify from project or data_admin from project
 
     # ------------------ Actions ------------------
     define can_create_namespace: create
@@ -165,12 +165,12 @@ type namespace
     define managed_access_inheritance: managed_access or managed_access_inheritance from parent
 
     # ------------------ Assignable Privileges ------------------
-    define pass_grants: [role#assignee]
-    define manage_grants: [role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
-    define describe: [role#assignee] or ownership or select or create or describe from parent
-    define select: [role#assignee] or ownership or modify or select from parent
-    define create: [role#assignee] or ownership or create from parent
-    define modify: [role#assignee] or ownership or modify from parent
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    define describe: [user, role#assignee] or ownership or select or create or describe from parent
+    define select: [user, role#assignee] or ownership or modify or select from parent
+    define create: [user, role#assignee] or ownership or create from parent
+    define modify: [user, role#assignee] or ownership or modify from parent
 
     # ------------------ Actions ------------------
     define can_create_table: create
@@ -203,11 +203,11 @@ type table
     define ownership: [user, role#assignee]
 
     # ------------------ Assignable Privileges ------------------
-    define pass_grants: [role#assignee]
-    define manage_grants: [role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
-    define describe: [role#assignee] or ownership or select or describe from parent
-    define select: [role#assignee] or ownership or modify or select from parent
-    define modify: [role#assignee] or ownership or modify from parent
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    define describe: [user, role#assignee] or ownership or select or describe from parent
+    define select: [user, role#assignee] or ownership or modify or select from parent
+    define modify: [user, role#assignee] or ownership or modify from parent
 
     # ------------------ Actions ------------------
     define can_drop: modify
@@ -236,10 +236,10 @@ type view
     define ownership: [user, role#assignee]
 
     # ------------------ Assignable Privileges ------------------
-    define pass_grants: [role#assignee]
-    define manage_grants: [role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
-    define describe: [role#assignee] or ownership or modify or describe from parent
-    define modify: [role#assignee] or ownership or modify from parent
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    define describe: [user, role#assignee] or ownership or modify or describe from parent
+    define modify: [user, role#assignee] or ownership or modify from parent
 
     # ------------------ Actions ------------------
     define can_drop: modify
