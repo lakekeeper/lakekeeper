@@ -214,6 +214,7 @@ fn sign(
     };
 
     let mut sign_settings = SigningSettings::default();
+    sign_settings.percent_encoding_mode = aws_sigv4::http_request::PercentEncodingMode::Single;
     sign_settings.payload_checksum_kind = aws_sigv4::http_request::PayloadChecksumKind::XAmzSha256;
     let identity = credentials.into();
     let signing_params = v4::SigningParams::builder()
@@ -302,14 +303,18 @@ fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
     for segment in path_segments {
         new_path_segments.push(
             urlencoding::decode(segment)
-                .map(|s| s.replace(' ', "+"))
+                .map(|s| {
+                    aws_smithy_http::label::fmt_string(
+                        s,
+                        aws_smithy_http::label::EncodingStrategy::Greedy,
+                    )
+                })
                 .map_err(|e| {
-                    ErrorModel::builder()
-                        .code(http::StatusCode::BAD_REQUEST.into())
-                        .message("Failed to decode URI segment".to_string())
-                        .r#type("FailedToDecodeURISegment".to_string())
-                        .source(Some(Box::new(e)))
-                        .build()
+                    ErrorModel::bad_request(
+                        "Failed to decode URI segment",
+                        "FailedToDecodeURISegment",
+                        Some(Box::new(e)),
+                    )
                 })?,
         );
     }

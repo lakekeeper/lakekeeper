@@ -13,6 +13,12 @@ import requests
 # ---- Core
 MANAGEMENT_URL = os.environ.get("LAKEKEEPER_TEST__MANAGEMENT_URL")
 CATALOG_URL = os.environ.get("LAKEKEEPER_TEST__CATALOG_URL")
+# ---- AWS
+AWS_S3_ACCESS_KEY = os.environ.get("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY")
+AWS_S3_SECRET_KEY = os.environ.get("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
+AWS_S3_BUCKET = os.environ.get("LAKEKEEPER_TEST__AWS_S3_BUCKET")
+AWS_S3_REGION = os.environ.get("LAKEKEEPER_TEST__AWS_S3_REGION")
+AWS_S3_STS_ROLE_ARN = os.environ.get("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN")
 # ---- S3
 S3_ACCESS_KEY = os.environ.get("LAKEKEEPER_TEST__S3_ACCESS_KEY")
 S3_SECRET_KEY = os.environ.get("LAKEKEEPER_TEST__S3_SECRET_KEY")
@@ -62,6 +68,20 @@ if S3_ACCESS_KEY is not None:
             "must be one of 'both', 'enabled', 'disabled'"
         )
 
+if AWS_S3_ACCESS_KEY is not None:
+    if S3_STS_MODE == "both":
+        STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": True})
+        STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": False})
+    elif S3_STS_MODE == "enabled":
+        STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": True})
+    elif S3_STS_MODE == "disabled":
+        STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": False})
+    else:
+        raise ValueError(
+            f"Invalid LAKEKEEPER_TEST__S3_STS_MODE: {S3_STS_MODE}. "
+            "must be one of 'both', 'enabled', 'disabled'"
+        )
+
 if AZURE_CLIENT_ID is not None:
     STORAGE_CONFIGS.append({"type": "azure"})
 
@@ -102,6 +122,35 @@ def storage_config(request) -> dict:
                 "credential-type": "access-key",
                 "aws-access-key-id": S3_ACCESS_KEY,
                 "aws-secret-access-key": S3_SECRET_KEY,
+            },
+        }
+    elif request.param["type"] == "aws":
+        if AWS_S3_BUCKET is None or AWS_S3_BUCKET == "":
+            pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
+
+        if S3_PATH_STYLE_ACCESS is not None and S3_PATH_STYLE_ACCESS != "":
+            path_style_access = string_to_bool(S3_PATH_STYLE_ACCESS)
+        else:
+            path_style_access = None
+
+        if AWS_S3_REGION is None:
+            pytest.skip("LAKEKEEPER_TEST__AWS_S3_REGION is not set")
+
+        return {
+            "storage-profile": {
+                "type": "s3",
+                "bucket": AWS_S3_BUCKET,
+                "region": AWS_S3_REGION,
+                "path-style-access": path_style_access,
+                "flavor": "aws",
+                "sts-enabled": request.param["sts-enabled"],
+                "sts-role-arn": AWS_S3_STS_ROLE_ARN if request.param["sts-enabled"] else None,
+            },
+            "storage-credential": {
+                "type": "s3",
+                "credential-type": "access-key",
+                "aws-access-key-id": AWS_S3_ACCESS_KEY,
+                "aws-secret-access-key": AWS_S3_SECRET_KEY,
             },
         }
     elif request.param["type"] == "azure":
@@ -148,16 +197,19 @@ def io_fsspec(storage_config: dict):
     import fsspec
 
     if storage_config["storage-profile"]["type"] == "s3":
+        client_kwargs = {
+            "region_name": storage_config["storage-profile"]["region"],
+            "use_ssl": False,
+        }
+        if "endpoint" in storage_config["storage-profile"]:
+            client_kwargs["endpoint_url"] = storage_config["storage-profile"]["endpoint"]
+
         fs = fsspec.filesystem(
             "s3",
             anon=False,
             key=storage_config["storage-credential"]["aws-access-key-id"],
             secret=storage_config["storage-credential"]["aws-secret-access-key"],
-            client_kwargs={
-                "region_name": storage_config["storage-profile"]["region"],
-                "endpoint_url": storage_config["storage-profile"]["endpoint"],
-                "use_ssl": False,
-            },
+            client_kwargs=client_kwargs,
         )
 
         return fs
@@ -186,7 +238,7 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-        self, name: str, project_id: uuid.UUID, storage_config: dict
+            self, name: str, project_id: uuid.UUID, storage_config: dict
     ) -> uuid.UUID:
         """Create a warehouse in this server"""
 

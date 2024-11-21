@@ -14,9 +14,18 @@ use iceberg_ext::configs::{self, ConfigProperty, Location};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::LazyLock;
+use std::time::Duration;
 use veil::Redact;
 
 use super::StorageType;
+
+static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::ClientBuilder::new()
+        .http2_keep_alive_timeout(Duration::from_millis(18500))
+        .build()
+        .expect("This should never fail since we are just setting timeout to 18500 which does not populate config.error")
+});
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -97,7 +106,7 @@ impl S3Profile {
         &self,
         credential: Option<&aws_credential_types::Credentials>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("s3");
+        let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client((*S3_CLIENT).clone());
 
         builder = builder.with_prop(iceberg::io::S3_REGION, self.region.clone());
 

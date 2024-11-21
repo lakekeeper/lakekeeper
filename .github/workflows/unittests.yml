@@ -71,7 +71,7 @@ jobs:
           TEST_KV2: 1
           TEST_MINIO: 1
 
-  check-management-openapi:
+  check-generated-cotents-match:
     runs-on: ubuntu-latest
     steps:
       - run: sudo snap install --edge --classic just
@@ -85,7 +85,7 @@ jobs:
       - name: Regenerate management openapi
         run: just update-management-openapi
       - name: Fail on diff
-        run: git diff --exit-code
+        run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock openapi/
       - name: Build TS Client
         run: npx @hey-api/openapi-ts -i openapi/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 

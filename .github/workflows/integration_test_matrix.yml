@@ -1,4 +1,4 @@
-name: Trino Integration
+name: integration tests
 
 on:
   push:
@@ -40,34 +40,13 @@ jobs:
         with:
           name: iceberg-catalog-image
           path: /tmp/*.tar
-
-  test-trino:
+  tests:
     needs: docker
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Restore binary
-        uses: actions/download-artifact@v4
-        with:
-          name: iceberg-catalog-image
-          path: artifacts
-
-      - name: Display structure of downloaded files
-        run: ls -Rlh artifacts
-
-      - name: Restore Docker image
-        run: |
-          docker load -i artifacts/iceberg-catalog-amd64.tar
-
-      - name: Test Trino
-        run: |
-          cd tests &&
-          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_trino.sh"
-
-        env:
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
-      - name: Dump docker logs on failure
-        if: failure()
-        uses: jwalton/gh-docker-logs@v2
+    strategy:
+      fail-fast: false
+      matrix:
+        names: [ openfga, pyiceberg, spark_adls, spark_aws_remote_signing, spark_aws_sts, spark_gcs, spark_minio_sts, spark_minio_remote_signing, starrocks, trino ]
+    uses: ./.github/workflows/integration_test_workflow.yml
+    with:
+        test_name: ${{ matrix.names }}
+    secrets: inherit

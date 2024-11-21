@@ -3,9 +3,11 @@
 set -e
 
 source common.sh
+
 setup_python
+
 
 # Running tests
 echo "Running tests ..."
 cd python
-tox -qe spark_gcs,spark_minio_remote_signing,spark_minio_sts,spark_adls
+tox -qe spark_aws_sts

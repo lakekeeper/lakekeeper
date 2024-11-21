@@ -44,10 +44,10 @@ const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 struct GetAccessQuery {
-    // /// The user or role to show access for.
-    // /// If not specified, shows access for the current user.
-    // #[serde(default)]
-    // principal: Option<UserOrRole>,
+    /// The user or role to show access for.
+    /// If not specified, shows access for the current user.
+    #[serde(default)]
+    principal: Option<UserOrRole>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
@@ -290,11 +290,16 @@ async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
     Path(role_id): Path<RoleId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetRoleAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &role_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &role_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -317,10 +322,16 @@ async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
 async fn get_server_access<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations = get_allowed_actions(authorizer, metadata.actor(), &OPENFGA_SERVER).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &OPENFGA_SERVER,
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -343,7 +354,7 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
 async fn get_project_access<C: Catalog, S: SecretStore>(
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
@@ -351,8 +362,13 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
         .project_id()
         .or(*DEFAULT_PROJECT_ID)
         .ok_or(OpenFGAError::NoProjectId)?;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &project_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &project_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -379,11 +395,16 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     Path(project_id): Path<ProjectIdent>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &project_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &project_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -410,11 +431,16 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseIdent>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetWarehouseAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &warehouse_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &warehouse_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -573,11 +599,16 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     Path(namespace_id): Path<NamespaceIdentUuid>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetNamespaceAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &namespace_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &namespace_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -604,11 +635,16 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     Path(table_id): Path<TableIdentUuid>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &table_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &table_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -635,11 +671,16 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     Path(view_id): Path<ViewIdentUuid>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-    Query(_query): Query<GetAccessQuery>,
+    Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let relations =
-        get_allowed_actions(authorizer, metadata.actor(), &view_id.to_openfga()).await?;
+    let relations = get_allowed_actions(
+        authorizer,
+        metadata.actor(),
+        &view_id.to_openfga(),
+        &query.principal,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -1397,19 +1438,39 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     authorizer: OpenFGAAuthorizer,
     actor: &Actor,
     object: &str,
+    for_principal: &Option<UserOrRole>,
 ) -> OpenFGAResult<Vec<A>> {
-    // Fail fast
-    if actor == &Actor::Anonymous {
-        return Err(OpenFGAError::AuthenticationRequired);
-    }
-
     let openfga_actor = actor.to_openfga();
     let openfga_object = object.to_string();
+
+    if for_principal.is_some() || actor == &Actor::Anonymous {
+        // AuthZ
+        let key = CheckRequestTupleKey {
+            user: openfga_actor.clone(),
+            // This is identical for all entities and checked in unittests. Hence we use `RoleAction`
+            relation: RoleAction::ReadAssignments.to_openfga().to_string(),
+            object: openfga_object.clone(),
+        };
+
+        let allowed = authorizer.clone().check(key).await?;
+        if !allowed {
+            return Err(OpenFGAError::Unauthorized {
+                user: openfga_actor.clone(),
+                relation: RoleAction::ReadAssignments.to_openfga().to_string(),
+                object: object.to_string(),
+            });
+        }
+    }
+
     let actions = A::iter().collect::<Vec<_>>();
+    let for_principal = for_principal
+        .as_ref()
+        .map(super::entities::OpenFgaEntity::to_openfga)
+        .unwrap_or(openfga_actor.to_string());
 
     let actions = actions.iter().map(|action| async {
         let key = CheckRequestTupleKey {
-            user: openfga_actor.clone(),
+            user: for_principal.clone(),
             relation: action.to_openfga().to_string(),
             object: openfga_object.clone(),
         };
@@ -1648,13 +1709,42 @@ mod tests {
             );
         }
 
+        #[test]
+        fn test_can_read_assignments_identical() {
+            let role_assignment = RoleAction::ReadAssignments.to_openfga().to_string();
+            assert_eq!(
+                role_assignment,
+                ServerAction::ReadAssignments.to_openfga().to_string()
+            );
+            assert_eq!(
+                role_assignment,
+                ProjectAction::ReadAssignments.to_openfga().to_string()
+            );
+            assert_eq!(
+                role_assignment,
+                WarehouseAction::ReadAssignments.to_openfga().to_string()
+            );
+            assert_eq!(
+                role_assignment,
+                NamespaceAction::ReadAssignments.to_openfga().to_string()
+            );
+            assert_eq!(
+                role_assignment,
+                TableAction::ReadAssignments.to_openfga().to_string()
+            );
+            assert_eq!(
+                role_assignment,
+                ViewAction::ReadAssignments.to_openfga().to_string()
+            );
+        }
+
         #[tokio::test]
-        async fn test_get_allowed_actions() {
+        async fn test_get_allowed_actions_as_user() {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
             let actor = Actor::Principal(user_id.clone());
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1673,9 +1763,102 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
                     .await
                     .unwrap();
+            for action in ServerAction::iter() {
+                assert!(access.contains(&action));
+            }
+        }
+
+        #[tokio::test]
+        async fn test_get_allowed_actions_as_role() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+            let user_id = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let actor = Actor::Role {
+                principal: user_id.clone(),
+                assumed_role: role_id,
+            };
+            let access: Vec<ServerAction> =
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                    .await
+                    .unwrap();
+            assert!(access.is_empty());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: role_id.into_assignees().to_openfga(),
+                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        object: OPENFGA_SERVER.to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let access: Vec<ServerAction> =
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                    .await
+                    .unwrap();
+            for action in ServerAction::iter() {
+                assert!(access.contains(&action));
+            }
+        }
+
+        #[tokio::test]
+        async fn test_get_allowed_actions_for_other_principal() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+            let user_id = UserId::new(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+            let actor = Actor::Principal(user_id.clone());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id.to_openfga(),
+                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        object: OPENFGA_SERVER.to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let access: Vec<ServerAction> = get_allowed_actions(
+                authorizer.clone(),
+                &actor,
+                &OPENFGA_SERVER,
+                &Some(role_id.into()),
+            )
+            .await
+            .unwrap();
+            assert!(access.is_empty());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: role_id.into_assignees().to_openfga(),
+                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        object: OPENFGA_SERVER.to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let access: Vec<ServerAction> = get_allowed_actions(
+                authorizer.clone(),
+                &actor,
+                &OPENFGA_SERVER,
+                &Some(role_id.into()),
+            )
+            .await
+            .unwrap();
             for action in ServerAction::iter() {
                 assert!(access.contains(&action));
             }
@@ -1785,9 +1968,7 @@ mod tests {
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
-                    ProjectAssignment::Describe {
-                        role: role_id.into_assignees(),
-                    },
+                    ProjectAssignment::Describe(UserOrRole::Role(role_id.into_assignees())),
                     ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_assignees())),
                     ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
                 ],
