@@ -1,13 +1,37 @@
 use crate::api;
 use crate::api::iceberg::v1::PaginationQuery;
+use crate::implementations::postgres::migrations::{Migration, MigrationHook};
 use crate::implementations::postgres::tabular::table::create_table;
 use crate::implementations::postgres::tabular::{
     list_tabulars, mark_tabular_as_deleted, table, TabularType,
 };
 use crate::implementations::postgres::warehouse::{list_projects, list_warehouses};
 use crate::service::{ListFlags, TableCreation, TabularIdentUuid, WarehouseStatus};
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::Postgres;
+
+pub(super) struct SplitTableMetadataHook;
+
+impl MigrationHook for SplitTableMetadataHook {
+    fn apply<'c>(
+        &self,
+        trx: &'c mut sqlx::Transaction<'_, Postgres>,
+    ) -> BoxFuture<'c, api::Result<()>> {
+        split_table_metadata(trx).boxed()
+    }
+
+    fn migration() -> Migration
+    where
+        Self: Sized,
+    {
+        Migration {
+            version: 20_241_106_201_139,
+            description: "split_table_metadata".into(),
+        }
+    }
+}
 
 // FIXME: delete after migration period is done
 #[allow(clippy::too_many_lines)]
@@ -20,8 +44,7 @@ use sqlx::Postgres;
 ///  - tables that could be loaded cannot be dropped
 ///  - tables that could be dropped cannot be re-created
 ///  - deleted tables that could be re-created cannot be marked as deleted
-///
-pub(super) async fn split_table_metadata(
+async fn split_table_metadata(
     transaction: &mut sqlx::Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let projects = list_projects(None, &mut **transaction).await?;

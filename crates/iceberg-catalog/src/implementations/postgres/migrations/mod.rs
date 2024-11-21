@@ -1,9 +1,11 @@
-use crate::implementations::postgres::migrations::split_table_metadata::split_table_metadata;
+use crate::implementations::postgres::migrations::split_table_metadata::SplitTableMetadataHook;
 use crate::implementations::postgres::{CatalogState, PostgresTransaction};
 use crate::service::Transaction;
 use anyhow::anyhow;
+use futures::future::BoxFuture;
 use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migrator};
 use sqlx::{Error, Postgres};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 mod split_table_metadata;
@@ -12,7 +14,7 @@ mod split_table_metadata;
 /// Returns an error if the migration fails.
 pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     let migrator = sqlx::migrate!();
-
+    let mut hooks = get_data_migrations();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
     let mut trx = PostgresTransaction::begin_write(catalog_state.clone())
@@ -42,11 +44,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         } else {
             tr.apply(&migration).await?;
 
-            if migration.version == 20_241_106_201_139
-                && migration.description == "split_table_metadata"
-            {
+            if let Some(hook) = hooks.remove(&sqlx_mig_to_key(&migration)) {
                 tracing::info!("Running split_table_metadata migration");
-                split_table_metadata(tr).await.map_err(|e| e.error)?;
+                hook.apply(tr).await.map_err(|e| e.error)?;
                 tracing::info!("split_table_metadata migration complete");
             }
         }
@@ -130,6 +130,37 @@ pub enum MigrationState {
     Complete,
     Missing,
     NoMigrationsTable,
+}
+
+pub trait MigrationHook: Send + Sync + 'static {
+    fn apply<'c>(
+        &self,
+        trx: &'c mut sqlx::Transaction<'_, Postgres>,
+    ) -> BoxFuture<'c, crate::api::Result<()>>;
+
+    fn migration() -> Migration
+    where
+        Self: Sized;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Migration {
+    version: i64,
+    description: Cow<'static, str>,
+}
+
+fn sqlx_mig_to_key(mig: &sqlx::migrate::Migration) -> Migration {
+    Migration {
+        version: mig.version,
+        description: mig.description.clone(),
+    }
+}
+
+fn get_data_migrations() -> HashMap<Migration, Box<dyn MigrationHook>> {
+    HashMap::from([(
+        SplitTableMetadataHook::migration(),
+        Box::new(SplitTableMetadataHook) as Box<_>,
+    )])
 }
 
 fn validate_applied_migrations(
