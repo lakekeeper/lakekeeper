@@ -143,6 +143,20 @@ impl OpenFgaEntity for ProjectIdent {
     }
 }
 
+impl ParseOpenFgaEntity for ProjectIdent {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+        if r#type != FgaType::Project {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Project],
+                id.to_string(),
+            ));
+        }
+
+        ProjectIdent::from_str(id)
+            .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string()))
+    }
+}
+
 impl OpenFgaEntity for WarehouseIdent {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())

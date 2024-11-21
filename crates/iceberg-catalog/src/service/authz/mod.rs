@@ -128,7 +128,7 @@ impl TableUuid for TableIdentUuid {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ListProjectsResponse {
     /// List of projects that the user is allowed to see.
     Projects(HashSet<ProjectIdent>),
