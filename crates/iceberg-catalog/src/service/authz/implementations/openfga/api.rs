@@ -1787,7 +1787,7 @@ mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
-                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: OPENFGA_SERVER.to_string(),
                         condition: None,
                     }]),
@@ -1816,7 +1816,7 @@ mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
-                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: OPENFGA_SERVER.to_string(),
                         condition: None,
                     }]),
@@ -1839,7 +1839,7 @@ mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
-                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: OPENFGA_SERVER.to_string(),
                         condition: None,
                     }]),
