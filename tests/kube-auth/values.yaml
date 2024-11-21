@@ -19,8 +19,8 @@ helmWait: true
 catalog:
   image:
     repository: localhost/iceberg-catalog-local
-    tag: latest
-    pullPolicy: Never
+    tag: amd64
+    pullPolicy: IfNotPresent
     # -- 65532 = nonroot of google container distroless
     uid: 65532
     # -- 65534 = nobody of google container distroless
