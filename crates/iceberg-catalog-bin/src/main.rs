@@ -128,12 +128,12 @@ async fn main() -> anyhow::Result<()> {
 
             // This embeds database migrations in the application binary so we can ensure the database
             // is migrated correctly on startup
-            iceberg_catalog::implementations::postgres::migrate(&write_pool).await?;
+            iceberg_catalog::implementations::postgres::migrations::migrate(&write_pool).await?;
             println!("Database migration complete.");
 
             println!("Migrating old tables");
             let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
-            iceberg_catalog::implementations::postgres::tabular::table::migration::migrate_tables(
+            iceberg_catalog::implementations::postgres::migrations::split_table_metadata::split_table_metadata(
                 catalog_state,
             )
             .await

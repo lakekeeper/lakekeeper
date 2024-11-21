@@ -21,7 +21,9 @@ use sqlx::Postgres;
 ///  - tables that could be dropped cannot be re-created
 ///  - deleted tables that could be re-created cannot be marked as deleted
 ///
-pub async fn migrate_tables(transaction: &mut sqlx::Transaction<'_, Postgres>) -> api::Result<()> {
+pub async fn split_table_metadata(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+) -> api::Result<()> {
     let projects = list_projects(None, &mut **transaction).await?;
     for project in projects {
         tracing::info!("Migrating tables for project {}", project.project_id);
@@ -102,9 +104,9 @@ pub async fn migrate_tables(transaction: &mut sqlx::Transaction<'_, Postgres>) -
 #[cfg(test)]
 mod test {
     use crate::api::iceberg::v1::PaginationQuery;
+    use crate::implementations::postgres::migrations::split_table_metadata::split_table_metadata;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::tabular::list_tabulars;
-    use crate::implementations::postgres::tabular::table::migration::migrate_tables;
     use crate::implementations::postgres::tabular::table::tests::get_namespace_id;
     use crate::implementations::postgres::tabular::table::{create_table, load_tables};
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
@@ -124,7 +126,7 @@ mod test {
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
 
-        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+        let jsons = include_str!("../../../../tests/table_metadatas.jsonl")
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<TableMetadata>, _>>()
@@ -166,7 +168,7 @@ mod test {
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
 
-        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+        let jsons = include_str!("../../../../tests/table_metadatas.jsonl")
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<TableMetadata>, _>>()
@@ -191,7 +193,7 @@ mod test {
         trx.commit().await.unwrap();
 
         let mut trx = pool.begin().await.unwrap();
-        migrate_tables(&mut trx).await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
 
         for js in jsons {
             let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
@@ -225,7 +227,7 @@ mod test {
                 .collect::<HashMap<_, _>>();
 
         let mut trx = pool.begin().await.unwrap();
-        migrate_tables(&mut trx).await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
             let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
@@ -260,7 +262,7 @@ mod test {
                 })
                 .collect::<HashMap<_, _>>();
 
-        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+        let jsons = include_str!("../../../../tests/table_metadatas.jsonl")
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<TableMetadata>, _>>()
@@ -285,7 +287,7 @@ mod test {
         trx.commit().await.unwrap();
 
         let mut trx = pool.begin().await.unwrap();
-        migrate_tables(&mut trx).await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
 
         for js in jsons {
             let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
@@ -339,7 +341,7 @@ mod test {
         .unwrap();
         let mut trx = pool.begin().await.unwrap();
 
-        migrate_tables(&mut trx).await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
 
         let tabs = list_tabulars(
             (*whid).into(),

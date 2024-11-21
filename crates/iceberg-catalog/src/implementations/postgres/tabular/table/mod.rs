@@ -1,7 +1,6 @@
 mod commit;
 mod common;
 mod create;
-pub mod migration;
 
 pub(crate) use commit::commit_table_transaction;
 pub(crate) use create::create_table;

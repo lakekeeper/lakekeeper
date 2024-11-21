@@ -1,6 +1,7 @@
 mod bootstrap;
 mod catalog;
 pub(crate) mod dbutils;
+pub mod migrations;
 pub(crate) mod namespace;
 mod pagination;
 pub(crate) mod role;
@@ -47,81 +48,6 @@ pub async fn get_writer_pool(pool_opts: PgPoolOptions) -> anyhow::Result<sqlx::P
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Error creating write pool."))?;
     Ok(pool)
-}
-
-/// # Errors
-/// Returns an error if the migration fails.
-pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
-    let migrator = sqlx::migrate!();
-    let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-    let mut trx = PostgresTransaction::begin_write(catalog_state.clone())
-        .await
-        .map_err(|e| e.error)?;
-
-    for mig in migrator.iter() {
-        if mig.migration_type.is_down_migration() {
-            continue;
-        }
-        if mig.description.contains("bla") {
-            tabular::table::migration::migrate_tables(trx.transaction())
-                .await
-                .map_err(|e| e.error)?;
-        }
-        trx.transaction().apply(mig).await?;
-    }
-    migrator
-        .run(pool)
-        .await
-        .map_err(|e| anyhow::anyhow!(e).context("Error migrating database."))?;
-    Ok(())
-}
-
-/// # Errors
-/// Returns an error if db connection fails or if migrations are missing.
-pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
-    let mut conn = pool.acquire().await?;
-    let m = sqlx::migrate!();
-    let applied_migrations = match conn.list_applied_migrations().await {
-        Ok(migrations) => migrations,
-        Err(e) => {
-            if let MigrateError::Execute(Error::Database(db)) = &e {
-                if db.code().as_deref() == Some("42P01") {
-                    tracing::debug!(?db, "No migrations have been applied.");
-                    return Ok(MigrationState::NoMigrationsTable);
-                };
-            };
-            // we discard the error here since sqlx prefixes db errors with "while executing
-            // migrations" which is not what we are doing here.
-            tracing::debug!(?e, "Error listing applied migrations, even though the error may say different things, we are not applying migrations here.");
-            return Err(anyhow!("Error listing applied migrations"));
-        }
-    };
-
-    let to_be_applied = m
-        .migrations
-        .iter()
-        .map(|mig| (mig.version, &*mig.checksum))
-        .collect::<HashSet<_>>();
-    let applied = applied_migrations
-        .iter()
-        .map(|mig| (mig.version, &*mig.checksum))
-        .collect::<HashSet<_>>();
-    let missing = to_be_applied.difference(&applied).collect::<HashSet<_>>();
-
-    if missing.is_empty() {
-        tracing::debug!("Migrations are up to date.");
-        Ok(MigrationState::Complete)
-    } else {
-        tracing::debug!(?missing, "Migrations are missing.");
-        Ok(MigrationState::Missing)
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum MigrationState {
-    Complete,
-    Missing,
-    NoMigrationsTable,
 }
 
 #[derive(Debug, Clone)]
