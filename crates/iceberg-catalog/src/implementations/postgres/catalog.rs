@@ -396,9 +396,9 @@ impl Catalog for super::PostgresCatalog {
 
     async fn list_projects(
         project_ids: Option<HashSet<ProjectIdent>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetProjectResponse>> {
-        list_projects(project_ids, catalog_state).await
+        list_projects(project_ids, &mut **transaction).await
     }
 
     async fn rename_project<'a>(
@@ -412,9 +412,9 @@ impl Catalog for super::PostgresCatalog {
     async fn list_warehouses(
         project_id: ProjectIdent,
         include_inactive: Option<Vec<WarehouseStatus>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetWarehouseResponse>> {
-        list_warehouses(project_id, include_inactive, catalog_state).await
+        list_warehouses(project_id, include_inactive, &mut **transaction).await
     }
 
     async fn get_warehouse<'a>(

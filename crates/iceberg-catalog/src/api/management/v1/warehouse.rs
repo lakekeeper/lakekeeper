@@ -310,12 +310,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
 
         // ------------------- Business Logic -------------------
-        let warehouses = C::list_warehouses(
-            project_id,
-            request.warehouse_status,
-            context.v1_state.catalog,
-        )
-        .await?;
+        let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
+
+        let warehouses =
+            C::list_warehouses(project_id, request.warehouse_status, trx.transaction()).await?;
+        trx.commit().await?;
 
         let warehouses = futures::future::try_join_all(warehouses.iter().map(|w| {
             authorizer.is_allowed_warehouse_action(

@@ -482,7 +482,7 @@ where
     /// If project_ids is None, return all projects, otherwise return only the projects in the set
     async fn list_projects(
         project_ids: Option<HashSet<ProjectIdent>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetProjectResponse>>;
 
     /// Return a list of all warehouse in a project
@@ -491,7 +491,7 @@ where
         // If None, return only active warehouses
         // If Some, return only warehouses with any of the statuses in the set
         include_inactive: Option<Vec<WarehouseStatus>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetWarehouseResponse>>;
 
     /// Get the warehouse metadata - should only return active warehouses.

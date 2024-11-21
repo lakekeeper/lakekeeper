@@ -25,6 +25,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::service::Transaction;
 pub use secrets::SecretsState;
 pub use tabular::DeletionKind;
 
@@ -51,7 +52,24 @@ pub async fn get_writer_pool(pool_opts: PgPoolOptions) -> anyhow::Result<sqlx::P
 /// # Errors
 /// Returns an error if the migration fails.
 pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
-    sqlx::migrate!()
+    let migrator = sqlx::migrate!();
+    let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+    let mut trx = PostgresTransaction::begin_write(catalog_state.clone())
+        .await
+        .map_err(|e| e.error)?;
+
+    for mig in migrator.iter() {
+        if mig.migration_type.is_down_migration() {
+            continue;
+        }
+        if mig.description.contains("bla") {
+            tabular::table::migration::migrate_tables(trx.transaction())
+                .await
+                .map_err(|e| e.error)?;
+        }
+        trx.transaction().apply(mig).await?;
+    }
+    migrator
         .run(pool)
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Error migrating database."))?;
