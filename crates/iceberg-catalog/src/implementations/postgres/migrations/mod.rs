@@ -16,7 +16,7 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     let migrator = sqlx::migrate!();
     let mut hooks = get_data_migrations();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-
+    tracing::info!("Hooks: {:?}", hooks.keys().collect::<Vec<_>>());
     let mut trx = PostgresTransaction::begin_write(catalog_state.clone())
         .await
         .map_err(|e| e.error)?;
@@ -30,6 +30,7 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     let applied_migrations = run_checks(&migrator, tr).await?;
 
     for migration in migrator.iter() {
+        tracing::info!(%migration.version, %migration.description, "Current migration");
         let mut migration = migration.clone();
         // we are in a tx, so we don't need to start a new one
         migration.no_tx = true;
@@ -41,13 +42,16 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             if migration.checksum != applied_migration.checksum {
                 return Err(MigrateError::VersionMismatch(migration.version))?;
             }
+            tracing::info!(%migration.version, "Migration already applied");
         } else {
             tr.apply(&migration).await?;
-
-            if let Some(hook) = hooks.remove(&sqlx_mig_to_key(&migration)) {
-                tracing::info!("Running split_table_metadata migration");
+            tracing::info!(%migration.version, "Applying migration");
+            if let Some(hook) = hooks.remove(&migration.version) {
+                tracing::info!(%migration.version, "Running split_table_metadata migration");
                 hook.apply(tr).await.map_err(|e| e.error)?;
-                tracing::info!("split_table_metadata migration complete");
+                tracing::info!(%migration.version, "split_table_metadata migration complete");
+            } else {
+                tracing::info!(%migration.version, "No hook for migration");
             }
         }
     }
@@ -138,7 +142,7 @@ pub trait MigrationHook: Send + Sync + 'static {
         trx: &'c mut sqlx::Transaction<'_, Postgres>,
     ) -> BoxFuture<'c, crate::api::Result<()>>;
 
-    fn migration() -> Migration
+    fn version() -> i64
     where
         Self: Sized;
 }
@@ -149,16 +153,9 @@ pub struct Migration {
     description: Cow<'static, str>,
 }
 
-fn sqlx_mig_to_key(mig: &sqlx::migrate::Migration) -> Migration {
-    Migration {
-        version: mig.version,
-        description: mig.description.clone(),
-    }
-}
-
-fn get_data_migrations() -> HashMap<Migration, Box<dyn MigrationHook>> {
+fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
     HashMap::from([(
-        SplitTableMetadataHook::migration(),
+        SplitTableMetadataHook::version(),
         Box::new(SplitTableMetadataHook) as Box<_>,
     )])
 }

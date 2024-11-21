@@ -22,14 +22,11 @@ impl MigrationHook for SplitTableMetadataHook {
         split_table_metadata(trx).boxed()
     }
 
-    fn migration() -> Migration
+    fn version() -> i64
     where
         Self: Sized,
     {
-        Migration {
-            version: 20_241_106_201_139,
-            description: "split_table_metadata".into(),
-        }
+        20_241_106_201_139
     }
 }
 
