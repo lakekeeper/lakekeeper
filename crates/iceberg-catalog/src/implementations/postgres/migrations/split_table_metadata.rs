@@ -1,13 +1,34 @@
 use crate::api;
 use crate::api::iceberg::v1::PaginationQuery;
+use crate::implementations::postgres::migrations::{Migration, MigrationHook};
 use crate::implementations::postgres::tabular::table::create_table;
 use crate::implementations::postgres::tabular::{
     list_tabulars, mark_tabular_as_deleted, table, TabularType,
 };
 use crate::implementations::postgres::warehouse::{list_projects, list_warehouses};
-use crate::implementations::postgres::CatalogState;
 use crate::service::{ListFlags, TableCreation, TabularIdentUuid, WarehouseStatus};
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use iceberg_ext::catalog::rest::ErrorModel;
+use sqlx::Postgres;
+
+pub(super) struct SplitTableMetadataHook;
+
+impl MigrationHook for SplitTableMetadataHook {
+    fn apply<'c>(
+        &self,
+        trx: &'c mut sqlx::Transaction<'_, Postgres>,
+    ) -> BoxFuture<'c, api::Result<()>> {
+        split_table_metadata(trx).boxed()
+    }
+
+    fn version() -> i64
+    where
+        Self: Sized,
+    {
+        20_241_106_201_139
+    }
+}
 
 // FIXME: delete after migration period is done
 #[allow(clippy::too_many_lines)]
@@ -20,26 +41,21 @@ use iceberg_ext::catalog::rest::ErrorModel;
 ///  - tables that could be loaded cannot be dropped
 ///  - tables that could be dropped cannot be re-created
 ///  - deleted tables that could be re-created cannot be marked as deleted
-///
-pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
-    let projects = list_projects(None, catalog_state.clone()).await?;
+async fn split_table_metadata(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let projects = list_projects(None, &mut **transaction).await?;
     for project in projects {
         tracing::info!("Migrating tables for project {}", project.project_id);
         let warehouses = list_warehouses(
             project.project_id,
             Some(vec![WarehouseStatus::Active, WarehouseStatus::Inactive]),
-            catalog_state.clone(),
+            &mut **transaction,
         )
         .await?;
         for warehouse in warehouses {
             let warehouse_id = warehouse.id;
-            let mut transaction = catalog_state.write_pool().begin().await.map_err(|e| {
-                ErrorModel::internal(
-                    "Error starting transaction",
-                    "InternalTransactionError",
-                    Some(Box::new(e)),
-                )
-            })?;
+
             let mut token = None;
             loop {
                 let tabs = list_tabulars(
@@ -47,7 +63,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
                     None,
                     None,
                     ListFlags::all(),
-                    &mut *transaction,
+                    &mut **transaction,
                     Some(TabularType::Table),
                     PaginationQuery::new(token.into(), Some(100)),
                     true,
@@ -61,8 +77,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
                     .map(|k| (*k).try_into())
                     .collect::<api::Result<Vec<_>>>()?;
 
-                let tables =
-                    table::load_tables_old(warehouse_id, ids, true, &mut transaction).await?;
+                let tables = table::load_tables_old(warehouse_id, ids, true, transaction).await?;
                 let n_tables = tables.len();
                 for (idx, (table_id, table)) in tables.into_iter().enumerate() {
                     tracing::info!("Migrating table '{table_id}', {idx}/{n_tables}");
@@ -74,7 +89,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
                             "InternalTableNotFound",
                             None,
                         ))?;
-                    table::drop_table(table_id, &mut transaction).await?;
+                    table::drop_table(table_id, transaction).await?;
 
                     create_table(
                         TableCreation {
@@ -83,7 +98,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
                             metadata_location: table.metadata_location.as_ref(),
                             table_metadata: table.table_metadata,
                         },
-                        &mut transaction,
+                        transaction,
                     )
                     .await?;
 
@@ -91,7 +106,7 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
                         mark_tabular_as_deleted(
                             TabularIdentUuid::Table(*table_id),
                             Some(del.deleted_at),
-                            &mut transaction,
+                            transaction,
                         )
                         .await?;
                     }
@@ -100,13 +115,6 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
                     break;
                 }
             }
-            transaction.commit().await.map_err(|e| {
-                ErrorModel::internal(
-                    "Error committing transaction while migrating tables",
-                    "InternalTransactionError",
-                    Some(Box::new(e)),
-                )
-            })?;
         }
     }
 
@@ -116,9 +124,9 @@ pub async fn migrate_tables(catalog_state: CatalogState) -> api::Result<()> {
 #[cfg(test)]
 mod test {
     use crate::api::iceberg::v1::PaginationQuery;
+    use crate::implementations::postgres::migrations::split_table_metadata::split_table_metadata;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::tabular::list_tabulars;
-    use crate::implementations::postgres::tabular::table::migration::migrate_tables;
     use crate::implementations::postgres::tabular::table::tests::get_namespace_id;
     use crate::implementations::postgres::tabular::table::{create_table, load_tables};
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
@@ -138,7 +146,7 @@ mod test {
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
 
-        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+        let jsons = include_str!("../../../../tests/table_metadatas.jsonl")
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<TableMetadata>, _>>()
@@ -180,7 +188,7 @@ mod test {
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
 
-        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+        let jsons = include_str!("../../../../tests/table_metadatas.jsonl")
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<TableMetadata>, _>>()
@@ -204,9 +212,9 @@ mod test {
         }
         trx.commit().await.unwrap();
 
-        migrate_tables(state.clone()).await.unwrap();
-
         let mut trx = pool.begin().await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
+
         for js in jsons {
             let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
@@ -238,9 +246,8 @@ mod test {
                 })
                 .collect::<HashMap<_, _>>();
 
-        migrate_tables(state.clone()).await.unwrap();
-
         let mut trx = pool.begin().await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
             let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
@@ -275,7 +282,7 @@ mod test {
                 })
                 .collect::<HashMap<_, _>>();
 
-        let jsons = include_str!("../../../../../tests/table_metadatas.jsonl")
+        let jsons = include_str!("../../../../tests/table_metadatas.jsonl")
             .lines()
             .map(serde_json::from_str)
             .collect::<std::result::Result<Vec<TableMetadata>, _>>()
@@ -299,9 +306,9 @@ mod test {
         }
         trx.commit().await.unwrap();
 
-        migrate_tables(state.clone()).await.unwrap();
-
         let mut trx = pool.begin().await.unwrap();
+        split_table_metadata(&mut trx).await.unwrap();
+
         for js in jsons {
             let tables = load_tables(warehouse_id, vec![js.uuid().into()], false, &mut trx)
                 .await
@@ -324,8 +331,6 @@ mod test {
 
     #[sqlx::test(fixtures("deleted_metadata_migration"))]
     async fn test_migrate_deleted_table(pool: sqlx::PgPool) {
-        let state = CatalogState::from_pools(pool.clone(), pool.clone());
-
         let old_tables: HashMap<_, TableMetadata> =
             sqlx::query!(r#"select w.warehouse_id, n.namespace_id, table_id, metadata from "table" t JOIN tabular ta on ta.tabular_id = t.table_id join namespace n on n.namespace_id = ta.namespace_id join warehouse w on n.warehouse_id = w.warehouse_id"#)
                 .fetch_all(&pool)
@@ -354,10 +359,10 @@ mod test {
         )
         .await
         .unwrap();
-
-        migrate_tables(state.clone()).await.unwrap();
-
         let mut trx = pool.begin().await.unwrap();
+
+        split_table_metadata(&mut trx).await.unwrap();
+
         let tabs = list_tabulars(
             (*whid).into(),
             None,
