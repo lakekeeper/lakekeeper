@@ -118,7 +118,7 @@ impl Authorizer for OpenFGAAuthorizer {
         Ok(())
     }
 
-    async fn bootstrap(&self, metadata: &RequestMetadata) -> Result<()> {
+    async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()> {
         let actor = metadata.actor();
         // We don't check the actor as assumed roles are irrelevant for bootstrapping.
         // The principal is the only relevant actor.
@@ -134,10 +134,16 @@ impl Authorizer for OpenFGAAuthorizer {
             }
         };
 
+        let relation = if is_operator {
+            ServerRelation::Operator
+        } else {
+            ServerRelation::Admin
+        };
+
         self.write(
             Some(vec![TupleKey {
                 user: user.to_openfga(),
-                relation: ServerRelation::GlobalAdmin.to_string(),
+                relation: relation.to_string(),
                 object: OPENFGA_SERVER.clone(),
                 condition: None,
             }]),

@@ -1689,7 +1689,7 @@ mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
-                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: OPENFGA_SERVER.to_string(),
                         condition: None,
                     }]),
@@ -1703,10 +1703,7 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 1);
-            assert_eq!(
-                relations,
-                vec![ServerAssignment::GlobalAdmin(user_id.into())]
-            );
+            assert_eq!(relations, vec![ServerAssignment::Admin(user_id.into())]);
         }
 
         #[test]
@@ -1753,7 +1750,7 @@ mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
-                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: OPENFGA_SERVER.to_string(),
                         condition: None,
                     }]),
@@ -1875,7 +1872,7 @@ mod tests {
                 .write(
                     Some(vec![TupleKey {
                         user: user1_id.to_openfga(),
-                        relation: ServerRelation::GlobalAdmin.to_openfga().to_string(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
                         object: OPENFGA_SERVER.to_string(),
                         condition: None,
                     }]),
@@ -1887,7 +1884,7 @@ mod tests {
             checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user1_id.clone()),
-                vec![ServerAssignment::GlobalAdmin(user2_id.into())],
+                vec![ServerAssignment::Admin(user2_id.into())],
                 vec![],
                 &OPENFGA_SERVER,
             )

@@ -1492,6 +1492,12 @@ components:
         accept-terms-of-use:
           type: boolean
           description: Set to true if you accept LAKEKEEPER terms of use.
+        is-operator:
+          type: boolean
+          description: |-
+            If set to true, the calling user is treated as an operator and obtain
+            a corresponding role. If not specified, the user is treated as a human.
+          nullable: true
         user-email:
           type: string
           description: |-
@@ -2478,7 +2484,7 @@ components:
       - update_users
       - delete_users
       - list_users
-      - grant_global_admin
+      - grant_admin
       - provision_users
       - read_assignments
     ServerAssignment:
@@ -2492,8 +2498,19 @@ components:
             type:
               type: string
               enum:
-              - global_admin
-        title: ServerAssignmentGlobalAdmin
+              - admin
+        title: ServerAssignmentAdmin
+      - allOf:
+        - $ref: '#/components/schemas/UserOrRole'
+        - type: object
+          required:
+          - type
+          properties:
+            type:
+              type: string
+              enum:
+              - operator
+        title: ServerAssignmentOperator
       discriminator:
         propertyName: type
     ServerInfo:
@@ -2524,7 +2541,8 @@ components:
     ServerRelation:
       type: string
       enum:
-      - global_admin
+      - admin
+      - operator
     SetManagedAccessRequest:
       type: object
       required:

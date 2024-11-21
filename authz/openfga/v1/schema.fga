@@ -36,22 +36,32 @@ type server
     define project: [project]
 
     # ------------------ Built-in Roles ------------------
-    define global_admin: [user, role#assignee]
+    # The server administrator is able to administrate the server and list all projects.
+    # In order to perform actions inside projects, the admin can assign himself
+    # as `project_admin` on each project. This action is visible in the audit log.
+    # The admin role is designed for human users.
+    define admin: [user, role#assignee]
+
+    # Opererators are more powerful than administrators - they are the most powerful role in
+    # Lakekeeper. The operator role allows usage of all APIs inside the catalog. It is designed
+    # to be used by machines that provision resources inside Lakekeeper, i.e. a `KubernetesOperator`
+    define operator: [user, role#assignee]
 
     # ------------------ Actions ------------------
-    define can_create_project: global_admin
+    define can_create_project: admin or operator
 
     # Anyone can list projects, they are however filtered by can_include_in_list of the project.
-    # Only global_admin can list all projects.
-    define can_list_all_projects: global_admin
-    define can_list_users: global_admin
-    define can_provision_users: global_admin
-    define can_update_users: global_admin
-    define can_delete_users: global_admin
-    define can_read_assignments: global_admin
+    # Only admin can list all projects.
+    define can_list_all_projects: admin or operator
+    define can_list_users: admin or operator
+    define can_provision_users: admin or operator
+    define can_update_users: admin or operator
+    define can_delete_users: admin or operator
+    define can_read_assignments: admin or operator
 
     # GRANT Permissions
-    define can_grant_global_admin: global_admin
+    define can_grant_admin: admin or operator
+    define can_grant_operator: admin or operator
 
 type project
   relations
@@ -63,7 +73,7 @@ type project
     # Project Admin has two purposes:
     # 1. Lock-out protection: Checked to never be empty
     # 2. Granting new privileges, such as billing, which might require separate permissions / admin roles
-    define project_admin: [user, role#assignee]
+    define project_admin: [user, role#assignee] or operator from server
     # Security Admins can manage all security aspects (grants, ownership) but not modify, create or access objects
     define security_admin: [user, role#assignee] or project_admin
     # Data Admins can manage all warehouse aspects but not grant privileges
@@ -84,26 +94,26 @@ type project
     # Drop this project
     define can_delete: modify
     define can_rename: modify
-    define can_get_metadata: describe or can_get_metadata from warehouse or global_admin from server
+    define can_get_metadata: describe or can_get_metadata from warehouse or admin from server
     # Can list elements in this projects - will be filtered subsequently
     define can_list_warehouses: can_get_metadata
     define can_include_in_list: can_get_metadata
     # Roles
     define can_create_role: role_creator
-    define can_list_roles: can_get_metadata or global_admin from server
-    define can_search_roles: can_list_roles or global_admin from server
+    define can_list_roles: can_get_metadata or admin from server
+    define can_search_roles: can_list_roles or admin from server
     # Only if we can GRANT a privilege, we can LIST them for now
-    define can_read_assignments: security_admin or project_admin or global_admin from server
+    define can_read_assignments: security_admin or project_admin or admin from server
 
     # GRANT Permissions
-    define can_grant_role_creator: security_admin or global_admin from server
-    define can_grant_create: security_admin or global_admin from server
-    define can_grant_describe: security_admin or global_admin from server
-    define can_grant_modify: security_admin or global_admin from server
-    define can_grant_select: security_admin or global_admin from server
-    define can_grant_project_admin: project_admin or global_admin from server
-    define can_grant_security_admin: security_admin or global_admin from server
-    define can_grant_data_admin: data_admin or global_admin from server
+    define can_grant_role_creator: security_admin or admin from server
+    define can_grant_create: security_admin or admin from server
+    define can_grant_describe: security_admin or admin from server
+    define can_grant_modify: security_admin or admin from server
+    define can_grant_select: security_admin or admin from server
+    define can_grant_project_admin: project_admin or admin from server
+    define can_grant_security_admin: security_admin or admin from server
+    define can_grant_data_admin: data_admin or admin from server
 
 type warehouse
   relations

@@ -84,9 +84,12 @@ tuples:
   - user: user:*
     relation: managed_access
     object: warehouse:warehouse_2
-  # Roles (Global Admin)
-  - user: user:global_admin
-    relation: global_admin
+  # Roles (Server Admin)
+  - user: user:admin
+    relation: admin
+    object: server:server_1
+  - user: user:operator
+    relation: operator
     object: server:server_1
   # Roles (Project 1 project admin)
   - user: user:project_1_project_admin
@@ -138,13 +141,45 @@ tuples:
     relation: assignee
     object: role:namespace_2_1_owner
 tests:
+  - name: Test Almighty Operator
+    check:
+      - user: user:operator
+        object: server:server_1
+        assertions:
+            can_create_project: true
+            can_list_all_projects: true
+            can_update_users: true
+            can_delete_users: true
+            can_grant_operator: true
+            can_read_assignments: true
+      - user: user:operator
+        object: project:project_1
+        assertions:
+          can_create_warehouse: true
+          can_delete: true
+          can_get_metadata: true
+          can_list_warehouses: true
+          can_include_in_list: true
+          can_rename: true
+          can_grant_create: true
+          can_grant_describe: true
+          can_grant_modify: true
+          can_grant_select: true
+          can_grant_project_admin: true
+          can_grant_security_admin: true
+          can_grant_data_admin: true
   - name: Test Global Admin
     check:
-      - user: user:global_admin
+      - user: user:admin
         object: server:server_1
         assertions:
           can_create_project: true
-      - user: user:global_admin
+          can_list_all_projects: true
+          can_update_users: true
+          can_delete_users: true
+          can_grant_operator: true
+          can_read_assignments: true
+      - user: user:admin
         object: project:project_1
         assertions:
           can_create_warehouse: false
@@ -160,7 +195,7 @@ tests:
           can_grant_project_admin: true
           can_grant_security_admin: true
           can_grant_data_admin: true
-      - user: user:global_admin
+      - user: user:admin
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: false
@@ -183,7 +218,7 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: user:global_admin
+      - user: user:admin
         object: namespace:namespace_1
         assertions:
           can_create_table: false
@@ -202,7 +237,7 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: user:global_admin
+      - user: user:admin
         object: table:table_3
         assertions:
           can_drop: false
@@ -218,7 +253,7 @@ tests:
           can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
-      - user: user:global_admin
+      - user: user:admin
         object: view:view_1
         assertions:
           can_drop: false

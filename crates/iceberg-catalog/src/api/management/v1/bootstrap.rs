@@ -24,6 +24,9 @@ pub enum AuthZBackend {
 pub struct BootstrapRequest {
     /// Set to true if you accept LAKEKEEPER terms of use.
     pub accept_terms_of_use: bool,
+    /// If set to true, the calling user is treated as an operator and obtain
+    /// a corresponding role. If not specified, the user is treated as a human.
+    pub is_operator: Option<bool>,
     /// Name of the user performing bootstrap. Optional. If not provided
     /// the server will try to parse the name from the provided token.
     /// The initial user will become the global admin.
@@ -69,6 +72,7 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             user_email,
             user_type,
             accept_terms_of_use,
+            is_operator,
         } = request;
 
         if !accept_terms_of_use {
@@ -129,7 +133,9 @@ pub(super) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
         }
 
-        authorizer.bootstrap(&request_metadata).await?;
+        authorizer
+            .bootstrap(&request_metadata, is_operator.unwrap_or(false))
+            .await?;
         t.commit().await?;
 
         // If default project is is specified, and the project does not exist, create it

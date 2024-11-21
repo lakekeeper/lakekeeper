@@ -46,7 +46,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(())
     }
 
-    async fn bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {
+    async fn bootstrap(&self, _metadata: &RequestMetadata, _is_operator: bool) -> Result<()> {
         Ok(())
     }
 

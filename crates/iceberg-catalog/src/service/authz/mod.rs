@@ -158,7 +158,7 @@ where
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
 
     /// Perform bootstrapping, including granting the provided user the highest level of access.
-    async fn bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
+    async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
     /// Return Err only for internal errors.
     async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse>;

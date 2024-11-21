@@ -233,7 +233,8 @@ pub(super) enum ServerRelation {
     // -- Hierarchical relations --
     Project,
     // -- Direct relations --
-    GlobalAdmin,
+    Admin,
+    Operator,
     // -- Actions --
     CanCreateProject,
     CanListAllProjects,
@@ -242,7 +243,8 @@ pub(super) enum ServerRelation {
     CanUpdateUsers,
     CanDeleteUsers,
     CanReadAssignments,
-    CanGrantGlobalAdmin,
+    CanGrantAdmin,
+    CanGrantOperator,
 }
 
 impl OpenFgaRelation for ServerRelation {}
@@ -251,20 +253,24 @@ impl OpenFgaRelation for ServerRelation {}
 #[serde(rename_all = "snake_case")]
 #[schema(as=ServerRelation)]
 pub(super) enum APIServerRelation {
-    GlobalAdmin,
+    Admin,
+    Operator,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ServerAssignment {
-    #[schema(title = "ServerAssignmentGlobalAdmin")]
-    GlobalAdmin(UserOrRole),
+    #[schema(title = "ServerAssignmentAdmin")]
+    Admin(UserOrRole),
+    #[schema(title = "ServerAssignmentOperator")]
+    Operator(UserOrRole),
 }
 
 impl GrantableRelation for APIServerRelation {
     fn grant_relation(&self) -> ServerRelation {
         match self {
-            APIServerRelation::GlobalAdmin => ServerRelation::CanGrantGlobalAdmin,
+            APIServerRelation::Admin => ServerRelation::CanGrantAdmin,
+            APIServerRelation::Operator => ServerRelation::CanGrantOperator,
         }
     }
 }
@@ -274,21 +280,25 @@ impl Assignment for ServerAssignment {
 
     fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
         match relation {
-            APIServerRelation::GlobalAdmin => {
-                UserOrRole::parse_from_openfga(user).map(ServerAssignment::GlobalAdmin)
+            APIServerRelation::Admin => {
+                UserOrRole::parse_from_openfga(user).map(ServerAssignment::Admin)
+            }
+            APIServerRelation::Operator => {
+                UserOrRole::parse_from_openfga(user).map(ServerAssignment::Operator)
             }
         }
     }
 
     fn openfga_user(&self) -> String {
         match self {
-            ServerAssignment::GlobalAdmin(user) => user.to_openfga(),
+            ServerAssignment::Admin(user) | ServerAssignment::Operator(user) => user.to_openfga(),
         }
     }
 
     fn relation(&self) -> Self::Relation {
         match self {
-            ServerAssignment::GlobalAdmin(_) => APIServerRelation::GlobalAdmin,
+            ServerAssignment::Admin(_) => APIServerRelation::Admin,
+            ServerAssignment::Operator(_) => APIServerRelation::Operator,
         }
     }
 }
@@ -306,7 +316,7 @@ pub(super) enum APIServerAction {
     /// Can List all users on this server.
     ListUsers,
     /// Can grant global Admin
-    GrantGlobalAdmin,
+    GrantAdmin,
     /// Can provision user
     ProvisionUsers,
     /// Can read assignments
@@ -318,7 +328,8 @@ impl ReducedRelation for APIServerRelation {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            APIServerRelation::GlobalAdmin => ServerRelation::GlobalAdmin,
+            APIServerRelation::Admin => ServerRelation::Admin,
+            APIServerRelation::Operator => ServerRelation::Operator,
         }
     }
 }
@@ -348,7 +359,7 @@ impl ReducedRelation for APIServerAction {
             APIServerAction::ListUsers => ServerRelation::CanListUsers,
             APIServerAction::ProvisionUsers => ServerRelation::CanProvisionUsers,
             APIServerAction::ReadAssignments => ServerRelation::CanReadAssignments,
-            APIServerAction::GrantGlobalAdmin => ServerRelation::CanGrantGlobalAdmin,
+            APIServerAction::GrantAdmin => ServerRelation::CanGrantAdmin,
         }
     }
 }
@@ -1417,10 +1428,10 @@ mod test {
     fn test_assignment_serialization() {
         let user_id = UserId::new("my_user").unwrap();
         let user_or_role = UserOrRole::User(user_id);
-        let assignment = ServerAssignment::GlobalAdmin(user_or_role);
+        let assignment = ServerAssignment::Admin(user_or_role);
         let serialized = serde_json::to_string(&assignment).unwrap();
         let expected = serde_json::json!({
-            "type": "global_admin",
+            "type": "admin",
             "user": "my_user"
         });
         assert_eq!(
