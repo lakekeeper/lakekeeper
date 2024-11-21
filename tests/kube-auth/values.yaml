@@ -20,7 +20,7 @@ catalog:
   image:
     repository: localhost/iceberg-catalog-local
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
     # -- 65532 = nonroot of google container distroless
     uid: 65532
     # -- 65534 = nobody of google container distroless
