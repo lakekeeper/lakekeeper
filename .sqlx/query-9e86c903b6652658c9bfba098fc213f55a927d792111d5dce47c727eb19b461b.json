@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n               SELECT 1\n               FROM tabular ta\n               JOIN namespace n ON ta.namespace_id = n.namespace_id\n               JOIN warehouse w ON w.warehouse_id = n.warehouse_id\n               WHERE (location = ANY($1) OR\n                      -- TODO: revisit this after knowing performance impact, may need an index\n                      (length($3) < length(location) AND (location LIKE $3 || '%'))\n               ) AND tabular_id != $2\n           ) as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9e86c903b6652658c9bfba098fc213f55a927d792111d5dce47c727eb19b461b"
+}

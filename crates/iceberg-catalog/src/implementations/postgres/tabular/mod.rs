@@ -1,4 +1,4 @@
-pub(crate) mod table;
+pub mod table;
 pub(crate) mod view;
 
 use super::dbutils::DBErrorHandler as _;
@@ -14,6 +14,7 @@ use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::DeletionDetails;
 use crate::service::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
+use chrono::Utc;
 use iceberg_ext::configs::Location;
 use sqlx::postgres::PgArguments;
 use sqlx::{Arguments, Execute, FromRow, Postgres, QueryBuilder};
@@ -263,17 +264,10 @@ pub(crate) async fn create_tabular<'a>(
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    // Tables with `metadata_location is NULL` are staged and not yet committed.
-    // They can be overwritten in a new create statement as if they wouldn't exist yet.
-    // Views do not require this distinction, as `metadata_location` is always set for them
-    // (validated by constraint).
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT ON CONSTRAINT unique_name_per_namespace_id
-        DO UPDATE SET tabular_id = $1, metadata_location = $5, location = $6
-        WHERE tabular.metadata_location IS NULL AND tabular.typ = 'table'
+        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)
+        VALUES ($1, $2, $3, $4, $5, $6, 'true')
         RETURNING tabular_id
         "#,
         id,
@@ -285,35 +279,30 @@ pub(crate) async fn create_tabular<'a>(
     )
     .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| match &e {
-        sqlx::Error::RowNotFound => {
-            tracing::debug!("conflicted out {id}, {namespace_id}, {typ}");
-            ErrorModel::conflict(
-                "Table or View with same name already exists in Namespace",
-                "TableOrViewAlreadyExists",
-                None,
-            )
-        }
-        _ => e.into_error_model(format!("Error creating {typ}")),
+    .map_err(|e| {
+        tracing::warn!(?e, "Error creating new {typ}");
+        e.into_error_model(format!("Error creating {typ}"))
     })?;
 
     let location_is_taken = sqlx::query_scalar!(
-        r#"
-    SELECT EXISTS (
-        SELECT 1
-        FROM tabular ta
-        JOIN namespace n ON ta.namespace_id = n.namespace_id
-        JOIN warehouse w ON w.warehouse_id = n.warehouse_id
-        WHERE location = ANY($1) AND tabular_id != $2
-    ) AS "prefix_exists!"
-    "#,
+        r#"SELECT EXISTS (
+               SELECT 1
+               FROM tabular ta
+               JOIN namespace n ON ta.namespace_id = n.namespace_id
+               JOIN warehouse w ON w.warehouse_id = n.warehouse_id
+               WHERE (location = ANY($1) OR
+                      -- TODO: revisit this after knowing performance impact, may need an index
+                      (length($3) < length(location) AND (location LIKE $3 || '%'))
+               ) AND tabular_id != $2
+           ) as "exists!""#,
         &query_strings,
-        id
+        id,
+        location.as_str()
     )
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| {
-        tracing::warn!("Error checking for conflicting locations: {}", e);
+        tracing::warn!(?e, "Error checking for conflicting locations");
         e.into_error_model("Error checking for conflicting locations".to_string())
     })?;
 
@@ -329,7 +318,7 @@ pub(crate) async fn create_tabular<'a>(
     Ok(tabular_id)
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) async fn list_tabulars<'e, 'c, E>(
     warehouse_id: WarehouseIdent,
     namespace: Option<&NamespaceIdent>,
@@ -338,6 +327,9 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
+    // FIXME: remove with 0.6
+    // TODO: make an enum
+    only_unmigrated: bool,
 ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
@@ -380,16 +372,17 @@ where
         LEFT JOIN task tt ON te.task_id = tt.task_id
         WHERE n.warehouse_id = $1
             AND (namespace_name = $2 OR $2 IS NULL)
-            AND (n.namespace_id = $10 OR $10 IS NULL)
+            AND (n.namespace_id = $11 OR $11 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted
             AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)
             AND (t.deleted_at IS NULL OR $5)
             AND (t.metadata_location IS NOT NULL OR $6)
-            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
+            AND (t.table_migrated != $7)
+            AND ((t.created_at > $8 OR $8 IS NULL) OR (t.created_at = $8 AND t.tabular_id > $9))
             ORDER BY t.created_at, t.tabular_id ASC
-            LIMIT $9
+            LIMIT $10
         "#,
         *warehouse_id,
         namespace.as_deref().map(|n| n.as_ref().as_slice()),
@@ -397,6 +390,7 @@ where
         list_flags.include_active,
         list_flags.include_deleted,
         list_flags.include_staged,
+        only_unmigrated,
         token_ts,
         token_id,
         page_size,
@@ -582,16 +576,18 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 
 pub(crate) async fn mark_tabular_as_deleted(
     tabular_id: TabularIdentUuid,
+    delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     let _ = sqlx::query!(
         r#"
         UPDATE tabular
-        SET deleted_at = now()
+        SET deleted_at = $2
         WHERE tabular_id = $1
         RETURNING tabular_id
         "#,
-        *tabular_id
+        *tabular_id,
+        delete_date.unwrap_or(Utc::now())
     )
     .fetch_one(&mut **transaction)
     .await

@@ -6,7 +6,6 @@
 )]
 #![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
-
 pub mod catalog;
 mod config;
 pub mod service;

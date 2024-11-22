@@ -138,6 +138,13 @@ impl From<ProjectIdent> for uuid::Uuid {
     }
 }
 
+impl ProjectIdent {
+    #[must_use]
+    pub fn new(id: uuid::Uuid) -> Self {
+        Self(id)
+    }
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[serde(transparent)]
 pub struct RoleId(uuid::Uuid);
@@ -322,6 +329,22 @@ impl FromStr for TableIdentUuid {
 impl From<TableIdentUuid> for uuid::Uuid {
     fn from(ident: TableIdentUuid) -> Self {
         ident.0
+    }
+}
+
+impl TryFrom<TabularIdentUuid> for TableIdentUuid {
+    type Error = IcebergErrorResponse;
+
+    fn try_from(value: TabularIdentUuid) -> Result<Self, Self::Error> {
+        match value {
+            TabularIdentUuid::Table(value) => Ok(value.into()),
+            TabularIdentUuid::View(_) => Err(ErrorModel::internal(
+                "Provided identifier is not a table id",
+                "IdentifierIsNotTableID",
+                None,
+            )
+            .into()),
+        }
     }
 }
 

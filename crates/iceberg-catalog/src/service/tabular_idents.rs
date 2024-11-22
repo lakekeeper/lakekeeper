@@ -1,9 +1,9 @@
+use super::{TableIdentUuid, ViewIdentUuid};
 use iceberg::TableIdent;
+use iceberg_ext::catalog::rest::ErrorModel;
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use uuid::Uuid;
-
-use super::{TableIdentUuid, ViewIdentUuid};
 
 #[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq)]
 pub enum TabularIdentUuid {
@@ -76,6 +76,32 @@ impl TabularIdentOwned {
     pub(crate) fn into_inner(self) -> TableIdent {
         match self {
             TabularIdentOwned::Table(ident) | TabularIdentOwned::View(ident) => ident,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn as_table(&self) -> crate::api::Result<&TableIdent> {
+        match self {
+            TabularIdentOwned::Table(ident) => Ok(ident),
+            TabularIdentOwned::View(_) => Err(ErrorModel::internal(
+                "Expected a table identifier, but got a view identifier",
+                "UnexpectedViewIdentifier",
+                None,
+            )
+            .into()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn as_view(&self) -> crate::api::Result<&TableIdent> {
+        match self {
+            TabularIdentOwned::Table(_) => Err(ErrorModel::internal(
+                "Expected a view identifier, but got a table identifier",
+                "UnexpectedTableIdentifier",
+                None,
+            )
+            .into()),
+            TabularIdentOwned::View(ident) => Ok(ident),
         }
     }
 }

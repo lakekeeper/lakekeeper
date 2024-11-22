@@ -1,4 +1,4 @@
-mod commit_tables;
+pub(crate) mod commit_tables;
 pub(crate) mod compression_codec;
 mod config;
 pub(crate) mod io;
@@ -6,7 +6,7 @@ mod metrics;
 pub(crate) mod namespace;
 #[cfg(feature = "s3-signer")]
 mod s3_signer;
-mod tables;
+pub(crate) mod tables;
 mod tabular;
 pub(crate) mod views;
 
@@ -165,7 +165,7 @@ pub(crate) mod test {
     use crate::service::contract_verification::ContractVerifiers;
     use crate::service::event_publisher::CloudEventsPublisher;
     use crate::service::storage::{
-        S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
+        S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
     };
     use crate::service::task_queue::TaskQueues;
     use crate::service::{AuthDetails, State};
@@ -175,6 +175,10 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use std::sync::Arc;
     use uuid::Uuid;
+
+    pub(crate) fn test_io_profile() -> StorageProfile {
+        TestProfile.into()
+    }
 
     pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
         let key_prefix = Some(format!("test_prefix-{}", Uuid::now_v7()));

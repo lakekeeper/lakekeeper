@@ -26,7 +26,7 @@ use std::sync::{Arc, OnceLock};
 use url::{Host, Url};
 use veil::Redact;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct AdlsProfile {
     /// Name of the adls filesystem, in blobstorage also known as container.

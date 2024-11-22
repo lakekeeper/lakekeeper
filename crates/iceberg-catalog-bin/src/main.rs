@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
 
             // This embeds database migrations in the application binary so we can ensure the database
             // is migrated correctly on startup
-            iceberg_catalog::implementations::postgres::migrate(&write_pool).await?;
+            iceberg_catalog::implementations::postgres::migrations::migrate(&write_pool).await?;
             println!("Database migration complete.");
         }
         Some(Commands::Serve { force_start }) => {

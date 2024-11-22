@@ -351,6 +351,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert-json-diff"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "async-channel"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -640,9 +650,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-s3"
-version = "1.61.0"
+version = "1.62.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e531658a0397d22365dfe26c3e1c0c8448bf6a3a2d8a098ded802f2b1261615"
+checksum = "83d3a2854c7490b4c63d2b0e8c3976d628c80afa3045d078a715b2edb2ee4e0a"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -2392,6 +2402,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2916,7 +2935,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.3.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=1990d35fa07fe7b5595444027a4db9e1b6f79014#1990d35fa07fe7b5595444027a4db9e1b6f79014"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2454504#24545045be8ea82fc834bdfa92d06d640b70c7c6"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -2965,6 +2984,7 @@ name = "iceberg-catalog"
 version = "0.4.3"
 dependencies = [
  "anyhow",
+ "assert-json-diff",
  "async-nats",
  "async-stream",
  "async-trait",
@@ -2988,6 +3008,7 @@ dependencies = [
  "figment",
  "flate2",
  "futures",
+ "fxhash",
  "google-cloud-auth",
  "google-cloud-token",
  "hostname 0.4.0",
@@ -3017,6 +3038,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_yml",
+ "similar",
  "sqlx",
  "strum",
  "strum_macros",
@@ -5797,6 +5819,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "similar"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1de1d4f81173b03af4c0cbed3c898f6bff5b870e4a7f5d6f4057d62a7a4b686e"
+
+[[package]]
 name = "simple_asn1"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7280,7 +7308,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

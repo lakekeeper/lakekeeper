@@ -1,32 +1,42 @@
+mod commit;
+mod common;
+mod create;
+
+pub(crate) use commit::commit_table_transaction;
+pub(crate) use create::create_table;
+
 use crate::implementations::postgres::{dbutils::DBErrorHandler as _, CatalogState};
-use crate::service::{TableCommit, TableCreation};
 use crate::{
     service::{
-        storage::StorageProfile, CreateTableResponse, ErrorModel, GetTableMetadataResponse,
-        LoadTableResponse, Result, TableIdent, TableIdentUuid,
+        storage::StorageProfile, ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result,
+        TableIdent, TableIdentUuid,
     },
     SecretIdent, WarehouseIdent,
 };
-
 use http::StatusCode;
-use iceberg::spec::{
-    FormatVersion, SortOrder, TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
-};
 use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
 
 use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
 use crate::implementations::postgres::tabular::{
-    create_tabular, drop_tabular, list_tabulars, try_parse_namespace_ident, CreateTabular,
-    TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularType,
+    drop_tabular, list_tabulars, try_parse_namespace_ident, TabularIdentBorrowed,
+    TabularIdentOwned, TabularIdentUuid, TabularType,
+};
+use iceberg::spec::{
+    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
+    SnapshotRetention, SortOrder, Summary, UnboundPartitionField, MAIN_BRANCH,
 };
 use iceberg_ext::configs::Location;
+
+use iceberg::TableUpdate;
 use sqlx::types::Json;
 use std::default::Default;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
 };
+use uuid::Uuid;
 
 const MAX_PARAMETERS: usize = 30000;
 
@@ -92,106 +102,25 @@ where
     Ok(table_map)
 }
 
-pub(crate) async fn create_table(
-    TableCreation {
-        namespace_id,
-        table_ident,
-        table_id,
-        table_location,
-        table_schema,
-        table_partition_spec,
-        table_write_order,
-        table_properties,
-        metadata_location,
-    }: TableCreation<'_>,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<CreateTableResponse> {
-    let TableIdent { namespace: _, name } = table_ident;
-
-    let mut table_properties = table_properties.unwrap_or_default();
-    let format_version = table_properties
-        .remove(PROPERTY_FORMAT_VERSION)
-        .map({
-            |s| match s.as_str() {
-                "v1" | "1" => Ok(FormatVersion::V1),
-                "v2" | "2" => Ok(FormatVersion::V2),
-                _ => Err(ErrorModel::bad_request(
-                    format!("Invalid format version specified in table_properties: {s}"),
-                    "InvalidFormatVersion",
-                    None,
-                )),
-            }
-        })
-        .transpose()?
-        .unwrap_or(FormatVersion::V2);
-
-    let table_metadata = TableMetadataBuilder::new(
-        table_schema,
-        table_partition_spec.unwrap_or(UnboundPartitionSpec::builder().build()),
-        table_write_order.unwrap_or(SortOrder::unsorted_order()),
-        table_location.to_string(),
-        format_version,
-        table_properties,
-    )
-    .map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "CreateTableMetadataError", Some(Box::new(e)))
-    })?
-    .assign_uuid(*table_id)
-    .build()
-    .map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "BuildTableMetadataError", Some(Box::new(e)))
-    })?
-    .metadata;
-
-    let table_metadata_ser = serde_json::to_value(table_metadata.clone()).map_err(|e| {
-        ErrorModel::internal(
-            "Error serializing table metadata",
-            "TableMetadataSerializationError",
-            Some(Box::new(e)),
-        )
-    })?;
-
-    let tabular_id = create_tabular(
-        CreateTabular {
-            id: *table_id,
-            name,
-            namespace_id: *namespace_id,
-            typ: TabularType::Table,
-            metadata_location,
-            location: table_location,
-        },
-        transaction,
-    )
-    .await?;
-
-    let _update_result = sqlx::query!(
-        r#"
-        INSERT INTO "table" (table_id, "metadata")
-        (
-            SELECT $1, $2
-            WHERE EXISTS (SELECT 1
-                FROM active_tables
-                WHERE active_tables.table_id = $1))
-        ON CONFLICT ON CONSTRAINT "table_pkey"
-        DO UPDATE SET "metadata" = $2
-        RETURNING "table_id"
-        "#,
-        tabular_id,
-        table_metadata_ser,
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        tracing::warn!("Error creating table: {}", e);
-        e.into_error_model("Error creating table".to_string())
-    })?;
-
-    Ok(CreateTableResponse { table_metadata })
+#[derive(Debug, sqlx::Type)]
+#[sqlx(type_name = "table_format_version", rename_all = "kebab-case")]
+pub enum DbTableFormatVersion {
+    #[sqlx(rename = "1")]
+    V1,
+    #[sqlx(rename = "2")]
+    V2,
 }
 
-pub(crate) async fn load_tables(
+impl From<DbTableFormatVersion> for FormatVersion {
+    fn from(v: DbTableFormatVersion) -> Self {
+        match v {
+            DbTableFormatVersion::V1 => FormatVersion::V1,
+            DbTableFormatVersion::V2 => FormatVersion::V2,
+        }
+    }
+}
+
+pub(crate) async fn load_tables_old(
     warehouse_id: WarehouseIdent,
     tables: impl IntoIterator<Item = TableIdentUuid>,
     include_deleted: bool,
@@ -240,12 +169,20 @@ pub(crate) async fn load_tables(
                         Some(Box::new(e)),
                     )
                 })?;
+
             Ok((
                 table_id,
                 LoadTableResponse {
                     table_id,
                     namespace_id: table.namespace_id.into(),
-                    table_metadata: table.metadata.deref().clone(),
+                    table_metadata: table
+                        .metadata
+                        .ok_or(ErrorModel::internal(
+                            "Table metadata jsonb not found",
+                            "InternalTableMetadataNotFound",
+                            None,
+                        ))?
+                        .0,
                     metadata_location,
                     storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
                     storage_profile: table.storage_profile.deref().clone(),
@@ -273,6 +210,7 @@ where
         transaction,
         Some(TabularType::Table),
         pagination_query,
+        false,
     )
     .await?;
 
@@ -291,6 +229,392 @@ where
         },
         |(v, _)| Ok(v.into_inner()),
     )
+}
+
+#[expect(dead_code)]
+#[derive(sqlx::FromRow)]
+struct TableQueryStruct {
+    // TODO: clean up the options below once we've released this and can assume that migrations
+    //       have happened
+    table_id: Uuid,
+    table_name: String,
+    namespace_name: Vec<String>,
+    namespace_id: Uuid,
+    table_ref_names: Option<Vec<String>>,
+    table_ref_snapshot_ids: Option<Vec<i64>>,
+    table_ref_retention: Option<Vec<Json<SnapshotRetention>>>,
+    default_sort_order_id: Option<i64>,
+    sort_order_ids: Option<Vec<i64>>,
+    sort_orders: Option<Vec<Json<SortOrder>>>,
+    metadata_log_timestamps: Option<Vec<i64>>,
+    metadata_log_files: Option<Vec<String>>,
+    snapshot_log_timestamps: Option<Vec<i64>>,
+    snapshot_log_ids: Option<Vec<i64>>,
+    snapshot_ids: Option<Vec<i64>>,
+    snapshot_parent_snapshot_id: Option<Vec<Option<i64>>>,
+    snapshot_sequence_number: Option<Vec<i64>>,
+    snapshot_manifest_list: Option<Vec<String>>,
+    snapshot_summary: Option<Vec<Json<Summary>>>,
+    snapshot_schema_id: Option<Vec<i32>>,
+    snapshot_timestamp_ms: Option<Vec<i64>>,
+    metadata_location: Option<String>,
+    table_location: String,
+    storage_profile: Json<StorageProfile>,
+    storage_secret_id: Option<Uuid>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
+    default_partition_spec_id: Option<i32>,
+    partition_spec_ids: Option<Vec<i32>>,
+    partition_specs: Option<Vec<Json<SchemalessPartitionSpec>>>,
+    current_schema: Option<i32>,
+    schemas: Option<Vec<Json<Schema>>>,
+    schema_ids: Option<Vec<i32>>,
+    table_format_version: Option<DbTableFormatVersion>,
+    last_sequence_number: Option<i64>,
+    last_column_id: Option<i32>,
+    last_updated_ms: Option<i64>,
+    last_partition_id: Option<i32>,
+}
+
+impl TableQueryStruct {
+    #[expect(clippy::too_many_lines)]
+    fn into_table_metadata(self) -> Result<Option<TableMetadata>> {
+        macro_rules! expect {
+            ($e:expr) => {
+                match $e {
+                    Some(v) => v,
+                    None => return Ok(None),
+                }
+            };
+        }
+        let schemas = expect!(self.schemas)
+            .into_iter()
+            .map(|s| (s.0.schema_id(), Arc::new(s.0)))
+            .collect::<HashMap<SchemaId, _>>();
+
+        let partition_specs = expect!(self.partition_spec_ids)
+            .into_iter()
+            .zip(
+                expect!(self.partition_specs)
+                    .into_iter()
+                    .map(|s| Arc::new(s.0)),
+            )
+            .collect::<HashMap<_, _>>();
+
+        let default_spec_schema = schemas
+            .get(&expect!(self.current_schema))
+            .ok_or(ErrorModel::internal(
+                "Default partition schema not found",
+                "InternalDefaultPartitionSchemaNotFound",
+                None,
+            ))?
+            .clone();
+        let default_spec = partition_specs
+            .get(&expect!(self.default_partition_spec_id))
+            .ok_or(ErrorModel::internal(
+                "Default partition spec not found",
+                "InternalDefaultPartitionSpecNotFound",
+                None,
+            ))?;
+        let fields = default_spec.fields();
+        let default = BoundPartitionSpec::builder(default_spec_schema.clone())
+            .with_spec_id(default_spec.spec_id())
+            .add_unbound_fields(fields.iter().map(|f| UnboundPartitionField {
+                source_id: f.source_id,
+                field_id: Some(f.field_id),
+                name: f.name.clone(),
+                transform: f.transform,
+            }))
+            .unwrap();
+
+        let default = default.build().unwrap();
+
+        let properties = self
+            .table_properties_keys
+            .unwrap_or_default()
+            .into_iter()
+            .zip(self.table_properties_values.unwrap_or_default())
+            .collect::<HashMap<_, _>>();
+
+        let snapshots = itertools::multizip((
+            self.snapshot_ids.unwrap_or_default(),
+            self.snapshot_schema_id.unwrap_or_default(),
+            self.snapshot_summary.unwrap_or_default(),
+            self.snapshot_manifest_list.unwrap_or_default(),
+            self.snapshot_parent_snapshot_id.unwrap_or_default(),
+            self.snapshot_sequence_number.unwrap_or_default(),
+            self.snapshot_timestamp_ms.unwrap_or_default(),
+        ))
+        .map(
+            |(snap_id, schema_id, summary, manifest, parent_snap, seq, timestamp_ms)| {
+                (
+                    snap_id,
+                    Arc::new(
+                        iceberg::spec::Snapshot::builder()
+                            .with_manifest_list(manifest)
+                            .with_parent_snapshot_id(parent_snap)
+                            .with_schema_id(schema_id)
+                            .with_sequence_number(seq)
+                            .with_snapshot_id(snap_id)
+                            .with_summary(summary.0)
+                            .with_timestamp_ms(timestamp_ms)
+                            .build(),
+                    ),
+                )
+            },
+        )
+        .collect::<_>();
+
+        let snapshot_log = itertools::multizip((
+            self.snapshot_log_ids.unwrap_or_default(),
+            self.snapshot_log_timestamps.unwrap_or_default(),
+        ))
+        .map(|(snap_id, timestamp)| iceberg::spec::SnapshotLog {
+            snapshot_id: snap_id,
+            timestamp_ms: timestamp,
+        })
+        .collect::<Vec<_>>();
+
+        let metadata_log = itertools::multizip((
+            self.metadata_log_files.unwrap_or_default(),
+            self.metadata_log_timestamps.unwrap_or_default(),
+        ))
+        .map(|(file, timestamp)| iceberg::spec::MetadataLog {
+            metadata_file: file,
+            timestamp_ms: timestamp,
+        })
+        .collect::<Vec<_>>();
+
+        let sort_orders =
+            itertools::multizip((expect!(self.sort_order_ids), expect!(self.sort_orders)))
+                .map(|(sort_order_id, sort_order)| (sort_order_id, Arc::new(sort_order.0)))
+                .collect::<HashMap<_, _>>();
+
+        let refs = itertools::multizip((
+            self.table_ref_names.unwrap_or_default(),
+            self.table_ref_snapshot_ids.unwrap_or_default(),
+            self.table_ref_retention.unwrap_or_default(),
+        ))
+        .map(|(name, snap_id, retention)| {
+            (
+                name,
+                iceberg::spec::SnapshotReference {
+                    snapshot_id: snap_id,
+                    retention: retention.0,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+        let current_snapshot_id = refs.get(MAIN_BRANCH).map(|s| s.snapshot_id);
+
+        Ok(Some(
+            TableMetadata::try_from_parts(Parts {
+                format_version: FormatVersion::from(expect!(self.table_format_version)),
+                table_uuid: self.table_id,
+                location: self.table_location,
+                last_sequence_number: expect!(self.last_sequence_number),
+                last_updated_ms: expect!(self.last_updated_ms),
+                last_column_id: expect!(self.last_column_id),
+                schemas,
+                current_schema_id: expect!(self.current_schema),
+                partition_specs,
+                default_spec: Arc::new(default),
+                last_partition_id: expect!(self.last_partition_id),
+                properties,
+                current_snapshot_id,
+                snapshots,
+                snapshot_log,
+                metadata_log,
+                sort_orders,
+                default_sort_order_id: expect!(self.default_sort_order_id),
+                refs,
+            })
+            .map_err(|e| {
+                ErrorModel::internal(
+                    "Error parsing table metadata from DB",
+                    "InternalTableMetadataParseError",
+                    Some(Box::new(e)),
+                )
+            })?,
+        ))
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn load_tables(
+    warehouse_id: WarehouseIdent,
+    tables: impl IntoIterator<Item = TableIdentUuid>,
+    include_deleted: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
+    let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
+
+    let table = sqlx::query_as!(
+        TableQueryStruct,
+        r#"
+        SELECT
+            t."table_id",
+            t.last_sequence_number,
+            t.last_column_id,
+            t.last_updated_ms,
+            t.last_partition_id,
+            t.table_format_version as "table_format_version: DbTableFormatVersion",
+            ti.name as "table_name",
+            ti.location as "table_location",
+            namespace_name,
+            ti.namespace_id,
+            ti."metadata_location",
+            w.storage_profile as "storage_profile: Json<StorageProfile>",
+            w."storage_secret_id",
+            ts.schema_ids,
+            tcs.schema_id as "current_schema",
+            tdps.partition_spec_id as "default_partition_spec_id",
+            ts.schemas as "schemas: Vec<Json<Schema>>",
+            tsnap.snapshot_ids,
+            tsnap.parent_snapshot_ids as "snapshot_parent_snapshot_id: Vec<Option<i64>>",
+            tsnap.sequence_numbers as "snapshot_sequence_number",
+            tsnap.manifest_lists as "snapshot_manifest_list: Vec<String>",
+            tsnap.timestamp as "snapshot_timestamp_ms",
+            tsnap.summaries as "snapshot_summary: Vec<Json<Summary>>",
+            tsnap.schema_ids as "snapshot_schema_id",
+            tdsort.sort_order_id as "default_sort_order_id?",
+            tps.partition_spec_id as "partition_spec_ids",
+            tps.partition_spec as "partition_specs: Vec<Json<SchemalessPartitionSpec>>",
+            tp.keys as "table_properties_keys",
+            tp.values as "table_properties_values",
+            tsl.snapshot_ids as "snapshot_log_ids",
+            tsl.timestamps as "snapshot_log_timestamps",
+            tml.metadata_files as "metadata_log_files",
+            tml.timestamps as "metadata_log_timestamps",
+            tso.sort_order_ids as "sort_order_ids",
+            tso.sort_orders as "sort_orders: Vec<Json<SortOrder>>",
+            tr.table_ref_names as "table_ref_names",
+            tr.snapshot_ids as "table_ref_snapshot_ids",
+            tr.retentions as "table_ref_retention: Vec<Json<SnapshotRetention>>"
+        FROM "table" t
+        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN table_current_schema tcs ON tcs.table_id = t.table_id
+        LEFT JOIN table_default_partition_spec tdps ON tdps.table_id = t.table_id
+        LEFT JOIN table_default_sort_order tdsort ON tdsort.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(schema_id) as schema_ids,
+                          ARRAY_AGG(schema) as schemas
+                   FROM table_schema
+                   GROUP BY table_id) ts ON ts.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(partition_spec) as partition_spec,
+                          ARRAY_AGG(partition_spec_id) as partition_spec_id
+                   FROM table_partition_spec
+                   GROUP BY table_id) tps ON tps.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                            ARRAY_AGG(key) as keys,
+                            ARRAY_AGG(value) as values
+                     FROM table_properties
+                     GROUP BY table_id) tp ON tp.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(parent_snapshot_id) as parent_snapshot_ids,
+                          ARRAY_AGG(sequence_number) as sequence_numbers,
+                          ARRAY_AGG(manifest_list) as manifest_lists,
+                          ARRAY_AGG(summary) as summaries,
+                          ARRAY_AGG(schema_id) as schema_ids,
+                          ARRAY_AGG(timestamp_ms) as timestamp
+                   FROM table_snapshot
+                   GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
+                          ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
+                     FROM table_snapshot_log
+                     GROUP BY table_id) tsl ON tsl.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps,
+                          ARRAY_AGG(metadata_file ORDER BY sequence_number) as metadata_files
+                   FROM table_metadata_log
+                   GROUP BY table_id) tml ON tml.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(sort_order_id) as sort_order_ids,
+                          ARRAY_AGG(sort_order) as sort_orders
+                     FROM table_sort_order
+                        GROUP BY table_id) tso ON tso.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(table_ref_name) as table_ref_names,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(retention) as retentions
+                   FROM table_refs
+                   GROUP BY table_id) tr ON tr.table_id = t.table_id
+        WHERE w.warehouse_id = $1
+            AND w.status = 'active'
+            AND (ti.deleted_at IS NULL OR $3)
+            AND t."table_id" = ANY($2)
+        "#,
+        *warehouse_id,
+        &table_ids,
+        include_deleted
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .unwrap();
+
+    let mut tables = HashMap::new();
+    let mut failed_to_fetch = HashSet::new();
+    for table in table {
+        let table_id = table.table_id.into();
+        let metadata_location = match table
+            .metadata_location
+            .as_deref()
+            .map(FromStr::from_str)
+            .transpose()
+        {
+            Ok(location) => location,
+            Err(e) => {
+                return Err(ErrorModel::internal(
+                    "Error parsing metadata location",
+                    "InternalMetadataLocationParseError",
+                    Some(Box::new(e)),
+                )
+                .into());
+            }
+        };
+        let namespace_id = table.namespace_id.into();
+        let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
+        let storage_profile = table.storage_profile.deref().clone();
+
+        let Some(table_metadata) = table.into_table_metadata()? else {
+            tracing::warn!(
+                "Table metadata could not be fetched from tables, falling back to blob retrieval."
+            );
+            failed_to_fetch.insert(table_id);
+            continue;
+        };
+
+        tables.insert(
+            table_id,
+            LoadTableResponse {
+                table_id,
+                namespace_id,
+                table_metadata,
+                metadata_location,
+                storage_secret_ident,
+                storage_profile,
+            },
+        );
+    }
+
+    for t in table_ids {
+        if !tables.contains_key(&((*t).into())) {
+            failed_to_fetch.insert((*t).into());
+        }
+    }
+
+    tracing::error!(
+        "Failed to fetch the following tables: '{:?}'",
+        failed_to_fetch
+    );
+
+    Ok(tables)
 }
 
 pub(crate) async fn get_table_metadata_by_id(
@@ -456,132 +780,32 @@ pub(crate) async fn drop_table<'a>(
     table_id: TableIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    let _ = sqlx::query!(
-        r#"
-        DELETE FROM "table"
-        WHERE table_id = $1 AND EXISTS (
-            SELECT 1
-            FROM active_tables
-            WHERE active_tables.table_id = $1
-        )
-        RETURNING table_id
-        "#,
-        *table_id,
-    )
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            ErrorModel::not_found(
-                "Table not found",
-                "NoSuchTabularError".to_string(),
-                Some(Box::new(e)),
-            )
-        } else {
-            tracing::warn!("Error dropping table: {}", e);
-            e.into_error_model("Error dropping table".into())
-        }
-    })?;
-
     drop_tabular(TabularIdentUuid::Table(*table_id), transaction).await
 }
 
-pub(crate) async fn commit_table_transaction<'a>(
-    // We do not need the warehouse_id here, because table_ids are unique across warehouses
-    _: WarehouseIdent,
-    commits: impl IntoIterator<Item = TableCommit> + Send,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let commits: Vec<TableCommit> = commits.into_iter().collect();
-    if commits.len() > (MAX_PARAMETERS / 4) {
-        return Err(ErrorModel::builder()
-            .code(StatusCode::BAD_REQUEST.into())
-            .message("Too updates in single commit".to_string())
-            .r#type("TooManyTablesForCommit".to_string())
-            .build()
-            .into());
-    }
+#[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct TableUpdates {
+    snapshot_refs: bool,
+    properties: bool,
+}
 
-    let mut query_builder_table = sqlx::QueryBuilder::new(
-        r#"
-        UPDATE "table" as t
-        SET "metadata" = c."metadata"
-        FROM (VALUES
-        "#,
-    );
-
-    let mut query_builder_tabular = sqlx::QueryBuilder::new(
-        r#"
-        UPDATE "tabular" as t
-        SET "metadata_location" = c."metadata_location",
-        "location" = c."location"
-        FROM (VALUES
-        "#,
-    );
-
-    for (i, commit) in commits.iter().enumerate() {
-        let metadata_ser = serde_json::to_value(&commit.new_metadata).map_err(|e| {
-            ErrorModel::internal(
-                "Error serializing table metadata",
-                "TableMetadataSerializationError",
-                Some(Box::new(e)),
-            )
-        })?;
-
-        query_builder_table.push("(");
-        query_builder_table.push_bind(commit.new_metadata.uuid());
-        query_builder_table.push(", ");
-        query_builder_table.push_bind(metadata_ser);
-        query_builder_table.push(")");
-
-        query_builder_tabular.push("(");
-        query_builder_tabular.push_bind(commit.new_metadata.uuid());
-        query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(commit.new_metadata_location.to_string());
-        query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(commit.new_metadata.location());
-        query_builder_tabular.push(")");
-
-        if i != commits.len() - 1 {
-            query_builder_table.push(", ");
-            query_builder_tabular.push(", ");
+impl From<&[TableUpdate]> for TableUpdates {
+    fn from(value: &[TableUpdate]) -> Self {
+        let mut s = TableUpdates::default();
+        for u in value {
+            match u {
+                TableUpdate::RemoveSnapshotRef { .. } | TableUpdate::SetSnapshotRef { .. } => {
+                    s.snapshot_refs = true;
+                }
+                TableUpdate::RemoveProperties { .. } | TableUpdate::SetProperties { .. } => {
+                    s.properties = true;
+                }
+                _ => {}
+            }
         }
+        s
     }
-
-    query_builder_table.push(") as c(table_id, metadata) WHERE c.table_id = t.table_id");
-    query_builder_tabular.push(
-        ") as c(table_id, metadata_location, location) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
-    );
-
-    query_builder_table.push(" RETURNING t.table_id");
-    query_builder_tabular.push(" RETURNING t.tabular_id");
-
-    let query_meta_update = query_builder_table.build();
-    let query_meta_location_update = query_builder_tabular.build();
-
-    // futures::try_join didn't work due to concurrent mutable borrow of transaction
-    let updated_meta = query_meta_update
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|e| e.into_error_model("Error committing tablemetadata updates".to_string()))?;
-
-    let updated_meta_location = query_meta_location_update
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|e| {
-            e.into_error_model("Error committing tablemetadata location updates".to_string())
-        })?;
-
-    if updated_meta.len() != commits.len() || updated_meta_location.len() != commits.len() {
-        return Err(ErrorModel::builder()
-            .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-            .message("Error committing table updates".to_string())
-            .r#type("CommitTableUpdateError".to_string())
-            .build()
-            .into());
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -593,16 +817,22 @@ pub(crate) mod tests {
     // - Stage-Create => Next regular create works & overwrites
 
     use super::*;
-
     use crate::api::iceberg::types::PageToken;
     use crate::api::management::v1::warehouse::WarehouseStatus;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::implementations::postgres::warehouse::set_warehouse_status;
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::service::{ListFlags, NamespaceIdentUuid};
+    use crate::service::{ListFlags, NamespaceIdentUuid, TableCreation};
+    use std::default::Default;
+    use std::time::SystemTime;
 
+    use crate::catalog::tables::create_table_request_into_table_metadata;
     use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
-    use iceberg::spec::{NestedField, PrimitiveType, Schema, UnboundPartitionSpec};
+    use crate::implementations::postgres::tabular::table::create::create_table;
+    use iceberg::spec::{
+        NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
+        UnboundPartitionSpec,
+    };
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateTableRequest;
     use iceberg_ext::configs::Location;
@@ -712,22 +942,50 @@ pub(crate) mod tests {
             name: request.name.clone(),
         };
         let table_id = Uuid::now_v7().into();
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
+
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let schema = table_metadata.current_schema_id();
+        let table_metadata = table_metadata
+            .into_builder(None)
+            .add_snapshot(
+                Snapshot::builder()
+                    .with_manifest_list("a.txt")
+                    .with_parent_snapshot_id(None)
+                    .with_schema_id(schema)
+                    .with_sequence_number(1)
+                    .with_snapshot_id(1)
+                    .with_summary(Summary {
+                        operation: Operation::Append,
+                        other: HashMap::default(),
+                    })
+                    .with_timestamp_ms(
+                        SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                            .try_into()
+                            .unwrap(),
+                    )
+                    .build(),
+            )
             .unwrap()
-            .unwrap();
+            .set_ref(
+                "my_ref",
+                SnapshotReference {
+                    snapshot_id: 1,
+                    retention: SnapshotRetention::Tag {
+                        max_ref_age_ms: None,
+                    },
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
         let create = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
         let mut transaction = state.write_pool().begin().await.unwrap();
@@ -760,23 +1018,15 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+
+        let table_metadata =
+            crate::catalog::tables::create_table_request_into_table_metadata(table_id, request)
+                .unwrap();
 
         let request = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
 
@@ -793,8 +1043,15 @@ pub(crate) mod tests {
             .as_str()
             .parse::<Location>()
             .unwrap();
-        request.table_location = &location;
-        request.table_id = Uuid::now_v7().into();
+        let build = request
+            .table_metadata
+            .into_builder(None)
+            .set_location(location.to_string())
+            .assign_uuid(Uuid::now_v7())
+            .build()
+            .unwrap()
+            .metadata;
+        request.table_metadata = build;
         let create_err = create_table(request, &mut transaction).await.unwrap_err();
 
         assert_eq!(
@@ -832,23 +1089,12 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
 
@@ -872,7 +1118,14 @@ pub(crate) mod tests {
         // Second create should succeed, even with different id
         let mut transaction = pool.begin().await.unwrap();
         let mut request = request;
-        request.table_id = Uuid::now_v7().into();
+        request.table_metadata = request
+            .table_metadata
+            .into_builder(None)
+            .assign_uuid(Uuid::now_v7())
+            .build()
+            .unwrap()
+            .metadata;
+
         let create_result = create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
 
@@ -880,29 +1133,18 @@ pub(crate) mod tests {
 
         // We can overwrite the table with a regular create
         let (request, metadata_location) = create_request(Some(false), None);
-        let table_location = request
-            .location
-            .as_deref()
-            .map(FromStr::from_str)
-            .transpose()
-            .unwrap()
-            .unwrap();
+
+        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
             namespace_id,
             table_ident: &table_ident,
-            table_id,
-            table_location: &table_location,
-            table_schema: request.schema,
-            table_partition_spec: request.partition_spec,
-            table_write_order: request.write_order,
-            table_properties: request.properties,
+            table_metadata,
             metadata_location: metadata_location.as_ref(),
         };
         let mut transaction = pool.begin().await.unwrap();
         let create_result = create_table(request, &mut transaction).await.unwrap();
         transaction.commit().await.unwrap();
-
         let load_result = load_tables(
             warehouse_id,
             vec![table_id],
@@ -912,9 +1154,18 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(load_result.len(), 1);
+        let s1 = format!("{:#?}", load_result.get(&table_id).unwrap().table_metadata);
+        let s2 = format!("{:#?}", create_result.table_metadata);
+        let diff = similar::TextDiff::from_lines(&s1, &s2);
+        let diff = diff
+            .unified_diff()
+            .context_radius(15)
+            .missing_newline_hint(false)
+            .to_string();
         assert_eq!(
             load_result.get(&table_id).unwrap().table_metadata,
-            create_result.table_metadata
+            create_result.table_metadata,
+            "{diff}",
         );
         assert_eq!(
             load_result.get(&table_id).unwrap().metadata_location,
@@ -1324,96 +1575,6 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
-    async fn test_commit_transaction(pool: sqlx::PgPool) {
-        let state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table1 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
-        let table2 = initialize_table(warehouse_id, state.clone(), false, None, None).await;
-        let _ = initialize_table(warehouse_id, state.clone(), false, None, None).await;
-
-        let loaded_tables = load_tables(
-            warehouse_id,
-            vec![table1.table_id, table2.table_id],
-            false,
-            &mut pool.begin().await.unwrap(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(loaded_tables.len(), 2);
-        assert!(loaded_tables
-            .get(&table1.table_id)
-            .unwrap()
-            .metadata_location
-            .is_none());
-        assert!(loaded_tables
-            .get(&table2.table_id)
-            .unwrap()
-            .metadata_location
-            .is_some());
-
-        let table1_metadata = &loaded_tables.get(&table1.table_id).unwrap().table_metadata;
-        let table2_metadata = &loaded_tables.get(&table2.table_id).unwrap().table_metadata;
-
-        let builder1 = TableMetadataBuilder::new_from_metadata(
-            table1_metadata.clone(),
-            Some("s3://my_bucket/table1/metadata/foo".to_string()),
-        )
-        .set_properties(HashMap::from_iter(vec![(
-            "t1_key".to_string(),
-            "t1_value".to_string(),
-        )]))
-        .unwrap();
-        let builder2 = TableMetadataBuilder::new_from_metadata(
-            table2_metadata.clone(),
-            Some("s3://my_bucket/table2/metadata/foo".to_string()),
-        )
-        .set_properties(HashMap::from_iter(vec![(
-            "t2_key".to_string(),
-            "t2_value".to_string(),
-        )]))
-        .unwrap();
-        let updated_metadata1 = builder1.build().unwrap().metadata;
-        let updated_metadata2 = builder2.build().unwrap().metadata;
-
-        let commits = vec![
-            TableCommit {
-                new_metadata: updated_metadata1.clone(),
-                new_metadata_location: Location::from_str("s3://my_bucket/table1/metadata/foo")
-                    .unwrap(),
-            },
-            TableCommit {
-                new_metadata: updated_metadata2.clone(),
-                new_metadata_location: Location::from_str("s3://my_bucket/table2/metadata/foo")
-                    .unwrap(),
-            },
-        ];
-
-        let mut transaction = pool.begin().await.unwrap();
-        commit_table_transaction(warehouse_id, commits.clone(), &mut transaction)
-            .await
-            .unwrap();
-        transaction.commit().await.unwrap();
-
-        let loaded_tables = load_tables(
-            warehouse_id,
-            vec![table1.table_id, table2.table_id],
-            false,
-            &mut pool.begin().await.unwrap(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(loaded_tables.len(), 2);
-
-        let loaded_metadata1 = &loaded_tables.get(&table1.table_id).unwrap().table_metadata;
-        let loaded_metadata2 = &loaded_tables.get(&table2.table_id).unwrap().table_metadata;
-
-        assert_eq!(loaded_metadata1, &updated_metadata1);
-        assert_eq!(loaded_metadata2, &updated_metadata2);
-    }
-
-    #[sqlx::test]
     async fn test_get_id_by_location(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1530,9 +1691,13 @@ pub(crate) mod tests {
         let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
 
         let mut transaction = pool.begin().await.unwrap();
-        mark_tabular_as_deleted(TabularIdentUuid::Table(*table.table_id), &mut transaction)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            TabularIdentUuid::Table(*table.table_id),
+            None,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
         transaction.commit().await.unwrap();
 
         assert!(get_table_metadata_by_id(

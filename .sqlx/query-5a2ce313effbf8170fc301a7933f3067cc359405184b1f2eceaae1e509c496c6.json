@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select w.warehouse_id, n.namespace_id, table_id, metadata from \"table\" t JOIN tabular ta on ta.tabular_id = t.table_id join namespace n on n.namespace_id = ta.namespace_id join warehouse w on n.warehouse_id = w.warehouse_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "table_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5a2ce313effbf8170fc301a7933f3067cc359405184b1f2eceaae1e509c496c6"
+}

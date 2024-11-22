@@ -160,30 +160,6 @@ pub(crate) async fn drop_view<'a>(
     view_id: ViewIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    let _ = sqlx::query!(
-        r#"
-     DELETE FROM view
-     WHERE view_id = $1
-     AND view_id IN (select view_id from active_views)
-     RETURNING view_id
-     "#,
-        *view_id,
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::RowNotFound = e {
-            ErrorModel::builder()
-                .code(StatusCode::NOT_FOUND.into())
-                .message("View not found".to_string())
-                .r#type("NoSuchViewError".to_string())
-                .build()
-        } else {
-            tracing::warn!("Error dropping view: {}", e);
-            e.into_error_model("Error dropping view".to_string())
-        }
-    })?;
-
     drop_tabular(TabularIdentUuid::View(*view_id), transaction).await
 }
 
@@ -375,25 +351,25 @@ async fn create_view_version(
             )
         .fetch_one(&mut **transaction)
         .await.map_err(|e| {
-            if let sqlx::Error::RowNotFound = e {
-                let message = "View version already exists";
-                tracing::debug!(?e,"{}", message);
-                ErrorModel::builder()
-                    .code(StatusCode::CONFLICT.into())
-                    .message(message.to_string())
-                    .r#type("ViewVersionAlreadyExists".to_string())
-                    .build()
-            } else {
-                let message = "Error creating view version";
-                tracing::warn!(?e, "{} for: '{}'/'{}' with schema_id: '{}' due to: '{}'",
+        if let sqlx::Error::RowNotFound = e {
+            let message = "View version already exists";
+            tracing::debug!(?e,"{}", message);
+            ErrorModel::builder()
+                .code(StatusCode::CONFLICT.into())
+                .message(message.to_string())
+                .r#type("ViewVersionAlreadyExists".to_string())
+                .build()
+        } else {
+            let message = "Error creating view version";
+            tracing::warn!(?e, "{} for: '{}'/'{}' with schema_id: '{}' due to: '{}'",
                 message,
                 view_id,
                 version_id,
                 schema_id,
                 e
             );
-                e.into_error_model(message.to_string())
-            }
+            e.into_error_model(message.to_string())
+        }
     })?;
 
     for rep in view_version.representations().iter() {
@@ -459,6 +435,7 @@ where
         transaction,
         Some(TabularType::View),
         paginate_query,
+        false,
     )
     .await?;
     let views = page.map::<ViewIdentUuid, TableIdent>(
@@ -770,9 +747,13 @@ pub(crate) mod tests {
     async fn soft_drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        mark_tabular_as_deleted(TabularIdentUuid::View(created_meta.view_uuid), &mut tx)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            TabularIdentUuid::View(created_meta.view_uuid),
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.view_uuid.into(),
