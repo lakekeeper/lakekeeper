@@ -1647,7 +1647,7 @@ mod tests {
         async fn test_cannot_assign_role_to_itself() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             let role_id = RoleId::new(uuid::Uuid::nil());
 
             authorizer
@@ -1684,7 +1684,7 @@ mod tests {
                     .unwrap();
             assert!(relations.is_empty());
 
-            let user_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             authorizer
                 .write(
                     Some(vec![TupleKey {
@@ -1741,7 +1741,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_as_user() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-            let user_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             let actor = Actor::Principal(user_id.clone());
             let access: Vec<ServerAction> =
                 get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
@@ -1775,7 +1775,7 @@ mod tests {
         async fn test_get_allowed_actions_as_role() {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let role_id = RoleId::new(uuid::Uuid::now_v7());
-            let user_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             let actor = Actor::Role {
                 principal: user_id.clone(),
                 assumed_role: role_id,
@@ -1811,7 +1811,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_for_other_principal() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-            let user_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             let role_id = RoleId::new(uuid::Uuid::now_v7());
             let actor = Actor::Principal(user_id.clone());
 
@@ -1868,8 +1868,8 @@ mod tests {
         async fn test_checked_write() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user1_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let user2_id = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user1_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user2_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
 
             authorizer
                 .write(
@@ -1905,7 +1905,7 @@ mod tests {
         async fn test_assign_to_role() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user_id_owner = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id_owner = UserId::kubernetes(&uuid::Uuid::now_v7().to_string()).unwrap();
             let role_id_1 = RoleId::new(uuid::Uuid::nil());
             let role_id_2 = RoleId::new(uuid::Uuid::now_v7());
 
@@ -1946,8 +1946,8 @@ mod tests {
         async fn test_assign_to_project() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user_id_owner = UserId::default_prefix(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let user_id_assignee = UserId::default_prefix(&uuid::Uuid::nil().to_string()).unwrap();
+            let user_id_owner = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id_assignee = UserId::kubernetes(&uuid::Uuid::nil().to_string()).unwrap();
             let role_id = RoleId::new(uuid::Uuid::now_v7());
             let project_id = ProjectIdent::from(uuid::Uuid::nil());
 

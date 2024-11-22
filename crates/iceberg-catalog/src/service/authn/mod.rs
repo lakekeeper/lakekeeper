@@ -30,7 +30,7 @@ impl AuthDetails {
                     )
                     .into());
                 };
-                let prefixed_id = UserId::idp_prefixed(uid.as_str(), "kubernetes")?;
+                let prefixed_id = UserId::kubernetes(uid.as_str())?;
                 return Ok(AuthDetails::Principal(Principal {
                     actor: Actor::Principal(prefixed_id.clone()),
                     user_id: prefixed_id,
@@ -47,7 +47,16 @@ impl AuthDetails {
     }
 
     fn try_from_jwt_claims(claims: Claims) -> Result<Self> {
-        let user_id = UserId::try_from_claims(&claims)?;
+        // For azure, the oid claim is permanent to the user account
+        // accross all Entra ID applications. sub is only unique for one client.
+        // To enable collaboration between projects, we use oid as the user id if
+        // provided.
+        let sub = if let Some(oid) = &claims.oid {
+            oid.as_str()
+        } else {
+            claims.sub.as_str()
+        };
+        let user_id = UserId::oidc(sub)?;
 
         let first_name = claims.given_name.or(claims.first_name);
         let last_name = claims.family_name.or(claims.last_name);

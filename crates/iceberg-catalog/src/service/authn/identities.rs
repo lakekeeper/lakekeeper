@@ -1,73 +1,59 @@
 use crate::api;
 use crate::api::management::v1::user::UserType;
-use crate::service::authn::Claims;
 use crate::service::Actor;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier of a user in the system.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, utoipa::ToSchema)]
-pub struct UserId {
-    pub idp: String,
-    pub user_id: String,
+pub enum UserId {
+    /// OIDC principal
+    OIDC(String),
+    /// K8s principal
+    Kubernetes(String),
 }
 
 impl TryFrom<String> for UserId {
     type Error = IcebergErrorResponse;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        if let Some((idp, user_id)) = s.split_once('/') {
-            UserId::idp_prefixed(user_id, idp)
-        } else {
-            UserId::default_prefix(&s)
+        match s.split_once('/') {
+            Some(("oidc", user_id)) => Ok(UserId::oidc(user_id)?),
+            Some(("kubernetes", user_id)) => Ok(UserId::kubernetes(user_id)?),
+            _ => Err(ErrorModel::bad_request(
+                format!("Invalid user id format: {s}"),
+                "InvalidUserId",
+                None,
+            )
+            .into()),
         }
     }
 }
 
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(format!("{}/{}", self.idp, self.user_id).as_str())
+        match self {
+            UserId::OIDC(user_id) => write!(f, "oidc/{user_id}"),
+            UserId::Kubernetes(user_id) => write!(f, "kubernetes/{user_id}"),
+        }
     }
 }
 
 impl UserId {
-    pub(crate) fn idp_prefixed(user_id: &str, idp_prefix: &str) -> api::Result<Self> {
-        Self::validate_len(user_id)?;
-        Self::no_illegal_chars(user_id)?;
-
-        // Lowercase all subjects
-        Ok(Self {
-            idp: idp_prefix.to_string(),
-            user_id: user_id.to_lowercase(),
-        })
-    }
-
-    pub(crate) fn default_prefix(subject: &str) -> api::Result<Self> {
+    fn validate_subject(subject: &str) -> api::Result<()> {
         Self::validate_len(subject)?;
-
         Self::no_illegal_chars(subject)?;
-
-        // Lowercase all subjects
-        let subject = subject.to_lowercase();
-
-        Ok(Self {
-            idp: "default".to_string(),
-            user_id: subject,
-        })
+        Ok(())
     }
 
-    pub(super) fn try_from_claims(claims: &Claims) -> api::Result<Self> {
-        // For azure, the oid claim is permanent to the user account
-        // accross all Entra ID applications. sub is only unique for one client.
-        // To enable collaboration between projects, we use oid as the user id if
-        // provided.
-        let sub = if let Some(oid) = &claims.oid {
-            oid.as_str()
-        } else {
-            claims.sub.as_str()
-        };
+    pub(crate) fn oidc(subject: &str) -> api::Result<Self> {
+        Self::validate_subject(subject)?;
+        Ok(Self::OIDC(subject.to_string()))
+    }
 
-        Self::default_prefix(sub)
+    pub(crate) fn kubernetes(subject: &str) -> api::Result<Self> {
+        Self::validate_subject(subject)?;
+        Ok(Self::Kubernetes(subject.to_string()))
     }
 
     fn validate_len(subject: &str) -> api::Result<()> {
@@ -85,7 +71,7 @@ impl UserId {
     fn no_illegal_chars(subject: &str) -> api::Result<()> {
         if subject
             .chars()
-            .any(|c| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '/'))
+            .any(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
         {
             return Err(ErrorModel::bad_request(
                 "sub or oid claim contain illegal characters. Only alphanumeric + - are legal.",
@@ -95,11 +81,6 @@ impl UserId {
             .into());
         }
         Ok(())
-    }
-
-    #[must_use]
-    pub fn inner(&self) -> String {
-        self.to_string()
     }
 }
 
@@ -223,39 +204,24 @@ impl Principal {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_user_id() {
-        let user_id = super::UserId::try_from("default/123".to_string()).unwrap();
-        assert_eq!(user_id.idp, "default");
-        assert_eq!(user_id.user_id, "123");
+        let user_id = UserId::try_from("oidc/123".to_string()).unwrap();
+        assert_eq!(user_id, UserId::OIDC("123".to_string()));
+        assert_eq!(user_id.to_string(), "oidc/123");
 
-        let user_id = super::UserId::try_from("default/123/456".to_string()).unwrap();
-        assert_eq!(user_id.idp, "default");
-        assert_eq!(user_id.user_id, "123/456");
+        let user_id = UserId::try_from("kubernetes/1234".to_string()).unwrap();
+        assert_eq!(user_id, UserId::Kubernetes("1234".to_string()));
+        assert_eq!(user_id.to_string(), "kubernetes/1234");
 
-        let user_id = super::UserId::try_from("kubernetes/123/456/789".to_string()).unwrap();
-        assert_eq!(user_id.idp, "kubernetes");
-        assert_eq!(user_id.user_id, "123/456/789");
+        let user_id: UserId = serde_json::from_str(r#""oidc/123""#).unwrap();
+        assert_eq!(user_id, UserId::OIDC("123".to_string()));
 
-        let user_str = user_id.to_string();
-        assert_eq!(user_str, "kubernetes/123/456/789");
+        let user_id: UserId = serde_json::from_str(r#""kubernetes/123""#).unwrap();
+        assert_eq!(user_id, UserId::Kubernetes("123".to_string()));
 
-        // Test json serde
-        let user_id: super::UserId = serde_json::from_str("\"kubernetes/123/456/789\"").unwrap();
-        assert_eq!(user_id.idp, "kubernetes");
-        assert_eq!(user_id.user_id, "123/456/789");
-        assert_eq!(
-            serde_json::to_string(&user_id).unwrap(),
-            "\"kubernetes/123/456/789\""
-        );
-
-        // Default deserialization without prefix
-        let user_id: super::UserId = serde_json::from_str("\"123-456-789\"").unwrap();
-        assert_eq!(user_id.idp, "default");
-        assert_eq!(user_id.user_id, "123-456-789");
-        assert_eq!(
-            serde_json::to_string(&user_id).unwrap(),
-            "\"default/123-456-789\""
-        );
+        serde_json::from_str::<UserId>(r#""nonexistant/123""#).unwrap_err();
     }
 }

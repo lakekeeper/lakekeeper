@@ -1243,7 +1243,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_list_projects() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let user_id = UserId::default_prefix("this_user").unwrap();
+            let user_id = UserId::oidc("this_user").unwrap();
             let actor = Actor::Principal(user_id.clone());
             let project = ProjectIdent::from(uuid::Uuid::now_v7());
 
