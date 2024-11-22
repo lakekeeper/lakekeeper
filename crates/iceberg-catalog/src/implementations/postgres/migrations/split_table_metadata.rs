@@ -362,19 +362,23 @@ mod test {
         let mut trx = pool.begin().await.unwrap();
 
         split_table_metadata(&mut trx).await.unwrap();
+        trx.commit().await.unwrap();
+
+        let mut trx = pool.begin().await.unwrap();
 
         let tabs = list_tabulars(
             (*whid).into(),
             None,
             Some((*nsid).into()),
             ListFlags::only_deleted(),
-            &pool,
+            &mut *trx,
             None,
             PaginationQuery::empty(),
             false,
         )
         .await
         .unwrap();
+        trx.commit().await.unwrap();
 
         assert_eq!(tabs.len(), tabs_before.len());
         let t = tabs.get(&tab).unwrap().1.unwrap();
@@ -382,6 +386,7 @@ mod test {
         assert_eq!(t.expiration_task_id, t2.expiration_task_id);
         assert_eq!(t.expiration_date, t2.expiration_date);
         assert_eq!(t.deleted_at, t2.deleted_at);
+        let mut trx = pool.begin().await.unwrap();
 
         for ((warehouse_id, _, tid), metadata) in old_tables {
             let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
@@ -391,7 +396,6 @@ mod test {
             let table = tables.get(&(tid.into())).unwrap();
             pretty_assertions::assert_eq!(table.table_metadata, metadata);
         }
-
         trx.commit().await.unwrap();
     }
 }
