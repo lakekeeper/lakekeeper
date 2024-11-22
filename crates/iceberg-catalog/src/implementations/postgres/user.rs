@@ -52,8 +52,10 @@ struct UserRow {
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl From<UserRow> for User {
-    fn from(
+impl TryFrom<UserRow> for User {
+    type Error = crate::service::IcebergErrorResponse;
+
+    fn try_from(
         UserRow {
             id,
             name,
@@ -63,9 +65,9 @@ impl From<UserRow> for User {
             created_at,
             updated_at,
         }: UserRow,
-    ) -> Self {
-        User {
-            id,
+    ) -> Result<Self> {
+        Ok(User {
+            id: id.try_into()?,
             name,
             email,
             user_type: user_type.into(),
@@ -78,7 +80,7 @@ impl From<UserRow> for User {
             },
             created_at,
             updated_at,
-        }
+        })
     }
 }
 
@@ -140,8 +142,8 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     .await
     .map_err(|e| e.into_error_model("Error fetching users".to_string()))?
     .into_iter()
-    .map(User::from)
-    .collect();
+    .map(User::try_from)
+    .collect::<Result<_>>()?;
 
     let next_page_token = users.last().map(|u| {
         PaginateToken::V1(V1PaginateToken {
@@ -230,9 +232,9 @@ pub(crate) async fn create_or_update_user<
     };
 
     Ok(if created {
-        CreateOrUpdateUserResponse::Created(User::from(user))
+        CreateOrUpdateUserResponse::Created(User::try_from(user)?)
     } else {
-        CreateOrUpdateUserResponse::Updated(User::from(user))
+        CreateOrUpdateUserResponse::Updated(User::try_from(user)?)
     })
 }
 
@@ -253,13 +255,14 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     .await
     .map_err(|e| e.into_error_model("Error searching user".to_string()))?
     .into_iter()
-    .map(|row| SearchUser {
-        id: row.id,
+    .map(|row|  Ok(
+        SearchUser {
+        id: row.id.try_into()?,
         name: row.name,
         user_type: row.user_type.into(),
         email: row.email,
-    })
-    .collect();
+    }))
+    .collect::<Result<_>>()?;
 
     Ok(SearchUserResponse { users })
 }
@@ -302,7 +305,7 @@ mod test {
         .unwrap();
 
         assert_eq!(users.users.len(), 1);
-        assert_eq!(users.users[0].id, user_id.inner());
+        assert_eq!(users.users[0].id, user_id);
         assert_eq!(users.users[0].name, user_name);
         assert_eq!(users.users[0].email, None);
         assert_eq!(users.users[0].user_type, UserType::Human);
@@ -333,7 +336,7 @@ mod test {
         .unwrap();
 
         assert_eq!(users.users.len(), 1);
-        assert_eq!(users.users[0].id, user_id.inner());
+        assert_eq!(users.users[0].id, user_id);
         assert_eq!(users.users[0].name, user_name);
         assert_eq!(users.users[0].email, None);
     }
@@ -360,7 +363,7 @@ mod test {
             .await
             .unwrap();
         assert_eq!(search_result.users.len(), 1);
-        assert_eq!(search_result.users[0].id, user_id.inner());
+        assert_eq!(search_result.users[0].id, user_id);
         assert_eq!(search_result.users[0].name, user_name);
         assert_eq!(search_result.users[0].user_type, UserType::Application);
     }
@@ -457,7 +460,7 @@ mod test {
         for (uidx, u) in users.users.iter().enumerate() {
             let user_id = UserId::default_prefix(&format!("test_user_{uidx}")).unwrap();
             let user_name = format!("test user {uidx}");
-            assert_eq!(u.id, user_id.inner());
+            assert_eq!(u.id, user_id);
             assert_eq!(u.name, user_name);
         }
 
@@ -479,7 +482,7 @@ mod test {
             let uidx = uidx + 5;
             let user_id = UserId::default_prefix(&format!("test_user_{uidx}")).unwrap();
             let user_name = format!("test user {uidx}");
-            assert_eq!(u.id, user_id.inner());
+            assert_eq!(u.id, user_id);
             assert_eq!(u.name, user_name);
         }
 

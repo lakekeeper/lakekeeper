@@ -45,7 +45,8 @@ pub struct User {
     #[serde(default)]
     pub email: Option<String>,
     /// The user's ID
-    pub id: String,
+    #[schema(value_type=String)]
+    pub id: UserId,
     /// Type of the user
     pub user_type: UserType,
     /// The endpoint that last updated the user
@@ -62,7 +63,8 @@ pub struct SearchUser {
     /// Name of the user
     pub name: String,
     /// ID of the user
-    pub id: String,
+    #[schema(value_type=String)]
+    pub id: UserId,
     /// Type of the user
     pub user_type: UserType,
     /// Email of the user. If id is not specified, the email is extracted
