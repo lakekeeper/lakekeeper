@@ -17,16 +17,16 @@ impl std::fmt::Display for UserId {
 }
 
 impl UserId {
-    pub(crate) fn namespaced(user_id: &str, namespace: &str) -> api::Result<Self> {
+    pub(crate) fn idp_prefixed(user_id: &str, idp_prefix: &str) -> api::Result<Self> {
         Self::validate_len(user_id)?;
         Self::no_illegal_chars(user_id)?;
 
         // Lowercase all subjects
-        let user_id = format!("{namespace}/{user_id}");
+        let user_id = format!("{idp_prefix}/{user_id}");
         Ok(Self(user_id.to_string()))
     }
 
-    pub(crate) fn new(subject: &str) -> api::Result<Self> {
+    pub(crate) fn without_prefix(subject: &str) -> api::Result<Self> {
         Self::validate_len(subject)?;
 
         Self::no_illegal_chars(subject)?;
@@ -48,7 +48,7 @@ impl UserId {
             claims.sub.as_str()
         };
 
-        Self::new(sub)
+        Self::without_prefix(sub)
     }
 
     fn validate_len(subject: &str) -> api::Result<()> {
@@ -96,7 +96,7 @@ impl<'de> Deserialize<'de> for UserId {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        UserId::new(&s)
+        UserId::without_prefix(&s)
             .map_err(|e| serde::de::Error::custom(format!("Invalid UserId: {}", e.error.message)))
     }
 }

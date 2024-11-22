@@ -30,7 +30,7 @@ impl AuthDetails {
                     )
                     .into());
                 };
-                let prefixed_id = UserId::namespaced(uid.as_str(), "kubernetes")?;
+                let prefixed_id = UserId::idp_prefixed(uid.as_str(), "kubernetes")?;
                 return Ok(AuthDetails::Principal(Principal {
                     actor: Actor::Principal(prefixed_id.clone()),
                     user_id: prefixed_id,

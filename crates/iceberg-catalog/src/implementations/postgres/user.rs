@@ -275,7 +275,7 @@ mod test {
     async fn test_create_or_update_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::new("test_user_1").unwrap();
+        let user_id = UserId::without_prefix("test_user_1").unwrap();
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -342,7 +342,7 @@ mod test {
     async fn test_search_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::new("test_user_1").unwrap();
+        let user_id = UserId::without_prefix("test_user_1").unwrap();
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -369,7 +369,7 @@ mod test {
     async fn test_delete_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::new("test_user_1").unwrap();
+        let user_id = UserId::without_prefix("test_user_1").unwrap();
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -402,7 +402,7 @@ mod test {
         assert_eq!(users.users.len(), 0);
 
         // Delete non-existent user
-        let user_id = UserId::new("test_user_2").unwrap();
+        let user_id = UserId::without_prefix("test_user_2").unwrap();
         let result = delete_user(user_id, &state.read_write.write_pool)
             .await
             .unwrap();
@@ -413,7 +413,7 @@ mod test {
     async fn test_paginate_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for i in 0..10 {
-            let user_id = UserId::new(&format!("test_user_{i}")).unwrap();
+            let user_id = UserId::without_prefix(&format!("test_user_{i}")).unwrap();
             let user_name = &format!("test user {i}");
 
             create_or_update_user(
@@ -455,7 +455,7 @@ mod test {
         assert_eq!(users.users.len(), 5);
 
         for (uidx, u) in users.users.iter().enumerate() {
-            let user_id = UserId::new(&format!("test_user_{uidx}")).unwrap();
+            let user_id = UserId::without_prefix(&format!("test_user_{uidx}")).unwrap();
             let user_name = format!("test user {uidx}");
             assert_eq!(u.id, user_id.inner());
             assert_eq!(u.name, user_name);
@@ -477,7 +477,7 @@ mod test {
 
         for (uidx, u) in users.users.iter().enumerate() {
             let uidx = uidx + 5;
-            let user_id = UserId::new(&format!("test_user_{uidx}")).unwrap();
+            let user_id = UserId::without_prefix(&format!("test_user_{uidx}")).unwrap();
             let user_name = format!("test user {uidx}");
             assert_eq!(u.id, user_id.inner());
             assert_eq!(u.name, user_name);
