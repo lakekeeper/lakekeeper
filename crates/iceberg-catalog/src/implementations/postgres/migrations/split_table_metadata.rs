@@ -1,6 +1,6 @@
 use crate::api;
 use crate::api::iceberg::v1::PaginationQuery;
-use crate::implementations::postgres::migrations::{Migration, MigrationHook};
+use crate::implementations::postgres::migrations::MigrationHook;
 use crate::implementations::postgres::tabular::table::create_table;
 use crate::implementations::postgres::tabular::{
     list_tabulars, mark_tabular_as_deleted, table, TabularType,
