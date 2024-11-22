@@ -2,17 +2,31 @@ use crate::api;
 use crate::api::management::v1::user::UserType;
 use crate::service::authn::Claims;
 use crate::service::Actor;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier of a user in the system.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, utoipa::ToSchema)]
-#[serde(transparent)]
-pub struct UserId(String);
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, utoipa::ToSchema)]
+pub struct UserId {
+    pub idp: String,
+    pub user_id: String,
+}
+
+impl TryFrom<String> for UserId {
+    type Error = IcebergErrorResponse;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if let Some((idp, user_id)) = s.split_once('/') {
+            UserId::idp_prefixed(user_id, idp)
+        } else {
+            UserId::without_prefix(&s)
+        }
+    }
+}
 
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0.as_str())
+        f.write_str(format!("{}/{}", self.idp, self.user_id).as_str())
     }
 }
 
@@ -22,8 +36,10 @@ impl UserId {
         Self::no_illegal_chars(user_id)?;
 
         // Lowercase all subjects
-        let user_id = format!("{idp_prefix}/{user_id}");
-        Ok(Self(user_id.to_string()))
+        Ok(Self {
+            idp: idp_prefix.to_string(),
+            user_id: user_id.to_lowercase(),
+        })
     }
 
     pub(crate) fn without_prefix(subject: &str) -> api::Result<Self> {
@@ -34,7 +50,10 @@ impl UserId {
         // Lowercase all subjects
         let subject = subject.to_lowercase();
 
-        Ok(Self(subject.to_string()))
+        Ok(Self {
+            idp: "default".to_string(),
+            user_id: subject,
+        })
     }
 
     pub(super) fn try_from_claims(claims: &Claims) -> api::Result<Self> {
@@ -66,7 +85,7 @@ impl UserId {
     fn no_illegal_chars(subject: &str) -> api::Result<()> {
         if subject
             .chars()
-            .any(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .any(|c| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '/'))
         {
             return Err(ErrorModel::bad_request(
                 "sub or oid claim contain illegal characters. Only alphanumeric + - are legal.",
@@ -79,14 +98,14 @@ impl UserId {
     }
 
     #[must_use]
-    pub fn inner(&self) -> &str {
-        self.0.as_str()
+    pub fn inner(&self) -> String {
+        self.to_string()
     }
 }
 
 impl From<UserId> for String {
     fn from(user_id: UserId) -> Self {
-        user_id.0
+        user_id.to_string()
     }
 }
 
@@ -96,8 +115,16 @@ impl<'de> Deserialize<'de> for UserId {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        UserId::without_prefix(&s)
-            .map_err(|e| serde::de::Error::custom(format!("Invalid UserId: {}", e.error.message)))
+        UserId::try_from(s).map_err(|e| serde::de::Error::custom(e.error))
+    }
+}
+
+impl Serialize for UserId {
+    fn serialize<S>(&self, serializer: S) -> api::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.to_string().as_str())
     }
 }
 
