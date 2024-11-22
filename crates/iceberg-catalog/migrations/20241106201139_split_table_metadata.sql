@@ -1,5 +1,3 @@
--- FIXME: indexes missing
-
 create type table_format_version as enum ('1', '2');
 
 alter table "table"
