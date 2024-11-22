@@ -220,3 +220,42 @@ impl Principal {
         self.email.as_deref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_user_id() {
+        let user_id = super::UserId::try_from("default/123".to_string()).unwrap();
+        assert_eq!(user_id.idp, "default");
+        assert_eq!(user_id.user_id, "123");
+
+        let user_id = super::UserId::try_from("default/123/456".to_string()).unwrap();
+        assert_eq!(user_id.idp, "default");
+        assert_eq!(user_id.user_id, "123/456");
+
+        let user_id = super::UserId::try_from("kubernetes/123/456/789".to_string()).unwrap();
+        assert_eq!(user_id.idp, "kubernetes");
+        assert_eq!(user_id.user_id, "123/456/789");
+
+        let user_str = user_id.to_string();
+        assert_eq!(user_str, "kubernetes/123/456/789");
+
+        // Test json serde
+        let user_id: super::UserId = serde_json::from_str("\"kubernetes/123/456/789\"").unwrap();
+        assert_eq!(user_id.idp, "kubernetes");
+        assert_eq!(user_id.user_id, "123/456/789");
+        assert_eq!(
+            serde_json::to_string(&user_id).unwrap(),
+            "\"kubernetes/123/456/789\""
+        );
+
+        // Default deserialization without prefix
+        let user_id: super::UserId = serde_json::from_str("\"123-456-789\"").unwrap();
+        assert_eq!(user_id.idp, "default");
+        assert_eq!(user_id.user_id, "123-456-789");
+        assert_eq!(
+            serde_json::to_string(&user_id).unwrap(),
+            "\"default/123-456-789\""
+        );
+    }
+}
