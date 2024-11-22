@@ -107,7 +107,7 @@ impl ParseOpenFgaEntity for UserId {
             ));
         }
 
-        UserId::without_prefix(id)
+        UserId::default_prefix(id)
             .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::User], id.to_string()))
     }
 }

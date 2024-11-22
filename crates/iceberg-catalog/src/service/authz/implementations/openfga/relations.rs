@@ -1416,7 +1416,7 @@ mod test {
 
     #[test]
     fn test_assignment_serialization() {
-        let user_id = UserId::without_prefix("my_user").unwrap();
+        let user_id = UserId::default_prefix("my_user").unwrap();
         let user_or_role = UserOrRole::User(user_id);
         let assignment = ServerAssignment::GlobalAdmin(user_or_role);
         let serialized = serde_json::to_string(&assignment).unwrap();

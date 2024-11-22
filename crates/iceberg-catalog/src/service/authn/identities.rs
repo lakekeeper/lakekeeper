@@ -19,7 +19,7 @@ impl TryFrom<String> for UserId {
         if let Some((idp, user_id)) = s.split_once('/') {
             UserId::idp_prefixed(user_id, idp)
         } else {
-            UserId::without_prefix(&s)
+            UserId::default_prefix(&s)
         }
     }
 }
@@ -42,7 +42,7 @@ impl UserId {
         })
     }
 
-    pub(crate) fn without_prefix(subject: &str) -> api::Result<Self> {
+    pub(crate) fn default_prefix(subject: &str) -> api::Result<Self> {
         Self::validate_len(subject)?;
 
         Self::no_illegal_chars(subject)?;
@@ -67,7 +67,7 @@ impl UserId {
             claims.sub.as_str()
         };
 
-        Self::without_prefix(sub)
+        Self::default_prefix(sub)
     }
 
     fn validate_len(subject: &str) -> api::Result<()> {
