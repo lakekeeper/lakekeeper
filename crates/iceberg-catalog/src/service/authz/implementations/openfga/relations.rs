@@ -1422,7 +1422,7 @@ mod test {
         let serialized = serde_json::to_string(&assignment).unwrap();
         let expected = serde_json::json!({
             "type": "global_admin",
-            "user": "oidc/my_user"
+            "user": "oidc~my_user"
         });
         assert_eq!(
             expected,
