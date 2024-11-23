@@ -2,7 +2,7 @@
 members = [
     "crates/iceberg-catalog",
     "crates/iceberg-catalog-bin",
-    "crates/iceberg-ext",
+    "crates/iceberg-ext"
 ]
 resolver = "2"
 
