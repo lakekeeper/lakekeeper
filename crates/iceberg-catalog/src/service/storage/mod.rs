@@ -143,14 +143,15 @@ impl StorageProfile {
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
-            StorageProfile::Test(_) => std::str::FromStr::from_str("file://tmp/").map_err(|_| {
-                ValidationError::InvalidLocation {
-                    reason: "Invalid namespace location".to_string(),
-                    location: "file://tmp/".to_string(),
-                    source: None,
-                    storage_type: self.storage_type(),
-                }
-            }),
+            StorageProfile::Test(_) => {
+                std::str::FromStr::from_str(&format!("file://tmp/{}", uuid::Uuid::now_v7()))
+                    .map_err(|_| ValidationError::InvalidLocation {
+                        reason: "Invalid namespace location".to_string(),
+                        location: "file://tmp/".to_string(),
+                        source: None,
+                        storage_type: self.storage_type(),
+                    })
+            }
         }
     }
 
@@ -826,65 +827,76 @@ mod tests {
         }
     }
 
-    #[tokio::test]
     #[needs_env_var(TEST_AWS = 1)]
-    async fn test_vended_aws() {
-        let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
-        let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
-        let region = std::env::var("AWS_S3_REGION").unwrap();
-        let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
-        let cred: StorageCredential = S3Credential::AccessKey {
-            aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-            aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
-        }
-        .into();
+    #[test]
+    fn test_vended_aws() {
+        crate::test::test_block_on(
+            async {
+                let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
+                let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
+                let region = std::env::var("AWS_S3_REGION").unwrap();
+                let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
+                let cred: StorageCredential = S3Credential::AccessKey {
+                    aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
+                    aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                }
+                .into();
 
-        let mut profile: StorageProfile = S3Profile {
-            bucket,
-            key_prefix: key_prefix.clone(),
-            assume_role_arn: None,
-            endpoint: None,
-            region,
-            path_style_access: Some(true),
-            sts_role_arn: Some(sts_role_arn),
-            flavor: S3Flavor::Aws,
-            sts_enabled: true,
-        }
-        .into();
+                let mut profile: StorageProfile = S3Profile {
+                    bucket,
+                    key_prefix: key_prefix.clone(),
+                    assume_role_arn: None,
+                    endpoint: None,
+                    region,
+                    path_style_access: Some(true),
+                    sts_role_arn: Some(sts_role_arn),
+                    flavor: S3Flavor::Aws,
+                    sts_enabled: true,
+                }
+                .into();
 
-        test_profile(&cred, &mut profile).await;
+                test_profile(&cred, &mut profile).await;
+            },
+            true,
+        );
     }
 
-    #[tokio::test]
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
-    async fn test_vended_minio() {
-        let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
-        let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-        let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-        let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-        let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-        let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
+    #[test]
+    fn test_vended_minio() {
+        crate::test::test_block_on(
+            async {
+                let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
+                let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
+                let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
+                let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
+                let aws_secret_access_key =
+                    std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
+                let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
 
-        let cred: StorageCredential = S3Credential::AccessKey {
-            aws_access_key_id,
-            aws_secret_access_key,
-        }
-        .into();
+                let cred: StorageCredential = S3Credential::AccessKey {
+                    aws_access_key_id,
+                    aws_secret_access_key,
+                }
+                .into();
 
-        let mut profile = S3Profile {
-            bucket,
-            key_prefix: key_prefix.clone(),
-            assume_role_arn: None,
-            endpoint: Some(endpoint.parse().unwrap()),
-            region,
-            path_style_access: Some(true),
-            sts_role_arn: None,
-            flavor: S3Flavor::Minio,
-            sts_enabled: true,
-        }
-        .into();
+                let mut profile = S3Profile {
+                    bucket,
+                    key_prefix: key_prefix.clone(),
+                    assume_role_arn: None,
+                    endpoint: Some(endpoint.parse().unwrap()),
+                    region,
+                    path_style_access: Some(true),
+                    sts_role_arn: None,
+                    flavor: S3Flavor::Minio,
+                    sts_enabled: true,
+                }
+                .into();
 
-        test_profile(&cred, &mut profile).await;
+                test_profile(&cred, &mut profile).await;
+            },
+            true,
+        );
     }
 
     #[allow(dead_code, clippy::too_many_lines)]

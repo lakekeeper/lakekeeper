@@ -615,183 +615,180 @@ fn namespace_location_may_not_change(
 #[cfg(test)]
 mod tests {
 
-    #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
-    mod minio {
-        use crate::api::iceberg::types::{PageToken, Prefix};
-        use crate::api::iceberg::v1::namespace::Service;
-        use crate::api::management::v1::warehouse::TabularDeleteProfile;
-        use crate::catalog::test::random_request_metadata;
-        use crate::catalog::CatalogServer;
-        use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
-        use crate::service::ListNamespacesQuery;
-        use iceberg::NamespaceIdent;
-        use iceberg_ext::catalog::rest::CreateNamespaceRequest;
-        use std::collections::HashSet;
-        use std::hash::RandomState;
+    use crate::api::iceberg::types::{PageToken, Prefix};
+    use crate::api::iceberg::v1::namespace::Service;
+    use crate::api::management::v1::warehouse::TabularDeleteProfile;
+    use crate::catalog::test::random_request_metadata;
+    use crate::catalog::CatalogServer;
+    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
+    use crate::service::ListNamespacesQuery;
+    use iceberg::NamespaceIdent;
+    use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+    use std::collections::HashSet;
+    use std::hash::RandomState;
 
-        #[sqlx::test]
-        async fn test_ns_pagination(pool: sqlx::PgPool) {
-            let (prof, cred) = crate::catalog::test::minio_profile();
+    #[sqlx::test]
+    async fn test_ns_pagination(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::test_io_profile();
 
-            let hiding_mock = ObjectHidingMock::new();
-            let authz = hiding_mock.to_authorizer();
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
 
-            let (ctx, warehouse) = crate::catalog::test::setup(
-                pool.clone(),
-                prof,
-                Some(cred),
-                authz,
-                TabularDeleteProfile::Hard {},
-            )
-            .await;
-            for n in 0..10 {
-                let ns = format!("ns-{n}");
-                let _ = CatalogServer::create_namespace(
-                    Some(Prefix(warehouse.warehouse_id.to_string())),
-                    CreateNamespaceRequest {
-                        namespace: NamespaceIdent::new(ns),
-                        properties: None,
-                    },
-                    ctx.clone(),
-                    random_request_metadata(),
-                )
-                .await
-                .unwrap();
-            }
-
-            let all = CatalogServer::list_namespaces(
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        for n in 0..10 {
+            let ns = format!("ns-{n}");
+            let _ = CatalogServer::create_namespace(
                 Some(Prefix(warehouse.warehouse_id.to_string())),
-                ListNamespacesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(11),
-                    parent: None,
-                    return_uuids: true,
+                CreateNamespaceRequest {
+                    namespace: NamespaceIdent::new(ns),
+                    properties: None,
                 },
                 ctx.clone(),
                 random_request_metadata(),
             )
             .await
             .unwrap();
-            assert_eq!(all.namespaces.len(), 10);
+        }
 
-            let _ = CatalogServer::list_namespaces(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
-                ListNamespacesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(10),
-                    parent: None,
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(all.namespaces.len(), 10);
+        let all = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.namespaces.len(), 10);
 
-            let first_six = CatalogServer::list_namespaces(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
-                ListNamespacesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(6),
-                    parent: None,
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
+        let _ = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.namespaces.len(), 10);
 
-            assert_eq!(first_six.namespaces.len(), 6);
-            let first_six_items: HashSet<String, RandomState> = first_six
-                .namespaces
-                .into_iter()
-                .map(|ns| ns.to_url_string())
-                .collect();
-            for i in 0..6 {
-                assert!(first_six_items.contains(&format!("ns-{i}")));
-            }
+        let first_six = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(6),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
 
-            let next_four = CatalogServer::list_namespaces(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
-                ListNamespacesQuery {
-                    page_token: PageToken::Present(first_six.next_page_token.unwrap()),
-                    page_size: Some(6),
-                    parent: None,
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
-            let next_four_items: HashSet<String, RandomState> = next_four
-                .namespaces
-                .into_iter()
-                .map(|ns| ns.to_url_string())
-                .collect();
-            for i in 6..10 {
-                assert!(next_four_items.contains(&format!("ns-{i}")));
-            }
+        assert_eq!(first_six.namespaces.len(), 6);
+        let first_six_items: HashSet<String, RandomState> = first_six
+            .namespaces
+            .into_iter()
+            .map(|ns| ns.to_url_string())
+            .collect();
+        for i in 0..6 {
+            assert!(first_six_items.contains(&format!("ns-{i}")));
+        }
 
-            let mut ids = all.namespace_uuids.unwrap();
-            ids.sort();
-            for i in ids.iter().take(6).skip(4) {
-                hiding_mock.hide(&format!("namespace:{i}"));
-            }
+        let next_four = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::Present(first_six.next_page_token.unwrap()),
+                page_size: Some(6),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        let next_four_items: HashSet<String, RandomState> = next_four
+            .namespaces
+            .into_iter()
+            .map(|ns| ns.to_url_string())
+            .collect();
+        for i in 6..10 {
+            assert!(next_four_items.contains(&format!("ns-{i}")));
+        }
 
-            let page = CatalogServer::list_namespaces(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
-                ListNamespacesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(5),
-                    parent: None,
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
+        let mut ids = all.namespace_uuids.unwrap();
+        ids.sort();
+        for i in ids.iter().take(6).skip(4) {
+            hiding_mock.hide(&format!("namespace:{i}"));
+        }
 
-            assert_eq!(page.namespaces.len(), 5);
-            assert!(page.next_page_token.is_some());
+        let page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(5),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
 
-            let page_items: HashSet<String, RandomState> = page
-                .namespaces
-                .into_iter()
-                .map(|ns| ns.to_url_string())
-                .collect();
+        assert_eq!(page.namespaces.len(), 5);
+        assert!(page.next_page_token.is_some());
 
-            for i in 0..5 {
-                let ns_id = if i > 3 { i + 2 } else { i };
-                assert!(page_items.contains(&format!("ns-{ns_id}")));
-            }
-            let next_page = CatalogServer::list_namespaces(
-                Some(Prefix(warehouse.warehouse_id.to_string())),
-                ListNamespacesQuery {
-                    page_token: PageToken::Present(page.next_page_token.unwrap()),
-                    page_size: Some(5),
-                    parent: None,
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(next_page.namespaces.len(), 3);
+        let page_items: HashSet<String, RandomState> = page
+            .namespaces
+            .into_iter()
+            .map(|ns| ns.to_url_string())
+            .collect();
 
-            let next_page_items: HashSet<String, RandomState> = next_page
-                .namespaces
-                .into_iter()
-                .map(|ns| ns.to_url_string())
-                .collect();
+        for i in 0..5 {
+            let ns_id = if i > 3 { i + 2 } else { i };
+            assert!(page_items.contains(&format!("ns-{ns_id}")));
+        }
+        let next_page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::Present(page.next_page_token.unwrap()),
+                page_size: Some(5),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next_page.namespaces.len(), 3);
 
-            for i in 7..10 {
-                assert!(next_page_items.contains(&format!("ns-{i}")));
-            }
+        let next_page_items: HashSet<String, RandomState> = next_page
+            .namespaces
+            .into_iter()
+            .map(|ns| ns.to_url_string())
+            .collect();
+
+        for i in 7..10 {
+            assert!(next_page_items.contains(&format!("ns-{i}")));
         }
     }
 

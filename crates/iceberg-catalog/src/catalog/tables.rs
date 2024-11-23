@@ -1565,14 +1565,17 @@ pub(crate) fn create_table_request_into_table_metadata(
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::types::Prefix;
+    use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::tables::Service as _;
-    use crate::api::iceberg::v1::{DataAccess, NamespaceParameters, TableParameters};
+    use crate::api::iceberg::v1::{
+        DataAccess, ListTablesQuery, NamespaceParameters, TableParameters,
+    };
     use crate::api::management::v1::warehouse::TabularDeleteProfile;
     use crate::api::ApiContext;
     use crate::catalog::test::random_request_metadata;
     use crate::catalog::CatalogServer;
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
+    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use crate::service::authz::AllowAllAuthorizer;
     use crate::service::State;
 
@@ -2475,215 +2478,202 @@ mod test {
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
 
-    #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
-    mod minio {
-        use crate::api::iceberg::types::{PageToken, Prefix};
-        use crate::api::iceberg::v1::tables::Service;
-        use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
-        use crate::api::management::v1::warehouse::TabularDeleteProfile;
-        use crate::catalog::test::random_request_metadata;
-        use crate::catalog::CatalogServer;
-        use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
+    #[sqlx::test]
+    async fn test_table_pagination(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::test_io_profile();
 
-        use itertools::Itertools;
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
 
-        #[sqlx::test]
-        async fn test_table_pagination(pool: sqlx::PgPool) {
-            let (prof, cred) = crate::catalog::test::minio_profile();
-
-            let hiding_mock = ObjectHidingMock::new();
-            let authz = hiding_mock.to_authorizer();
-
-            let (ctx, warehouse) = crate::catalog::test::setup(
-                pool.clone(),
-                prof,
-                Some(cred),
-                authz,
-                TabularDeleteProfile::Hard {},
-            )
-            .await;
-            let ns = crate::catalog::test::create_ns(
-                ctx.clone(),
-                warehouse.warehouse_id.to_string(),
-                "ns1".to_string(),
-            )
-            .await;
-            let ns_params = NamespaceParameters {
-                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
-                namespace: ns.namespace.clone(),
-            };
-            // create 10 staged tables
-            for i in 0..10 {
-                let _ = CatalogServer::create_table(
-                    ns_params.clone(),
-                    super::create_request(Some(format!("tab-{i}"))),
-                    DataAccess {
-                        vended_credentials: true,
-                        remote_signing: false,
-                    },
-                    ctx.clone(),
-                    random_request_metadata(),
-                )
-                .await
-                .unwrap();
-            }
-
-            // list 1 more than existing tables
-            let all = CatalogServer::list_tables(
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        // create 10 staged tables
+        for i in 0..10 {
+            let _ = CatalogServer::create_table(
                 ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(11),
-                    return_uuids: true,
+                create_request(Some(format!("tab-{i}"))),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
                 },
                 ctx.clone(),
                 random_request_metadata(),
             )
             .await
             .unwrap();
-            assert_eq!(all.identifiers.len(), 10);
+        }
 
-            // list exactly amount of existing tables
-            let all = CatalogServer::list_tables(
-                ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(10),
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(all.identifiers.len(), 10);
+        // list 1 more than existing tables
+        let all = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 10);
 
-            // next page is empty
-            let next = CatalogServer::list_tables(
-                ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::Present(all.next_page_token.unwrap()),
-                    page_size: Some(10),
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
+        // list exactly amount of existing tables
+        let all = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 10);
 
-            assert_eq!(next.identifiers.len(), 0);
-            assert!(next.next_page_token.is_none());
+        // next page is empty
+        let next = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::Present(all.next_page_token.unwrap()),
+                page_size: Some(10),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
 
-            let first_six = CatalogServer::list_tables(
-                ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(6),
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(first_six.identifiers.len(), 6);
-            assert!(first_six.next_page_token.is_some());
-            let first_six_items = first_six
-                .identifiers
-                .iter()
-                .map(|i| i.name.clone())
-                .sorted()
-                .collect::<Vec<_>>();
+        assert_eq!(next.identifiers.len(), 0);
+        assert!(next.next_page_token.is_none());
 
-            for (i, item) in first_six_items.iter().enumerate().take(6) {
-                assert_eq!(item, &format!("tab-{i}"));
-            }
+        let first_six = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(6),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_six.identifiers.len(), 6);
+        assert!(first_six.next_page_token.is_some());
+        let first_six_items = first_six
+            .identifiers
+            .iter()
+            .map(|i| i.name.clone())
+            .sorted()
+            .collect::<Vec<_>>();
 
-            let next_four = CatalogServer::list_tables(
-                ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::Present(first_six.next_page_token.unwrap()),
-                    page_size: Some(6),
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(next_four.identifiers.len(), 4);
-            // page-size > number of items left -> no next page
-            assert!(next_four.next_page_token.is_none());
+        for (i, item) in first_six_items.iter().enumerate().take(6) {
+            assert_eq!(item, &format!("tab-{i}"));
+        }
 
-            let next_four_items = next_four
-                .identifiers
-                .iter()
-                .map(|i| i.name.clone())
-                .sorted()
-                .collect::<Vec<_>>();
+        let next_four = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::Present(first_six.next_page_token.unwrap()),
+                page_size: Some(6),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next_four.identifiers.len(), 4);
+        // page-size > number of items left -> no next page
+        assert!(next_four.next_page_token.is_none());
 
-            for (idx, i) in (6..10).enumerate() {
-                assert_eq!(next_four_items[idx], format!("tab-{i}"));
-            }
+        let next_four_items = next_four
+            .identifiers
+            .iter()
+            .map(|i| i.name.clone())
+            .sorted()
+            .collect::<Vec<_>>();
 
-            let mut ids = all.table_uuids.unwrap();
-            ids.sort();
-            for t in ids.iter().take(6).skip(4) {
-                hiding_mock.hide(&format!("table:{t}"));
-            }
+        for (idx, i) in (6..10).enumerate() {
+            assert_eq!(next_four_items[idx], format!("tab-{i}"));
+        }
 
-            let page = CatalogServer::list_tables(
-                ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::NotSpecified,
-                    page_size: Some(5),
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
+        let mut ids = all.table_uuids.unwrap();
+        ids.sort();
+        for t in ids.iter().take(6).skip(4) {
+            hiding_mock.hide(&format!("table:{t}"));
+        }
 
-            assert_eq!(page.identifiers.len(), 5);
-            assert!(page.next_page_token.is_some());
-            let page_items = page
-                .identifiers
-                .iter()
-                .map(|i| i.name.clone())
-                .sorted()
-                .collect::<Vec<_>>();
-            for (i, item) in page_items.iter().enumerate() {
-                let tab_id = if i > 3 { i + 2 } else { i };
-                assert_eq!(item, &format!("tab-{tab_id}"));
-            }
+        let page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(5),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
 
-            let next_page = CatalogServer::list_tables(
-                ns_params.clone(),
-                ListTablesQuery {
-                    page_token: PageToken::Present(page.next_page_token.unwrap()),
-                    page_size: Some(6),
-                    return_uuids: true,
-                },
-                ctx.clone(),
-                random_request_metadata(),
-            )
-            .await
-            .unwrap();
+        assert_eq!(page.identifiers.len(), 5);
+        assert!(page.next_page_token.is_some());
+        let page_items = page
+            .identifiers
+            .iter()
+            .map(|i| i.name.clone())
+            .sorted()
+            .collect::<Vec<_>>();
+        for (i, item) in page_items.iter().enumerate() {
+            let tab_id = if i > 3 { i + 2 } else { i };
+            assert_eq!(item, &format!("tab-{tab_id}"));
+        }
 
-            assert_eq!(next_page.identifiers.len(), 3);
+        let next_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::Present(page.next_page_token.unwrap()),
+                page_size: Some(6),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
 
-            let next_page_items = next_page
-                .identifiers
-                .iter()
-                .map(|i| i.name.clone())
-                .sorted()
-                .collect::<Vec<_>>();
+        assert_eq!(next_page.identifiers.len(), 3);
 
-            for (idx, i) in (7..10).enumerate() {
-                assert_eq!(next_page_items[idx], format!("tab-{i}"));
-            }
+        let next_page_items = next_page
+            .identifiers
+            .iter()
+            .map(|i| i.name.clone())
+            .sorted()
+            .collect::<Vec<_>>();
+
+        for (idx, i) in (7..10).enumerate() {
+            assert_eq!(next_page_items[idx], format!("tab-{i}"));
         }
     }
 }
