@@ -39,6 +39,7 @@ pub enum StorageProfile {
     #[schema(title = "StorageProfileS3")]
     S3(S3Profile),
     #[cfg(test)]
+    #[serde(rename = "test")]
     Test(TestProfile),
     #[serde(rename = "gcs")]
     #[schema(title = "StorageProfileGcs")]
@@ -46,7 +47,6 @@ pub enum StorageProfile {
 }
 
 #[derive(Debug, Clone, strum_macros::Display)]
-
 pub enum StorageType {
     #[strum(serialize = "s3")]
     S3,
@@ -145,14 +145,13 @@ impl StorageProfile {
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
             StorageProfile::Test(profile) => {
-                std::str::FromStr::from_str(&format!("file://tmp/{}", profile.0)).map_err(|_| {
-                    ValidationError::InvalidLocation {
+                std::str::FromStr::from_str(&format!("file://tmp/{}", profile.base_location))
+                    .map_err(|_| ValidationError::InvalidLocation {
                         reason: "Invalid namespace location".to_string(),
                         location: "file://tmp/".to_string(),
                         source: None,
                         storage_type: self.storage_type(),
-                    }
-                })
+                    })
             }
         }
     }
@@ -481,11 +480,15 @@ impl StorageLocations for S3Profile {}
 impl StorageLocations for AdlsProfile {}
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TestProfile(Uuid);
+pub struct TestProfile {
+    base_location: Uuid,
+}
 
 impl Default for TestProfile {
     fn default() -> Self {
-        Self(Uuid::now_v7())
+        Self {
+            base_location: Uuid::now_v7(),
+        }
     }
 }
 
