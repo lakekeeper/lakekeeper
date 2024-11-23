@@ -22,7 +22,7 @@ use super::StorageType;
 
 static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::ClientBuilder::new()
-        .http2_keep_alive_timeout(Duration::from_millis(18500))
+        .pool_idle_timeout(Duration::from_millis(18500))
         .build()
         .expect("This should never fail since we are just setting timeout to 18500 which does not populate config.error")
 });
