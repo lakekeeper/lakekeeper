@@ -22,6 +22,7 @@ use iceberg_ext::configs::Location;
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Storage profile for a warehouse.
 #[derive(
@@ -143,14 +144,15 @@ impl StorageProfile {
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
-            StorageProfile::Test(_) => {
-                std::str::FromStr::from_str(&format!("file://tmp/{}", uuid::Uuid::now_v7()))
-                    .map_err(|_| ValidationError::InvalidLocation {
+            StorageProfile::Test(profile) => {
+                std::str::FromStr::from_str(&format!("file://tmp/{}", profile.0)).map_err(|_| {
+                    ValidationError::InvalidLocation {
                         reason: "Invalid namespace location".to_string(),
                         location: "file://tmp/".to_string(),
                         source: None,
                         storage_type: self.storage_type(),
-                    })
+                    }
+                })
             }
         }
     }
@@ -479,7 +481,13 @@ impl StorageLocations for S3Profile {}
 impl StorageLocations for AdlsProfile {}
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TestProfile;
+pub struct TestProfile(Uuid);
+
+impl Default for TestProfile {
+    fn default() -> Self {
+        Self(Uuid::now_v7())
+    }
+}
 
 /// Storage secret for a warehouse.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema)]

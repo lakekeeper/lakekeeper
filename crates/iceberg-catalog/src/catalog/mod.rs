@@ -177,7 +177,7 @@ pub(crate) mod test {
     use uuid::Uuid;
 
     pub(crate) fn test_io_profile() -> StorageProfile {
-        TestProfile.into()
+        TestProfile::default().into()
     }
 
     pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {

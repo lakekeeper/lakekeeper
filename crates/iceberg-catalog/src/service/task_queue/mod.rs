@@ -280,7 +280,7 @@ mod test {
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),
-            Some(TestProfile.into()),
+            Some(TestProfile::default().into()),
             None,
             None,
             true,

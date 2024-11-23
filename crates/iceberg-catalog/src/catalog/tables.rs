@@ -2335,7 +2335,7 @@ mod test {
         NamespaceParameters,
         LoadTableResult,
     ) {
-        let (ctx, ns, ns_params) = table_test_setup(pool).await;
+        let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
         let table = CatalogServer::create_table(
             ns_params.clone(),
             create_request(Some("tab-1".to_string())),
@@ -2357,9 +2357,10 @@ mod test {
         ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
         CreateNamespaceResponse,
         NamespaceParameters,
+        String,
     ) {
         let prof = crate::catalog::test::test_io_profile();
-
+        let base_loc = prof.base_location().unwrap().to_string();
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
@@ -2378,17 +2379,17 @@ mod test {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: ns.namespace.clone(),
         };
-        (ctx, ns, ns_params)
+        (ctx, ns, ns_params, base_loc)
     }
 
     #[sqlx::test]
     async fn test_cannot_create_table_at_same_location(pool: PgPool) {
-        let (ctx, _, ns_params) = table_test_setup(pool).await;
+        let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
         let mut create_request_1 = create_request(Some("tab-1".to_string()));
-        create_request_1.location = Some(format!("file://tmp/{tmp_id}/bucket/"));
+        create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket/"));
         let mut create_request_2 = create_request(Some("tab-2".to_string()));
-        create_request_2.location = Some(format!("file://tmp/{tmp_id}/bucket/"));
+        create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/"));
 
         let _ = CatalogServer::create_table(
             ns_params.clone(),
@@ -2415,14 +2416,14 @@ mod test {
 
     #[sqlx::test]
     async fn test_cannot_create_staged_tables_at_sublocations(pool: PgPool) {
-        let (ctx, _, ns_params) = table_test_setup(pool).await;
+        let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
         let mut create_request_1 = create_request(Some("tab-1".to_string()));
         create_request_1.stage_create = Some(true);
-        create_request_1.location = Some(format!("file://tmp/{tmp_id}/bucket/inner"));
+        create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket/inner"));
         let mut create_request_2 = create_request(Some("tab-2".to_string()));
         create_request_2.stage_create = Some(true);
-        create_request_2.location = Some(format!("file://tmp/{tmp_id}/bucket/"));
+        create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/"));
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
@@ -2448,13 +2449,13 @@ mod test {
 
     #[sqlx::test]
     async fn test_cannot_create_tables_at_sublocations(pool: PgPool) {
-        let (ctx, _, ns_params) = table_test_setup(pool).await;
+        let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
 
         let mut create_request_1 = create_request(Some("tab-1".to_string()));
-        create_request_1.location = Some(format!("file://tmp/{tmp_id}/bucket/"));
+        create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket/"));
         let mut create_request_2 = create_request(Some("tab-2".to_string()));
-        create_request_2.location = Some(format!("file://tmp/{tmp_id}/bucket/sublocation"));
+        create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/sublocation"));
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
