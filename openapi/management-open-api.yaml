@@ -1298,7 +1298,7 @@ paths:
       responses:
         '200':
           description: Deletion Profile updated successfully
-  /management/v1/warehouse/{warehouse_id}/deleted_tabulars:
+  /management/v1/warehouse/{warehouse_id}/deleted-tabulars:
     get:
       tags:
       - warehouse
@@ -3149,6 +3149,4 @@ tags:
   description: Manage Roles
 - name: permissions
   description: Manage Permissions
-
-
 
