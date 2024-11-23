@@ -425,7 +425,7 @@ def spark(warehouse: Warehouse, storage_config):
     }
     if storage_config["storage-profile"]["type"] == "s3" and storage_config["storage-profile"]["sts-enabled"]:
         configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "vended-credentials"
-    elif storage_config["storage_profile"]["type"] == "s3":
+    elif storage_config["storage-profile"]["type"] == "s3":
         configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "remote-signing"
 
     spark_conf = pyspark.SparkConf().setMaster("local[*]")
