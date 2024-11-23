@@ -13,7 +13,8 @@ use azure_storage::shared_access_signature::SasToken;
 use azure_storage::StorageCredentials;
 use futures::StreamExt;
 
-use azure_core::TransportOptions;
+use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::AzdlsConfigKeys;
 use iceberg_ext::configs::{
     table::{custom, TableProperties},
@@ -235,14 +236,7 @@ impl AdlsProfile {
         cred: StorageCredentials,
         permissions: StoragePermissions,
     ) -> Result<String, CredentialsError> {
-        let client = azure_storage_blobs::prelude::BlobServiceClient::builder(
-            self.account_name.as_str(),
-            cred,
-        )
-        .transport(TransportOptions::new(Arc::new(
-            STS_CLIENT.get_or_init(reqwest::Client::new).clone(),
-        )))
-        .blob_service_client();
+        let client = blob_service_client(self.account_name.as_str(), cred);
 
         let start = time::OffsetDateTime::now_utc();
         let max_validity_seconds = i64::MAX;
@@ -535,6 +529,21 @@ fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String
     format!("adls.sas-token.{account_name}.{endpoint_suffix}")
 }
 
+fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
+    azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
+        .transport(TransportOptions::new(Arc::new(
+            STS_CLIENT.get_or_init(reqwest::Client::new).clone(),
+        )))
+        .client_options(
+            azure_core::ClientOptions::default().retry(RetryOptions::fixed(
+                FixedRetryOptions::default()
+                    .max_retries(3u32)
+                    .max_total_elapsed(std::time::Duration::from_secs(5)),
+            )),
+        )
+        .blob_service_client()
+}
+
 // This function should not use any information available in the profile, thus
 // we don't give it a `&self` reference. We just pass it in to attach in the error.
 pub(super) async fn validate_vended_credentials(
@@ -559,14 +568,7 @@ pub(super) async fn validate_vended_credentials(
         reason: "Error creating azure sas token.".to_string(),
         source: Some(Box::new(e)),
     })?;
-    let client = azure_storage_blobs::prelude::BlobServiceClient::builder(
-        table_location.account_name.as_str(),
-        cred,
-    )
-    .transport(TransportOptions::new(Arc::new(
-        STS_CLIENT.get_or_init(reqwest::Client::new).clone(),
-    )))
-    .blob_service_client();
+    let client = blob_service_client(&table_location.account_name, cred);
 
     let container = client.container_client(table_location.filesystem.as_str());
     let blob_client = container.blob_client(reduce_scheme_string(&file_location.to_string(), true));
