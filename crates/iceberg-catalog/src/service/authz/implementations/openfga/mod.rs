@@ -1439,6 +1439,8 @@ pub(crate) mod tests {
                 .await
                 .unwrap_err();
             authorizer.delete_own_relations(&project_id).await.unwrap();
+            // openfga is eventually consistent, this should make tests less flaky
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
