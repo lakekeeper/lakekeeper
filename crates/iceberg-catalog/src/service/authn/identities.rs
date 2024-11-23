@@ -17,7 +17,7 @@ impl TryFrom<String> for UserId {
     type Error = IcebergErrorResponse;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        match s.split_once('/') {
+        match s.split_once('~') {
             Some(("oidc", user_id)) => Ok(UserId::oidc(user_id)?),
             Some(("kubernetes", user_id)) => Ok(UserId::kubernetes(user_id)?),
             _ => Err(ErrorModel::bad_request(
@@ -33,8 +33,8 @@ impl TryFrom<String> for UserId {
 impl std::fmt::Display for UserId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UserId::OIDC(user_id) => write!(f, "oidc/{user_id}"),
-            UserId::Kubernetes(user_id) => write!(f, "kubernetes/{user_id}"),
+            UserId::OIDC(user_id) => write!(f, "oidc~{user_id}"),
+            UserId::Kubernetes(user_id) => write!(f, "kubernetes~{user_id}"),
         }
     }
 }
@@ -208,20 +208,20 @@ mod tests {
 
     #[test]
     fn test_user_id() {
-        let user_id = UserId::try_from("oidc/123".to_string()).unwrap();
+        let user_id = UserId::try_from("oidc~123".to_string()).unwrap();
         assert_eq!(user_id, UserId::OIDC("123".to_string()));
-        assert_eq!(user_id.to_string(), "oidc/123");
+        assert_eq!(user_id.to_string(), "oidc~123");
 
-        let user_id = UserId::try_from("kubernetes/1234".to_string()).unwrap();
+        let user_id = UserId::try_from("kubernetes~1234".to_string()).unwrap();
         assert_eq!(user_id, UserId::Kubernetes("1234".to_string()));
-        assert_eq!(user_id.to_string(), "kubernetes/1234");
+        assert_eq!(user_id.to_string(), "kubernetes~1234");
 
-        let user_id: UserId = serde_json::from_str(r#""oidc/123""#).unwrap();
+        let user_id: UserId = serde_json::from_str(r#""oidc~123""#).unwrap();
         assert_eq!(user_id, UserId::OIDC("123".to_string()));
 
-        let user_id: UserId = serde_json::from_str(r#""kubernetes/123""#).unwrap();
+        let user_id: UserId = serde_json::from_str(r#""kubernetes~123""#).unwrap();
         assert_eq!(user_id, UserId::Kubernetes("123".to_string()));
 
-        serde_json::from_str::<UserId>(r#""nonexistant/123""#).unwrap_err();
+        serde_json::from_str::<UserId>(r#""nonexistant~123""#).unwrap_err();
     }
 }
