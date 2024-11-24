@@ -905,10 +905,10 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/{namespace_id}/assignments",
+    path = "/management/v1/permissions/table/{table_id}/assignments",
     params(
         GetTableAssignmentsQuery,
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+        ("table_id" = uuid::Uuid, Path, description = "Table ID"),
     ),
     responses(
             (status = 200, body = GetTableAssignmentsResponse),
@@ -937,10 +937,10 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/{namespace_id}/assignments",
+    path = "/management/v1/permissions/view/{view_id}/assignments",
     params(
         GetViewAssignmentsQuery,
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+        ("view_id" = uuid::Uuid, Path, description = "View ID"),
     ),
     responses(
             (status = 200, body = GetViewAssignmentsResponse),
@@ -1398,7 +1398,7 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/view/:table_id/assignments",
+            "/permissions/view/:view_id/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
         )
 }

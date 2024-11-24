@@ -4,7 +4,7 @@ info:
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage users, roles, projects, and warehouses.
   license:
     name: Apache-2.0
-  version: 0.4.4
+  version: 0.4.3
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -503,36 +503,6 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
-  /management/v1/permissions/table/{namespace_id}/assignments:
-    get:
-      tags:
-      - permissions
-      summary: Get user and role assignments for a view
-      operationId: get_view_assignments_by_id
-      parameters:
-      - name: relations
-        in: query
-        description: Relations to be loaded. If not specified, all relations are returned.
-        required: false
-        schema:
-          type: array
-          items:
-            $ref: '#/components/schemas/ViewRelation'
-          nullable: true
-      - name: namespace_id
-        in: path
-        description: Namespace ID
-        required: true
-        schema:
-          type: string
-          format: uuid
-      responses:
-        '200':
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetViewAssignmentsResponse'
   /management/v1/permissions/table/{table_id}/access:
     get:
       tags:
@@ -565,6 +535,35 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetTableAccessResponse'
   /management/v1/permissions/table/{table_id}/assignments:
+    get:
+      tags:
+      - permissions
+      summary: Get user and role assignments for a table
+      operationId: get_table_assignments_by_id
+      parameters:
+      - name: relations
+        in: query
+        description: Relations to be loaded. If not specified, all relations are returned.
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableRelation'
+          nullable: true
+      - name: table_id
+        in: path
+        description: Table ID
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableAssignmentsResponse'
     post:
       tags:
       - permissions
@@ -619,6 +618,35 @@ paths:
               schema:
                 $ref: '#/components/schemas/GetViewAccessResponse'
   /management/v1/permissions/view/{view_id}/assignments:
+    get:
+      tags:
+      - permissions
+      summary: Get user and role assignments for a view
+      operationId: get_view_assignments_by_id
+      parameters:
+      - name: relations
+        in: query
+        description: Relations to be loaded. If not specified, all relations are returned.
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViewRelation'
+          nullable: true
+      - name: view_id
+        in: path
+        description: View ID
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetViewAssignmentsResponse'
     post:
       tags:
       - permissions
