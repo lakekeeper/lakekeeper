@@ -14,18 +14,20 @@ use iceberg_ext::configs::{self, ConfigProperty, Location};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
+use std::time::Duration;
 use veil::Redact;
 
 use super::StorageType;
 
-static S3_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::ClientBuilder::new()
+        .pool_idle_timeout(Duration::from_millis(18500))
+        .build()
+        .expect("This should never fail since we are just setting timeout to 18500 which does not populate config.error")
+});
 
-fn get_client() -> reqwest::Client {
-    S3_CLIENT.get_or_init(reqwest::Client::new).clone()
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct S3Profile {
     /// Name of the S3 bucket
@@ -57,7 +59,7 @@ pub struct S3Profile {
     pub flavor: S3Flavor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum S3Flavor {
@@ -104,7 +106,7 @@ impl S3Profile {
         &self,
         credential: Option<&aws_credential_types::Credentials>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client(get_client());
+        let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client((*S3_CLIENT).clone());
 
         builder = builder.with_prop(iceberg::io::S3_REGION, self.region.clone());
 
@@ -870,35 +872,47 @@ mod test {
             S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
         };
 
-        #[tokio::test]
-        async fn test_can_validate() {
-            let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-            let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-            let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-            let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-            let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
+        #[test]
+        fn test_can_validate() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
+                    let region =
+                        std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
+                    let aws_access_key_id =
+                        std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
+                    let aws_secret_access_key =
+                        std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
+                    let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
 
-            let cred: StorageCredential = S3Credential::AccessKey {
-                aws_access_key_id,
-                aws_secret_access_key,
-            }
-            .into();
+                    let cred: StorageCredential = S3Credential::AccessKey {
+                        aws_access_key_id,
+                        aws_secret_access_key,
+                    }
+                    .into();
 
-            let profile = S3Profile {
-                bucket,
-                key_prefix: Some("test_prefix".to_string()),
-                assume_role_arn: None,
-                endpoint: Some(endpoint.parse().unwrap()),
-                region,
-                path_style_access: Some(true),
-                sts_role_arn: None,
-                flavor: S3Flavor::Minio,
-                sts_enabled: true,
-            };
-            let mut profile: StorageProfile = profile.into();
+                    let profile = S3Profile {
+                        bucket,
+                        key_prefix: Some("test_prefix".to_string()),
+                        assume_role_arn: None,
+                        endpoint: Some(endpoint.parse().unwrap()),
+                        region,
+                        path_style_access: Some(true),
+                        sts_role_arn: None,
+                        flavor: S3Flavor::Minio,
+                        sts_enabled: true,
+                    };
+                    let mut profile: StorageProfile = profile.into();
 
-            profile.normalize().unwrap();
-            profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile.normalize().unwrap();
+                    profile.validate_access(Some(&cred), None).await.unwrap();
+                },
+                true,
+            );
         }
     }
 
@@ -908,32 +922,41 @@ mod test {
 
         use super::super::*;
 
-        #[tokio::test]
-        async fn test_can_validate() {
-            let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
-            let region = std::env::var("AWS_S3_REGION").unwrap();
-            let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
-            let cred: StorageCredential = S3Credential::AccessKey {
-                aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
-            }
-            .into();
+        #[test]
+        fn test_can_validate() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
+                    let region = std::env::var("AWS_S3_REGION").unwrap();
+                    let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
+                    let cred: StorageCredential = S3Credential::AccessKey {
+                        aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
+                        aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                    }
+                    .into();
 
-            let mut profile: StorageProfile = S3Profile {
-                bucket,
-                key_prefix: Some("test_prefix".to_string()),
-                assume_role_arn: None,
-                endpoint: None,
-                region,
-                path_style_access: Some(true),
-                sts_role_arn: Some(sts_role_arn),
-                flavor: S3Flavor::Aws,
-                sts_enabled: true,
-            }
-            .into();
+                    let mut profile: StorageProfile = S3Profile {
+                        bucket,
+                        key_prefix: Some("test_prefix".to_string()),
+                        assume_role_arn: None,
+                        endpoint: None,
+                        region,
+                        path_style_access: Some(true),
+                        sts_role_arn: Some(sts_role_arn),
+                        flavor: S3Flavor::Aws,
+                        sts_enabled: true,
+                    }
+                    .into();
 
-            profile.normalize().unwrap();
-            profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile.normalize().unwrap();
+                    profile.validate_access(Some(&cred), None).await.unwrap();
+                },
+                true,
+            );
         }
     }
 

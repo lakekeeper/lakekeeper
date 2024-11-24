@@ -210,7 +210,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             AuthZListProjectsResponse::All => None,
             AuthZListProjectsResponse::Projects(projects) => Some(projects),
         };
-        let projects = C::list_projects(project_id_filter, context.v1_state.catalog).await?;
+        let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
+
+        let projects = C::list_projects(project_id_filter, trx.transaction()).await?;
+        trx.commit().await?;
+
         Ok(ListProjectsResponse {
             projects: projects
                 .into_iter()

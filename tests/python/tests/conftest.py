@@ -387,7 +387,7 @@ def namespace(warehouse: Warehouse) -> Namespace:
 
 
 @pytest.fixture(scope="session")
-def spark(warehouse: Warehouse):
+def spark(warehouse: Warehouse, storage_config):
     """Spark with a pre-configured Iceberg catalog"""
     try:
         import findspark
@@ -423,6 +423,10 @@ def spark(warehouse: Warehouse):
         f"spark.sql.catalog.{catalog_name}.warehouse": f"{warehouse.project_id}/{warehouse.warehouse_name}",
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{OPENID_PROVIDER_URI.rstrip('/')}/protocol/openid-connect/token",
     }
+    if storage_config["storage-profile"]["type"] == "s3" and storage_config["storage-profile"]["sts-enabled"]:
+        configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "vended-credentials"
+    elif storage_config["storage-profile"]["type"] == "s3":
+        configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "remote-signing"
 
     spark_conf = pyspark.SparkConf().setMaster("local[*]")
 

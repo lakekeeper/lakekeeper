@@ -4,7 +4,8 @@ use crate::api::management::v1::user::{
     ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
 };
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::{CreateOrUpdateUserResponse, Result, UserId};
+use crate::service::authn::UserId;
+use crate::service::{CreateOrUpdateUserResponse, Result};
 use itertools::Itertools;
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
@@ -51,8 +52,10 @@ struct UserRow {
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-impl From<UserRow> for User {
-    fn from(
+impl TryFrom<UserRow> for User {
+    type Error = crate::service::IcebergErrorResponse;
+
+    fn try_from(
         UserRow {
             id,
             name,
@@ -62,9 +65,9 @@ impl From<UserRow> for User {
             created_at,
             updated_at,
         }: UserRow,
-    ) -> Self {
-        User {
-            id,
+    ) -> Result<Self> {
+        Ok(User {
+            id: id.try_into()?,
             name,
             email,
             user_type: user_type.into(),
@@ -77,7 +80,7 @@ impl From<UserRow> for User {
             },
             created_at,
             updated_at,
-        }
+        })
     }
 }
 
@@ -139,8 +142,8 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     .await
     .map_err(|e| e.into_error_model("Error fetching users".to_string()))?
     .into_iter()
-    .map(User::from)
-    .collect();
+    .map(User::try_from)
+    .collect::<Result<_>>()?;
 
     let next_page_token = users.last().map(|u| {
         PaginateToken::V1(V1PaginateToken {
@@ -168,7 +171,7 @@ pub(crate) async fn delete_user<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sql
             email = null
         WHERE id = $1
         "#,
-        id.inner(),
+        id.to_string(),
     )
     .execute(connection)
     .await
@@ -208,7 +211,7 @@ pub(crate) async fn create_or_update_user<
         DO UPDATE SET name = $2, email = $3, last_updated_with = $4, user_type = $5
         returning (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with as "last_updated_with: DbUserLastUpdatedWith", user_type as "user_type: DbUserType"
         "#,
-        id.inner(),
+        id.to_string(),
         name,
         email,
         db_last_updated_with as _,
@@ -229,9 +232,9 @@ pub(crate) async fn create_or_update_user<
     };
 
     Ok(if created {
-        CreateOrUpdateUserResponse::Created(User::from(user))
+        CreateOrUpdateUserResponse::Created(User::try_from(user)?)
     } else {
-        CreateOrUpdateUserResponse::Updated(User::from(user))
+        CreateOrUpdateUserResponse::Updated(User::try_from(user)?)
     })
 }
 
@@ -252,13 +255,14 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     .await
     .map_err(|e| e.into_error_model("Error searching user".to_string()))?
     .into_iter()
-    .map(|row| SearchUser {
-        id: row.id,
+    .map(|row|  Ok(
+        SearchUser {
+        id: row.id.try_into()?,
         name: row.name,
         user_type: row.user_type.into(),
         email: row.email,
-    })
-    .collect();
+    }))
+    .collect::<Result<_>>()?;
 
     Ok(SearchUserResponse { users })
 }
@@ -274,7 +278,7 @@ mod test {
     async fn test_create_or_update_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::new("test_user_1").unwrap();
+        let user_id = UserId::oidc("test_user_1").unwrap();
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -301,7 +305,7 @@ mod test {
         .unwrap();
 
         assert_eq!(users.users.len(), 1);
-        assert_eq!(users.users[0].id, user_id.inner());
+        assert_eq!(users.users[0].id, user_id);
         assert_eq!(users.users[0].name, user_name);
         assert_eq!(users.users[0].email, None);
         assert_eq!(users.users[0].user_type, UserType::Human);
@@ -332,7 +336,7 @@ mod test {
         .unwrap();
 
         assert_eq!(users.users.len(), 1);
-        assert_eq!(users.users[0].id, user_id.inner());
+        assert_eq!(users.users[0].id, user_id);
         assert_eq!(users.users[0].name, user_name);
         assert_eq!(users.users[0].email, None);
     }
@@ -341,7 +345,7 @@ mod test {
     async fn test_search_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::new("test_user_1").unwrap();
+        let user_id = UserId::kubernetes("test_user_1").unwrap();
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -359,7 +363,7 @@ mod test {
             .await
             .unwrap();
         assert_eq!(search_result.users.len(), 1);
-        assert_eq!(search_result.users[0].id, user_id.inner());
+        assert_eq!(search_result.users[0].id, user_id);
         assert_eq!(search_result.users[0].name, user_name);
         assert_eq!(search_result.users[0].user_type, UserType::Application);
     }
@@ -368,7 +372,7 @@ mod test {
     async fn test_delete_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::new("test_user_1").unwrap();
+        let user_id = UserId::oidc("test_user_1").unwrap();
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -401,7 +405,7 @@ mod test {
         assert_eq!(users.users.len(), 0);
 
         // Delete non-existent user
-        let user_id = UserId::new("test_user_2").unwrap();
+        let user_id = UserId::oidc("test_user_2").unwrap();
         let result = delete_user(user_id, &state.read_write.write_pool)
             .await
             .unwrap();
@@ -412,7 +416,7 @@ mod test {
     async fn test_paginate_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for i in 0..10 {
-            let user_id = UserId::new(&format!("test_user_{i}")).unwrap();
+            let user_id = UserId::oidc(&format!("test_user_{i}")).unwrap();
             let user_name = &format!("test user {i}");
 
             create_or_update_user(
@@ -454,9 +458,9 @@ mod test {
         assert_eq!(users.users.len(), 5);
 
         for (uidx, u) in users.users.iter().enumerate() {
-            let user_id = UserId::new(&format!("test_user_{uidx}")).unwrap();
+            let user_id = UserId::oidc(&format!("test_user_{uidx}")).unwrap();
             let user_name = format!("test user {uidx}");
-            assert_eq!(u.id, user_id.inner());
+            assert_eq!(u.id, user_id);
             assert_eq!(u.name, user_name);
         }
 
@@ -476,9 +480,9 @@ mod test {
 
         for (uidx, u) in users.users.iter().enumerate() {
             let uidx = uidx + 5;
-            let user_id = UserId::new(&format!("test_user_{uidx}")).unwrap();
+            let user_id = UserId::oidc(&format!("test_user_{uidx}")).unwrap();
             let user_name = format!("test user {uidx}");
-            assert_eq!(u.id, user_id.inner());
+            assert_eq!(u.id, user_id);
             assert_eq!(u.name, user_name);
         }
 

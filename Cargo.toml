@@ -2,7 +2,7 @@
 members = [
     "crates/iceberg-catalog",
     "crates/iceberg-catalog-bin",
-    "crates/iceberg-ext",
+    "crates/iceberg-ext"
 ]
 resolver = "2"
 
@@ -10,7 +10,7 @@ resolver = "2"
 edition = "2021"
 homepage = "https://github.com/lakekeeper/lakekeeper"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
-rust-version = "1.75.0"
+rust-version = "1.80.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -34,6 +34,7 @@ aws-sdk-sts = "1.36.0"
 aws-sdk-s3 = "1.61.0"
 aws-smithy-http = "0.60.11"
 base64 = "0.22.1"
+fxhash = "0.2.1"
 google-cloud-auth = { version = "0.17.0", features = [
     "rustls-tls",
 ], default-features = false }
@@ -51,7 +52,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "1990d35fa07fe7b5595444027a4db9e1b6f79014", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2454504", features = [
     "storage-all",
 ] }
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "f0c61a5775e87c55d9d9d9268d6d837d621c5a3a" }
@@ -82,6 +83,8 @@ http-body-util = "^0.1"
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
+kube = { version = "0.97", default-features = false, features = ["rustls-tls", "client"] }
+k8s-openapi = { version = "0.23.0", features = ["v1_26"] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lru = "0.12.4"
 percent-encoding = "2.3.1"
@@ -127,3 +130,5 @@ paste = "1.0.15"
 heck = "0.5.0"
 time = "0.3.36"
 pretty_assertions = "~1.4"
+similar = "2.6.0"
+assert-json-diff = "2.0.2"

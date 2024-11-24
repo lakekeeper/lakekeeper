@@ -282,6 +282,16 @@ pub struct PaginationQuery {
     pub page_size: Option<i64>,
 }
 
+impl PaginationQuery {
+    #[must_use]
+    pub fn new(page_token: PageToken, page_size: Option<i64>) -> Self {
+        PaginationQuery {
+            page_token,
+            page_size,
+        }
+    }
+}
+
 impl From<ListNamespacesQuery> for PaginationQuery {
     fn from(query: ListNamespacesQuery) -> Self {
         PaginationQuery {

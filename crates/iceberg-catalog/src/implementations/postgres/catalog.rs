@@ -6,9 +6,8 @@ use super::{
     },
     role::{create_role, delete_role, list_roles, update_role},
     tabular::table::{
-        commit_table_transaction, create_table, drop_table, get_table_metadata_by_id,
-        get_table_metadata_by_s3_location, list_tables, load_tables, rename_table,
-        table_ident_to_id, table_idents_to_ids,
+        drop_table, get_table_metadata_by_id, get_table_metadata_by_s3_location, list_tables,
+        load_tables, rename_table, table_ident_to_id, table_idents_to_ids,
     },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse,
@@ -22,17 +21,20 @@ use crate::api::management::v1::user::{
     ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType,
 };
 use crate::implementations::postgres::role::search_role;
+use crate::implementations::postgres::tabular::table::commit_table_transaction;
+use crate::implementations::postgres::tabular::table::create_table;
 use crate::implementations::postgres::tabular::{list_tabulars, mark_tabular_as_deleted};
 use crate::implementations::postgres::user::{
     create_or_update_user, delete_user, list_users, search_user,
 };
+use crate::service::authn::UserId;
 use crate::service::{
     storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
     GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse, ListFlags,
     ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid, ProjectIdent,
     Result, RoleId, StartupValidationData, TableCreation, TableIdent, TableIdentUuid, Transaction,
-    UserId, WarehouseIdent, WarehouseStatus,
+    WarehouseIdent, WarehouseStatus,
 };
 use crate::SecretIdent;
 use crate::{
@@ -338,7 +340,7 @@ impl Catalog for super::PostgresCatalog {
         table_id: TabularIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        mark_tabular_as_deleted(table_id, transaction).await
+        mark_tabular_as_deleted(table_id, None, transaction).await
     }
 
     async fn commit_table_transaction<'a>(
@@ -395,9 +397,9 @@ impl Catalog for super::PostgresCatalog {
 
     async fn list_projects(
         project_ids: Option<HashSet<ProjectIdent>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetProjectResponse>> {
-        list_projects(project_ids, catalog_state).await
+        list_projects(project_ids, &mut **transaction).await
     }
 
     async fn rename_project<'a>(
@@ -411,9 +413,9 @@ impl Catalog for super::PostgresCatalog {
     async fn list_warehouses(
         project_id: ProjectIdent,
         include_inactive: Option<Vec<WarehouseStatus>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetWarehouseResponse>> {
-        list_warehouses(project_id, include_inactive, catalog_state).await
+        list_warehouses(project_id, include_inactive, &mut **transaction).await
     }
 
     async fn get_warehouse<'a>(
@@ -575,6 +577,7 @@ impl Catalog for super::PostgresCatalog {
             &catalog_state.read_pool(),
             None,
             pagination_query,
+            false,
         )
         .await
     }

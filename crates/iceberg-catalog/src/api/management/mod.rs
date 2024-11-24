@@ -14,9 +14,10 @@ pub mod v1 {
     use std::marker::PhantomData;
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
+    use crate::service::authn::UserId;
     use crate::service::{
         authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
-        SecretStore, State, TabularIdentUuid, UserId,
+        SecretStore, State, TabularIdentUuid,
     };
     use crate::ProjectIdent;
     use axum::extract::{Path, Query, State as AxumState};
@@ -850,7 +851,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars",
+        path = "/management/v1/warehouse/{warehouse_id}/deleted-tabulars",
         params(ListDeletedTabularsQuery),
         responses(
             (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse)
@@ -1002,7 +1003,7 @@ pub mod v1 {
                     post(update_storage_credential),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/deleted_tabulars",
+                    "/warehouse/:warehouse_id/deleted-tabulars",
                     get(list_deleted_tabulars),
                 )
                 .route(

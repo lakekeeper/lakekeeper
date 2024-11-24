@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH deleted AS (\n            DELETE FROM table_refs\n            WHERE table_id = $1 AND table_ref_name = ANY($2::TEXT[])\n        )\n        INSERT INTO table_refs(table_id,\n                              table_ref_name,\n                              snapshot_id,\n                              retention)\n        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])\n        ON CONFLICT (table_id, table_ref_name)\n        DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Int8Array",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "72f155f0750a5e0d772290a0b086483783562d086d3c198e9a7487b24216fc7c"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ON CONFLICT ON CONSTRAINT unique_name_per_namespace_id\n        DO UPDATE SET tabular_id = $1, metadata_location = $5, location = $6\n        WHERE tabular.metadata_location IS NULL AND tabular.typ = 'table'\n        RETURNING tabular_id\n        ",
+  "query": "\n        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)\n        VALUES ($1, $2, $3, $4, $5, $6, 'true')\n        RETURNING tabular_id\n        ",
   "describe": {
     "columns": [
       {
@@ -33,5 +33,5 @@
       false
     ]
   },
-  "hash": "1101d6f50be0876202046a232a75da0dccf526012d459a6bd0c66d5f1914f523"
+  "hash": "f09d28e2608c2b3440e39e7bc93f7aea95ef9f0b34088abdb1e1917cc10b7d39"
 }

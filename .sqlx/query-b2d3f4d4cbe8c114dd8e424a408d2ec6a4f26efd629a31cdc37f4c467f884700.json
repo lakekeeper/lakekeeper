@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE tabular\n        SET deleted_at = now()\n        WHERE tabular_id = $1\n        RETURNING tabular_id\n        ",
+  "query": "\n        UPDATE tabular\n        SET deleted_at = $2\n        WHERE tabular_id = $1\n        RETURNING tabular_id\n        ",
   "describe": {
     "columns": [
       {
@@ -11,12 +11,13 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Timestamptz"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "8188b9912b22c29ba840633776d7c04a1160b0e1f41f0f8366ff5c9bb9a8bdad"
+  "hash": "b2d3f4d4cbe8c114dd8e424a408d2ec6a4f26efd629a31cdc37f4c467f884700"
 }

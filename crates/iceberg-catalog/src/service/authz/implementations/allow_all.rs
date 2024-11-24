@@ -1,6 +1,7 @@
 use crate::api::iceberg::v1::Result;
 use crate::api::ApiContext;
 use crate::request_metadata::RequestMetadata;
+use crate::service::authn::UserId;
 use crate::service::authz::{
     Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
     CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
@@ -8,7 +9,7 @@ use crate::service::authz::{
 };
 use crate::service::health::{Health, HealthExt};
 use crate::service::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid, UserId,
+    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
     ViewIdentUuid, WarehouseIdent,
 };
 use async_trait::async_trait;

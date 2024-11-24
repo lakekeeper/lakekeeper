@@ -3,10 +3,12 @@ use crate::tracing::{MakeRequestUuid7, RestMakeSpan};
 
 use crate::api::management::v1::{api_doc as v1_api_doc, ApiServer};
 use crate::api::{iceberg::v1::new_v1_full_router, shutdown_signal, ApiContext};
+use crate::service::authn::IdpVerifier;
+use crate::service::authn::K8sVerifier;
+use crate::service::authn::VerifierChain;
 use crate::service::contract_verification::ContractVerifiers;
 use crate::service::health::ServiceHealthProvider;
 use crate::service::task_queue::TaskQueues;
-use crate::service::token_verification::Verifier;
 use crate::service::{authz::Authorizer, Catalog, SecretStore, State};
 use axum::response::IntoResponse;
 use axum::{routing::get, Json, Router};
@@ -29,19 +31,60 @@ lazy_static::lazy_static! {
     };
 }
 
-#[allow(clippy::module_name_repetitions, clippy::too_many_arguments)]
+pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
+    pub authorizer: A,
+    pub catalog_state: C::State,
+    pub secrets_state: S,
+    pub queues: TaskQueues,
+    pub publisher: CloudEventsPublisher,
+    pub table_change_checkers: ContractVerifiers,
+    pub token_verifier: Option<IdpVerifier>,
+    pub k8s_token_verifier: Option<K8sVerifier>,
+    pub service_health_provider: ServiceHealthProvider,
+    pub cors_origins: Option<&'static [HeaderValue]>,
+    pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
+}
+
+impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> std::fmt::Debug for RouterArgs<C, A, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouterArgs")
+            .field("authorizer", &"Authorizer")
+            .field("catalog_state", &"CatalogState")
+            .field("secrets_state", &"SecretsState")
+            .field("queues", &self.queues)
+            .field("publisher", &self.publisher)
+            .field("table_change_checkers", &self.table_change_checkers)
+            .field("token_verifier", &self.token_verifier)
+            .field("k8s_token_verifier", &self.k8s_token_verifier)
+            .field("svhp", &self.service_health_provider)
+            .field("cors_origins", &self.cors_origins)
+            .field(
+                "metrics_layer",
+                &self.metrics_layer.as_ref().map(|_| "PrometheusMetricLayer"),
+            )
+            .finish()
+    }
+}
+
+/// Create a new router with the given `RouterArgs`
+///
+/// # Errors
+/// - Fails if the token verifier chain cannot be created
 pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-    authorizer: A,
-    catalog_state: C::State,
-    secrets_state: S,
-    queues: TaskQueues,
-    publisher: CloudEventsPublisher,
-    table_change_checkers: ContractVerifiers,
-    token_verifier: Option<Verifier>,
-    svhp: ServiceHealthProvider,
-    cors_origins: Option<&[HeaderValue]>,
-    metrics_layer: Option<PrometheusMetricLayer<'static>>,
-) -> Router {
+    RouterArgs {
+        authorizer,
+        catalog_state,
+        secrets_state,
+        queues,
+        publisher,
+        table_change_checkers,
+        token_verifier,
+        k8s_token_verifier,
+        service_health_provider,
+        cors_origins,
+        metrics_layer,
+    }: RouterArgs<C, A, S>,
+) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
@@ -71,12 +114,13 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
                 Method::OPTIONS,
             ])
     }));
-    let maybe_auth_layer = option_layer(token_verifier.map(|o| {
-        axum::middleware::from_fn_with_state(
-            o,
-            crate::service::token_verification::auth_middleware_fn,
-        )
-    }));
+    let maybe_auth_layer = match (token_verifier, k8s_token_verifier) {
+        (None, None) => option_layer(None),
+        (idp_verifier, k8s_verifier) => option_layer(Some(axum::middleware::from_fn_with_state(
+            VerifierChain::try_new(idp_verifier, k8s_verifier)?,
+            crate::service::authn::auth_middleware_fn,
+        ))),
+    };
 
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
@@ -85,7 +129,7 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         .route(
             "/health",
             get(|| async move {
-                let health = svhp.collect_health().await;
+                let health = service_health_provider.collect_health().await;
                 Json(health).into_response()
             }),
         )
@@ -129,11 +173,11 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
             },
         });
 
-    if let Some(metrics_layer) = metrics_layer {
+    Ok(if let Some(metrics_layer) = metrics_layer {
         router.layer(metrics_layer)
     } else {
         router
-    }
+    })
 }
 
 /// Serve the given router on the given listener

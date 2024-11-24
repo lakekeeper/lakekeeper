@@ -1,11 +1,11 @@
+use super::RoleAssignee;
+use crate::service::authn::Actor;
+use crate::service::authn::UserId;
 use crate::service::authz::implementations::openfga::{OpenFGAError, OpenFGAResult};
 use crate::service::authz::implementations::FgaType;
-use crate::service::token_verification::Actor;
-use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, UserId, ViewIdentUuid};
+use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, ViewIdentUuid};
 use crate::{ProjectIdent, WarehouseIdent};
 use std::str::FromStr;
-
-use super::RoleAssignee;
 
 pub(super) trait ParseOpenFgaEntity: Sized {
     fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {
@@ -107,7 +107,7 @@ impl ParseOpenFgaEntity for UserId {
             ));
         }
 
-        UserId::new(id)
+        UserId::try_from(id.to_string())
             .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::User], id.to_string()))
     }
 }
@@ -140,6 +140,20 @@ impl OpenFgaEntity for ProjectIdent {
 
     fn openfga_type(&self) -> FgaType {
         FgaType::Project
+    }
+}
+
+impl ParseOpenFgaEntity for ProjectIdent {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+        if r#type != FgaType::Project {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Project],
+                id.to_string(),
+            ));
+        }
+
+        ProjectIdent::from_str(id)
+            .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string()))
     }
 }
 

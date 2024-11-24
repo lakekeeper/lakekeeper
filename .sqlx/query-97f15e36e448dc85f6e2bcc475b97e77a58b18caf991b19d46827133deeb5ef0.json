@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)\n           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "97f15e36e448dc85f6e2bcc475b97e77a58b18caf991b19d46827133deeb5ef0"
+}

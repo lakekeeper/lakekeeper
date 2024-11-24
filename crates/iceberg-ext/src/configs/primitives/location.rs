@@ -2,7 +2,7 @@ use std::str::{FromStr, RMatchIndices};
 
 use crate::configs::{ConfigParseError, ConfigProperty, NotCustomProp, ParseError, ParseFromStr};
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Location(url::Url);
 
 impl NotCustomProp for Location {}

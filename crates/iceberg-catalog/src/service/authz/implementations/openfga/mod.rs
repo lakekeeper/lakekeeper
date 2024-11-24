@@ -1,12 +1,12 @@
 use crate::{
     request_metadata::RequestMetadata,
     service::{
+        authn::Actor,
         authz::{
             Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction,
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
             ListProjectsResponse, Result,
         },
-        token_verification::Actor,
         NamespaceIdentUuid, TableIdentUuid,
     },
     ProjectIdent, WarehouseIdent, CONFIG,
@@ -26,7 +26,7 @@ use openfga_rs::{
 };
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use std::{collections::HashSet, fmt, str::FromStr};
+use std::{collections::HashSet, fmt};
 
 pub(super) mod api;
 mod client;
@@ -40,18 +40,19 @@ mod relations;
 mod service_ext;
 
 use crate::api::ApiContext;
+use crate::service::authn::UserId;
 use crate::service::authz::implementations::openfga::client::ClientConnection;
 use crate::service::authz::implementations::openfga::relations::OpenFgaRelation;
 use crate::service::authz::implementations::FgaType;
 use crate::service::authz::{CatalogRoleAction, CatalogUserAction, NamespaceParent};
 use crate::service::health::Health;
-use crate::service::{AuthDetails, Catalog, RoleId, SecretStore, State, UserId, ViewIdentUuid};
+use crate::service::{AuthDetails, Catalog, RoleId, SecretStore, State, ViewIdentUuid};
 pub(crate) use client::new_client_from_config;
 pub use client::{
     new_authorizer_from_config, BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer,
     UnauthenticatedOpenFGAAuthorizer,
 };
-use entities::OpenFgaEntity;
+use entities::{OpenFgaEntity, ParseOpenFgaEntity as _};
 pub use error::{OpenFGAError, OpenFGAResult};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
@@ -156,44 +157,7 @@ impl Authorizer for OpenFGAAuthorizer {
 
     async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
         let actor = metadata.actor();
-
-        let check_actor_fut = self.check_actor(actor);
-        let list_all_fut = self.check(CheckRequestTupleKey {
-            user: metadata.actor().to_openfga(),
-            relation: relations::ServerRelation::CanListAllProjects.to_string(),
-            object: OPENFGA_SERVER.clone(),
-        });
-
-        let (check_actor, list_all) = futures::join!(check_actor_fut, list_all_fut);
-        check_actor?;
-        let list_all = list_all?;
-
-        if list_all {
-            return Ok(ListProjectsResponse::All);
-        }
-
-        let projects = self
-            .list_objects(
-                FgaType::Project.to_string(),
-                CatalogProjectAction::CanIncludeInList.to_string(),
-                actor.to_openfga(),
-            )
-            .await?
-            .iter()
-            .map(|p| {
-                ProjectIdent::from_str(p).map_err(|_e| {
-                    ErrorModel::internal(
-                        "Failed to parse project id",
-                        "ListProjectsIdParseError",
-                        None,
-                    )
-                    .append_detail(format!("Project id: {p}"))
-                    .into()
-                })
-            })
-            .collect::<Result<HashSet<ProjectIdent>>>()?;
-
-        Ok(ListProjectsResponse::Projects(projects))
+        self.list_projects_internal(actor).await
     }
 
     async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool> {
@@ -680,6 +644,36 @@ impl Authorizer for OpenFGAAuthorizer {
 }
 
 impl OpenFGAAuthorizer {
+    async fn list_projects_internal(&self, actor: &Actor) -> Result<ListProjectsResponse> {
+        let check_actor_fut = self.check_actor(actor);
+        let list_all_fut = self.check(CheckRequestTupleKey {
+            user: actor.to_openfga(),
+            relation: relations::ServerRelation::CanListAllProjects.to_string(),
+            object: OPENFGA_SERVER.clone(),
+        });
+
+        let (check_actor, list_all) = futures::join!(check_actor_fut, list_all_fut);
+        check_actor?;
+        let list_all = list_all?;
+
+        if list_all {
+            return Ok(ListProjectsResponse::All);
+        }
+
+        let projects = self
+            .list_objects(
+                FgaType::Project.to_string(),
+                CatalogProjectAction::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await?
+            .iter()
+            .map(|p| ProjectIdent::parse_from_openfga(p))
+            .collect::<std::result::Result<HashSet<ProjectIdent>, _>>()?;
+
+        Ok(ListProjectsResponse::Projects(projects))
+    }
+
     /// A convenience wrapper around write.
     /// All writes happen in a single transaction.
     /// At most 100 writes can be performed in a single transaction.
@@ -1054,11 +1048,7 @@ impl OpenFGAAuthorizer {
                 .append_detail(format!("Tonic code: {code}"))
                 .into()
             })
-            .map(|response| {
-                let s: Vec<String> = response.into_inner().objects;
-                // cut off the user: prefix
-                s.iter().map(|s| s[user.len()..].to_string()).collect()
-            })
+            .map(|response| response.into_inner().objects)
     }
 
     /// Check if the requested actor combination is allowed - especially if the user
@@ -1257,6 +1247,42 @@ pub(crate) mod tests {
         }
 
         #[tokio::test]
+        async fn test_list_projects() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::oidc("this_user").unwrap();
+            let actor = Actor::Principal(user_id.clone());
+            let project = ProjectIdent::from(uuid::Uuid::now_v7());
+
+            let projects = authorizer
+                .list_projects_internal(&actor)
+                .await
+                .expect("Failed to list projects");
+            assert_eq!(projects, ListProjectsResponse::Projects(HashSet::new()));
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id.to_openfga(),
+                        relation: ProjectRelation::ProjectAdmin.to_string(),
+                        object: project.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let projects = authorizer
+                .list_projects_internal(&actor)
+                .await
+                .expect("Failed to list projects");
+            assert_eq!(
+                projects,
+                ListProjectsResponse::Projects(HashSet::from_iter(vec![project]))
+            );
+        }
+
+        #[tokio::test]
         async fn test_require_no_relations_own_relations() {
             let authorizer = new_authorizer_in_empty_store().await;
 
@@ -1420,6 +1446,8 @@ pub(crate) mod tests {
                 .await
                 .unwrap_err();
             authorizer.delete_own_relations(&project_id).await.unwrap();
+            // openfga is eventually consistent, this should make tests less flaky
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await

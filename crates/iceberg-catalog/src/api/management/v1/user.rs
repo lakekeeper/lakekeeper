@@ -3,10 +3,10 @@ use crate::api::iceberg::v1::{PageToken, PaginationQuery};
 use crate::api::management::v1::ApiServer;
 use crate::api::ApiContext;
 use crate::request_metadata::RequestMetadata;
+use crate::service::authn::UserId;
 use crate::service::authz::{Authorizer, CatalogServerAction, CatalogUserAction};
 use crate::service::{
     AuthDetails, Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction,
-    UserId,
 };
 use axum::response::IntoResponse;
 use axum::Json;
@@ -45,7 +45,8 @@ pub struct User {
     #[serde(default)]
     pub email: Option<String>,
     /// The user's ID
-    pub id: String,
+    #[schema(value_type=String)]
+    pub id: UserId,
     /// Type of the user
     pub user_type: UserType,
     /// The endpoint that last updated the user
@@ -62,7 +63,8 @@ pub struct SearchUser {
     /// Name of the user
     pub name: String,
     /// ID of the user
-    pub id: String,
+    #[schema(value_type=String)]
+    pub id: UserId,
     /// Type of the user
     pub user_type: UserType,
     /// Email of the user. If id is not specified, the email is extracted

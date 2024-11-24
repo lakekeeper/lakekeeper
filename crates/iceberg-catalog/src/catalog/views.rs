@@ -164,7 +164,7 @@ mod test {
         let state = api_context.v1_state.catalog.clone();
         let warehouse_id = initialize_warehouse(
             state.clone(),
-            Some(StorageProfile::Test(TestProfile)),
+            Some(StorageProfile::Test(TestProfile::default())),
             None,
             None,
             true,
