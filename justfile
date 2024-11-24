@@ -27,10 +27,10 @@ doc-test:
 	cargo test --no-fail-fast --doc --all-features --workspace
 
 unit-test: doc-test
-	cargo test --no-fail-fast --lib --all-features --workspace
+	cargo nextest run --profile ci --lib --all-features --workspace
 
 test: doc-test
-	cargo test --no-fail-fast --all-targets --all-features --workspace
+	cargo nextest run --profile ci --all-targets --all-features --workspace
 
 update-rest-openapi:
     # Download from https://raw.githubusercontent.com/apache/iceberg/main/open-api/rest-catalog-open-api.yaml and put into openapi folder

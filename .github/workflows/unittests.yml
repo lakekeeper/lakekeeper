@@ -141,6 +141,9 @@ jobs:
         env:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
 
+      - name: Setup cargo nextest
+        run: cargo install cargo-nextest
+
       - name: Migrate database
         run: |
           sudo apt-get install libpq-dev -y
@@ -170,7 +173,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.6 run
 
       - name: Test
-        run: cargo test --no-fail-fast --all-targets --all-features --workspace
+        run: cargo nextest --profile ci --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           TEST_KV2: 1
@@ -206,7 +209,11 @@ jobs:
           TEST_GCS: ${{ secrets.TEST_GCS }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
-
+      - name: Upload junit
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
       - name: Doc Test
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
