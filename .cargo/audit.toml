@@ -5,4 +5,5 @@ ignore = [
     "RUSTSEC-2024-0373", # we're not using http3 in reqwest, we end up getting quinn due to a bug in cargo, it's not being compiled: https://github.com/seanmonstar/reqwest/issues/2318 / https://github.com/rust-lang/cargo/issues/10802
     "RUSTSEC-2024-0370", # we are aware of the issue, once we migrate to utoipa 0.5 the dependency will be gone, it is also "only" an unmaintained dependency without direct harm.
     "RUSTSEC-2024-0399", # we are using tls only in clients
+    "RUSTSEC-2024-0384", # unmaintained without direct harm
 ]
