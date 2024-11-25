@@ -150,7 +150,10 @@ jobs:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        run: cargo install cargo-nextest --force
+        run: cargo install --force cargo-nextest 
+
+      - name: Setup cargo nextest
+        run: cargo install cargo-nextest
 
       - name: Migrate database
         run: |
@@ -181,7 +184,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.6 run
 
       - name: Test
-        run: cargo test --all-targets --all-features --workspace
+        run: cargo nextest run --profile ci --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           TEST_KV2: 1
