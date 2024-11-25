@@ -3049,6 +3049,7 @@ dependencies = [
  "tower-http 0.6.2",
  "tracing",
  "tracing-subscriber",
+ "tryhard",
  "url",
  "urlencoding",
  "utoipa",

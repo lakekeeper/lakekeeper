@@ -21,6 +21,7 @@ use iceberg_ext::configs::table::TableProperties;
 use iceberg_ext::configs::Location;
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
 
+use crate::retry::retry_fn;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -324,16 +325,22 @@ impl StorageProfile {
             .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
 
         tracing::info!("Cleanup finished");
-
-        check_location_is_empty(&file_io, &test_location, self, || {
-            ValidationError::InvalidLocation {
-                reason: "Files are left after remove_all on test location".to_string(),
-                source: None,
-                location: test_location.to_string(),
-                storage_type: self.storage_type(),
+        retry_fn(|| async {
+            match check_location_is_empty(&file_io, &test_location, self, || {
+                ValidationError::InvalidLocation {
+                    reason: "Files are left after remove_all on test location".to_string(),
+                    source: None,
+                    location: test_location.to_string(),
+                    storage_type: self.storage_type(),
+                }
+            })
+            .await
+            {
+                Err(e @ ValidationError::IoOperationFailed(_, _)) => Err(e),
+                other => Ok(other),
             }
         })
-        .await?;
+        .await??;
         tracing::info!("checked location is empty");
         Ok(())
     }

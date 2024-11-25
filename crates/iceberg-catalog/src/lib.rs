@@ -21,6 +21,7 @@ pub mod api;
 
 #[cfg(feature = "router")]
 pub mod metrics;
+mod retry;
 #[cfg(feature = "router")]
 pub(crate) mod tracing;
 
