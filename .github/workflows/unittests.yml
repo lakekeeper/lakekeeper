@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - main
-      - 'release-*'
+      - "release-*"
   pull_request:
     branches:
       - main
-      - 'release-*'
+      - "release-*"
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,9 +24,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Cargo sqlx-check
         run: |
-          sudo apt-get install libpq-dev -y
+          export DEBIAN_FRONTEND=noninteractive 
+          sudo apt-get update && sudo apt-get install -yqq libpq-dev libsasl2-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
-          cargo sqlx prepare --check --workspace -- --all-features 
+          cargo sqlx prepare --check --workspace -- --all-features
 
   check-format:
     runs-on: ubuntu-latest
@@ -43,7 +44,10 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - run: sudo snap install --edge --classic just
+      - run: |
+          export DEBIAN_FRONTEND=noninteractive 
+          sudo snap install --edge --classic just
+          sudo apt-get update && sudo apt-get install -yqq libsasl2-dev --no-install-recommends
 
       - uses: actions/checkout@v4
 
@@ -74,7 +78,10 @@ jobs:
   check-generated-cotents-match:
     runs-on: ubuntu-latest
     steps:
-      - run: sudo snap install --edge --classic just
+      - run: |
+          export DEBIAN_FRONTEND=noninteractive 
+          sudo snap install --edge --classic just
+          sudo apt-get update && sudo apt-get install -yqq libsasl2-dev --no-install-recommends
       - uses: actions/checkout@v4
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -141,9 +148,13 @@ jobs:
         env:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
 
+      - name: Setup cargo nextest
+        run: cargo install cargo-nextest
+
       - name: Migrate database
         run: |
-          sudo apt-get install libpq-dev -y
+          export DEBIAN_FRONTEND=noninteractive 
+          sudo apt-get update && sudo apt-get install -yqq libpq-dev libsasl2-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           cd crates/iceberg-catalog
           sqlx database create
@@ -159,7 +170,7 @@ jobs:
           gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
           sudo apt update && sudo apt install vault
-          
+
           vault login -address "${VAULT_ADDR}" myroot
           vault auth  enable -address "${VAULT_ADDR}"  userpass
           echo "path \"secret/*\" { capabilities = [\"create\", \"read\", \"update\", \"delete\", \"list\"] }" > /tmp/app.hcl
@@ -170,7 +181,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.6 run
 
       - name: Test
-        run: cargo test --no-fail-fast --all-targets --all-features --workspace
+        run: cargo nextest run --profile ci --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           TEST_KV2: 1
@@ -206,7 +217,11 @@ jobs:
           TEST_GCS: ${{ secrets.TEST_GCS }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
-
+      - name: Upload junit
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
       - name: Doc Test
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:

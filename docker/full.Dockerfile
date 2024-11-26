@@ -2,12 +2,12 @@ FROM rust:1.82-slim-bookworm AS chef
 # We only pay the installation cost once, 
 # it will be cached from the second build onwards
 RUN apt-get update -qq && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -yqq curl build-essential libpq-dev pkg-config libssl-dev make perl wget zip unzip --no-install-recommends && \
-    cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
+  DEBIAN_FRONTEND=noninteractive apt-get install -yqq curl build-essential libpq-dev pkg-config libssl-dev libsasl2-dev make perl wget zip unzip --no-install-recommends && \
+  cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
 
 RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v28.2/protoc-28.2-linux-x86_64.zip && \
-    unzip protoc-28.2-linux-x86_64.zip -d /usr/local/ && \
-    rm protoc-28.2-linux-x86_64.zip
+  unzip protoc-28.2-linux-x86_64.zip -d /usr/local/ && \
+  rm protoc-28.2-linux-x86_64.zip
 RUN cargo install cargo-chef 
 
 WORKDIR /app
@@ -38,18 +38,18 @@ FROM busybox:1.37.0 as cleaner
 COPY --from=base / /clean
 
 RUN rm -r /clean/usr/lib/*-linux-gnu/libgomp*  \
-         /clean/usr/lib/*-linux-gnu/libssl*  \
-         /clean/usr/lib/*-linux-gnu/libstdc++* \
-         /clean/usr/lib/*-linux-gnu/engines-3 \
-         /clean/usr/lib/*-linux-gnu/ossl-modules \
-         /clean/usr/lib/*-linux-gnu/libcrypto.so.3 \
-        /clean/usr/lib/*-linux-gnu/gconv \
-       /clean/var/lib/dpkg/status.d/libgomp1*  \
-       /clean/var/lib/dpkg/status.d/libssl3*  \
-       /clean/var/lib/dpkg/status.d/libstdc++6* \
-       /clean/usr/share/doc/libssl3 \
-       /clean/usr/share/doc/libstdc++6 \
-       /clean/usr/share/doc/libgomp1
+  /clean/usr/lib/*-linux-gnu/libssl*  \
+  /clean/usr/lib/*-linux-gnu/libstdc++* \
+  /clean/usr/lib/*-linux-gnu/engines-3 \
+  /clean/usr/lib/*-linux-gnu/ossl-modules \
+  /clean/usr/lib/*-linux-gnu/libcrypto.so.3 \
+  /clean/usr/lib/*-linux-gnu/gconv \
+  /clean/var/lib/dpkg/status.d/libgomp1*  \
+  /clean/var/lib/dpkg/status.d/libssl3*  \
+  /clean/var/lib/dpkg/status.d/libstdc++6* \
+  /clean/usr/share/doc/libssl3 \
+  /clean/usr/share/doc/libstdc++6 \
+  /clean/usr/share/doc/libgomp1
 
 
 FROM scratch

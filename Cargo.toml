@@ -14,8 +14,16 @@ rust-version = "1.80.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-async-nats = "0.38.0"
+rdkafka = { version = "0.36.2", default-features = false, features = [
+    "tokio",
+    "zstd",
+    "gssapi-vendored",
+    "curl-static",
+    "ssl-vendored",
+    "libz-static",
+] }
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
+async-nats = "0.38.0"
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
@@ -40,6 +48,7 @@ google-cloud-auth = { version = "0.17.0", features = [
 ], default-features = false }
 google-cloud-token = "0.1.2"
 figment = { version = "0.10.19", features = ["env"] }
+figment_file_provider_adapter = "0.1.1"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"
