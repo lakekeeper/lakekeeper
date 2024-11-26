@@ -20,10 +20,11 @@ If you have questions, feature requests or just want a chat, we are hanging arou
 </p>
 
 # Next Steps
+
 The catalog is evolving quickly. Especially internal rust APIs are not stable and subject to change. External REST APIs are kept as stable as possible, especially the `/catalog` API is stable as of today.
 
-* **Release 0.5.0**: Our biggest release yet is coming early November. It includes **Fine Grained Access Control**, a first simple **UI** and much more.
-* **Release 0.6.0**: With Release 0.6.0 we focus on stabilizing some of our most recent features and significantly improve our **Docs**. Docusaurus is coming!
+- **Release 0.5.0**: Our biggest release yet is coming early November. It includes **Fine Grained Access Control**, a first simple **UI** and much more.
+- **Release 0.6.0**: With Release 0.6.0 we focus on stabilizing some of our most recent features and significantly improve our **Docs**. Docusaurus is coming!
 
 # Quickstart
 
@@ -64,7 +65,7 @@ Please find following an overview of currently supported features. Please also c
 ### Supported Operations - Iceberg-Rest
 
 | Operation | Status  | Description                                                              |
-|-----------|:-------:|--------------------------------------------------------------------------|
+| --------- | :-----: | ------------------------------------------------------------------------ |
 | Namespace | ![done] | All operations implemented                                               |
 | Table     | ![done] | All operations implemented - additional integration tests in development |
 | Views     | ![done] | Remove unused files and log entries                                      |
@@ -73,7 +74,7 @@ Please find following an overview of currently supported features. Please also c
 ### Storage Profile Support
 
 | Storage              |    Status    | Comment                                                   |
-|----------------------|:------------:|-----------------------------------------------------------|
+| -------------------- | :----------: | --------------------------------------------------------- |
 | S3 - AWS             | ![semi-done] | vended-credentials & remote-signing, assume role missing  |
 | S3 - Custom          |   ![done]    | vended-credentials & remote-signing, tested against minio |
 | Azure ADLS Gen2      |   ![done]    |                                                           |
@@ -86,14 +87,14 @@ Details on how to configure the storage profiles can be found in the [Storage Gu
 ### Supported Catalog Backends
 
 | Backend  | Status  | Comment |
-|----------|:-------:|---------|
+| -------- | :-----: | ------- |
 | Postgres | ![done] |         |
 | MongoDB  | ![open] |         |
 
 ### Supported Secret Stores
 
 | Backend         | Status  | Comment       |
-|-----------------|:-------:|---------------|
+| --------------- | :-----: | ------------- |
 | Postgres        | ![done] |               |
 | kv2 (hcp-vault) | ![done] | userpass auth |
 
@@ -102,12 +103,12 @@ Details on how to configure the storage profiles can be found in the [Storage Gu
 | Backend | Status  | Comment |
 |---------|:-------:|---------|
 | Nats    | ![done] |         |
-| Kafka   | ![open] |         |
+| Kafka   | ![done] |         |
 
 ### Supported Operations - Management API
 
 | Operation            | Status  | Description                                        |
-|----------------------|:-------:|----------------------------------------------------|
+| -------------------- | :-----: | -------------------------------------------------- |
 | Warehouse Management | ![done] | Create / Update / Delete a Warehouse               |
 | AuthZ                | ![open] | Manage access to warehouses, namespaces and tables |
 | More to come!        | ![open] |                                                    |
@@ -115,7 +116,7 @@ Details on how to configure the storage profiles can be found in the [Storage Gu
 ### Auth(N/Z) Handlers
 
 | Operation       | Status  | Description                                                                                                        |
-|-----------------|:-------:|--------------------------------------------------------------------------------------------------------------------|
+| --------------- | :-----: | ------------------------------------------------------------------------------------------------------------------ |
 | OIDC (AuthN)    | ![done] | Secure access to the catalog via OIDC                                                                              |
 | Custom (AuthZ)  | ![done] | If you are willing to implement a single rust Trait, the `AuthZHandler` can be implement to connect to your system |
 | OpenFGA (AuthZ) | ![open] | Internal Authorization management                                                                                  |
@@ -146,7 +147,6 @@ When a table or view is dropped, it is not immediately deleted from the catalog.
 
 `Undrop` of a table is only possible if soft-deletes are enabled for a Warehouse.
 
-
 # Configuration
 
 The basic setup of the Catalog is configured via environment variables. As this catalog supports a multi-tenant setup, each catalog ("warehouse") also comes with its own configuration options including its Storage Configuration. The documentation of the Management-API for warehouses is hosted at the unprotected `/swagger-ui` endpoint.
@@ -158,7 +158,7 @@ Following options are global and apply to all warehouses:
 Previous to Lakekeeper Version `0.5.0` please prefix all environment variables with `ICEBERG_REST__` instead of `LAKEKEEPER__`.
 
 | Variable                             | Example                    | Description                                                                                                                                                                                                                                                               |
-|--------------------------------------|----------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LAKEKEEPER__BASE_URI`               | `https://example.com:8080` | Base URL where the catalog is externally reachable. Default: `https://localhost:8080`                                                                                                                                                                                     |
 | `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` | `true`                     | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
 | `LAKEKEEPER__RESERVED_NAMESPACES`    | `system,examples`          | Reserved Namespaces that cannot be created via the REST interface                                                                                                                                                                                                         |
@@ -175,8 +175,8 @@ You may be running Lakekeeper in your own environment which uses self-signed cer
 Currently, the catalog uses two task queues, one to ultimately delete soft-deleted tabulars and another to purge tabulars which have been deleted with the `purgeRequested=True` query parameter. The task queues are configured as follows:
 
 | Variable                                  | Example | Description                                                                                                 |
-|-------------------------------------------|---------|-------------------------------------------------------------------------------------------------------------|
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5       | Number of retries before a task is considered failed  Default: 5                                            |
+| ----------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5       | Number of retries before a task is considered failed Default: 5                                             |
 | `LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`       | 3600    | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600 |
 | `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL` | 10      | Amount of seconds between polling for new tasks. Default: 10                                                |
 
@@ -187,7 +187,7 @@ The queues are currently implemented using the `sqlx` Postgres backend. If you w
 Configuration parameters if Postgres is used as a backend, you may either provide connection strings or use the `PG_*` environment variables, connection strings take precedence:
 
 | Variable                                  | Example                                               | Description                                                                                                                              |
-|-------------------------------------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|
+| ----------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `LAKEKEEPER__PG_DATABASE_URL_READ`        | `postgres://postgres:password@localhost:5432/iceberg` | Postgres Database connection string used for reading                                                                                     |
 | `LAKEKEEPER__PG_DATABASE_URL_WRITE`       | `postgres://postgres:password@localhost:5432/iceberg` | Postgres Database connection string used for writing.                                                                                    |
 | `LAKEKEEPER__PG_ENCRYPTION_KEY`           | `<This is unsafe, please set a proper key>`           | If `LAKEKEEPER__SECRET_BACKEND=postgres`, this key is used to encrypt secrets. It is required to change this for production deployments. |
@@ -211,7 +211,7 @@ Configuration parameters if a KV2 compatible storage is used as a backend. Curre
 `LAKEKEEPER__KV2='{url="http://localhost:1234", user="test", password="test", secret_mount="secret"}'`
 
 | Variable                        | Example               | Description                                      |
-|---------------------------------|-----------------------|--------------------------------------------------|
+| ------------------------------- | --------------------- | ------------------------------------------------ |
 | `LAKEKEEPER__KV2__URL`          | `https://vault.local` | URL of the KV2 backend                           |
 | `LAKEKEEPER__KV2__USER`         | `admin`               | Username to authenticate against the KV2 backend |
 | `LAKEKEEPER__KV2__PASSWORD`     | `password`            | Password to authenticate against the KV2 backend |
@@ -222,13 +222,52 @@ Configuration parameters if a KV2 compatible storage is used as a backend. Curre
 If you want the server to publish events to a NATS server, set the following environment variables:
 
 | Variable                      | Example                 | Description                                                          |
-|-------------------------------|-------------------------|----------------------------------------------------------------------|
+| ----------------------------- | ----------------------- | -------------------------------------------------------------------- |
 | `LAKEKEEPER__NATS_ADDRESS`    | `nats://localhost:4222` | The URL of the NATS server to connect to                             |
 | `LAKEKEEPER__NATS_TOPIC`      | `iceberg`               | The subject to publish events to                                     |
 | `LAKEKEEPER__NATS_USER`       | `test-user`             | User to authenticate against nats, needs `LAKEKEEPER__NATS_PASSWORD` |
 | `LAKEKEEPER__NATS_PASSWORD`   | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
 | `LAKEKEEPER__NATS_CREDS_FILE` | `/path/to/file.creds`   | Path to a file containing nats credentials                           |
 | `LAKEKEEPER__NATS_TOKEN`      | `xyz`                   | Nats token to authenticate against server                            |
+
+### Kafka
+
+Lakekeeper uses [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) to enable publishing events to Kafka.
+
+The following features of rust-rdkafka are enabled:
+
+- tokio
+- ztstd
+- gssapi-vendored
+- curl-static
+- ssl-vendored
+- libz-static
+
+This means that all features of [librdkafka](https://github.com/confluentinc/librdkafka) are usable. All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
+
+To publish events to Kafka, set the following environment variables:
+
+| Variable                        | Example                                                                   | Description                                                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LAKEKEEPER__KAFKA_TOPIC`       | `lakekeeper`                                                              | The topic to which events are published                                                                                                                                                 |
+| `LAKEKEEPER__KAFKA_CONFIG`      | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
+| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below                                      |
+
+**Notes**
+
+`LAKEKEEPER__KAFKA_CONFIG` and `LAKEKEEPER__KAFKA_CONFIG_FILE` are mutually exclusive and the values are not merged, if both variables are set. In case that both are set, `LAKEKEEPER__KAFKA_CONFIG` is used.
+
+A `LAKEKEEPER__KAFKA_CONFIG_FILE` could look like this:
+
+```
+{
+  "bootstrap.servers"="host1:port,host2:port",
+  "security.protocol"="SASL_SSL",
+  "sasl.mechanisms"="PLAIN",
+}
+```
+
+Checking configuration parameters is deferred to `rdkafka`
 
 ### OpenID Connect
 
@@ -242,7 +281,7 @@ curl {your-catalog-url}/catalog/v1/transactions/commit -X POST -H "authorization
 ```
 
 | Variable                          | Example                                      | Description                                                                                                                                                                                                                                                  |
-|-----------------------------------|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| --------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `LAKEKEEPER__OPENID_PROVIDER_URI` | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL, with keycloak this is the url pointing to your realm, for Azure App Registration it would be something like `https://login.microsoftonline.com/{your-tenant-id-here}/v2.0/`. If this variable is not set, endpoints are **not** secured |
 
 ## License

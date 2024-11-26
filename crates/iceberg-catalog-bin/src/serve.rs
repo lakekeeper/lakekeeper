@@ -8,8 +8,8 @@ use iceberg_catalog::service::authz::implementations::{
 use iceberg_catalog::service::authz::Authorizer;
 use iceberg_catalog::service::contract_verification::ContractVerifiers;
 use iceberg_catalog::service::event_publisher::{
-    CloudEventBackend, CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
-    NatsBackend,
+    kafka::KafkaBackend, kafka::KafkaConfig, nats::NatsBackend, CloudEventBackend,
+    CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
 };
 use iceberg_catalog::service::health::ServiceHealthProvider;
 use iceberg_catalog::service::{Catalog, StartupValidationData};
@@ -143,7 +143,14 @@ async fn serve_inner<A: Authorizer>(
         let nats_publisher = build_nats_client(nat_addr).await?;
         cloud_event_sinks
             .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    } else {
+    }
+    if let (Some(kafka_config), Some(kafka_topic)) = (&CONFIG.kafka_config, &CONFIG.kafka_topic) {
+        let kafka_publisher = build_kafka_producer(kafka_config, kafka_topic)?;
+        cloud_event_sinks
+            .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+    }
+
+    if cloud_event_sinks.is_empty() {
         tracing::info!("Running without publisher.");
     };
 
@@ -230,4 +237,54 @@ async fn build_nats_client(nat_addr: &Url) -> Result<NatsBackend, Error> {
             .ok_or(anyhow::anyhow!("Missing nats topic."))?,
     };
     Ok(nats_publisher)
+}
+
+fn build_kafka_producer(
+    kafka_config: &KafkaConfig,
+    topic: &String,
+) -> anyhow::Result<KafkaBackend> {
+    if !(kafka_config.conf.contains_key("bootstrap.servers")
+        || kafka_config.conf.contains_key("metadata.broker.list"))
+    {
+        return Err(anyhow::anyhow!(
+            "Kafka config map does not contain 'bootstrap.servers' or 'metadata.broker.list'. You need to provide either of those, in addition with any other parameters you need."
+        ));
+    }
+    let mut producer_client_config = rdkafka::ClientConfig::new();
+    for (key, value) in kafka_config.conf.iter() {
+        producer_client_config.set(key, value);
+    }
+    if let Some(sasl_password) = kafka_config.sasl_password.clone() {
+        producer_client_config.set("sasl.password", sasl_password);
+    }
+    if let Some(sasl_oauthbearer_client_secret) =
+        kafka_config.sasl_oauthbearer_client_secret.clone()
+    {
+        producer_client_config.set(
+            "sasl.oauthbearer.client.secret",
+            sasl_oauthbearer_client_secret,
+        );
+    }
+    if let Some(ssl_key_password) = kafka_config.ssl_key_password.clone() {
+        producer_client_config.set("ssl.key.password", ssl_key_password);
+    }
+    if let Some(ssl_keystore_password) = kafka_config.ssl_keystore_password.clone() {
+        producer_client_config.set("ssl.keystore.password", ssl_keystore_password);
+    }
+    let producer = producer_client_config.create()?;
+    let kafka_backend = KafkaBackend {
+        producer,
+        topic: topic.clone(),
+    };
+    let kafka_brokers = kafka_config
+        .conf
+        .get("bootstrap.servers")
+        .or(kafka_config.conf.get("metadata.broker.list"))
+        .unwrap();
+    tracing::info!(
+        "Running with kafka publisher, initial brokers are: {}. Topic: {}.",
+        kafka_brokers,
+        topic
+    );
+    Ok(kafka_backend)
 }
