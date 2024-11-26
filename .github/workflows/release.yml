@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - 'release-*'
+      - 'manual-release-*'
   pull_request:
     paths:
       - '.github/workflows/release.yml'
