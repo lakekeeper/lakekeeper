@@ -336,7 +336,12 @@ impl StorageProfile {
             })
             .await
             {
-                Err(e @ ValidationError::IoOperationFailed(_, _)) => Err(e),
+                Err(e @ ValidationError::IoOperationFailed(_, _)) => {
+                    tracing::warn!(
+                        "Error while checking location is empty: {e}, retrying up to three times.."
+                    );
+                    Err(e)
+                }
                 other => Ok(other),
             }
         })
@@ -655,9 +660,13 @@ pub(crate) async fn check_location_is_empty(
 
     let mut entry_stream = list_location(file_io, location, Some(1))
         .await
-        .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(storage_profile.clone())))?;
+        .map_err(|e| {
+            tracing::warn!("Initing list location failed: {e}");
+            ValidationError::IoOperationFailed(e, Box::new(storage_profile.clone()))
+        })?;
     while let Some(entries) = entry_stream.next().await {
         let entries = entries.map_err(|e| {
+            tracing::warn!("Stream batch failed: {e}");
             ValidationError::IoOperationFailed(e, Box::new(storage_profile.clone()))
         })?;
 
