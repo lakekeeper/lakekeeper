@@ -3,6 +3,7 @@ import json
 import os
 import urllib
 import uuid
+from typing import Optional
 
 import pyiceberg.catalog
 import pyiceberg.catalog.rest
@@ -10,82 +11,87 @@ import pyiceberg.typedef
 import pytest
 import requests
 
-# ---- Core
-MANAGEMENT_URL = os.environ.get("LAKEKEEPER_TEST__MANAGEMENT_URL")
-CATALOG_URL = os.environ.get("LAKEKEEPER_TEST__CATALOG_URL")
-# ---- AWS
-AWS_S3_ACCESS_KEY = os.environ.get("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY")
-AWS_S3_SECRET_KEY = os.environ.get("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
-AWS_S3_BUCKET = os.environ.get("LAKEKEEPER_TEST__AWS_S3_BUCKET")
-AWS_S3_REGION = os.environ.get("LAKEKEEPER_TEST__AWS_S3_REGION")
-AWS_S3_STS_ROLE_ARN = os.environ.get("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN")
-# ---- S3
-S3_ACCESS_KEY = os.environ.get("LAKEKEEPER_TEST__S3_ACCESS_KEY")
-S3_SECRET_KEY = os.environ.get("LAKEKEEPER_TEST__S3_SECRET_KEY")
-S3_BUCKET = os.environ.get("LAKEKEEPER_TEST__S3_BUCKET")
-S3_ENDPOINT = os.environ.get("LAKEKEEPER_TEST__S3_ENDPOINT")
-S3_REGION = os.environ.get("LAKEKEEPER_TEST__S3_REGION", None)
-S3_PATH_STYLE_ACCESS = os.environ.get("LAKEKEEPER_TEST__S3_PATH_STYLE_ACCESS")
-S3_STS_MODE = os.environ.get("LAKEKEEPER_TEST__S3_STS_MODE", "both")
-# ---- ADLS
-AZURE_CLIENT_ID = os.environ.get("LAKEKEEPER_TEST__AZURE_CLIENT_ID")
-AZURE_CLIENT_SECRET = os.environ.get("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET")
-AZURE_STORAGE_ACCOUNT_NAME = os.environ.get(
-    "LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME"
-)
-AZURE_STORAGE_FILESYSTEM = os.environ.get("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM")
-AZURE_TENANT_ID = os.environ.get("LAKEKEEPER_TEST__AZURE_TENANT_ID")
-# ---- GCS
-GCS_CREDENTIAL = os.environ.get("LAKEKEEPER_TEST__GCS_CREDENTIAL")
-GCS_BUCKET = os.environ.get("LAKEKEEPER_TEST__GCS_BUCKET")
-# ---- OAUTH
-OPENID_PROVIDER_URI = os.environ.get("LAKEKEEPER_TEST__OPENID_PROVIDER_URI")
-OPENID_CLIENT_ID = os.environ.get("LAKEKEEPER_TEST__OPENID_CLIENT_ID")
-OPENID_CLIENT_SECRET = os.environ.get("LAKEKEEPER_TEST__OPENID_CLIENT_SECRET")
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AnyHttpUrl, Field, SecretStr
 
-# ---- TRINO
-TRINO_URI = os.environ.get("LAKEKEEPER_TEST__TRINO_URI")
-# ---- SPARK
-SPARK_ICEBERG_VERSION = os.environ.get(
-    "LAKEKEEPER_TEST__SPARK_ICEBERG_VERSION", "1.5.2"
-)
-# ---- STARROCKS
-STARROCKS_URI = os.environ.get("LAKEKEEPER_TEST__STARROCKS_URI")
+
+class Secret(SecretStr, str):
+    def __repr__(self):
+        return "********"
+
+    def __str__(self):
+        return self.get_secret_value()
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='lakekeeper_test__')
+    management_url: str = Field()
+    catalog_url: str = Field()
+    aws_s3_access_key: Optional[Secret] = None
+    aws_s3_secret_access_key: Optional[Secret] = None
+    aws_s3_bucket: Optional[str] = None
+    aws_s3_region: Optional[str] = None
+    aws_s3_sts_role_arn: Optional[str] = None
+    s3_access_key: Optional[Secret] = None
+    s3_secret_key: Optional[Secret] = None
+    s3_bucket: Optional[str] = None
+    s3_endpoint: Optional[str] = None
+    s3_region: Optional[str] = None
+    s3_path_style_access: Optional[str] = None
+    s3_sts_mode: Optional[str] = None
+    azure_client_id: Optional[Secret] = None
+    azure_client_secret: Optional[Secret] = None
+    azure_tenant_id: Optional[Secret] = None
+    azure_storage_account_name: Optional[str] = None
+    azure_storage_filesystem: Optional[str] = None
+    gcs_credential: Optional[Secret] = None
+    gcs_bucket: Optional[str] = None
+    openid_provider_uri: Optional[str] = None
+    openid_client_id: Optional[Secret] = None
+    openid_client_secret: Optional[Secret] = None
+    trino_uri: Optional[str] = None
+    spark_iceberg_version: str = "1.5.2"
+    starrocks_uri: Optional[str] = None
+
+
+settings = Settings()
+
+print(settings)
 
 STORAGE_CONFIGS = []
 
-if S3_ACCESS_KEY is not None:
-    if S3_STS_MODE == "both":
+if settings.s3_access_key is not None:
+    if settings.s3_sts_mode == "both":
         STORAGE_CONFIGS.append({"type": "s3", "sts-enabled": True})
         STORAGE_CONFIGS.append({"type": "s3", "sts-enabled": False})
-    elif S3_STS_MODE == "enabled":
+    elif settings.s3_sts_mode == "enabled":
         STORAGE_CONFIGS.append({"type": "s3", "sts-enabled": True})
-    elif S3_STS_MODE == "disabled":
+    elif settings.s3_sts_mode == "disabled":
         STORAGE_CONFIGS.append({"type": "s3", "sts-enabled": False})
     else:
         raise ValueError(
-            f"Invalid LAKEKEEPER_TEST__S3_STS_MODE: {S3_STS_MODE}. "
+            f"Invalid LAKEKEEPER_TEST__S3_STS_MODE: {settings.s3_sts_mode}. "
             "must be one of 'both', 'enabled', 'disabled'"
         )
 
-if AWS_S3_ACCESS_KEY is not None:
-    if S3_STS_MODE == "both":
+if settings.aws_s3_access_key is not None:
+    if settings.s3_sts_mode == "both":
         STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": True})
         STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": False})
-    elif S3_STS_MODE == "enabled":
+    elif settings.s3_sts_mode == "enabled":
         STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": True})
-    elif S3_STS_MODE == "disabled":
+    elif settings.s3_sts_mode == "disabled":
         STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": False})
     else:
         raise ValueError(
-            f"Invalid LAKEKEEPER_TEST__S3_STS_MODE: {S3_STS_MODE}. "
+            f"Invalid LAKEKEEPER_TEST__S3_STS_MODE: {settings.s3_sts_mode}. "
             "must be one of 'both', 'enabled', 'disabled'"
         )
 
-if AZURE_CLIENT_ID is not None:
+if settings.azure_client_id is not None:
     STORAGE_CONFIGS.append({"type": "azure"})
 
-if GCS_CREDENTIAL is not None:
+if settings.gcs_credential is not None:
     STORAGE_CONFIGS.append({"type": "gcs"})
 
 
@@ -96,96 +102,96 @@ def string_to_bool(s: str) -> bool:
 @pytest.fixture(scope="session", params=STORAGE_CONFIGS)
 def storage_config(request) -> dict:
     if request.param["type"] == "s3":
-        if S3_BUCKET is None or S3_BUCKET == "":
+        if settings.s3_bucket is None or settings.s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__S3_BUCKET is not set")
 
-        if S3_PATH_STYLE_ACCESS is not None and S3_PATH_STYLE_ACCESS != "":
-            path_style_access = string_to_bool(S3_PATH_STYLE_ACCESS)
+        if settings.s3_path_style_access is not None and settings.s3_path_style_access != "":
+            path_style_access = string_to_bool(settings.s3_path_style_access)
         else:
             path_style_access = None
 
-        if S3_REGION is None:
+        if settings.s3_region is None:
             pytest.skip("LAKEKEEPER_TEST__S3_REGION is not set")
 
         return {
             "storage-profile": {
                 "type": "s3",
-                "bucket": S3_BUCKET,
-                "region": S3_REGION,
+                "bucket": settings.s3_bucket,
+                "region": settings.s3_region,
                 "path-style-access": path_style_access,
-                "endpoint": S3_ENDPOINT,
+                "endpoint": settings.s3_endpoint,
                 "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
             },
             "storage-credential": {
                 "type": "s3",
                 "credential-type": "access-key",
-                "aws-access-key-id": S3_ACCESS_KEY,
-                "aws-secret-access-key": S3_SECRET_KEY,
+                "aws-access-key-id": settings.s3_access_key,
+                "aws-secret-access-key": settings.s3_secret_key,
             },
         }
     elif request.param["type"] == "aws":
-        if AWS_S3_BUCKET is None or AWS_S3_BUCKET == "":
+        if settings.aws_s3_bucket is None or settings.aws_s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
 
-        if S3_PATH_STYLE_ACCESS is not None and S3_PATH_STYLE_ACCESS != "":
-            path_style_access = string_to_bool(S3_PATH_STYLE_ACCESS)
+        if settings.s3_path_style_access is not None and settings.s3_path_style_access != "":
+            path_style_access = string_to_bool(settings.s3_path_style_access)
         else:
             path_style_access = None
 
-        if AWS_S3_REGION is None:
+        if settings.aws_s3_region is None:
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_REGION is not set")
 
         return {
             "storage-profile": {
                 "type": "s3",
-                "bucket": AWS_S3_BUCKET,
-                "region": AWS_S3_REGION,
+                "bucket": settings.aws_s3_bucket,
+                "region": settings.aws_s3_region,
                 "path-style-access": path_style_access,
                 "flavor": "aws",
                 "sts-enabled": request.param["sts-enabled"],
-                "sts-role-arn": AWS_S3_STS_ROLE_ARN if request.param["sts-enabled"] else None,
+                "sts-role-arn": settings.aws_s3_sts_role_arn if request.param["sts-enabled"] else None,
             },
             "storage-credential": {
                 "type": "s3",
                 "credential-type": "access-key",
-                "aws-access-key-id": AWS_S3_ACCESS_KEY,
-                "aws-secret-access-key": AWS_S3_SECRET_KEY,
+                "aws-access-key-id": settings.aws_s3_access_key,
+                "aws-secret-access-key": settings.aws_s3_secret_access_key,
             },
         }
     elif request.param["type"] == "azure":
-        if AZURE_STORAGE_ACCOUNT_NAME is None or AZURE_STORAGE_ACCOUNT_NAME == "":
+        if settings.azure_storage_account_name is None or settings.azure_storage_account_name == "":
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME is not set")
-        if AZURE_STORAGE_FILESYSTEM is None or AZURE_STORAGE_FILESYSTEM == "":
+        if settings.azure_storage_filesystem is None or settings.azure_storage_filesystem == "":
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM is not set")
 
         return {
             "storage-profile": {
                 "type": "adls",
-                "account-name": AZURE_STORAGE_ACCOUNT_NAME,
-                "filesystem": AZURE_STORAGE_FILESYSTEM,
+                "account-name": settings.azure_storage_account_name,
+                "filesystem": settings.azure_storage_filesystem,
             },
             "storage-credential": {
                 "type": "az",
                 "credential-type": "client-credentials",
-                "client-id": AZURE_CLIENT_ID,
-                "client-secret": AZURE_CLIENT_SECRET,
-                "tenant-id": AZURE_TENANT_ID,
+                "client-id": settings.azure_client_id,
+                "client-secret": settings.azure_client_secret,
+                "tenant-id": settings.azure_tenant_id,
             },
         }
     elif request.param["type"] == "gcs":
-        if GCS_BUCKET is None or GCS_BUCKET == "":
+        if settings.gcs_bucket is None or settings.gcs_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__GCS_BUCKET is not set")
 
         return {
             "storage-profile": {
                 "type": "gcs",
-                "bucket": GCS_BUCKET,
+                "bucket": settings.gcs_bucket,
             },
             "storage-credential": {
                 "type": "gcs",
                 "credential-type": "service-account-key",
-                "key": json.loads(GCS_CREDENTIAL),
+                "key": json.loads(settings.gcs_credential),
             },
         }
     else:
@@ -310,16 +316,16 @@ class Namespace:
 
 @pytest.fixture(scope="session")
 def access_token() -> str:
-    if OPENID_PROVIDER_URI is None:
+    if settings.openid_provider_uri is None:
         pytest.skip("OAUTH_PROVIDER_URI is not set")
 
     token_endpoint = requests.get(
-        OPENID_PROVIDER_URI.strip("/") + "/.well-known/openid-configuration"
+        str(settings.openid_provider_uri).strip("/") + "/.well-known/openid-configuration"
     ).json()["token_endpoint"]
     response = requests.post(
         token_endpoint,
         data={"grant_type": "client_credentials"},
-        auth=(OPENID_CLIENT_ID, OPENID_CLIENT_SECRET),
+        auth=(settings.openid_client_id, settings.openid_client_secret),
     )
     response.raise_for_status()
     return response.json()["access_token"]
@@ -327,13 +333,13 @@ def access_token() -> str:
 
 @pytest.fixture(scope="session")
 def server(access_token) -> Server:
-    if MANAGEMENT_URL is None:
+    if settings.management_url is None:
         pytest.skip("LAKEKEEPER_TEST__MANAGEMENT_URL is not set")
-    if CATALOG_URL is None:
+    if settings.catalog_url is None:
         pytest.skip("LAKEKEEPER_TEST__CATALOG_URL is not set")
 
     # Bootstrap the server if is not yet boostrapped
-    management_url = MANAGEMENT_URL.rstrip("/") + "/"
+    management_url = settings.management_url.rstrip("/") + "/"
     server_info = requests.get(
         management_url + "v1/info", headers={"Authorization": f"Bearer {access_token}"}
     )
@@ -348,8 +354,8 @@ def server(access_token) -> Server:
         response.raise_for_status()
 
     return Server(
-        catalog_url=CATALOG_URL.rstrip("/") + "/",
-        management_url=MANAGEMENT_URL.rstrip("/") + "/",
+        catalog_url=settings.catalog_url.rstrip("/") + "/",
+        management_url=settings.management_url.rstrip("/") + "/",
         access_token=access_token,
     )
 
@@ -403,12 +409,12 @@ def spark(warehouse: Warehouse, storage_config):
     # Strip patch version
     pyspark_version = ".".join(pyspark_version.split(".")[:2])
 
-    print(f"SPARK_ICEBERG_VERSION: {SPARK_ICEBERG_VERSION}")
+    print(f"SPARK_ICEBERG_VERSION: {settings.spark_iceberg_version}")
     spark_jars_packages = (
-        f"org.apache.iceberg:iceberg-spark-runtime-{pyspark_version}_2.12:{SPARK_ICEBERG_VERSION},"
-        f"org.apache.iceberg:iceberg-aws-bundle:{SPARK_ICEBERG_VERSION},"
-        f"org.apache.iceberg:iceberg-azure-bundle:{SPARK_ICEBERG_VERSION},"
-        f"org.apache.iceberg:iceberg-gcp-bundle:{SPARK_ICEBERG_VERSION}"
+        f"org.apache.iceberg:iceberg-spark-runtime-{pyspark_version}_2.12:{settings.spark_iceberg_version},"
+        f"org.apache.iceberg:iceberg-aws-bundle:{settings.spark_iceberg_version},"
+        f"org.apache.iceberg:iceberg-azure-bundle:{settings.spark_iceberg_version},"
+        f"org.apache.iceberg:iceberg-gcp-bundle:{settings.spark_iceberg_version}"
     )
     # random 5 char string
     catalog_name = warehouse.normalized_catalog_name
@@ -419,9 +425,9 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",
         f"spark.sql.catalog.{catalog_name}.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
         f"spark.sql.catalog.{catalog_name}.uri": warehouse.server.catalog_url,
-        f"spark.sql.catalog.{catalog_name}.credential": f"{OPENID_CLIENT_ID}:{OPENID_CLIENT_SECRET}",
+        f"spark.sql.catalog.{catalog_name}.credential": f"{settings.openid_client_id}:{settings.openid_client_secret}",
         f"spark.sql.catalog.{catalog_name}.warehouse": f"{warehouse.project_id}/{warehouse.warehouse_name}",
-        f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{OPENID_PROVIDER_URI.rstrip('/')}/protocol/openid-connect/token",
+        f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
     }
     if storage_config["storage-profile"]["type"] == "s3" and storage_config["storage-profile"]["sts-enabled"]:
         configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "vended-credentials"
@@ -441,7 +447,7 @@ def spark(warehouse: Warehouse, storage_config):
 
 @pytest.fixture(scope="session")
 def trino(warehouse: Warehouse, storage_config):
-    if TRINO_URI is None:
+    if settings.trino_uri is None:
         pytest.skip("LAKEKEEPER_TEST__TRINO_URI is not set")
 
     from trino.dbapi import connect
@@ -454,7 +460,7 @@ def trino(warehouse: Warehouse, storage_config):
             ,
             "s3.region" = 'dummy',
             "s3.path-style-access" = 'true',
-            "s3.endpoint" = '{S3_ENDPOINT}',
+            "s3.endpoint" = '{settings.s3_endpoint}',
             "fs.native-s3.enabled" = 'true'
         """
     elif storage_config["storage-profile"]["type"] == "adls":
@@ -483,7 +489,7 @@ def trino(warehouse: Warehouse, storage_config):
     )
 
     conn = connect(
-        host=TRINO_URI,
+        host=settings.trino_uri,
         user="trino",
         catalog=warehouse.normalized_catalog_name,
     )
@@ -493,12 +499,12 @@ def trino(warehouse: Warehouse, storage_config):
 
 @pytest.fixture(scope="session")
 def starrocks(warehouse: Warehouse, storage_config):
-    if STARROCKS_URI is None:
+    if settings.starrocks_uri is None:
         pytest.skip("LAKEKEEPER_TEST__STARROCKS_URI is not set")
 
     from sqlalchemy import create_engine
 
-    engine = create_engine(STARROCKS_URI)
+    engine = create_engine(settings.starrocks_uri)
     connection = engine.connect()
     connection.execute("DROP CATALOG IF EXISTS rest_catalog")
 
@@ -517,8 +523,8 @@ def starrocks(warehouse: Warehouse, storage_config):
         #         "iceberg.catalog.uri" = "{warehouse.server.catalog_url}",
         #         "iceberg.catalog.warehouse" = "{warehouse.project_id}/{warehouse.warehouse_name}",
         #         "header.x-iceberg-access-delegation" = "vended-credentials",
-        #         "iceberg.catalog.oauth2-server-uri" = "{OPENID_PROVIDER_URI.rstrip('/')}/protocol/openid-connect/token",
-        #         "iceberg.catalog.credential" = "{OPENID_CLIENT_ID}:{OPENID_CLIENT_SECRET}"
+        #         "iceberg.catalog.oauth2-server-uri" = "{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
+        #         "iceberg.catalog.credential" = "{settings.openid_client_id}:{settings.openid_client_secret}"
         #     )
         #     """
         # )
@@ -531,13 +537,13 @@ def starrocks(warehouse: Warehouse, storage_config):
                 "iceberg.catalog.type" = "rest",
                 "iceberg.catalog.uri" = "{warehouse.server.catalog_url}",
                 "iceberg.catalog.warehouse" = "{warehouse.project_id}/{warehouse.warehouse_name}",
-                "iceberg.catalog.oauth2-server-uri" = "{OPENID_PROVIDER_URI.rstrip('/')}/protocol/openid-connect/token",
-                "iceberg.catalog.credential" = "{OPENID_CLIENT_ID}:{OPENID_CLIENT_SECRET}",
+                "iceberg.catalog.oauth2-server-uri" = "{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
+                "iceberg.catalog.credential" = "{settings.openid_client_id}:{settings.openid_client_secret}",
                 "aws.s3.region" = "local",
                 "aws.s3.enable_path_style_access" = "true",
-                "aws.s3.endpoint" = "{S3_ENDPOINT}",
-                "aws.s3.access_key" = "{S3_ACCESS_KEY}",
-                "aws.s3.secret_key" = "{S3_SECRET_KEY}"
+                "aws.s3.endpoint" = "{settings.s3_endpoint}",
+                "aws.s3.access_key" = "{settings.s3_access_key}",
+                "aws.s3.secret_key" = "{settings.s3_secret_key}"
             )
             """
         )
