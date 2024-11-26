@@ -14,7 +14,7 @@ rust-version = "1.80.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-rdkafka = { version = "0.36.2", default-features = false, features = [
+rdkafka = { version = "0.37.0", default-features = false, features = [
     "tokio",
     "zstd",
     "gssapi-vendored",
