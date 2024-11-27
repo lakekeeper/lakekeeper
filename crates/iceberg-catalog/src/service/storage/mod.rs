@@ -342,7 +342,14 @@ impl StorageProfile {
                     );
                     Err(e)
                 }
-                other => Ok(other),
+                Ok(()) => {
+                    tracing::debug!("Location is empty");
+                    Ok(Ok(()))
+                }
+                Err(other) => {
+                    tracing::error!("Unrecoverable error: {other:?}");
+                    Ok(Err(other))
+                }
             }
         })
         .await??;
