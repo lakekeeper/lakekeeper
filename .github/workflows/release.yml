@@ -10,6 +10,7 @@ on:
       - '.github/workflows/release.yml'
   workflow_dispatch:
 
+
 env:
   RUST_BACKTRACE: short
   RUSTUP_MAX_RETRIES: 10
