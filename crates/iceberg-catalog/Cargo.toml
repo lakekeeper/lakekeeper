@@ -12,21 +12,13 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
 [features]
-all = [
-    "sqlx-postgres",
-    "s3-signer",
-    "router",
-    "nats",
-    "kafka",
-    "vendored-protoc",
-]
-default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
+all = ["sqlx-postgres", "s3-signer", "router", "nats", "vendored-protoc"]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
 s3-signer = ["dep:aws-sigv4", "dep:aws-credential-types"]
 router = ["dep:tower-http"]
 nats = ["dep:async-nats"]
-kafka = ["dep:rdkafka"]
+default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 vendored-protoc = ["openfga-rs/vendored-protoc"]
 
 [dependencies]
@@ -52,7 +44,6 @@ chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { version = "0.7.0" }
 derive_more = { workspace = true }
 figment = { workspace = true }
-figment_file_provider_adapter = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
@@ -77,7 +68,6 @@ paste = { workspace = true }
 percent-encoding = { workspace = true }
 rand = "0.8.5"
 reqwest = { workspace = true }
-rdkafka = { workspace = true, optional = true }
 serde = { workspace = true }
 serde-aux = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }

@@ -1,20 +1,19 @@
 //! Contains Configuration of the service Module
+use anyhow::{anyhow, Context};
+use http::HeaderValue;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::str::FromStr;
+use url::Url;
 
 use crate::service::task_queue::TaskQueueConfig;
 use crate::{ProjectIdent, WarehouseIdent};
-use anyhow::{anyhow, Context};
-use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
-use url::Url;
 use veil::Redact;
 
-use crate::service::event_publisher::kafka::KafkaConfig;
 const DEFAULT_RESERVED_NAMESPACES: [&str; 2] = ["system", "examples"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
@@ -36,14 +35,9 @@ fn get_config() -> DynAppConfig {
     #[cfg(test)]
     let prefixes = &["LAKEKEEPER_TEST__"];
 
-    let file_keys = &["kafka_config"];
-
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        let env = figment::providers::Env::prefixed(prefix).split("__");
-        config = config
-            .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
-            .merge(env);
+        config = config.merge(figment::providers::Env::prefixed(prefix).split("__"));
     }
 
     let mut config = config
@@ -132,10 +126,6 @@ pub struct DynAppConfig {
     pub nats_password: Option<String>,
     #[redact]
     pub nats_token: Option<String>,
-
-    // ------------- KAFKA CLOUDEVENTS -------------
-    pub kafka_topic: Option<String>,
-    pub kafka_config: Option<KafkaConfig>,
 
     // ------------- AUTHENTICATION -------------
     pub openid_provider_uri: Option<Url>,
@@ -327,8 +317,6 @@ impl Default for DynAppConfig {
             nats_user: None,
             nats_password: None,
             nats_token: None,
-            kafka_config: None,
-            kafka_topic: None,
             openid_provider_uri: None,
             listen_port: 8080,
             health_check_frequency_seconds: 10,
