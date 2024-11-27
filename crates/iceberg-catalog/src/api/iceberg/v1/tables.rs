@@ -318,6 +318,15 @@ pub struct DataAccess {
 }
 
 impl DataAccess {
+    #[cfg(test)]
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            vended_credentials: false,
+            remote_signing: false,
+        }
+    }
+
     #[must_use]
     pub fn requested(&self) -> bool {
         self.vended_credentials || self.remote_signing

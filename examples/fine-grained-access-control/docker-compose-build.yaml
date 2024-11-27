@@ -22,13 +22,3 @@ services:
   openfga-db:
     ports:
       - "2346:5432"
-  ui:
-    build:
-      context: ../../ui/catalog
-      dockerfile: Dockerfile
-    ports:
-      - 3002:8080
-    environment:
-      - VITE_APP_ICEBERG_CATALOG_URL=http://localhost:8080
-    networks:
-      - iceberg_net

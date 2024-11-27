@@ -1,0 +1,438 @@
+# -- (list of <html><a href="https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/">image pull secrets</a></html>)
+# pull secrets for private repositories
+imagePullSecrets: []
+# -- Override the name of the chart.
+# @default -- `<chart-name>`
+nameOverride: ""
+# -- Override the fully qualified chart name.
+# @default -- `<release-name>-<chart-name>`
+fullnameOverride: ""
+
+# -- kubernetes cluster domain name.
+# Used for service discovery in the catalog.
+clusterDomain: "cluster.local"
+
+# -- If true, remove the helm.sh/hook for jobs that need to run before the catalog is started.
+# If this is false, helm install --wait will not work.
+helmWait: true
+
+catalog:
+  image:
+    repository: localhost/iceberg-catalog-local
+    tag: amd64
+    pullPolicy: IfNotPresent
+    # -- 65532 = nonroot of google container distroless
+    uid: 65532
+    # -- 65534 = nobody of google container distroless
+    gid: 65534
+
+  # -- Number of replicas to deploy. Replicas are stateless.
+  replicas: 1
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core">resource requirements</a></html>)
+  # resources for the catalog container of the catalog pod
+  resources: {}
+  # ---- EXAMPLE ----
+  # resources:
+  #   limits:
+  #     cpu: 100m
+  #     memory: 128Mi
+  #   requests:
+  #     cpu: 100m
+  #     memory: 128Mi
+
+  # -- (<html><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector">)
+  # node selector configs for the catalog Pods
+  nodeSelector: {}
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#affinity-v1-core">affinity</a></html>)
+  # -- affinity for the catalog Pods
+  affinity: {}
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#toleration-v1-core">toleration</a></html>)
+  # tolerations for the catalog Pods
+  tolerations: []
+
+  # -- (<html><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/">topologySpreadConstraints</a></html>)
+  # topology spread constraints the catalog Pods
+  topologySpreadConstraints: []
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#podsecuritycontext-v1-core">podsecuritycontext-v1-core</a></html>)
+  # security context for the catalog Pods.
+  # `runAsUser` and `runAsGroup` are ignored for the catalog container, please set with `catalog.image.uid` and `catalog.image.gid`
+  podSecurityContext:
+    {}
+    # # ---- EXAMPLE ----
+    # # securityContext:
+    # capabilities:
+    #   drop:
+    #     - ALL
+    # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#podsecuritycontext-v1-core">podsecuritycontext-v1-core</a></html>)
+  # security context for the catalog container.
+  # `runAsUser` is ignored, please set with `catalog.image.uid`, `runAsGroup` is ignored, please set with `catalog.image.gid`
+  containerSecurityContext: {}
+
+  # -- Labels for the catalog Deployment
+  labels: {}
+
+  # -- Pod labels for the catalog Deployment
+  podLabels: {}
+
+  # -- Annotations for the catalog Deployment
+  annotations: {}
+
+  # -- Pod annotations for the catalog Deployment
+  podAnnotations: {}
+
+  # -- (list of <html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#envvar-v1-core">envvar-v1-core</a></html>)
+  # extra variables for the catalog Pods
+  extraEnv: []
+
+  # -- (list of <html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#envfromsource-v1-core">envfromsource-v1-core</a></html>)
+  # extra variables for the catalog Pods
+  extraEnvFrom: []
+
+  # -- Configuration options for the catalog.
+  # Please check the documentation for the available options.
+  # Configuration items are mounted as environment variables.
+  # ICEBERG_REST__BASE_URI is required if ingress is disabled - otherwise
+  # the catalog will only work inside the cluster.
+  # Specify the external URL of the catalog as ICEBERG_REST__BASE_URI
+  config: {}
+  # ---- EXAMPLE ----
+  # config:
+  #   ICEBERG_REST__OPENID_PROVIDER_URI: "https://my-oidc-provider.com"
+  #   ICEBERG_REST__BASE_URI: "https://data.example.com"
+
+  # -- if we add the annotation: "cluster-autoscaler.kubernetes.io/safe-to-evict" = "true"
+  safeToEvict: true
+
+  podDisruptionBudget:
+    # -- if a PodDisruptionBudget resource is created for the catalog
+    enabled: false
+
+    # -- the maximum unavailable pods/percentage for the catalog
+    maxUnavailable: ""
+
+    # -- the minimum available pods/percentage for the catalog
+    minAvailable: ""
+
+  livenessProbe:
+    # -- if the liveness probes of the catalog Pods are enabled
+    enabled: true
+    initialDelaySeconds: 1
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 5
+
+  # configuration of the readiness probes of the catalog pods
+  readinessProbe:
+    # -- if the readiness probes of the catalog Pods are enabled
+    enabled: true
+    initialDelaySeconds: 1
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 5
+
+  autoscaling:
+    # -- if the HorizontalPodAutoscaler is enabled for the catalog Pods
+    enabled: false
+    # -- maximum number of replicas for the catalog Pods
+    maxReplicas: 2
+    # -- metrics for the HorizontalPodAutoscaler
+    metrics: []
+  # ____ EXAMPLE _______________
+  #   autoscaling:
+  #     enabled: true
+  #     maxReplicas: 16
+  #     metrics:
+  #     - type: Resource
+  #       resource:
+  #         name: memory
+  #         target:
+  #           type: Utilization
+  #           averageUtilization: 80
+
+  # -- how many seconds to wait after SIGTERM before SIGKILL of the catalog.
+  # Default is 60 seconds.
+  terminationPeriod: 60
+
+  # -- (list of <html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#container-v1-core">containers</a></html>)
+  # extra containers for the catalog Pods
+  extraContainers: []
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#container-v1-core">container</a></html>)
+  # extra init-containers for the catalog Pods
+  extraInitContainers: []
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#volumemount-v1-core">volume mount</a></html>)
+  # extra VolumeMounts for the catalog Pods
+  extraVolumeMounts: []
+  # ---- EXAMPLE ----
+  # extraVolumeMounts:
+  # - name: foo
+  #   mountPath: "/etc/foo"
+  #   readOnly: true
+
+  # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#volume-v1-core">volume</a></html>)
+  # extra Volumes for the catalog Pods
+  extraVolumes: []
+  # ---- EXAMPLE ----
+  # extraVolumes:
+  # - name: foo
+  #   secret:
+  #     secretName: mysecret
+  #     optional: false
+
+  # -- Overwrite the command of the catalog container.
+  # If not set, the default entrypoint of the image is used
+  command: []
+
+  dbMigrations:
+    # -- if the db-migrations Job is created.
+    # if `false`, you have to MANUALLY run `airflow db upgrade` when required
+    enabled: true
+
+    # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core">resource requirements</a></html>)
+    # resources for the catalog container of the catalog pod
+    resources: {}
+    # ---- EXAMPLE ----
+    # resources:
+    #   limits:
+    #     cpu: 100m
+    #     memory: 128Mi
+    #   requests:
+    #     cpu: 100m
+    #     memory: 128Mi
+
+    # -- Labels for the catalog migration job
+    labels: {}
+
+    # -- Labels for the migration pod
+    podLabels: {}
+
+    # -- Annotations for the migration job
+    annotations: {}
+
+    # -- Annotations for the migration pod
+    podAnnotations: {}
+
+    # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#container-v1-core">container</a></html>)
+    # extra init-containers for the migration Pod
+    extraInitContainers: []
+
+    # Other configurations are equal to the `catalog` section
+
+  initContainers:
+    checkDb:
+      # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core">resource requirements</a></html>)
+      # resource requests/limits for the "check-db" init-containers
+      resources: {}
+
+  # configs for the (backend) Service of the catalog Pods (REST-API)
+  service:
+    # -- catalog service annotations
+    annotations: {}
+    # -- catalog service session affinity
+    sessionAffinity: "None"
+    # -- catalog service session affinity config
+    sessionAffinityConfig: {}
+    # -- catalog service type
+    type: ClusterIP
+    # -- catalog service external port
+    externalPort: 8080
+    # -- catalog service ip of the load balancer service.
+    # Only used when `type: LoadBalancer`
+    loadBalancerIP: ""
+    # -- Source ip ranges for the catalog services.
+    # Only used when `type: LoadBalancer`
+    loadBalancerSourceRanges: []
+    # -- catalog service node port
+    # Only used when `type: NodePort`
+    nodePort:
+      http: ""
+
+  ingress:
+    # -- if we should deploy Ingress resources
+    enabled: false
+
+    # -- annotations for the catalog Ingress
+    annotations: {}
+
+    # -- additional labels for the catalog Ingress
+    labels: {}
+
+    # -- the path for the catalog Ingress.
+    # To host the catalog at the url
+    # `https://data.example.com/iceberg-catalog`, set `path: "/iceberg-catalog"`.
+    # If a path is set, the ingress must strip the path before forwarding to the service!
+    # This helm-chart does not take care of this, as it depends on the type of Ingress Controller used.
+    # For example, for NGINX Ingress Controller, set the annotation
+    # `nginx.ingress.kubernetes.io/rewrite-target: /`
+    path: ""
+
+    # -- the hostname for the catalog Ingress.
+    # For example, `data.example.com`.
+    host: ""
+
+    # -- the Ingress Class for the catalog Ingress
+    ingressClassName: ""
+
+    tls:
+      # -- enable TLS termination for the catalog Ingress
+      enabled: false
+
+      # -- the name of a pre-created Secret containing a TLS private key and certificate
+      secretName: ""
+
+serviceAccount:
+  # -- Specifies whether a service account should be created.
+  # If `false`, you must create the you must create the service account outside this chart with name: `serviceAccount.name`
+  create: true
+
+  # -- Option to opt-out of the default behavior of service account token auto-mounting.
+  automount: true
+
+  # -- Name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname
+  name: ""
+
+  # -- Annotations to add to the service account
+  annotations: {}
+  # ____ EXAMPLE _______________
+  #   # EKS - IAM Roles for Service Accounts
+  #   annotations:
+  #     eks.amazonaws.com/role-arn: "arn:aws:iam::XXXXXXXXXX:role/<<MY-ROLE-NAME>>"
+  #
+
+secretBackend:
+  # -- the type of secret store to use.
+  # Available values: "Postgres", "KV2"
+  type: "Postgres"
+
+  # postgres specific configurations.
+  postgres:
+    # -- Name of the secret containing the encryption key.
+    # If not set, a random key is generated and stored in a secret.
+    # We recommend setting this to a pre-existing secret. If you loose the key, you loose
+    # access to all secrets.
+    encryptionKeySecret: ""
+    # -- Name of the key within `encryptionKeySecret` containing the encryption key string
+    encryptionKeySecretKey: "encryptionKey"
+
+  # kv2 specific configurations
+  kv2:
+    # -- the URL of the KV2 secret store
+    url: ""
+    # -- user name for authentication
+    user: ""
+    # -- password for authentication
+    # consider using a secret for the password
+    password: ""
+    # -- path to the secret mount in the KV2 secret store.
+    secretMount: "kv/data/iceberg"
+    # -- the name of a pre-created secret containing the KV2 user
+    userSecret: ""
+    # -- the key within `kv2.userSecret` containing the user string
+    userSecretKey: "username"
+    # -- the name of a pre-created secret containing the KV2 password
+    passwordSecret: ""
+    # -- the key within `kv2.passwordSecret` containing the password string
+    passwordSecretKey: "password"
+
+postgresql:
+  # -- if the `stable/postgresql` chart is used.
+  # [WARNING] embedded Postgres is NOT recommended for production. Use an external database instead.
+  # set to `false` if using `externalDatabase.*`
+  enabled: true
+
+  auth:
+    # -- the postgres user to create
+    username: catalog
+    # -- the postgres user's password.
+    # if not specified, a random password is generated and stored in a secret
+    password: ""
+    # -- the postgres database to create
+    database: catalog
+    # -- the name of a pre-created secret containing the postgres password
+    existingSecret: ""
+    secretKeys:
+      # -- the key within `postgresql.existingSecret` containing the admin (postgres) password string
+      adminPasswordKey: "postgres-password"
+      # -- the key within `postgresql.existingSecret` containing the user password string
+      userPasswordKey: "password"
+
+  # configs for the PVC of postgresql
+  persistence:
+    # -- if postgres will use Persistent Volume Claims to store data.
+    # if false, data will be LOST as postgres Pods restart
+    enabled: true
+
+    # -- the StorageClass used by the PVC
+    storageClass: ""
+
+    # -- the access modes of the PVC
+    accessModes:
+      - ReadWriteOnce
+
+    # -- the size of PVC to request
+    size: 5Gi
+
+externalDatabase:
+  # -- the type of external database.
+  # allowed values: "postgres"
+  type: postgres
+
+  # -- hostname to use for read instances of the external database
+  host_read: "localhost"
+
+  # -- hostname to use for write instances of the external database.
+  # For single read/write instances, this should be the same as `host_read`
+  host_write: "localhost"
+
+  # port of the external database
+  port: 5432
+
+  # the database/scheme to use within the external database
+  database: catalog
+
+  # the username for the external database
+  user: catalog
+
+  # the name of a pre-created secret containing the external database user
+  # - if set, this overrides `externalDatabase.user`
+  userSecret: ""
+
+  # the key within `externalDatabase.userSecret` containing the user string
+  userSecretKey: "postgresql-user"
+
+  # the password for the external database
+  # - [WARNING] to avoid storing the password in plain-text within your values,
+  #   create a Kubernetes secret and use `externalDatabase.passwordSecret`
+  password: ""
+
+  # the name of a pre-created secret containing the external database password
+  # - if set, this overrides `externalDatabase.password`
+  passwordSecret: ""
+
+  # the key within `externalDatabase.passwordSecret` containing the password string
+  passwordSecretKey: "postgresql-password"
+
+  # Additional connection properties can be specified via environment variables
+  # in the `catalog.extraEnv` list
+
+auth:
+  oauth2:
+    # -- If set, access to rest endpoints is secured via an external OIDC-capable IdP.
+    # The IdP must expose `{provider_url}/.well-known/openid-configuration`
+    # and the openid-configuration needs to have the jwks_uri and issuer defined.
+    # For keycloak set: https://keycloak.local/realms/test
+    # For Entra-ID set: https://login.microsoftonline.com/{your-tenant-id}/v2.0
+    provider_uri: ""
+    # -- The client id of the OIDC App of the catalog.
+    # The aud (audience) claim of the JWT token must match this id.
+    client_id: ""
+

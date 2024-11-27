@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Error};
-use iceberg_catalog::api::router::{new_full_router, serve as service_serve};
+use iceberg_catalog::api::router::{new_full_router, serve as service_serve, RouterArgs};
 use iceberg_catalog::implementations::postgres::{CatalogState, PostgresCatalog, ReadWrite};
 use iceberg_catalog::implementations::Secrets;
 use iceberg_catalog::service::authz::implementations::{
@@ -8,11 +8,10 @@ use iceberg_catalog::service::authz::implementations::{
 use iceberg_catalog::service::authz::Authorizer;
 use iceberg_catalog::service::contract_verification::ContractVerifiers;
 use iceberg_catalog::service::event_publisher::{
-    CloudEventBackend, CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
-    NatsBackend,
+    kafka::KafkaBackend, kafka::KafkaConfig, nats::NatsBackend, CloudEventBackend,
+    CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
 };
 use iceberg_catalog::service::health::ServiceHealthProvider;
-use iceberg_catalog::service::token_verification::Verifier;
 use iceberg_catalog::service::{Catalog, StartupValidationData};
 use iceberg_catalog::{SecretBackend, CONFIG};
 use reqwest::Url;
@@ -20,6 +19,8 @@ use reqwest::Url;
 use iceberg_catalog::implementations::postgres::task_queues::{
     TabularExpirationQueue, TabularPurgeQueue,
 };
+use iceberg_catalog::service::authn::IdpVerifier;
+use iceberg_catalog::service::authn::K8sVerifier;
 use iceberg_catalog::service::task_queue::TaskQueues;
 use std::sync::Arc;
 
@@ -142,7 +143,14 @@ async fn serve_inner<A: Authorizer>(
         let nats_publisher = build_nats_client(nat_addr).await?;
         cloud_event_sinks
             .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    } else {
+    }
+    if let (Some(kafka_config), Some(kafka_topic)) = (&CONFIG.kafka_config, &CONFIG.kafka_topic) {
+        let kafka_publisher = build_kafka_producer(kafka_config, kafka_topic)?;
+        cloud_event_sinks
+            .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+    }
+
+    if cloud_event_sinks.is_empty() {
         tracing::info!("Running without publisher.");
     };
 
@@ -151,22 +159,34 @@ async fn serve_inner<A: Authorizer>(
         sinks: cloud_event_sinks,
     };
 
-    let router = new_full_router::<PostgresCatalog, _, Secrets>(
-        authorizer.clone(),
-        catalog_state.clone(),
-        secrets_state.clone(),
-        queues.clone(),
-        CloudEventsPublisher::new(tx.clone()),
-        ContractVerifiers::new(vec![]),
-        if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-            Some(Verifier::new(uri).await?)
+    let k8s_token_verifier = K8sVerifier::try_new()
+        .await
+        .map_err(|e| {
+            tracing::info!(
+                "Failed to create K8s authorizer: {e}, assuming we are not running on kubernetes."
+            )
+        })
+        .ok();
+
+    let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
+        authorizer: authorizer.clone(),
+        catalog_state: catalog_state.clone(),
+        secrets_state: secrets_state.clone(),
+        queues: queues.clone(),
+        publisher: CloudEventsPublisher::new(tx.clone()),
+        table_change_checkers: ContractVerifiers::new(vec![]),
+        token_verifier: if let Some(uri) = CONFIG.openid_provider_uri.clone() {
+            Some(IdpVerifier::new(uri).await?)
         } else {
             None
         },
-        health_provider,
-        CONFIG.allow_origin.as_deref(),
-        Some(iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?),
-    );
+        k8s_token_verifier,
+        service_health_provider: health_provider,
+        cors_origins: CONFIG.allow_origin.as_deref(),
+        metrics_layer: Some(
+            iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?,
+        ),
+    })?;
 
     let publisher_handle = tokio::task::spawn(async move {
         match x.publish().await {
@@ -217,4 +237,54 @@ async fn build_nats_client(nat_addr: &Url) -> Result<NatsBackend, Error> {
             .ok_or(anyhow::anyhow!("Missing nats topic."))?,
     };
     Ok(nats_publisher)
+}
+
+fn build_kafka_producer(
+    kafka_config: &KafkaConfig,
+    topic: &String,
+) -> anyhow::Result<KafkaBackend> {
+    if !(kafka_config.conf.contains_key("bootstrap.servers")
+        || kafka_config.conf.contains_key("metadata.broker.list"))
+    {
+        return Err(anyhow::anyhow!(
+            "Kafka config map does not contain 'bootstrap.servers' or 'metadata.broker.list'. You need to provide either of those, in addition with any other parameters you need."
+        ));
+    }
+    let mut producer_client_config = rdkafka::ClientConfig::new();
+    for (key, value) in kafka_config.conf.iter() {
+        producer_client_config.set(key, value);
+    }
+    if let Some(sasl_password) = kafka_config.sasl_password.clone() {
+        producer_client_config.set("sasl.password", sasl_password);
+    }
+    if let Some(sasl_oauthbearer_client_secret) =
+        kafka_config.sasl_oauthbearer_client_secret.clone()
+    {
+        producer_client_config.set(
+            "sasl.oauthbearer.client.secret",
+            sasl_oauthbearer_client_secret,
+        );
+    }
+    if let Some(ssl_key_password) = kafka_config.ssl_key_password.clone() {
+        producer_client_config.set("ssl.key.password", ssl_key_password);
+    }
+    if let Some(ssl_keystore_password) = kafka_config.ssl_keystore_password.clone() {
+        producer_client_config.set("ssl.keystore.password", ssl_keystore_password);
+    }
+    let producer = producer_client_config.create()?;
+    let kafka_backend = KafkaBackend {
+        producer,
+        topic: topic.clone(),
+    };
+    let kafka_brokers = kafka_config
+        .conf
+        .get("bootstrap.servers")
+        .or(kafka_config.conf.get("metadata.broker.list"))
+        .unwrap();
+    tracing::info!(
+        "Running with kafka publisher, initial brokers are: {}. Topic: {}.",
+        kafka_brokers,
+        topic
+    );
+    Ok(kafka_backend)
 }

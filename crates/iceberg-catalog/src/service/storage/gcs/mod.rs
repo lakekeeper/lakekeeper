@@ -19,7 +19,7 @@ use veil::Redact;
 
 mod sts;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct GcsProfile {
     /// Name of the GCS bucket

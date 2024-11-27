@@ -1,0 +1,74 @@
+name: integration test workflow
+
+on:
+  workflow_call:
+    inputs:
+      test_name:
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+
+jobs:
+      test:
+        name: ${{ inputs.test_name }}
+        env:
+          current_test: ${{ inputs.test_name }}
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Restore binary
+            uses: actions/download-artifact@v4
+            with:
+              name: iceberg-catalog-image
+              path: artifacts
+
+          - name: Display structure of downloaded files
+            run: ls -Rlh artifacts
+
+          - name: Restore Docker image
+            run: |
+              docker load -i artifacts/iceberg-catalog-amd64.tar
+
+          - name: Test ${{ inputs.test_name }}
+            run: |
+              cd tests &&
+              docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_${current_test}.sh"
+
+            env:
+              LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
+              LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+              AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+              AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+              AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+              AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
+              AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
+              GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+              GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+              AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+              AWS_S3_REGION: ${{ secrets.AWS_S3_REGION }}
+              AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+              AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+              AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
+          - name: Dump DB
+            if: always()
+            uses: tj-actions/pg-dump@v3
+            with:
+              database_url: "postgresql://postgres:postgres@localhost:31102/postgres"
+              postgresql_version: "16"
+              path: dump.sql
+          - name: compress
+            if: always()
+            run: cat dump.sql | gzip -9 > dump.sql.gz
+          - name: Upload dump
+            if: always()
+            uses: actions/upload-artifact@v4
+            with:
+              name: db-dump-${{ inputs.test_name }}
+              path: dump.sql.gz
+          - name: Dump docker logs on failure
+            if: failure()
+            uses: jwalton/gh-docker-logs@v2

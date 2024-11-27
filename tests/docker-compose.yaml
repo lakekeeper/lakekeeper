@@ -7,14 +7,24 @@ services:
     volumes:
       - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/test/.well-known/openid-configuration HTTP/1.1\r\nhost: localhost:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
+      test:
+        [
+          "CMD-SHELL",
+          'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/test/.well-known/openid-configuration HTTP/1.1\r\nhost: localhost:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3',
+        ]
       interval: 2s
       timeout: 80s
       retries: 10
       start_period: 60s
     ports:
       - "31100:8080"
-    command: [ "start-dev", "--metrics-enabled=true", "--health-enabled=true",  "--import-realm" ]
+    command:
+      [
+        "start-dev",
+        "--metrics-enabled=true",
+        "--health-enabled=true",
+        "--import-realm",
+      ]
     networks:
       - iceberg_rest_tests
 
@@ -42,8 +52,13 @@ services:
       - LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME}
       - LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=${AZURE_STORAGE_FILESYSTEM}
-      - LAKEKEEPER_TEST_GCS_CREDENTIAL=${GCS_CREDENTIAL}
-      - LAKEKEEPER_TEST_GCS_BUCKET=${GCS_BUCKET}
+      - LAKEKEEPER_TEST__GCS_CREDENTIAL=${GCS_CREDENTIAL}
+      - LAKEKEEPER_TEST__GCS_BUCKET=${GCS_BUCKET}
+      - LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY=${AWS_S3_ACCESS_KEY_ID}
+      - LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY=${AWS_S3_SECRET_ACCESS_KEY}
+      - LAKEKEEPER_TEST__AWS_S3_REGION=${AWS_S3_REGION}
+      - LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN=${AWS_S3_STS_ROLE_ARN}
+      - LAKEKEEPER_TEST__AWS_S3_BUCKET=${AWS_S3_BUCKET}
     depends_on:
       server:
         condition: service_healthy
@@ -64,7 +79,7 @@ services:
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
       - RUST_LOG=trace,axum=trace
     restart: "no"
-    command: [ "migrate" ]
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -78,23 +93,26 @@ services:
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
-      - ICEBERG_REST__NATS_URI=nats://nats:4222
+      - ICEBERG_REST__NATS_ADDRESS=nats://nats:4222
       - ICEBERG_REST__NATS_TOPIC=changes
       - ICEBERG_REST__NATS_USER=test
       - ICEBERG_REST__NATS_PASSWORD=test
+      - ICEBERG_REST__KAFKA_TOPIC=changes
+      - ICEBERG_REST__KAFKA_CONFIG={"bootstrap.servers"="kafka:19092","security.protocol"="PLAINTEXT"}
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
       - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
-      - ICEBERG_REST__DEFAULT_TABULAR_EXPIRATION_DELAY_SECONDS="2"
       - RUST_LOG=trace,axum=trace,reqwest=trace
-    command: [ "serve" ]
+    command: ["serve"]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/iceberg-catalog", "healthcheck"]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 10s
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      init-kafka:
         condition: service_completed_successfully
       db:
         condition: service_healthy
@@ -104,13 +122,15 @@ services:
         condition: service_started
       keycloak:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     ports:
       - 31101:8080
     networks:
       - iceberg_rest_tests
 
   db:
-    image: bitnami/postgresql:15
+    image: bitnami/postgresql:16.3.0
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -118,7 +138,7 @@ services:
       - PGUSER=postgres
       - POSTGRESQL_PORT_NUMBER=2345
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 2345 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 2345 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -138,7 +158,7 @@ services:
       - MINIO_SCHEME=http
       - MINIO_DEFAULT_BUCKETS=tests
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:9000/minio/health/live" ]
+      test: ["CMD", "curl", "-I", "http://localhost:9000/minio/health/live"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -151,15 +171,68 @@ services:
 
   nats:
     image: bitnami/nats:latest
-    command: [ "nats-server",  "-m=8222", "--user=test", "--pass=test" ]
+    command: ["nats-server", "-m=8222", "--user=test", "--pass=test"]
     ports:
       - "31105:4222"
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8222;echo -e "HEAD / HTTP/1.1\r\nhost: localhost:8222\r\nConnection: close\r\n\r\n" >&3;grep "HTTP/1.1 200 OK"  <&3' ]
+      test:
+        [
+          "CMD-SHELL",
+          'exec 3<>/dev/tcp/127.0.0.1/8222;echo -e "HEAD / HTTP/1.1\r\nhost: localhost:8222\r\nConnection: close\r\n\r\n" >&3;grep "HTTP/1.1 200 OK"  <&3',
+        ]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 10s
+    networks:
+      - iceberg_rest_tests
+
+  kafka:
+    image: apache/kafka:latest
+    ports:
+      - "9092:9092"
+    expose:
+      - "19092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT_HOST://:9092,PLAINTEXT://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "./opt/kafka/bin/kafka-topics.sh",
+          "--list",
+          "--bootstrap-server",
+          "localhost:9092",
+        ]
+      interval: 30s
+      timeout: 30s
+      retries: 2
+    networks:
+      - iceberg_rest_tests
+
+  init-kafka:
+    image: apache/kafka:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      echo kafka-init
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic changes
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+      "
     networks:
       - iceberg_rest_tests
 
@@ -169,7 +242,7 @@ services:
       - CATALOG_MANAGEMENT=dynamic
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8080/catalog
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -185,7 +258,7 @@ services:
   starrocks:
     image: starrocks/allin1-ubuntu:3.3.2
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      test: ["CMD", "curl", "-I", "http://starrocks:8030/api/health"]
       interval: 2s
       timeout: 10s
       retries: 2

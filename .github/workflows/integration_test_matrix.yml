@@ -1,0 +1,52 @@
+name: integration tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+    branches:
+      - main
+      - 'release-*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Build Docker image (amd64)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
+          -f docker/full.Dockerfile .
+          docker save -o /tmp/iceberg-catalog-amd64.tar localhost/iceberg-catalog-local:amd64
+
+      - name: Save Docker
+        uses: actions/upload-artifact@v4
+        with:
+          name: iceberg-catalog-image
+          path: /tmp/*.tar
+  tests:
+    needs: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        names: [ openfga, pyiceberg, spark_adls, spark_aws_remote_signing, spark_aws_sts, spark_gcs, spark_minio_sts, spark_minio_remote_signing, starrocks, trino ]
+    uses: ./.github/workflows/integration_test_workflow.yml
+    with:
+        test_name: ${{ matrix.names }}
+    secrets: inherit

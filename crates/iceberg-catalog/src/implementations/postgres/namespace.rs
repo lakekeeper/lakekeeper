@@ -104,7 +104,7 @@ pub(crate) async fn list_namespaces(
             r#"
             SELECT
                 n.namespace_id,
-                "namespace_name"[$2 + 1:] as "namespace_name: Vec<String>",
+                "namespace_name" as "namespace_name: Vec<String>",
                 n.created_at
             FROM namespace n
             INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -128,10 +128,7 @@ pub(crate) async fn list_namespaces(
         .await
         .map_err(|e| e.into_error_model("Error fetching Namespace".into()))?
         .into_iter()
-        .filter_map(|r| match r.namespace_name {
-            Some(n) => Some((r.namespace_id, n, r.created_at)),
-            None => None,
-        })
+        .map(|r| (r.namespace_id, r.namespace_name, r.created_at))
         .collect()
     } else {
         sqlx::query!(
@@ -143,6 +140,7 @@ pub(crate) async fn list_namespaces(
             FROM namespace n
             INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
             WHERE n.warehouse_id = $1
+            AND array_length("namespace_name", 1) = 1
             AND w.status = 'active'
             AND ((n.created_at > $2 OR $2 IS NULL) OR (n.created_at = $2 AND n.namespace_id > $3))
             ORDER BY n.created_at, n.namespace_id ASC
@@ -304,18 +302,33 @@ pub(crate) async fn drop_namespace(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     // Return 404 not found if namespace does not exist
-    let row_count = sqlx::query_scalar!(
+    let record = sqlx::query!(
         r#"
-        WITH deleted AS (
+        WITH namespace_name AS (
+            SELECT namespace_name
+            FROM namespace
+            WHERE warehouse_id = $1 AND namespace_id = $2
+        ),
+        child_namespaces AS (
+            SELECT 1
+            FROM namespace n
+            INNER JOIN namespace_name nn ON n.namespace_name[1:array_length(nn.namespace_name, 1)] = nn.namespace_name
+            WHERE n.warehouse_id = $1 AND n.namespace_id != $2
+        ),
+        deleted AS (
             DELETE FROM namespace
             WHERE warehouse_id = $1 
             AND namespace_id = $2
+            AND NOT EXISTS (SELECT 1 FROM child_namespaces)
             AND warehouse_id IN (
                 SELECT warehouse_id FROM warehouse WHERE status = 'active'
             )
             RETURNING *
         )
-        SELECT count(*) FROM deleted
+        SELECT 
+            count(*) AS deleted_count,
+            EXISTS (SELECT 1 FROM child_namespaces) AS has_child_namespaces
+        FROM deleted;
         "#,
         *warehouse_id,
         *namespace_id
@@ -342,7 +355,13 @@ pub(crate) async fn drop_namespace(
         _ => e.into_error_model("Error deleting namespace".to_string()),
     })?;
 
-    if row_count == Some(0) {
+    if record.has_child_namespaces == Some(true) {
+        return Err(
+            ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
+        );
+    }
+
+    if record.deleted_count == Some(0) {
         return Err(ErrorModel::internal(
             format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
             "NamespaceNotFound",
@@ -656,6 +675,38 @@ pub(crate) mod tests {
             .unwrap_err();
 
         assert_eq!(result.error.code, StatusCode::CONFLICT);
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_namespace_with_sub_namespaces(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+
+        let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let namespace =
+            NamespaceIdent::from_vec(vec!["test".to_string(), "test2".to_string()]).unwrap();
+        let response2 = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        let result = drop_namespace(warehouse_id, response.0, transaction.transaction())
+            .await
+            .unwrap_err();
+
+        assert_eq!(result.error.code, StatusCode::CONFLICT);
+
+        drop_namespace(warehouse_id, response2.0, transaction.transaction())
+            .await
+            .unwrap();
+
+        drop_namespace(warehouse_id, response.0, transaction.transaction())
+            .await
+            .unwrap();
     }
 
     #[sqlx::test]

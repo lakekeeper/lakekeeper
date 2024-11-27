@@ -1,5 +1,6 @@
 use crate::healthcheck::db_health_check;
-use iceberg_catalog::implementations::postgres::{get_reader_pool, MigrationState};
+use iceberg_catalog::implementations::postgres::get_reader_pool;
+use iceberg_catalog::implementations::postgres::migrations::MigrationState;
 use iceberg_catalog::CONFIG;
 
 pub(crate) async fn wait_for_db(
@@ -16,14 +17,14 @@ pub(crate) async fn wait_for_db(
                 tracing::info!("Database is healthy.");
                 break;
             };
+            counter += 1;
+            if counter > retries {
+                tracing::error!("DB is not up.");
+                anyhow::bail!("DB is not up.");
+            }
             tracing::info!(?details,
                         "DB not up yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",
                     );
-            counter += 1;
-            if counter == retries {
-                tracing::error!("Ran out of retries while waiting for db to come up.");
-                anyhow::bail!("Ran out of retries while waiting for db to come up.");
-            }
             tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
         }
     }
@@ -37,8 +38,10 @@ pub(crate) async fn wait_for_db(
 
             let read_pool = get_reader_pool(opts).await?;
             let migrations =
-                iceberg_catalog::implementations::postgres::check_migration_status(&read_pool)
-                    .await;
+                iceberg_catalog::implementations::postgres::migrations::check_migration_status(
+                    &read_pool,
+                )
+                .await;
             match migrations {
                 Ok(MigrationState::Complete) => {
                     tracing::info!("Database is up to date with binary.");
@@ -51,8 +54,8 @@ pub(crate) async fn wait_for_db(
 
             counter += 1;
             if counter > retries {
-                tracing::error!("Ran out of retries while waiting for migrations.");
-                anyhow::bail!("Ran out of retries while waiting for migrations.");
+                tracing::error!("Database is not up to date with binary, make sure to run the migrate command before starting the server.");
+                anyhow::bail!("Database is not up to date with binary, make sure to run the migrate command before starting the server.");
             }
             tracing::info!(
                         "DB not up to date with binary yet, sleeping for {backoff}s before next retry. Retry: {counter}/{retries}",

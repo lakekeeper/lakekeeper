@@ -1,7 +1,9 @@
+use super::RoleAssignee;
+use crate::service::authn::Actor;
+use crate::service::authn::UserId;
 use crate::service::authz::implementations::openfga::{OpenFGAError, OpenFGAResult};
 use crate::service::authz::implementations::FgaType;
-use crate::service::token_verification::Actor;
-use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, UserId, ViewIdentUuid};
+use crate::service::{NamespaceIdentUuid, RoleId, TableIdentUuid, ViewIdentUuid};
 use crate::{ProjectIdent, WarehouseIdent};
 use std::str::FromStr;
 
@@ -38,6 +40,16 @@ impl OpenFgaEntity for RoleId {
     }
 }
 
+impl OpenFgaEntity for RoleAssignee {
+    fn to_openfga(&self) -> String {
+        format!("{}#assignee", self.role().to_openfga())
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Role
+    }
+}
+
 impl ParseOpenFgaEntity for RoleId {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
         if r#type != FgaType::Role {
@@ -49,6 +61,30 @@ impl ParseOpenFgaEntity for RoleId {
 
         id.parse()
             .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string()))
+    }
+}
+
+impl ParseOpenFgaEntity for RoleAssignee {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+        if r#type != FgaType::Role {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Role],
+                id.to_string(),
+            ));
+        }
+
+        if !id.ends_with("#assignee") {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Role],
+                id.to_string(),
+            ));
+        }
+
+        let id = &id[..id.len() - "#assignee".len()];
+
+        Ok(RoleAssignee::from_role(id.parse().map_err(|_e| {
+            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string())
+        })?))
     }
 }
 
@@ -71,7 +107,7 @@ impl ParseOpenFgaEntity for UserId {
             ));
         }
 
-        UserId::new(id)
+        UserId::try_from(id.to_string())
             .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::User], id.to_string()))
     }
 }
@@ -104,6 +140,20 @@ impl OpenFgaEntity for ProjectIdent {
 
     fn openfga_type(&self) -> FgaType {
         FgaType::Project
+    }
+}
+
+impl ParseOpenFgaEntity for ProjectIdent {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+        if r#type != FgaType::Project {
+            return Err(OpenFGAError::unexpected_entity(
+                vec![FgaType::Project],
+                id.to_string(),
+            ));
+        }
+
+        ProjectIdent::from_str(id)
+            .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string()))
     }
 }
 

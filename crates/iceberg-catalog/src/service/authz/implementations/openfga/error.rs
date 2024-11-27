@@ -76,6 +76,8 @@ pub enum OpenFGAError {
         relation: String,
         object: String,
     },
+    #[error("Cannot assign {0} to itself")]
+    SelfAssignment(String),
 }
 
 impl OpenFGAError {
@@ -96,6 +98,7 @@ impl OpenFGAError {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn list_authentication_models(status: tonic::Status) -> Self {
         Self::known_status(&status).unwrap_or(OpenFGAError::ListAuthenticationModelsFailed(status))
     }

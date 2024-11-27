@@ -1,6 +1,6 @@
 use super::authz::TableUuid;
 use super::{
-    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid, UserId,
+    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid,
     ViewIdentUuid, WarehouseIdent, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
@@ -17,11 +17,14 @@ use crate::api::management::v1::user::{
 };
 use crate::api::management::v1::warehouse::TabularDeleteProfile;
 use crate::service::tabular_idents::{TabularIdentOwned, TabularIdentUuid};
-use iceberg::spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec, ViewMetadata};
+use iceberg::spec::{TableMetadata, ViewMetadata};
 use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::configs::Location;
 
+use crate::catalog::tables::TableMetadataDiffs;
+use crate::service::authn::UserId;
+use iceberg::TableUpdate;
 use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]
@@ -62,9 +65,10 @@ pub struct ListNamespacesResponse {
 #[derive(Debug)]
 pub struct CreateTableResponse {
     pub table_metadata: TableMetadata,
+    pub staged_table_id: Option<TableIdentUuid>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LoadTableResponse {
     pub table_id: TableIdentUuid,
     pub namespace_id: NamespaceIdentUuid,
@@ -74,7 +78,7 @@ pub struct LoadTableResponse {
     pub storage_profile: StorageProfile,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct GetTableMetadataResponse {
     pub table: TableIdent,
     pub table_id: TableIdentUuid,
@@ -128,19 +132,16 @@ pub struct GetProjectResponse {
 pub struct TableCommit {
     pub new_metadata: TableMetadata,
     pub new_metadata_location: Location,
+    pub updates: Vec<TableUpdate>,
+    pub(crate) diffs: TableMetadataDiffs,
 }
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
     pub(crate) namespace_id: NamespaceIdentUuid,
     pub(crate) table_ident: &'c TableIdent,
-    pub(crate) table_id: TableIdentUuid,
-    pub(crate) table_location: &'c Location,
-    pub(crate) table_schema: Schema,
-    pub(crate) table_partition_spec: Option<UnboundPartitionSpec>,
-    pub(crate) table_write_order: Option<SortOrder>,
-    pub(crate) table_properties: Option<HashMap<String, String>>,
     pub(crate) metadata_location: Option<&'c Location>,
+    pub(crate) table_metadata: TableMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -482,7 +483,7 @@ where
     /// If project_ids is None, return all projects, otherwise return only the projects in the set
     async fn list_projects(
         project_ids: Option<HashSet<ProjectIdent>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetProjectResponse>>;
 
     /// Return a list of all warehouse in a project
@@ -491,7 +492,7 @@ where
         // If None, return only active warehouses
         // If Some, return only warehouses with any of the statuses in the set
         include_inactive: Option<Vec<WarehouseStatus>>,
-        catalog_state: Self::State,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<GetWarehouseResponse>>;
 
     /// Get the warehouse metadata - should only return active warehouses.
@@ -620,6 +621,7 @@ where
 
     async fn list_tabulars(
         warehouse_id: WarehouseIdent,
+        namespace_id: Option<NamespaceIdentUuid>, // Filter by namespace
         list_flags: ListFlags,
         catalog_state: Self::State,
         pagination_query: PaginationQuery,
@@ -689,7 +691,7 @@ pub struct ViewMetadataWithLocation {
     pub metadata: ViewMetadata,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeletionDetails {
     pub expiration_task_id: uuid::Uuid,
     pub expiration_date: chrono::DateTime<chrono::Utc>,

@@ -10,8 +10,8 @@ import fsspec
 def test_create_namespace(spark, warehouse: conftest.Warehouse):
     spark.sql("CREATE NAMESPACE test_create_namespace_spark")
     assert (
-        "test_create_namespace_spark",
-    ) in warehouse.pyiceberg_catalog.list_namespaces()
+               "test_create_namespace_spark",
+           ) in warehouse.pyiceberg_catalog.list_namespaces()
 
 
 def test_list_namespaces(spark, warehouse: conftest.Warehouse):
@@ -192,10 +192,10 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
         "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
     )
     assert (
-        spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table")
-        .toPandas()
-        .shape[0]
-        == 0
+            spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table")
+            .toPandas()
+            .shape[0]
+            == 0
     )
 
     spark.sql("DROP TABLE test_drop_table_purge_spark.my_table PURGE;")
@@ -230,18 +230,18 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
     table_0 = warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
 
     purge_uri = (
-        warehouse.server.catalog_url.strip("/")
-        + "/"
-        + "/".join(
-            [
-                "v1",
-                str(warehouse.warehouse_id),
-                "namespaces",
-                namespace,
-                "tables",
-                "my_table_0?purgeRequested=True",
-            ]
-        )
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            str(warehouse.warehouse_id),
+            "namespaces",
+            namespace,
+            "tables",
+            "my_table_0?purgeRequested=True",
+        ]
+    )
     )
     requests.delete(
         purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -249,7 +249,6 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
 
-    properties = table_0.properties
     if storage_config["storage-profile"]["type"] == "s3":
         # Gotta use the s3 creds here since the prefix no longer exists after deletion & at least minio will not allow
         # listing a location that doesn't exist with our downscoped cred
@@ -260,7 +259,10 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
         properties["s3.secret-access-key"] = storage_config["storage-credential"][
             "aws-secret-access-key"
         ]
-        properties["s3.endpoint"] = storage_config["storage-profile"]["endpoint"]
+        if "endpoint" in storage_config["storage-profile"]:
+            properties["s3.endpoint"] = storage_config["storage-profile"]["endpoint"]
+        if "region" in storage_config["storage-profile"]:
+            properties["s3.region"] = storage_config["storage-profile"]["region"]
     else:
         properties = table_0.io.properties
 
@@ -280,18 +282,18 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
         table = warehouse.pyiceberg_catalog.load_table((namespace, table))
         assert table.scan().to_pandas().equals(df)
         purge_uri = (
-            warehouse.server.catalog_url.strip("/")
-            + "/"
-            + "/".join(
-                [
-                    "v1",
-                    str(warehouse.warehouse_id),
-                    "namespaces",
-                    namespace,
-                    "tables",
-                    f"my_table_{n}?purgeRequested=True",
-                ]
-            )
+                warehouse.server.catalog_url.strip("/")
+                + "/"
+                + "/".join(
+            [
+                "v1",
+                str(warehouse.warehouse_id),
+                "namespaces",
+                namespace,
+                "tables",
+                f"my_table_{n}?purgeRequested=True",
+            ]
+        )
         )
         requests.delete(
             purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -597,7 +599,7 @@ def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
 
 
 def test_cannot_create_table_at_same_location(
-    spark, namespace, warehouse: conftest.Warehouse
+        spark, namespace, warehouse: conftest.Warehouse
 ):
     # Create a table without a custom location to get the default location
     spark.sql(
@@ -639,7 +641,7 @@ def test_cannot_create_table_at_same_location(
 
 
 def test_cannot_create_table_at_sub_location(
-    spark, namespace, warehouse: conftest.Warehouse
+        spark, namespace, warehouse: conftest.Warehouse
 ):
     # Create a table without a custom location to get the default location
     spark.sql(
@@ -682,11 +684,11 @@ def test_cannot_create_table_at_sub_location(
 
 @pytest.mark.parametrize("enable_cleanup", [False, True])
 def test_old_metadata_files_are_deleted(
-    spark,
-    namespace,
-    warehouse: conftest.Warehouse,
-    enable_cleanup,
-    io_fsspec: fsspec.AbstractFileSystem,
+        spark,
+        namespace,
+        warehouse: conftest.Warehouse,
+        enable_cleanup,
+        io_fsspec: fsspec.AbstractFileSystem,
 ):
     if not enable_cleanup:
         tbl_name = "old_metadata_files_are_deleted_no_cleanup"
@@ -738,8 +740,8 @@ def test_old_metadata_files_are_deleted(
 
 
 def test_hierarchical_namespaces(
-    spark,
-    namespace: conftest.Namespace,
+        spark,
+        namespace: conftest.Namespace,
 ):
     nested_namespace = [namespace.spark_name, "nest1", "nest2", "nest3", "nest4"]
 

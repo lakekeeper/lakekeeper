@@ -1,6 +1,6 @@
 use super::health::HealthExt;
 use super::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid, UserId,
+    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
     ViewIdentUuid, WarehouseIdent,
 };
 use crate::api::iceberg::v1::Result;
@@ -12,6 +12,7 @@ use strum::EnumIter;
 pub mod implementations;
 
 use crate::api::ApiContext;
+use crate::service::authn::UserId;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use implementations::allow_all::AllowAllAuthorizer;
 
@@ -128,7 +129,7 @@ impl TableUuid for TableIdentUuid {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ListProjectsResponse {
     /// List of projects that the user is allowed to see.
     Projects(HashSet<ProjectIdent>),
@@ -158,7 +159,7 @@ where
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
 
     /// Perform bootstrapping, including granting the provided user the highest level of access.
-    async fn bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;
+    async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
     /// Return Err only for internal errors.
     async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse>;
