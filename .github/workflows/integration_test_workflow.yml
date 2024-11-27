@@ -70,5 +70,5 @@ jobs:
               name: db-dump-${{ inputs.test_name }}
               path: dump.sql.gz
           - name: Dump docker logs on failure
-            if: failure()
+            if: always()
             uses: jwalton/gh-docker-logs@v2
