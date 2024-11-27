@@ -452,7 +452,7 @@ def trino(warehouse: Warehouse, storage_config):
 
     from trino.dbapi import connect
 
-    conn = connect(host=TRINO_URI, user="trino")
+    conn = connect(host=settings.trino_uri, user="trino")
 
     cur = conn.cursor()
     if storage_config["storage-profile"]["type"] == "s3":
