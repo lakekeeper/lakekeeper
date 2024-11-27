@@ -352,15 +352,7 @@ impl StorageProfile {
                 }
             }
         })
-        .await
-        .map_err(|e| {
-            tracing::warn!("Outer Error: {e:?}");
-            e
-        })?
-        .map_err(|e| {
-            tracing::warn!("Inner error: {e:?}");
-            e
-        })?;
+        .await??;
         tracing::info!("checked location is empty");
         Ok(())
     }

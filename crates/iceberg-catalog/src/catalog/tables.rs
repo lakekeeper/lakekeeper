@@ -18,7 +18,9 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction};
 use crate::service::contract_verification::{ContractVerification, ContractVerificationOutcome};
 use crate::service::event_publisher::{CloudEventsPublisher, EventMetadata};
-use crate::service::storage::{StorageLocations as _, StoragePermissions, StorageProfile};
+use crate::service::storage::{
+    StorageLocations as _, StoragePermissions, StorageProfile, ValidationError,
+};
 use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
 use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
 use crate::service::TabularIdentUuid;
@@ -36,6 +38,7 @@ use std::str::FromStr as _;
 
 use crate::catalog;
 use crate::catalog::tabular::list_entities;
+use crate::retry::retry_fn;
 use http::StatusCode;
 use iceberg::spec::{
     FormatVersion, MetadataLog, SchemaId, SortOrder, TableMetadata, TableMetadataBuildResult,
@@ -222,20 +225,38 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         let file_io = storage_profile.file_io(storage_secret.as_ref())?;
-
-        crate::service::storage::check_location_is_empty(
-            &file_io,
-            &table_location,
-            storage_profile,
-            || crate::service::storage::ValidationError::InvalidLocation {
-                reason: "Unexpected files in location, tabular locations have to be empty"
-                    .to_string(),
-                location: table_location.to_string(),
-                source: None,
-                storage_type: storage_profile.storage_type(),
-            },
-        )
-        .await?;
+        retry_fn(|| async {
+            match crate::service::storage::check_location_is_empty(
+                &file_io,
+                &table_location,
+                storage_profile,
+                || crate::service::storage::ValidationError::InvalidLocation {
+                    reason: "Unexpected files in location, tabular locations have to be empty"
+                        .to_string(),
+                    location: table_location.to_string(),
+                    source: None,
+                    storage_type: storage_profile.storage_type(),
+                },
+            )
+            .await
+            {
+                Err(e @ ValidationError::IoOperationFailed(_, _)) => {
+                    tracing::warn!(
+                        "Error while checking location is empty: {e}, retrying up to three times.."
+                    );
+                    Err(e)
+                }
+                Ok(()) => {
+                    tracing::debug!("Location is empty");
+                    Ok(Ok(()))
+                }
+                Err(other) => {
+                    tracing::error!("Unrecoverable error: {other:?}");
+                    Ok(Err(other))
+                }
+            }
+        })
+        .await??;
 
         if let Some(metadata_location) = &metadata_location {
             let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
