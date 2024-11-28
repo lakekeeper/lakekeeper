@@ -5,7 +5,7 @@ site_author: Lakekeeper Team
 edit_uri: blob/main/docs/
 
 theme:
-  name: mkdocs
+  name: material
   color_mode: auto
   user_color_mode_toggle: true
   nav_style: dark
@@ -19,12 +19,25 @@ theme:
     next: 78 # n
     previous: 80 # p
     search: 83 # s
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.path
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - offline
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.copy
+    - content.code.annotate
 
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
-  - User Guide: user-guide/
-  - Developer Guide: dev-guide/
+  - Docs: 
+    - nightly: '!include docs/docs/nightly/mkdocs.yml'
   - About:
       - Release Notes: about/release-notes.md
       - License: about/license.md
@@ -39,6 +52,7 @@ markdown_extensions:
 copyright: Copyright &copy; 2024 <a href="https://hansetag.com">Hansetag GmbH</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
 
 plugins:
+  - monorepo
   - search
   - autorefs
 
