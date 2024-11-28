@@ -117,7 +117,7 @@ jobs:
         if: matrix.cross == true
         uses: taiki-e/install-action@v2
         with:
-          tool: cross
+          tool: cross@0.2.5
 
       #      - name: Setup cmake
       #        # C Toolchain for windows for protoc compilation
@@ -125,6 +125,10 @@ jobs:
       #        uses: jwlawson/actions-setup-cmake@v2
       #        with:
       #          cmake-version: '3.16'
+      - name: Install dependencies
+        if: matrix.cross == false && matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update && sudo apt-get install -yqq libsasl2-dev --no-install-recommends
 
       - name: Build [Cargo]
         if: matrix.cross == false

@@ -1,0 +1,14 @@
+[build.env]
+passthrough = [
+    "krb5_cv_attr_constructor_destructor=yes",
+    "ac_cv_func_regcomp=yes",
+    "ac_cv_printf_positional=yes",
+]
+
+[target.x86_64-unknown-linux-musl]
+pre-build = ["apt-get update -q && apt-get -yqq install libsasl2-dev"]
+
+[target.aarch64-unknown-linux-musl]
+pre-build = [
+    "apt-get update -q && apt-get -yqq install libsasl2-dev libssl-dev libzstd-dev",
+]
