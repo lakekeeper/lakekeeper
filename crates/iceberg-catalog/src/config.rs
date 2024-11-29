@@ -64,6 +64,7 @@ fn get_config() -> DynAppConfig {
     config
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
