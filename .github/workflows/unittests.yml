@@ -6,8 +6,6 @@ on:
       - main
       - 'manual-release-*'
   pull_request:
-    paths:
-      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 env:
