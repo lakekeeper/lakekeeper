@@ -35,7 +35,7 @@ jobs:
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
+          components: rustfmt
         env:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-latest
 
