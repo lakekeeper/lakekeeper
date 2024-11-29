@@ -77,11 +77,8 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 
 pub const DEFAULT_PAGE_SIZE: i64 = 100;
 
-#[derive(Debug)]
-pub enum PageStatus {
-    Full,
-    Partial,
-    AuthFiltered,
+lazy_static::lazy_static! {
+    pub static ref DEFAULT_PAGE_SIZE_USIZE: usize = DEFAULT_PAGE_SIZE.try_into().expect("1, 1000 is a valid usize");
 }
 
 pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun, C: Catalog>(
@@ -91,14 +88,13 @@ pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun
     transaction: &'d mut C::Transaction,
 ) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
 where
-    FetchFun: for<'c> FnMut(
-        i64,
-        Option<String>,
-        &'c mut C::Transaction,
-    ) -> BoxFuture<
-        'c,
-        Result<(Vec<Entity>, Vec<EntityId>, Vec<String>, PageStatus)>,
-    >,
+    FetchFun:
+        for<'c> FnMut(
+            i64,
+            Option<String>,
+            &'c mut C::Transaction,
+        )
+            -> BoxFuture<'c, Result<(Vec<Entity>, Vec<EntityId>, Vec<String>, usize)>>,
 {
     let page_size = page_size
         .unwrap_or(DEFAULT_PAGE_SIZE)
@@ -106,27 +102,24 @@ where
     let page_as_usize: usize = page_size.try_into().expect("1, 1000 is a valid usize");
 
     let page_token = page_token.as_option().map(ToString::to_string);
-    let (mut fetched_entities, mut fetched_entity_ids, mut next_page, filtered) =
+    let (mut fetched_entities, mut fetched_entity_ids, mut next_page, before_filter_len) =
         fetch_fn(page_size, page_token, transaction).await?;
 
-    match filtered {
-        PageStatus::AuthFiltered => {}
-        PageStatus::Full => {
-            return Ok((
-                fetched_entities,
-                fetched_entity_ids,
-                next_page.last().cloned(),
-            ));
-        }
-        PageStatus::Partial => {
-            return Ok((fetched_entities, fetched_entity_ids, None));
-        }
-    }
+    if before_filter_len < page_as_usize {
+        return Ok((fetched_entities, fetched_entity_ids, None));
+    } else if before_filter_len >= fetched_entities.len() {
+        return Ok((
+            fetched_entities,
+            fetched_entity_ids,
+            next_page.last().cloned(),
+        ));
+    };
 
     while fetched_entities.len() < page_as_usize {
-        let (more_entities, more_ids, more_page_tokens, page) =
+        let (more_entities, more_ids, more_page_tokens, before_filter_len) =
             fetch_fn(DEFAULT_PAGE_SIZE, next_page.last().cloned(), transaction).await?;
-        if matches!(page, PageStatus::Partial) {
+
+        if before_filter_len < *DEFAULT_PAGE_SIZE_USIZE {
             next_page = vec![];
             break;
         }

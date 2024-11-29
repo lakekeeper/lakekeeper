@@ -1,7 +1,7 @@
 use super::commit_tables::apply_commit;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer, PageStatus,
+    require_warehouse_id, CatalogServer,
 };
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{

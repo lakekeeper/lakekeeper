@@ -2,12 +2,12 @@ use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use std::fmt::Display;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum PaginateToken<T> {
     V1(V1PaginateToken<T>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct V1PaginateToken<T> {
     pub(crate) created_at: chrono::DateTime<Utc>,
     pub(crate) id: T,
@@ -60,4 +60,32 @@ fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) ->
         "PaginateTokenParseError".to_string(),
         e,
     )
+}
+
+#[cfg(test)]
+mod test {
+
+    use crate::service::ProjectIdent;
+
+    use super::*;
+
+    #[test]
+    fn test_paginate_token() {
+        let created_at = Utc::now();
+        let token = PaginateToken::V1(V1PaginateToken {
+            created_at,
+            id: ProjectIdent::new(uuid::Uuid::nil()),
+        });
+
+        let token_str = token.to_string();
+        let token: PaginateToken<uuid::Uuid> = PaginateToken::try_from(token_str.as_str()).unwrap();
+
+        assert_eq!(
+            token,
+            PaginateToken::V1(V1PaginateToken {
+                created_at,
+                id: uuid::Uuid::nil(),
+            })
+        );
+    }
 }

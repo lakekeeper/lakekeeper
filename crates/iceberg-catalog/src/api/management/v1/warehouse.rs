@@ -14,7 +14,6 @@ use crate::service::NamespaceIdentUuid;
 
 use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
-use crate::catalog::PageStatus;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
@@ -712,19 +711,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                                 allowed.then_some((namespace.0, namespace.1, token))
                             })
                             .multiunzip();
-
-                        let p = if before_filter_len == next_idents.len() {
-                            if before_filter_len
-                                == usize::try_from(page_size).expect("we sanitize page size")
-                            {
-                                PageStatus::Full
-                            } else {
-                                PageStatus::Partial
-                            }
-                        } else {
-                            PageStatus::AuthFiltered
-                        };
-                        Ok((next_idents, next_uuids, next_page_tokens, p))
+                        Ok((next_idents, next_uuids, next_page_tokens, before_filter_len))
                     }
                     .boxed()
                 },

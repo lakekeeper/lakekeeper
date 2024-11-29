@@ -2,8 +2,8 @@ use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQu
 use crate::api::ApiContext;
 use crate::api::Result;
 use crate::catalog::namespace::validate_namespace_ident;
+use crate::catalog::require_warehouse_id;
 use crate::catalog::tabular::list_entities;
-use crate::catalog::{require_warehouse_id, PageStatus};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{
     Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,

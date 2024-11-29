@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer, PageStatus};
+use super::{require_warehouse_id, CatalogServer};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -114,17 +114,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                             allowed.then_some((namespace.0, namespace.1, token))
                         })
                         .multiunzip();
-                    let p = if before_filter_len == next_namespaces.len() {
-                        if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
-                        {
-                            PageStatus::Full
-                        } else {
-                            PageStatus::Partial
-                        }
-                    } else {
-                        PageStatus::AuthFiltered
-                    };
-                    Ok((next_namespaces, next_uuids, next_page_tokens, p))
+
+                    Ok((
+                        next_namespaces,
+                        next_uuids,
+                        next_page_tokens,
+                        before_filter_len,
+                    ))
                 }
                 .boxed()
             },
