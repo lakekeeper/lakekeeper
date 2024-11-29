@@ -158,7 +158,7 @@ pub enum SuccessOrFailure<'a> {
     Failure(&'a str),
 }
 
-impl<'a> SuccessOrFailure<'a> {
+impl SuccessOrFailure<'_> {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {

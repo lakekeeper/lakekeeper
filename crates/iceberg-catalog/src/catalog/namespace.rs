@@ -395,7 +395,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .map(validate_namespace_properties_keys)
             .transpose()?;
 
-        namespace_location_may_not_change(&updates, &removals)?;
+        namespace_location_may_not_change(updates.as_ref(), removals.as_ref())?;
         let mut updates = NamespaceProperties::try_from_maybe_props(updates.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         remove_managed_namespace_properties(&mut updates);
@@ -584,8 +584,8 @@ fn update_namespace_properties(
 }
 
 fn namespace_location_may_not_change(
-    updates: &Option<HashMap<String, String>>,
-    removals: &Option<Vec<String>>,
+    updates: Option<&HashMap<String, String>>,
+    removals: Option<&Vec<String>>,
 ) -> Result<()> {
     if removals
         .as_ref()

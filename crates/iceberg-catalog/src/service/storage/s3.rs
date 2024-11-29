@@ -339,7 +339,7 @@ impl S3Profile {
         &self,
         table_location: &Location,
         cred: &S3Credential,
-        arn: &String,
+        arn: &str,
         storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
         self.get_sts_token(table_location, cred, Some(arn), storage_permissions)

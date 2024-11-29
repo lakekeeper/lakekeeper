@@ -435,7 +435,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             storage_secret_ident,
             storage_profile,
         } = remove_table(&table_id, &table, &mut metadatas)?;
-        require_not_staged(&metadata_location)?;
+        require_not_staged(metadata_location.as_ref())?;
 
         let table_location =
             parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -478,7 +478,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<CommitTableResponse> {
         request.identifier = Some(determine_table_ident(
             parameters.table,
-            &request.identifier,
+            request.identifier.as_ref(),
         )?);
         let t = commit_tables_internal(
             parameters.prefix,
@@ -948,7 +948,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 expired_metadata_logs: mut this_expired,
             } = apply_commit(
                 previous_table.table_metadata.clone(),
-                &previous_table.metadata_location,
+                previous_table.metadata_location.as_ref(),
                 &change.requirements,
                 change.updates.clone(),
             )?;
@@ -1258,7 +1258,7 @@ pub(crate) struct TableMetadataDiffs {
 
 pub(crate) fn determine_table_ident(
     parameters_ident: TableIdent,
-    request_ident: &Option<TableIdent>,
+    request_ident: Option<&TableIdent>,
 ) -> Result<TableIdent> {
     let Some(identifier) = request_ident else {
         return Ok(parameters_ident);
@@ -1368,7 +1368,7 @@ fn require_table_id(
     })
 }
 
-fn require_not_staged<T>(metadata_location: &Option<T>) -> Result<()> {
+fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
     if metadata_location.is_none() {
         return Err(ErrorModel::not_found(
             "Table not found or staged.",

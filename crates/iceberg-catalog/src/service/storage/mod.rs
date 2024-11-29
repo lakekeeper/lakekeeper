@@ -573,7 +573,6 @@ pub enum StorageCredential {
     /// }"#).unwrap();
     /// ```
     ///
-
     #[serde(rename = "gcs")]
     #[schema(title = "StorageCredentialGcs")]
     Gcs(GcsCredential),

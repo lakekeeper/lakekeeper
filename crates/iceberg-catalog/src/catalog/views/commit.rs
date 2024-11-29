@@ -45,7 +45,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         updates,
     } = &request;
 
-    let identifier = determine_table_ident(parameters.view, identifier)?;
+    let identifier = determine_table_ident(parameters.view, identifier.as_ref())?;
     validate_table_or_view_ident(&identifier)?;
 
     // ------------------- AUTHZ -------------------
@@ -91,7 +91,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     } = C::require_warehouse(warehouse_id, t.transaction()).await?;
     require_active_warehouse(status)?;
 
-    check_asserts(requirements, view_id)?;
+    check_asserts(requirements.as_ref(), view_id)?;
 
     let ViewMetadataWithLocation {
         metadata_location: before_update_metadata_location,
@@ -202,23 +202,26 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 }
 
 fn check_asserts(
-    requirements: &Option<Vec<ViewRequirement>>,
+    requirements: Option<&Vec<ViewRequirement>>,
     view_id: ViewIdentUuid,
 ) -> Result<()> {
-    for assertion in requirements.as_deref().unwrap_or_default() {
-        match assertion {
-            ViewRequirement::AssertViewUuid(uuid) => {
-                if uuid.uuid != *view_id {
-                    return Err(ErrorModel::bad_request(
-                        "View UUID does not match",
-                        "ViewUuidMismatch",
-                        None,
-                    )
-                    .into());
+    if let Some(requirements) = requirements {
+        for assertion in requirements {
+            match assertion {
+                ViewRequirement::AssertViewUuid(uuid) => {
+                    if uuid.uuid != *view_id {
+                        return Err(ErrorModel::bad_request(
+                            "View UUID does not match",
+                            "ViewUuidMismatch",
+                            None,
+                        )
+                        .into());
+                    }
                 }
             }
         }
     }
+
     Ok(())
 }
 

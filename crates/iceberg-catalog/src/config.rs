@@ -1,4 +1,7 @@
 //! Contains Configuration of the service Module
+
+#![allow(clippy::ref_option)]
+
 use anyhow::{anyhow, Context};
 use http::HeaderValue;
 use std::collections::HashSet;
@@ -202,6 +205,7 @@ where
         .transpose()
 }
 
+#[allow(clippy::ref_option)]
 fn serialize_origin<S>(value: &Option<Vec<HeaderValue>>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -510,6 +514,7 @@ where
     }))
 }
 
+#[allow(clippy::ref_option)]
 fn serialize_openfga_config<S>(
     value: &Option<OpenFGAConfig>,
     serializer: S,

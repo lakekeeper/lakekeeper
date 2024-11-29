@@ -57,7 +57,7 @@ pub(crate) enum TabularIdentBorrowed<'a> {
     View(&'a TableIdent),
 }
 
-impl<'a> TabularIdentBorrowed<'a> {
+impl TabularIdentBorrowed<'_> {
     pub(crate) fn typ_str(&self) -> &'static str {
         match self {
             TabularIdentBorrowed::Table(_) => "Table",
@@ -115,7 +115,7 @@ impl<'a> From<TabularIdentBorrowed<'a>> for TabularIdentOwned {
     }
 }
 
-impl<'a> TabularIdentBorrowed<'a> {
+impl TabularIdentBorrowed<'_> {
     pub(crate) fn to_table_ident_tuple(&self) -> &TableIdent {
         match self {
             TabularIdentBorrowed::Table(ident) | TabularIdentBorrowed::View(ident) => ident,

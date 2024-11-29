@@ -109,6 +109,7 @@ impl Serialize for NamespaceIdentUrl {
     }
 }
 
+#[allow(clippy::ref_option)]
 fn serialize_namespace_ident_as_url<S>(
     value: &Option<NamespaceIdent>,
     serializer: S,

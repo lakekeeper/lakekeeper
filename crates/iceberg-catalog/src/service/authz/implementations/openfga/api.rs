@@ -297,7 +297,7 @@ async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &role_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -329,7 +329,7 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &OPENFGA_SERVER,
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -366,7 +366,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &project_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -402,7 +402,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &project_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -438,7 +438,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &warehouse_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -606,7 +606,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &namespace_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -642,7 +642,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &table_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -678,7 +678,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &view_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -1438,7 +1438,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     authorizer: OpenFGAAuthorizer,
     actor: &Actor,
     object: &str,
-    for_principal: &Option<UserOrRole>,
+    for_principal: Option<&UserOrRole>,
 ) -> OpenFGAResult<Vec<A>> {
     let openfga_actor = actor.to_openfga();
     let openfga_object = object.to_string();
@@ -1464,7 +1464,6 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
     let actions = A::iter().collect::<Vec<_>>();
     let for_principal = for_principal
-        .as_ref()
         .map(super::entities::OpenFgaEntity::to_openfga)
         .unwrap_or(openfga_actor.to_string());
 
@@ -1741,7 +1740,7 @@ mod tests {
             let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             let actor = Actor::Principal(user_id.clone());
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1760,7 +1759,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1778,7 +1777,7 @@ mod tests {
                 assumed_role: role_id,
             };
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1797,7 +1796,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1829,7 +1828,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &OPENFGA_SERVER,
-                &Some(role_id.into()),
+                Some(&role_id.into()),
             )
             .await
             .unwrap();
@@ -1852,7 +1851,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &OPENFGA_SERVER,
-                &Some(role_id.into()),
+                Some(&role_id.into()),
             )
             .await
             .unwrap();
