@@ -107,28 +107,35 @@ where
 
     if before_filter_len < page_as_usize {
         return Ok((fetched_entities, fetched_entity_ids, None));
-    } else if before_filter_len >= fetched_entities.len() {
-        return Ok((
-            fetched_entities,
-            fetched_entity_ids,
-            next_page.last().cloned(),
-        ));
+    } else if before_filter_len >= page_as_usize {
+        if fetched_entities.len() == before_filter_len {
+            return Ok((
+                fetched_entities,
+                fetched_entity_ids,
+                next_page.last().cloned(),
+            ));
+        }
     };
 
     while fetched_entities.len() < page_as_usize {
         let (more_entities, more_ids, more_page_tokens, before_filter_len) =
             fetch_fn(DEFAULT_PAGE_SIZE, next_page.last().cloned(), transaction).await?;
 
-        if before_filter_len < *DEFAULT_PAGE_SIZE_USIZE {
-            next_page = vec![];
-            break;
-        }
         next_page = more_page_tokens;
 
-        let remaining = page_as_usize - more_entities.len();
+        let num_recieved = more_entities.len();
+        let remaining = page_as_usize - num_recieved;
         next_page = next_page.into_iter().take(remaining).collect();
         fetched_entities.extend(more_entities.into_iter().take(remaining));
         fetched_entity_ids.extend(more_ids.into_iter().take(remaining));
+
+        if before_filter_len < *DEFAULT_PAGE_SIZE_USIZE {
+            // If we took all remaining, we're done.
+            if remaining >= num_recieved {
+                next_page = vec![];
+            }
+            break;
+        }
     }
 
     Ok((

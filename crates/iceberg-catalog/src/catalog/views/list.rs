@@ -176,6 +176,7 @@ mod test {
         assert_eq!(next.identifiers.len(), 0);
         assert!(next.next_page_token.is_none());
 
+        // Fetch in two steps - 6 and 4
         let first_six = CatalogServer::list_views(
             ns_params.clone(),
             ListTablesQuery {
@@ -228,6 +229,7 @@ mod test {
             assert_eq!(next_four_items[idx], format!("view-{i}"));
         }
 
+        // Hiding 2 views
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
