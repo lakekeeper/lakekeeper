@@ -120,7 +120,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
-utoipa = { version = "4.2.3", features = [
+utoipa = { version = "5.0.0", features = [
     "axum_extras",
     "chrono",
     "url",
