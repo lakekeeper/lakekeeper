@@ -1,0 +1,14 @@
+site_name: docs/latest
+
+plugins:
+  - search
+
+nav:
+  - index.md
+  - Catalog:
+    - user-guide.md
+    - production.md
+  - Security:
+    - authorization.md
+  - Contribute:
+    - developer-guide.md
