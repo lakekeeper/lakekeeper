@@ -1,0 +1,46 @@
+site_name: Lakekeeper Docs
+repo_url: https://github.com/lakekeeper/lakekeeper
+site_description: Lakekeeper is a rust native Iceberg REST Catalog
+site_author: Lakekeeper Team
+edit_uri: blob/main/docs/
+
+theme:
+  name: mkdocs
+  color_mode: auto
+  user_color_mode_toggle: true
+  nav_style: dark
+  locale: en
+  highlightjs: true
+  hljs_languages:
+    - yaml
+    - rust
+  shortcuts:
+    help: 191 # ?
+    next: 78 # n
+    previous: 80 # p
+    search: 83 # s
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - User Guide: user-guide/
+  - Developer Guide: dev-guide/
+  - About:
+      - Release Notes: about/release-notes.md
+      - License: about/license.md
+      - Code of Conduct: about/code-of-conduct.md
+
+markdown_extensions:
+  - pymdownx.snippets
+
+# extra_css:
+#   - css/extra.css
+
+copyright: Copyright &copy; 2024 <a href="https://hansetag.com">Hansetag GmbH</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
+
+plugins:
+  - search
+  - autorefs
+
+watch:
+  - docs
