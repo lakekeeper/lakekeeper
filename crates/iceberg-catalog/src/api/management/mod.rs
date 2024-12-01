@@ -212,15 +212,16 @@ pub mod v1 {
         path = "/management/v1/bootstrap",
         request_body = BootstrapRequest,
         responses(
-            (status = 200, description = "Server bootstrapped successfully"),
+            (status = 204, description = "Server bootstrapped successfully"),
         )
     )]
     async fn bootstrap<C: Catalog, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<BootstrapRequest>,
-    ) -> Result<()> {
-        ApiServer::<C, A, S>::bootstrap(api_context, metadata, request).await
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::bootstrap(api_context, metadata, request).await?;
+        Ok(StatusCode::NO_CONTENT)
     }
 
     /// Creates the user in the catalog if it does not exist.
