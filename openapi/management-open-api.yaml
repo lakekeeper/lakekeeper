@@ -35,7 +35,7 @@ paths:
               $ref: '#/components/schemas/BootstrapRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Server bootstrapped successfully
   /management/v1/default-project:
     get:
