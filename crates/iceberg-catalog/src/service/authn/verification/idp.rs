@@ -31,6 +31,9 @@ impl Verifier for IdpVerifier {
 pub struct IdpVerifier {
     client: JwksClient<WebSource>,
     issuer: String,
+    /// Expected audience for the token.
+    /// If None, the audience will not be validated
+    audience: Option<String>,
 }
 
 impl IdpVerifier {
@@ -42,7 +45,7 @@ impl IdpVerifier {
     /// This function can fail if the openid configuration cannot be fetched or parsed.
     /// This function can also fail if the `WebSource` cannot be built from the jwks uri in the
     /// fetched openid configuration
-    pub async fn new(mut url: Url) -> anyhow::Result<Self> {
+    pub async fn new(mut url: Url, audience: Option<String>) -> anyhow::Result<Self> {
         if !url.path().ends_with('/') {
             url.set_path(&format!("{}/", url.path()));
         }
@@ -60,6 +63,7 @@ impl IdpVerifier {
         Ok(Self {
             client,
             issuer: config.issuer.clone(),
+            audience,
         })
     }
 
@@ -147,8 +151,12 @@ impl IdpVerifier {
             Validation::new(header.alg)
         };
 
-        // TODO: aud validation in multi-tenant setups
-        validation.validate_aud = false;
+        if let Some(aud) = &self.audience {
+            validation.set_audience(&[aud]);
+            validation.validate_aud = true;
+        } else {
+            validation.validate_aud = false;
+        }
 
         validation.set_issuer(&[&self.issuer]);
 

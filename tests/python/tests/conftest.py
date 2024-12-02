@@ -24,7 +24,7 @@ class Secret(SecretStr, str):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix='lakekeeper_test__')
+    model_config = SettingsConfigDict(env_prefix="lakekeeper_test__")
     management_url: str = Field()
     catalog_url: str = Field()
     aws_s3_access_key: Optional[Secret] = None
@@ -105,7 +105,10 @@ def storage_config(request) -> dict:
         if settings.s3_bucket is None or settings.s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__S3_BUCKET is not set")
 
-        if settings.s3_path_style_access is not None and settings.s3_path_style_access != "":
+        if (
+            settings.s3_path_style_access is not None
+            and settings.s3_path_style_access != ""
+        ):
             path_style_access = string_to_bool(settings.s3_path_style_access)
         else:
             path_style_access = None
@@ -134,7 +137,10 @@ def storage_config(request) -> dict:
         if settings.aws_s3_bucket is None or settings.aws_s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
 
-        if settings.s3_path_style_access is not None and settings.s3_path_style_access != "":
+        if (
+            settings.s3_path_style_access is not None
+            and settings.s3_path_style_access != ""
+        ):
             path_style_access = string_to_bool(settings.s3_path_style_access)
         else:
             path_style_access = None
@@ -150,7 +156,11 @@ def storage_config(request) -> dict:
                 "path-style-access": path_style_access,
                 "flavor": "aws",
                 "sts-enabled": request.param["sts-enabled"],
-                "sts-role-arn": settings.aws_s3_sts_role_arn if request.param["sts-enabled"] else None,
+                "sts-role-arn": (
+                    settings.aws_s3_sts_role_arn
+                    if request.param["sts-enabled"]
+                    else None
+                ),
             },
             "storage-credential": {
                 "type": "s3",
@@ -160,9 +170,15 @@ def storage_config(request) -> dict:
             },
         }
     elif request.param["type"] == "azure":
-        if settings.azure_storage_account_name is None or settings.azure_storage_account_name == "":
+        if (
+            settings.azure_storage_account_name is None
+            or settings.azure_storage_account_name == ""
+        ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME is not set")
-        if settings.azure_storage_filesystem is None or settings.azure_storage_filesystem == "":
+        if (
+            settings.azure_storage_filesystem is None
+            or settings.azure_storage_filesystem == ""
+        ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM is not set")
 
         return {
@@ -208,7 +224,9 @@ def io_fsspec(storage_config: dict):
             "use_ssl": False,
         }
         if "endpoint" in storage_config["storage-profile"]:
-            client_kwargs["endpoint_url"] = storage_config["storage-profile"]["endpoint"]
+            client_kwargs["endpoint_url"] = storage_config["storage-profile"][
+                "endpoint"
+            ]
 
         fs = fsspec.filesystem(
             "s3",
@@ -244,7 +262,7 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-            self, name: str, project_id: uuid.UUID, storage_config: dict
+        self, name: str, project_id: uuid.UUID, storage_config: dict
     ) -> uuid.UUID:
         """Create a warehouse in this server"""
 
@@ -320,7 +338,8 @@ def access_token() -> str:
         pytest.skip("OAUTH_PROVIDER_URI is not set")
 
     token_endpoint = requests.get(
-        str(settings.openid_provider_uri).strip("/") + "/.well-known/openid-configuration"
+        str(settings.openid_provider_uri).strip("/")
+        + "/.well-known/openid-configuration"
     ).json()["token_endpoint"]
     response = requests.post(
         token_endpoint,
@@ -429,10 +448,17 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.warehouse": f"{warehouse.project_id}/{warehouse.warehouse_name}",
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
     }
-    if storage_config["storage-profile"]["type"] == "s3" and storage_config["storage-profile"]["sts-enabled"]:
-        configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "vended-credentials"
+    if (
+        storage_config["storage-profile"]["type"] == "s3"
+        and storage_config["storage-profile"]["sts-enabled"]
+    ):
+        configuration[
+            f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"
+        ] = "vended-credentials"
     elif storage_config["storage-profile"]["type"] == "s3":
-        configuration[f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"] = "remote-signing"
+        configuration[
+            f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"
+        ] = "remote-signing"
 
     spark_conf = pyspark.SparkConf().setMaster("local[*]")
 

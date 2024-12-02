@@ -177,7 +177,7 @@ async fn serve_inner<A: Authorizer>(
         publisher: CloudEventsPublisher::new(tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         token_verifier: if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-            Some(IdpVerifier::new(uri).await?)
+            Some(IdpVerifier::new(uri, CONFIG.openid_audience.clone()).await?)
         } else {
             None
         },
