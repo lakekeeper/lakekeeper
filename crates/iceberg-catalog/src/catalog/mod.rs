@@ -22,7 +22,9 @@ use crate::{
     WarehouseIdent,
 };
 use futures::future::BoxFuture;
+use itertools::{FoldWhile, Itertools};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 
 pub trait CommonMetadata {
@@ -81,6 +83,89 @@ lazy_static::lazy_static! {
     pub static ref DEFAULT_PAGE_SIZE_USIZE: usize = DEFAULT_PAGE_SIZE.try_into().expect("1, 1000 is a valid usize");
 }
 
+#[derive(Debug)]
+pub struct FetchedStuff<Entity, EntityId> {
+    pub entities: Vec<Entity>,
+    pub entity_ids: Vec<EntityId>,
+    pub page_tokens: Vec<String>,
+    pub authz_mask: Vec<bool>,
+    pub n_filtered: usize,
+    pub page_size: usize,
+}
+
+impl<Entity, EntityId> FetchedStuff<Entity, EntityId> {
+    #[must_use]
+    pub(crate) fn new(
+        entities: Vec<Entity>,
+        entity_ids: Vec<EntityId>,
+        page_tokens: Vec<String>,
+        authz_mask: Vec<bool>,
+        page_size: usize,
+    ) -> Self {
+        let n_filtered = authz_mask.iter().map(|b| usize::from(*b)).sum();
+        Self {
+            entities,
+            entity_ids,
+            page_tokens,
+            authz_mask,
+            n_filtered,
+            page_size,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn take_n(self, n: usize) -> (Vec<Entity>, Vec<EntityId>, Option<String>) {
+        #[derive(Debug)]
+        enum State {
+            Open,
+            LoopingForLastNextPage,
+        }
+        let (entities, ids, token, _) = self
+            .authz_mask
+            .into_iter()
+            .zip(self.entities)
+            .zip(self.entity_ids)
+            .zip(self.page_tokens)
+            .fold_while(
+                (vec![], vec![], None, State::Open),
+                |(mut entities, mut entity_ids, mut page_token, mut state),
+                 (((authz, entity), id), token)| {
+                    eprintln!("state: {state:?}");
+                    if authz {
+                        if matches!(state, State::Open) {
+                            entities.push(entity);
+                            entity_ids.push(id);
+                            page_token = Some(token);
+                        } else if matches!(state, State::LoopingForLastNextPage) {
+                            return FoldWhile::Done((entities, entity_ids, page_token, state));
+                        }
+                    } else if !authz {
+                        page_token = Some(token);
+                    }
+                    state = if entities.len() == n {
+                        State::LoopingForLastNextPage
+                    } else {
+                        State::Open
+                    };
+                    FoldWhile::Continue((entities, entity_ids, page_token, state))
+                },
+            )
+            .into_inner();
+
+        (entities, ids, token)
+    }
+
+    #[must_use]
+    pub(crate) fn is_partial(&self) -> bool {
+        self.entities.len() < self.page_size
+    }
+
+    #[must_use]
+    pub(crate) fn is_filtered(&self) -> bool {
+        self.n_filtered > 0
+    }
+}
+
 pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun, C: Catalog>(
     page_size: Option<i64>,
     page_token: PageToken,
@@ -88,13 +173,14 @@ pub(crate) async fn fetch_until_full_page<'b, 'd: 'b, Entity, EntityId, FetchFun
     transaction: &'d mut C::Transaction,
 ) -> Result<(Vec<Entity>, Vec<EntityId>, Option<String>)>
 where
-    FetchFun:
-        for<'c> FnMut(
-            i64,
-            Option<String>,
-            &'c mut C::Transaction,
-        )
-            -> BoxFuture<'c, Result<(Vec<Entity>, Vec<EntityId>, Vec<String>, usize)>>,
+    FetchFun: for<'c> FnMut(
+        i64,
+        Option<String>,
+        &'c mut C::Transaction,
+    ) -> BoxFuture<'c, Result<FetchedStuff<Entity, EntityId>>>,
+    // you may feel tempted to change the Vec<String> of page-tokens to Option<String>
+    // a word of advice: don't, we need to take the nth page-token of the next page when
+    // we're filling a auth-filtered page. Without a vec, that won't fly.
 {
     let page_size = page_size
         .unwrap_or(DEFAULT_PAGE_SIZE)
@@ -102,47 +188,31 @@ where
     let page_as_usize: usize = page_size.try_into().expect("1, 1000 is a valid usize");
 
     let page_token = page_token.as_option().map(ToString::to_string);
-    let (mut fetched_entities, mut fetched_entity_ids, mut next_page, before_filter_len) =
-        fetch_fn(page_size, page_token, transaction).await?;
+    let fetched_stuff = fetch_fn(page_size, page_token, transaction).await?;
 
-    if before_filter_len < page_as_usize {
-        return Ok((fetched_entities, fetched_entity_ids, None));
-    } else if before_filter_len >= page_as_usize {
-        if fetched_entities.len() == before_filter_len {
-            return Ok((
-                fetched_entities,
-                fetched_entity_ids,
-                next_page.last().cloned(),
-            ));
-        }
-    };
-
-    while fetched_entities.len() < page_as_usize {
-        let (more_entities, more_ids, more_page_tokens, before_filter_len) =
-            fetch_fn(DEFAULT_PAGE_SIZE, next_page.last().cloned(), transaction).await?;
-
-        next_page = more_page_tokens;
-
-        let num_recieved = more_entities.len();
-        let remaining = page_as_usize - num_recieved;
-        next_page = next_page.into_iter().take(remaining).collect();
-        fetched_entities.extend(more_entities.into_iter().take(remaining));
-        fetched_entity_ids.extend(more_ids.into_iter().take(remaining));
-
-        if before_filter_len < *DEFAULT_PAGE_SIZE_USIZE {
-            // If we took all remaining, we're done.
-            if remaining >= num_recieved {
-                next_page = vec![];
-            }
-            break;
-        }
+    if fetched_stuff.is_partial() && !fetched_stuff.is_filtered() {
+        return Ok((fetched_stuff.entities, fetched_stuff.entity_ids, None));
     }
 
-    Ok((
-        fetched_entities,
-        fetched_entity_ids,
-        next_page.last().cloned(),
-    ))
+    let (mut entities, mut entity_ids, mut next_page) = fetched_stuff.take_n(page_as_usize);
+
+    while entities.len() < page_as_usize {
+        let new_page = fetch_fn(DEFAULT_PAGE_SIZE, next_page.clone(), transaction).await?;
+
+        if new_page.is_partial() && !new_page.is_filtered() {
+            entities.extend(new_page.entities);
+            entity_ids.extend(new_page.entity_ids);
+            next_page = None;
+            break;
+        }
+
+        let (more_entities, more_ids, n_page) = new_page.take_n(page_as_usize - entities.len());
+        next_page = n_page;
+        entities.extend(more_entities);
+        entity_ids.extend(more_ids);
+    }
+
+    Ok((entities, entity_ids, next_page))
 }
 
 #[cfg(test)]
@@ -290,8 +360,8 @@ pub(crate) mod test {
                     ),
                     Arc::new(
                         crate::implementations::postgres::task_queues::TabularPurgeQueue::from_config(ReadWrite::from_pools(pool.clone(), pool), CONFIG.queue_config.clone()).unwrap()
-                    )
-                )
+                    ),
+                ),
             },
         }
     }

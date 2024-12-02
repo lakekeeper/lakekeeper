@@ -14,6 +14,7 @@ use crate::service::NamespaceIdentUuid;
 
 use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
+use crate::catalog::FetchedStuff;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
@@ -686,32 +687,44 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                         .await?;
                         let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                             page.into_iter_with_page_tokens().multiunzip();
-                        let before_filter_len = ids.len();
 
-                        let (next_idents, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                            futures::future::try_join_all(ids.iter().map(|tid| match tid {
-                                TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
-                                    &request_metadata,
-                                    warehouse_id,
-                                    (*id).into(),
-                                    &crate::service::authz::CatalogViewAction::CanIncludeInList,
-                                ),
-                                TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
-                                    &request_metadata,
-                                    warehouse_id,
-                                    (*id).into(),
-                                    &crate::service::authz::CatalogTableAction::CanIncludeInList,
-                                ),
-                            }))
-                            .await?
-                            .into_iter()
-                            .zip(idents.into_iter().zip(ids.into_iter()))
-                            .zip(tokens.into_iter())
-                            .filter_map(|((allowed, namespace), token)| {
-                                allowed.then_some((namespace.0, namespace.1, token))
-                            })
-                            .multiunzip();
-                        Ok((next_idents, next_uuids, next_page_tokens, before_filter_len))
+                        let (next_idents, next_uuids, next_page_tokens, mask): (
+                            Vec<_>,
+                            Vec<_>,
+                            Vec<_>,
+                            Vec<bool>,
+                        ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
+                            TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
+                                &request_metadata,
+                                warehouse_id,
+                                (*id).into(),
+                                &crate::service::authz::CatalogViewAction::CanIncludeInList,
+                            ),
+                            TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
+                                &request_metadata,
+                                warehouse_id,
+                                (*id).into(),
+                                &crate::service::authz::CatalogTableAction::CanIncludeInList,
+                            ),
+                        }))
+                        .await?
+                        .into_iter()
+                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(tokens.into_iter())
+                        .map(|((allowed, namespace), token)| {
+                            (namespace.0, namespace.1, token, allowed)
+                        })
+                        .multiunzip();
+                        Ok(FetchedStuff::new(
+                            next_idents,
+                            next_uuids,
+                            next_page_tokens,
+                            mask,
+                            page_size
+                                .clamp(0, i64::MAX)
+                                .try_into()
+                                .expect("We clamped."),
+                        ))
                     }
                     .boxed()
                 },

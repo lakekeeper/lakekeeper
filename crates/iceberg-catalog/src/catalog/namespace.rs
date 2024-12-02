@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer};
+use super::{require_warehouse_id, CatalogServer, FetchedStuff};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -95,31 +95,32 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         list_namespaces.into_iter_with_page_tokens().multiunzip();
 
-                    let before_filter_len = ids.len();
+                    let (next_namespaces, next_uuids, next_page_tokens, mask): (
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<bool>,
+                    ) = futures::future::try_join_all(ids.iter().map(|n| {
+                        authorizer.is_allowed_namespace_action(
+                            &request_metadata,
+                            warehouse_id,
+                            *n,
+                            &CatalogNamespaceAction::CanGetMetadata,
+                        )
+                    }))
+                    .await?
+                    .into_iter()
+                    .zip(idents.into_iter().zip(ids.into_iter()))
+                    .zip(tokens.into_iter())
+                    .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
+                    .multiunzip();
 
-                    let (next_namespaces, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                        futures::future::try_join_all(ids.iter().map(|n| {
-                            authorizer.is_allowed_namespace_action(
-                                &request_metadata,
-                                warehouse_id,
-                                *n,
-                                &CatalogNamespaceAction::CanGetMetadata,
-                            )
-                        }))
-                        .await?
-                        .into_iter()
-                        .zip(idents.into_iter().zip(ids.into_iter()))
-                        .zip(tokens.into_iter())
-                        .filter_map(|((allowed, namespace), token)| {
-                            allowed.then_some((namespace.0, namespace.1, token))
-                        })
-                        .multiunzip();
-
-                    Ok((
+                    Ok(FetchedStuff::new(
                         next_namespaces,
                         next_uuids,
                         next_page_tokens,
-                        before_filter_len,
+                        mask,
+                        ps.clamp(0, i64::MAX).try_into().expect("We clamped it"),
                     ))
                 }
                 .boxed()
@@ -613,15 +614,158 @@ mod tests {
 
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::namespace::Service;
-    use crate::api::management::v1::warehouse::TabularDeleteProfile;
+    use crate::api::management::v1::warehouse::{CreateWarehouseResponse, TabularDeleteProfile};
+    use crate::api::ApiContext;
     use crate::catalog::test::random_request_metadata;
     use crate::catalog::CatalogServer;
+    use crate::implementations::postgres::namespace::namespace_to_id;
+    use crate::implementations::postgres::{PostgresCatalog, PostgresTransaction, SecretsState};
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
-    use crate::service::ListNamespacesQuery;
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
+    use crate::service::{ListNamespacesQuery, State, Transaction};
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+    use sqlx::PgPool;
     use std::collections::HashSet;
     use std::hash::RandomState;
+
+    async fn ns_paginate_test_setup(
+        pool: PgPool,
+        number_of_namespaces: usize,
+        hide_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        CreateWarehouseResponse,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+
+        for n in 0..number_of_namespaces {
+            let ns = format!("ns-{n}");
+            let ns = CatalogServer::create_namespace(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                CreateNamespaceRequest {
+                    namespace: NamespaceIdent::new(ns),
+                    properties: None,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            let mut trx = PostgresTransaction::begin_read(ctx.v1_state.catalog.clone())
+                .await
+                .unwrap();
+            for (range_start, range_end) in hide_ranges {
+                if n >= *range_start && n <= *range_end {
+                    hiding_mock.hide(&format!(
+                        "namespace:{}",
+                        *namespace_to_id(
+                            warehouse.warehouse_id.into(),
+                            &ns.namespace,
+                            trx.transaction(),
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap()
+                    ));
+                }
+            }
+        }
+        (ctx, warehouse)
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_first_page_is_hidden(pool: sqlx::PgPool) {
+        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(0, 10)]).await;
+
+        let mut first_page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        for i in (11..=20).rev() {
+            assert_eq!(
+                first_page.namespaces.pop().map(|ns| ns.inner()),
+                Some(vec![format!("ns-{i}")])
+            );
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_middle_page_is_hidden(pool: sqlx::PgPool) {
+        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(5, 15)]).await;
+
+        let mut first_page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.namespaces.len(), 10);
+
+        for i in (0..=4).chain(15..20).rev() {
+            assert_eq!(
+                first_page.namespaces.pop().map(|ns| ns.inner()),
+                Some(vec![format!("ns-{i}")])
+            );
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_last_page_is_hidden(pool: PgPool) {
+        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(10, 20)]).await;
+
+        let mut first_page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.namespaces.len(), 10);
+
+        for i in (0..=9).rev() {
+            assert_eq!(
+                first_page.namespaces.pop().map(|ns| ns.inner()),
+                Some(vec![format!("ns-{i}")])
+            );
+        }
+    }
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {
@@ -775,7 +919,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(next_page.namespaces.len(), 3);
+        assert_eq!(dbg!(&next_page.namespaces).len(), 3);
 
         let next_page_items: HashSet<String, RandomState> = next_page
             .namespaces
