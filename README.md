@@ -235,15 +235,16 @@ If you want the server to publish events to a NATS server, set the following env
 If you want to limit ac
 cess to the API, set `LAKEKEEPER__OPENID_PROVIDER_URI` to the URI of your OpenID Connect Provider. The catalog will then verify access tokens against this provider. The provider must have the `.well-known/openid-configuration` endpoint under `${LAKEKEEPER__OPENID_PROVIDER_URI}/.well-known/openid-configuration` and the openid-configuration needs to have the `jwks_uri` and `issuer` defined.
 
-If `LAKEKEEPER__OPENID_PROVIDER_URI` is set, every request needs have an authorization header, e.g.
+If `LAKEKEEPER__OPENID_PROVIDER_URI` or `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set, every request needs have an authorization header, e.g.
 
 ```sh
 curl {your-catalog-url}/catalog/v1/transactions/commit -X POST -H "authorization: Bearer {your-token-here}" -H "content-type: application/json" -d ...
 ```
 
-| Variable                          | Example                                      | Description                                                                                                                                                                                                                                                  |
-|-----------------------------------|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LAKEKEEPER__OPENID_PROVIDER_URI` | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL, with keycloak this is the url pointing to your realm, for Azure App Registration it would be something like `https://login.microsoftonline.com/{your-tenant-id-here}/v2.0/`. If this variable is not set, endpoints are **not** secured |
+| Variable                                       | Example                                      | Description                                                                                                                                                                                                                                                  |
+|------------------------------------------------|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LAKEKEEPER__OPENID_PROVIDER_URI`              | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL, with keycloak this is the url pointing to your realm, for Azure App Registration it would be something like `https://login.microsoftonline.com/{your-tenant-id-here}/v2.0/`. If this variable is not set, endpoints are **not** secured |
+| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true                                         | If true, kubernetes service accounts can authenticate using their tokens to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and kubernetes) can be enabled simultaneously.                                |
 
 ## License
 
