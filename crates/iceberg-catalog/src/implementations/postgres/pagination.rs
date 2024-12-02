@@ -64,7 +64,6 @@ fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) ->
 
 #[cfg(test)]
 mod test {
-
     use crate::service::ProjectIdent;
 
     use super::*;
@@ -79,7 +78,9 @@ mod test {
 
         let token_str = token.to_string();
         let token: PaginateToken<uuid::Uuid> = PaginateToken::try_from(token_str.as_str()).unwrap();
-
+        // we lose some precision while serializing the timestamp making tests flaky
+        let created_at =
+            chrono::DateTime::from_timestamp_micros(created_at.timestamp_micros()).unwrap();
         assert_eq!(
             token,
             PaginateToken::V1(V1PaginateToken {

@@ -130,7 +130,6 @@ impl<Entity, EntityId> FetchedStuff<Entity, EntityId> {
                 (vec![], vec![], None, State::Open),
                 |(mut entities, mut entity_ids, mut page_token, mut state),
                  (((authz, entity), id), token)| {
-                    eprintln!("state: {state:?}");
                     if authz {
                         if matches!(state, State::Open) {
                             entities.push(entity);
@@ -139,7 +138,7 @@ impl<Entity, EntityId> FetchedStuff<Entity, EntityId> {
                         } else if matches!(state, State::LoopingForLastNextPage) {
                             return FoldWhile::Done((entities, entity_ids, page_token, state));
                         }
-                    } else if !authz {
+                    } else {
                         page_token = Some(token);
                     }
                     state = if entities.len() == n {

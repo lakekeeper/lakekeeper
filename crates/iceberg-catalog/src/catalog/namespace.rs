@@ -668,7 +668,7 @@ mod tests {
                 .await
                 .unwrap();
             for (range_start, range_end) in hide_ranges {
-                if n >= *range_start && n <= *range_end {
+                if n >= *range_start && n < *range_end {
                     hiding_mock.hide(&format!(
                         "namespace:{}",
                         *namespace_to_id(
@@ -684,6 +684,57 @@ mod tests {
             }
         }
         (ctx, warehouse)
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
+        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(5, 15)]).await;
+
+        let mut first_page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(5),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.namespaces.len(), 5);
+
+        for i in (0..5).rev() {
+            assert_eq!(
+                first_page.namespaces.pop().map(|ns| ns.inner()),
+                Some(vec![format!("ns-{i}")])
+            );
+        }
+
+        let mut next_page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: first_page.next_page_token.into(),
+                page_size: Some(6),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(next_page.namespaces.len(), 5);
+        for i in (15..20).rev() {
+            assert_eq!(
+                next_page.namespaces.pop().map(|ns| ns.inner()),
+                Some(vec![format!("ns-{i}")])
+            );
+        }
+        assert_eq!(next_page.next_page_token, None);
     }
 
     #[sqlx::test]
@@ -703,7 +754,7 @@ mod tests {
         )
         .await
         .unwrap();
-        for i in (11..=20).rev() {
+        for i in (11..20).rev() {
             assert_eq!(
                 first_page.namespaces.pop().map(|ns| ns.inner()),
                 Some(vec![format!("ns-{i}")])
@@ -731,7 +782,7 @@ mod tests {
 
         assert_eq!(first_page.namespaces.len(), 10);
 
-        for i in (0..=4).chain(15..20).rev() {
+        for i in (0..5).chain(15..20).rev() {
             assert_eq!(
                 first_page.namespaces.pop().map(|ns| ns.inner()),
                 Some(vec![format!("ns-{i}")])
