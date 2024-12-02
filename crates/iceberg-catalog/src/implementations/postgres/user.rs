@@ -208,7 +208,7 @@ pub(crate) async fn create_or_update_user<
         INSERT INTO users (id, name, email, last_updated_with, user_type)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (id)
-        DO UPDATE SET name = $2, email = $3, last_updated_with = $4, user_type = $5
+        DO UPDATE SET name = $2, email = $3, last_updated_with = $4, user_type = $5, deleted_at = null
         returning (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with as "last_updated_with: DbUserLastUpdatedWith", user_type as "user_type: DbUserType"
         "#,
         id.to_string(),
