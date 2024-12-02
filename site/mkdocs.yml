@@ -6,14 +6,34 @@ edit_uri: blob/main/docs/
 
 theme:
   name: material
-  color_mode: auto
-  user_color_mode_toggle: true
-  nav_style: dark
+  logo: assets/bear.svg
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
   locale: en
   highlightjs: true
   hljs_languages:
     - yaml
     - rust
+    - bash
+    - json
   shortcuts:
     help: 191 # ?
     next: 78 # n
@@ -25,6 +45,7 @@ theme:
     - navigation.path
     - navigation.top
     - navigation.tracking
+    - navigation.footer
     - toc.follow
     - offline
     - search.suggest
@@ -38,6 +59,7 @@ nav:
   - Getting Started: getting-started.md
   - Docs:
       - nightly: "!include docs/docs/nightly/mkdocs.yml"
+  - Community: support.md
   - About:
       - Release Notes: about/release-notes.md
       - License: about/license.md
@@ -57,9 +79,11 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences
-
-# extra_css:
-#   - css/extra.css
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.tabbed:
+      alternate_style: true
 
 copyright: Copyright &copy; 2024 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
 
@@ -70,3 +94,10 @@ plugins:
 
 watch:
   - docs
+
+extra:
+  social:
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/jkAGG8p93B
+    - icon: fontawesome/brands/github
+      link: https://github.com/lakekeeper/lakekeeper

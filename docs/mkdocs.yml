@@ -4,12 +4,14 @@ plugins:
   - search
 
 nav:
-  - index.md
-  - User Guide:
+  - Concepts:
       - entities.md
-      - bootstrapping.md
+  - User Guide:
+      - deployment.md
+      - bootstrap.md
       - production.md
   - Security:
       - authorization.md
   - Contribute:
       - developer-guide.md
+      - customize.md
