@@ -36,20 +36,25 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
-  - Docs: 
-    - nightly: '!include docs/docs/nightly/mkdocs.yml'
+  - Docs:
+      - nightly: "!include docs/docs/nightly/mkdocs.yml"
   - About:
       - Release Notes: about/release-notes.md
       - License: about/license.md
       - Code of Conduct: about/code-of-conduct.md
 
 markdown_extensions:
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      # check_paths: True
+      restrict_base_path: False
+      base_path: .
+  - markdown.extensions.attr_list
+  - md_in_html
 
 # extra_css:
 #   - css/extra.css
 
-copyright: Copyright &copy; 2024 <a href="https://hansetag.com">Hansetag GmbH</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
+copyright: Copyright &copy; 2024 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
 
 plugins:
   - monorepo

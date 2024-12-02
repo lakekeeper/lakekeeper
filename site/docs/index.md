@@ -1,29 +1,30 @@
 # Lakekeeper
 
 Lakekeeper is a **secure**, **fast** and **easy to use** Apache Iceberg REST Catalog implementation written in Rust.
-Start by reading the [quickstart tutorial](getting-started.md), then check the [documentation](docs/nightly/) for more information.
+Start by reading [Getting Started](getting-started.md), then check the [Documentation](docs/nightly/index.md) for more details information.
+
+<p align="center">
+<img src="./assets/Lakekeeper-Overview.png" width="70%">
+</p>
 
 ## Features
 
-### Architecture
+- **Written in Rust**: Single all-in-one binary - no JVM or Python env required.
+- **Storage Access Management**: Lakekeeper secures access to your data using [Vended-Credentials](ToDo) and [remote signing for S3](ToDo). All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
+- **Openid Provider Integration**: Use your own identity provider for authentication, just set `LAKEKEEPER__OPENID_PROVIDER_URI` and you are good to go.
+- **Native Kubernetes Integration**: Use our helm chart to easily deploy high available setups and natively authenticate kubernetes service accounts with Lakekeeper. Kubernetes and OpenID authentication can be used simultaneously.
+- **Change Events**: Built-in support to emit change events (CloudEvents), which enables you to react to any change that happen to your tables.
+- **Change Approval**: Changes can also be prohibited by external systems. This can be used to prohibit changes to tables that would invalidate Data Contracts, Quality SLOs etc. Simply integrate with your own change approval via our `ContractVerification` trait.
+- **Multi-Tenant capable**: A single deployment of Lakekeeper can serve multiple projects - all with a single entrypoint. Each project itself supports multiple Warehouses to which compute engines can connect.
+- **Customizable**: Lakekeeper is meant to be extended. We expose the Database implementation (`Catalog`), `SecretsStore`, `Authorizer`, Events (`CloudEventBackend`) and `ContractVerification` as interfaces (Traits). This allows you to tap into any access management system of your company or stream change events to any system you like - simply by implementing a handful methods.
+- **Well-Tested**: Integration-tested with `spark`, `pyiceberg`, `trino` and `starrocks`.
+- **High Available & Horizontally Scalable**: There is no local state - the catalog can be scaled horizontally easily.
+- **Fine Grained Access (FGA):** Lakekeeper's default Authorization system leverages [OpenFGA](https://openfga.dev/). If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `Authorizer` trait.
 
-Learn more about the way Lakekeeper works. Lakekeeper can support anything from standalone single Project deployments for small companies up to distributed multi-tenant setups.
+If you are missing something, we would love to hear about it in a [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/new).
 
-### Getting Started
 
-Get started quickly with Lakekeeper by using our binary, docker-compose or our helm chart.
 
-### User Guide
-
-Learn how to configure and use Lakekeeper - from configuring a persistent storage backend to connecting your own IdP.
-
-### Host anywhere
-
-...
-
----
-
-# Overview
 
 Lakekeeper is an implementation of the Apache Iceberg REST Catalog API. Currently Lakekeeper depends on the following external dependencies:
 

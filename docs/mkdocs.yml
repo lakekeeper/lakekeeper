@@ -5,10 +5,11 @@ plugins:
 
 nav:
   - index.md
-  - Catalog:
-    - user-guide.md
-    - production.md
+  - User Guide:
+      - entities.md
+      - bootstrapping.md
+      - production.md
   - Security:
-    - authorization.md
+      - authorization.md
   - Contribute:
-    - developer-guide.md
+      - developer-guide.md
