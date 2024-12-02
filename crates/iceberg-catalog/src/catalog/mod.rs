@@ -84,7 +84,7 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Debug)]
-pub struct FetchedStuff<Entity, EntityId> {
+pub struct FetchResult<Entity, EntityId> {
     pub entities: Vec<Entity>,
     pub entity_ids: Vec<EntityId>,
     pub page_tokens: Vec<String>,
@@ -93,21 +93,21 @@ pub struct FetchedStuff<Entity, EntityId> {
     pub page_size: usize,
 }
 
-impl<Entity, EntityId> FetchedStuff<Entity, EntityId> {
+impl<Entity, EntityId> FetchResult<Entity, EntityId> {
     #[must_use]
     pub(crate) fn new(
         entities: Vec<Entity>,
         entity_ids: Vec<EntityId>,
         page_tokens: Vec<String>,
-        authz_mask: Vec<bool>,
+        authz_approved_items: Vec<bool>,
         page_size: usize,
     ) -> Self {
-        let n_filtered = authz_mask.iter().map(|b| usize::from(*b)).sum();
+        let n_filtered = authz_approved_items.iter().map(|b| usize::from(*b)).sum();
         Self {
             entities,
             entity_ids,
             page_tokens,
-            authz_mask,
+            authz_mask: authz_approved_items,
             n_filtered,
             page_size,
         }
@@ -176,7 +176,7 @@ where
         i64,
         Option<String>,
         &'c mut C::Transaction,
-    ) -> BoxFuture<'c, Result<FetchedStuff<Entity, EntityId>>>,
+    ) -> BoxFuture<'c, Result<FetchResult<Entity, EntityId>>>,
     // you may feel tempted to change the Vec<String> of page-tokens to Option<String>
     // a word of advice: don't, we need to take the nth page-token of the next page when
     // we're filling a auth-filtered page. Without a vec, that won't fly.

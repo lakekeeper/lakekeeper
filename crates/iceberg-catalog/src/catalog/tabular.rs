@@ -19,7 +19,7 @@ macro_rules! list_entities {
             paste! {
                 use crate::catalog::tabular::[<default_ $entity:snake _flags>] as default_flags;
             }
-            use crate::catalog::FetchedStuff;
+            use crate::catalog::FetchResult;
             let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
@@ -61,7 +61,7 @@ macro_rules! list_entities {
                 .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
                 .multiunzip();
 
-                Ok(FetchedStuff::new(
+                Ok(FetchResult::new(
                     next_idents,
                     next_uuids,
                     next_page_tokens,

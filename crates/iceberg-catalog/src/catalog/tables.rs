@@ -1615,6 +1615,7 @@ mod test {
     use std::collections::HashMap;
     use uuid::Uuid;
 
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use iceberg_ext::configs::Location;
     use std::str::FromStr;
 
@@ -2498,6 +2499,280 @@ mod test {
         .expect_err("Staged table could be created at sublocation which should not be possible");
         assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
+    }
+
+    async fn pagination_test_setup(
+        pool: PgPool,
+        n_tables: usize,
+        hidden_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        NamespaceParameters,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+        let base_location = prof.base_location().unwrap();
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        for i in 0..n_tables {
+            let mut create_request = create_request(Some(format!("tab-{i}")));
+            create_request.location = Some(format!("{base_location}/bucket/{i}"));
+            let tab = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request,
+                DataAccess::none(),
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            for (start, end) in hidden_ranges.iter().copied() {
+                if i >= start && i < end {
+                    hiding_mock.hide(&format!("table:{}", tab.metadata.uuid()));
+                }
+            }
+        }
+        (ctx, ns_params)
+    }
+
+    #[sqlx::test]
+    async fn test_table_pagination_with_no_items(pool: sqlx::PgPool) {
+        let (ctx, ns_params) = pagination_test_setup(pool, 0, &[]).await;
+        let all = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 0);
+        assert!(all.next_page_token.is_none());
+    }
+
+    #[sqlx::test]
+    async fn test_table_pagination_with_all_items_hidden(pool: PgPool) {
+        let (ctx, ns_params) = pagination_test_setup(pool, 20, &[(0, 20)]).await;
+        let all = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 0);
+        assert!(all.next_page_token.is_none());
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
+        let (ctx, ns_params) = pagination_test_setup(pool, 20, &[(5, 15)]).await;
+
+        let mut first_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(5),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.identifiers.len(), 5);
+
+        for i in (0..5).rev() {
+            assert_eq!(
+                first_page.identifiers.pop().map(|tid| tid.name),
+                Some(format!("tab-{i}"))
+            );
+        }
+
+        let mut next_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: first_page.next_page_token.into(),
+                page_size: Some(6),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(next_page.identifiers.len(), 5);
+        for i in (15..20).rev() {
+            assert_eq!(
+                next_page.identifiers.pop().map(|tid| tid.name),
+                Some(format!("tab-{i}"))
+            );
+        }
+        assert_eq!(next_page.next_page_token, None);
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_first_page_is_hidden(pool: PgPool) {
+        let (ctx, ns_params) = pagination_test_setup(pool, 20, &[(0, 10)]).await;
+
+        let first_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.identifiers.len(), 0);
+        assert!(first_page.next_page_token.is_none());
+
+        let mut next_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(next_page.identifiers.len(), 10);
+        for i in (10..20).rev() {
+            assert_eq!(
+                next_page.identifiers.pop().map(|tid| tid.name),
+                Some(format!("tab-{i}"))
+            );
+        }
+        assert_eq!(next_page.next_page_token, None);
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_middle_page_is_hidden(pool: PgPool) {
+        let (ctx, ns_params) = pagination_test_setup(pool, 20, &[(5, 15)]).await;
+
+        let mut first_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(5),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.identifiers.len(), 5);
+
+        for i in (0..5).rev() {
+            assert_eq!(
+                first_page.identifiers.pop().map(|tid| tid.name),
+                Some(format!("tab-{i}"))
+            );
+        }
+
+        let mut next_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: first_page.next_page_token.into(),
+                page_size: Some(6),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(next_page.identifiers.len(), 5);
+        for i in (15..20).rev() {
+            assert_eq!(
+                next_page.identifiers.pop().map(|tid| tid.name),
+                Some(format!("tab-{i}"))
+            );
+        }
+        assert_eq!(next_page.next_page_token, None);
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_last_page_is_hidden(pool: PgPool) {
+        let (ctx, ns_params) = pagination_test_setup(pool, 20, &[(10, 20)]).await;
+
+        let mut first_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(first_page.identifiers.len(), 10);
+
+        for i in (0..10).rev() {
+            assert_eq!(
+                first_page.identifiers.pop().map(|tid| tid.name),
+                Some(format!("tab-{i}"))
+            );
+        }
+
+        let next_page = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: first_page.next_page_token.into(),
+                page_size: Some(11),
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(next_page.identifiers.len(), 0);
+        assert_eq!(next_page.next_page_token, None);
     }
 
     #[sqlx::test]

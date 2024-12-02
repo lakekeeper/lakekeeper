@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer, FetchedStuff};
+use super::{require_warehouse_id, CatalogServer, FetchResult};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -115,7 +115,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
                     .multiunzip();
 
-                    Ok(FetchedStuff::new(
+                    Ok(FetchResult::new(
                         next_namespaces,
                         next_uuids,
                         next_page_tokens,
@@ -687,6 +687,48 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_pagination_with_no_items(pool: sqlx::PgPool) {
+        let (ctx, warehouse) = ns_paginate_test_setup(pool, 0, &[]).await;
+
+        let page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(page.namespaces.len(), 0);
+    }
+
+    #[sqlx::test]
+    async fn test_pagination_with_all_items_hidden(pool: PgPool) {
+        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(0, 20)]).await;
+
+        let page = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(10),
+                parent: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(page.namespaces.len(), 0);
+    }
+
+    #[sqlx::test]
     async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
         let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(5, 15)]).await;
 
@@ -970,7 +1012,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(dbg!(&next_page.namespaces).len(), 3);
+        assert_eq!(next_page.namespaces.len(), 3);
 
         let next_page_items: HashSet<String, RandomState> = next_page
             .namespaces
