@@ -708,7 +708,7 @@ mod tests {
 
         for i in (0..5).rev() {
             assert_eq!(
-                first_page.namespaces.pop().map(|ns| ns.inner()),
+                first_page.namespaces.pop().map(NamespaceIdent::inner),
                 Some(vec![format!("ns-{i}")])
             );
         }
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(next_page.namespaces.len(), 5);
         for i in (15..20).rev() {
             assert_eq!(
-                next_page.namespaces.pop().map(|ns| ns.inner()),
+                next_page.namespaces.pop().map(NamespaceIdent::inner),
                 Some(vec![format!("ns-{i}")])
             );
         }
@@ -756,7 +756,7 @@ mod tests {
         .unwrap();
         for i in (11..20).rev() {
             assert_eq!(
-                first_page.namespaces.pop().map(|ns| ns.inner()),
+                first_page.namespaces.pop().map(NamespaceIdent::inner),
                 Some(vec![format!("ns-{i}")])
             );
         }
@@ -784,7 +784,7 @@ mod tests {
 
         for i in (0..5).chain(15..20).rev() {
             assert_eq!(
-                first_page.namespaces.pop().map(|ns| ns.inner()),
+                first_page.namespaces.pop().map(NamespaceIdent::inner),
                 Some(vec![format!("ns-{i}")])
             );
         }
@@ -812,7 +812,7 @@ mod tests {
 
         for i in (0..=9).rev() {
             assert_eq!(
-                first_page.namespaces.pop().map(|ns| ns.inner()),
+                first_page.namespaces.pop().map(NamespaceIdent::inner),
                 Some(vec![format!("ns-{i}")])
             );
         }
