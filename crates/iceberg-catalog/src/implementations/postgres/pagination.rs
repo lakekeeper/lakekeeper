@@ -1,3 +1,4 @@
+use base64::Engine;
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use std::fmt::Display;
@@ -18,12 +19,16 @@ where
     T: Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
+        let token_string = match self {
             PaginateToken::V1(V1PaginateToken { created_at, id }) => {
                 format!("1&{}&{}", created_at.timestamp_micros(), id)
             }
         };
-        write!(f, "{str}")
+        write!(
+            f,
+            "{}",
+            base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(&token_string)
+        )
     }
 }
 
@@ -35,7 +40,26 @@ where
     type Error = ErrorModel;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let parts = s.split('&').collect::<Vec<_>>();
+        let s = String::from_utf8(base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(s).map_err(
+            |e| {
+                tracing::info!("Failed to decode b64 encoded page token");
+                ErrorModel::bad_request(
+                    "Invalid paginate token".to_string(),
+                    "PaginateTokenDecodeError".to_string(),
+                    Some(Box::new(e)),
+                )
+            },
+        )?)
+        .map_err(|e| {
+            tracing::info!("Decoded b64 contained an invalid utf8-sequence.");
+            ErrorModel::bad_request(
+                "Invalid paginate token".to_string(),
+                "PaginateTokenDecodeError".to_string(),
+                Some(Box::new(e)),
+            )
+        })?;
+
+        let parts = s.splitn(3, '&').collect::<Vec<_>>();
 
         match *parts.first().ok_or(parse_error(None))? {
             "1" => match &parts[1..] {
@@ -86,6 +110,50 @@ mod test {
             PaginateToken::V1(V1PaginateToken {
                 created_at,
                 id: uuid::Uuid::nil(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_paginate_token_with_ampersand() {
+        let created_at = Utc::now();
+        let token = PaginateToken::V1(V1PaginateToken {
+            created_at,
+            id: "kubernetes/some-name&with&ampersand".to_string(),
+        });
+
+        let token_str = dbg!(token.to_string());
+        let token: PaginateToken<String> = PaginateToken::try_from(token_str.as_str()).unwrap();
+        // we lose some precision while serializing the timestamp making tests flaky
+        let created_at =
+            chrono::DateTime::from_timestamp_micros(created_at.timestamp_micros()).unwrap();
+        assert_eq!(
+            token,
+            PaginateToken::V1(V1PaginateToken {
+                created_at,
+                id: "kubernetes/some-name&with&ampersand".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_paginate_token_with_user_id() {
+        let created_at = Utc::now();
+        let token = PaginateToken::V1(V1PaginateToken {
+            created_at,
+            id: "kubernetes/some-name",
+        });
+
+        let token_str = token.to_string();
+        let token: PaginateToken<String> = PaginateToken::try_from(token_str.as_str()).unwrap();
+        // we lose some precision while serializing the timestamp making tests flaky
+        let created_at =
+            chrono::DateTime::from_timestamp_micros(created_at.timestamp_micros()).unwrap();
+        assert_eq!(
+            token,
+            PaginateToken::V1(V1PaginateToken {
+                created_at,
+                id: "kubernetes/some-name".to_string(),
             })
         );
     }
