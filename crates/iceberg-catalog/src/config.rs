@@ -133,7 +133,7 @@ pub struct DynAppConfig {
 
     // ------------- AUTHENTICATION -------------
     pub openid_provider_uri: Option<Url>,
-    /// Expected audience for the OpenID token.
+    /// Expected audience for the provided token.
     pub openid_audience: Option<String>,
     pub enable_kubernetes_authentication: bool,
 
