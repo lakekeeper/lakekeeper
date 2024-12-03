@@ -14,7 +14,7 @@ use crate::service::NamespaceIdentUuid;
 
 use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
-use crate::catalog::FetchResult;
+use crate::catalog::UnfilteredPage;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
@@ -715,7 +715,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             (namespace.0, namespace.1, token, allowed)
                         })
                         .multiunzip();
-                        Ok(FetchResult::new(
+                        Ok(UnfilteredPage::new(
                             next_idents,
                             next_uuids,
                             next_page_tokens,

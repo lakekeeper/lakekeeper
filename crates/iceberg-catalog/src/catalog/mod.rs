@@ -83,7 +83,7 @@ lazy_static::lazy_static! {
     pub static ref DEFAULT_PAGE_SIZE_USIZE: usize = DEFAULT_PAGE_SIZE.try_into().expect("1, 1000 is a valid usize");
 }
 
-pub struct FetchResult<Entity, EntityId> {
+pub struct UnfilteredPage<Entity, EntityId> {
     pub entities: Vec<Entity>,
     pub entity_ids: Vec<EntityId>,
     pub page_tokens: Vec<String>,
@@ -92,7 +92,7 @@ pub struct FetchResult<Entity, EntityId> {
     pub page_size: usize,
 }
 
-impl<T, Z> Debug for FetchResult<T, Z> {
+impl<T, Z> Debug for UnfilteredPage<T, Z> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FetchResult")
             .field("page_tokens", &self.page_tokens)
@@ -103,7 +103,7 @@ impl<T, Z> Debug for FetchResult<T, Z> {
     }
 }
 
-impl<Entity, EntityId> FetchResult<Entity, EntityId> {
+impl<Entity, EntityId> UnfilteredPage<Entity, EntityId> {
     #[must_use]
     pub(crate) fn new(
         entities: Vec<Entity>,
@@ -127,7 +127,10 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
     }
 
     #[must_use]
-    pub(crate) fn take_n(self, n: usize) -> (Vec<Entity>, Vec<EntityId>, Option<String>) {
+    pub(crate) fn take_n_authz_approved(
+        self,
+        n: usize,
+    ) -> (Vec<Entity>, Vec<EntityId>, Option<String>) {
         #[derive(Debug)]
         enum State {
             Open,
@@ -166,12 +169,12 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
     }
 
     #[must_use]
-    pub(crate) fn is_partial(&self) -> bool {
+    fn is_partial(&self) -> bool {
         self.entities.len() < self.page_size
     }
 
     #[must_use]
-    pub(crate) fn is_filtered(&self) -> bool {
+    fn has_authz_denied_items(&self) -> bool {
         self.n_filtered > 0
     }
 }
@@ -187,7 +190,7 @@ where
         i64,
         Option<String>,
         &'c mut C::Transaction,
-    ) -> BoxFuture<'c, Result<FetchResult<Entity, EntityId>>>,
+    ) -> BoxFuture<'c, Result<UnfilteredPage<Entity, EntityId>>>,
     // you may feel tempted to change the Vec<String> of page-tokens to Option<String>
     // a word of advice: don't, we need to take the nth page-token of the next page when
     // we're filling a auth-filtered page. Without a vec, that won't fly.
@@ -198,31 +201,37 @@ where
     let page_as_usize: usize = page_size.try_into().expect("1, 1000 is a valid usize");
 
     let page_token = page_token.as_option().map(ToString::to_string);
-    let fetched_stuff = fetch_fn(page_size, page_token, transaction).await?;
+    let unfiltered_page = fetch_fn(page_size, page_token, transaction).await?;
 
-    if fetched_stuff.is_partial() && !fetched_stuff.is_filtered() {
-        return Ok((fetched_stuff.entities, fetched_stuff.entity_ids, None));
+    if unfiltered_page.is_partial() && !unfiltered_page.has_authz_denied_items() {
+        return Ok((unfiltered_page.entities, unfiltered_page.entity_ids, None));
     }
 
-    let (mut entities, mut entity_ids, mut next_page) = fetched_stuff.take_n(page_as_usize);
+    let (mut entities, mut entity_ids, mut next_page_token) =
+        unfiltered_page.take_n_authz_approved(page_as_usize);
 
     while entities.len() < page_as_usize {
-        let new_page = fetch_fn(DEFAULT_PAGE_SIZE, next_page.clone(), transaction).await?;
+        let new_unfiltered_page =
+            fetch_fn(DEFAULT_PAGE_SIZE, next_page_token.clone(), transaction).await?;
 
-        if new_page.is_partial() && !new_page.is_filtered() {
-            entities.extend(new_page.entities);
-            entity_ids.extend(new_page.entity_ids);
-            next_page = None;
-            break;
-        }
+        let number_of_requested_items = page_as_usize - entities.len();
+        let page_was_authz_reduced = new_unfiltered_page.has_authz_denied_items();
 
-        let (more_entities, more_ids, n_page) = new_page.take_n(page_as_usize - entities.len());
-        next_page = n_page;
+        let (more_entities, more_ids, n_page) =
+            new_unfiltered_page.take_n_authz_approved(number_of_requested_items);
+        let number_of_new_items = more_entities.len();
         entities.extend(more_entities);
         entity_ids.extend(more_ids);
+
+        if (number_of_new_items < number_of_requested_items) && !page_was_authz_reduced {
+            next_page_token = None;
+            break;
+        } else {
+            next_page_token = n_page;
+        }
     }
 
-    Ok((entities, entity_ids, next_page))
+    Ok((entities, entity_ids, next_page_token))
 }
 
 #[cfg(test)]
@@ -432,13 +441,13 @@ pub(crate) mod test {
 
                     #[sqlx::test]
                     async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
-                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(5, 15)]).await;
+                        let (ctx, ns_params) = $setup_fn(pool, 200, &[(95, 150),(195,200)]).await;
 
                         let mut first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                              serde_json::from_value::<$query_typ>(serde_json::json!(
                            {
-                            "pageSize": 5,
+                            "pageSize": 105,
                             "returnUuids": true,
                             }
                             )).unwrap(),
@@ -448,9 +457,9 @@ pub(crate) mod test {
                         .await
                         .unwrap();
 
-                        assert_eq!(first_page.$entity_ident.len(), 5);
+                        assert_eq!(first_page.$entity_ident.len(), 105);
 
-                        for i in (0..5).rev() {
+                        for i in (0..95).chain(150..160).rev() {
                             assert_eq!(
                                 first_page.$entity_ident.pop().map($map_block),
                                 Some(format!("{i}"))
@@ -461,7 +470,7 @@ pub(crate) mod test {
                             ns_params.clone(),
                              serde_json::from_value::<$query_typ>(serde_json::json!({
                                 "pageToken": first_page.next_page_token.unwrap(),
-                                "pageSize": 6,
+                                "pageSize": 100,
                                 "returnUuids": true,
                                 })).unwrap(),
                             ctx.clone(),
@@ -470,8 +479,8 @@ pub(crate) mod test {
                         .await
                         .unwrap();
 
-                        assert_eq!(next_page.$entity_ident.len(), 5);
-                        for i in (15..20).rev() {
+                        assert_eq!(next_page.$entity_ident.len(), 35);
+                        for i in (160..195).rev() {
                             assert_eq!(
                                 next_page.$entity_ident.pop().map($map_block),
                                 Some(format!("{i}"))
@@ -499,11 +508,7 @@ pub(crate) mod test {
                         .unwrap();
 
                         assert_eq!(first_page.$entity_ident.len(), 10);
-                        // In this case, next_page_token is None since first page is hidden and we fetch 100 items
-                        // if we have an empty page. Since there only 10 items left, the returned page is considered
-                        // partial and we get no next_page_token, leaving this comment here in case someone changes
-                        // the fetch amount and wonders why this test starts failing.
-                        assert_eq!(first_page.next_page_token, None);
+                        assert!(first_page.next_page_token.is_some());
                         for i in (10..20).rev() {
                             assert_eq!(
                                 first_page.$entity_ident.pop().map($map_block),

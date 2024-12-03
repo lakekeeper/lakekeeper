@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer, FetchResult};
+use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -115,7 +115,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
                     .multiunzip();
 
-                    Ok(FetchResult::new(
+                    Ok(UnfilteredPage::new(
                         next_namespaces,
                         next_uuids,
                         next_page_tokens,
