@@ -8,7 +8,7 @@ There are multiple ways to deploy the catalog. It ships as a single standalone b
 
 ## Deployment on Kubernetes
 
-We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/hansetag/tip-catalog-charts/tree/main/charts/tip-catalog). Please check the Helm Chart's documentation for possible values.
+We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values.
 
 ## Deployment Standalone
 

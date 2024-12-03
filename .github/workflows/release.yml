@@ -264,13 +264,6 @@ jobs:
           name: docker-iceberg-catalog
           path: /tmp/docker-iceberg-catalog-*.tar
 
-      - name: Test Login to Quay.io (TIP)
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: hansetag+githubicebergcatalog
-          password: ${{ secrets.QUAY_PASSWORD }}
-
       - name: Test Login to Quay.io (Lakekeeper)
         uses: docker/login-action@v3
         with:
@@ -361,75 +354,6 @@ jobs:
         with:
           files: bin-iceberg-catalog-*/iceberg-catalog-*
           tag_name: ${{ needs.release_please.outputs.tag_name }}
-
-  publish-container-tip:
-    name: Publish Container (TIP)
-    runs-on: ubuntu-latest
-    needs:
-      - build-docker
-      - build-binary
-      - release_please
-    if: ${{ needs.release_please.outputs.releases_created == 'true' }}
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Login to Quay.io
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: hansetag+githubicebergcatalog
-          password: ${{ secrets.QUAY_PASSWORD }}
-
-      - name: Load Docker
-        run: |
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
-          docker images
-
-      - name: Push Images to quay.io
-        run: |
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/hansetag/tip-catalog:${{ needs.release_please.outputs.tag_name }}-amd64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/hansetag/tip-catalog:${{ needs.release_please.outputs.tag_name }}-arm64
-          docker push quay.io/hansetag/tip-catalog:${{ needs.release_please.outputs.tag_name }}-amd64
-          docker push quay.io/hansetag/tip-catalog:${{ needs.release_please.outputs.tag_name }}-arm64
-
-      - name: Check if Tag is vX.Y.Z
-        id: check-tag
-        run: |
-          if [[ ${{ needs.release_please.outputs.tag_name }} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "match=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Push Partial Tag to quay.io
-        if: steps.check-tag.outputs.match == 'true'
-        run: |
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/hansetag/tip-catalog:latest-amd64
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}-amd64
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/hansetag/tip-catalog:latest-arm64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker push quay.io/hansetag/tip-catalog:latest-amd64
-          docker push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}-amd64
-          docker push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker push quay.io/hansetag/tip-catalog:latest-arm64
-          docker push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker manifest create quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }} quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}-amd64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker manifest push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}
-          docker manifest create quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }} quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker manifest push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}
-          docker manifest create quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }} quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64 quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
-          docker manifest push quay.io/hansetag/tip-catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}
-          docker image rm quay.io/hansetag/tip-catalog:latest || true
-          docker manifest rm quay.io/hansetag/tip-catalog:latest || true
-          docker manifest create quay.io/hansetag/tip-catalog:latest quay.io/hansetag/tip-catalog:latest-amd64 quay.io/hansetag/tip-catalog:latest-arm64
-          docker manifest push quay.io/hansetag/tip-catalog:latest
 
   publish-container-lakekeeper:
     name: Publish Container (Lakekeeper)
