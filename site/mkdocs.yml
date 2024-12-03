@@ -59,6 +59,8 @@ nav:
   - Getting Started: getting-started.md
   - Docs:
       - nightly: "!include docs/docs/nightly/mkdocs.yml"
+      - latest: "!include docs/docs/latest/mkdocs.yml"
+      - 0.4.3: "!include docs/docs/0.4.3/mkdocs.yml"
   - Community: support.md
   - About:
       - Release Notes: about/release-notes.md
