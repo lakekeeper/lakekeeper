@@ -83,12 +83,11 @@ lazy_static::lazy_static! {
     pub static ref DEFAULT_PAGE_SIZE_USIZE: usize = DEFAULT_PAGE_SIZE.try_into().expect("1, 1000 is a valid usize");
 }
 
-#[derive(Debug)]
 pub struct FetchResult<Entity, EntityId> {
     pub entities: Vec<Entity>,
     pub entity_ids: Vec<EntityId>,
     pub page_tokens: Vec<String>,
-    pub authz_mask: Vec<bool>,
+    pub authz_approved: Vec<bool>,
     pub n_filtered: usize,
     pub page_size: usize,
 }
@@ -102,12 +101,15 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
         authz_approved_items: Vec<bool>,
         page_size: usize,
     ) -> Self {
-        let n_filtered = authz_approved_items.iter().map(|b| usize::from(*b)).sum();
+        let n_filtered = dbg!(&authz_approved_items)
+            .iter()
+            .map(|allowed| usize::from(!*allowed))
+            .sum();
         Self {
             entities,
             entity_ids,
             page_tokens,
-            authz_mask: authz_approved_items,
+            authz_approved: authz_approved_items,
             n_filtered,
             page_size,
         }
@@ -121,7 +123,7 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
             LoopingForLastNextPage,
         }
         let (entities, ids, token, _) = self
-            .authz_mask
+            .authz_approved
             .into_iter()
             .zip(self.entities)
             .zip(self.entity_ids)
@@ -134,13 +136,11 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
                         if matches!(state, State::Open) {
                             entities.push(entity);
                             entity_ids.push(id);
-                            page_token = Some(token);
                         } else if matches!(state, State::LoopingForLastNextPage) {
                             return FoldWhile::Done((entities, entity_ids, page_token, state));
                         }
-                    } else {
-                        page_token = Some(token);
                     }
+                    page_token = Some(token);
                     state = if entities.len() == n {
                         State::LoopingForLastNextPage
                     } else {

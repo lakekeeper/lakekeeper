@@ -2550,6 +2550,7 @@ mod test {
                 }
             }
         }
+
         (ctx, ns_params)
     }
 
@@ -2644,7 +2645,7 @@ mod test {
     async fn test_pagination_first_page_is_hidden(pool: PgPool) {
         let (ctx, ns_params) = pagination_test_setup(pool, 20, &[(0, 10)]).await;
 
-        let first_page = CatalogServer::list_tables(
+        let mut first_page = CatalogServer::list_tables(
             ns_params.clone(),
             ListTablesQuery {
                 page_token: PageToken::NotSpecified,
@@ -2657,30 +2658,18 @@ mod test {
         .await
         .unwrap();
 
-        assert_eq!(first_page.identifiers.len(), 0);
-        assert!(first_page.next_page_token.is_none());
-
-        let mut next_page = CatalogServer::list_tables(
-            ns_params.clone(),
-            ListTablesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(11),
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(next_page.identifiers.len(), 10);
+        assert_eq!(first_page.identifiers.len(), 10);
+        // In this case, next_page_token is None since first page is hidden and we fetch 100 items
+        // if we have an empty page. Since there only 10 items left, the returned page is considered
+        // partial and we get no next_page_token, leaving this comment here in case someone changes
+        // the fetch amount and wonders why this test starts failing.
+        assert_eq!(first_page.next_page_token, None);
         for i in (10..20).rev() {
             assert_eq!(
-                next_page.identifiers.pop().map(|tid| tid.name),
+                first_page.identifiers.pop().map(|tid| tid.name),
                 Some(format!("tab-{i}"))
             );
         }
-        assert_eq!(next_page.next_page_token, None);
     }
 
     #[sqlx::test]
@@ -2771,7 +2760,7 @@ mod test {
         .await
         .unwrap();
 
-        assert_eq!(next_page.identifiers.len(), 0);
+        assert_eq!(dbg!(next_page.table_uuids).unwrap().len(), 0);
         assert_eq!(next_page.next_page_token, None);
     }
 
