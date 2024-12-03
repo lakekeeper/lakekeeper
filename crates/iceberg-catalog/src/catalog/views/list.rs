@@ -84,7 +84,70 @@ mod test {
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
 
     use crate::api::iceberg::v1::views::Service;
+    use crate::api::ApiContext;
+    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
+    use crate::service::State;
     use itertools::Itertools;
+    use sqlx::PgPool;
+
+    async fn pagination_test_setup(
+        pool: PgPool,
+        n_tables: usize,
+        hidden_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        NamespaceParameters,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        for i in 0..n_tables {
+            let view = CatalogServer::create_view(
+                ns_params.clone(),
+                crate::catalog::views::create::test::create_view_request(
+                    Some(&format!("{i}")),
+                    None,
+                ),
+                ctx.clone(),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            for (start, end) in hidden_ranges.iter().copied() {
+                if i >= start && i < end {
+                    hiding_mock.hide(&format!("view:{}", view.metadata.uuid()));
+                }
+            }
+        }
+
+        (ctx, ns_params)
+    }
+
+    crate::catalog::tabular::test::impl_tabular_pagination_tests!(view, pagination_test_setup);
 
     #[sqlx::test]
     async fn test_view_pagination(pool: sqlx::PgPool) {

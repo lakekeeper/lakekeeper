@@ -112,7 +112,7 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
         authz_approved_items: Vec<bool>,
         page_size: usize,
     ) -> Self {
-        let n_filtered = dbg!(&authz_approved_items)
+        let n_filtered = &authz_approved_items
             .iter()
             .map(|allowed| usize::from(!*allowed))
             .sum();

@@ -122,7 +122,7 @@ mod test {
             id: "kubernetes/some-name&with&ampersand".to_string(),
         });
 
-        let token_str = dbg!(token.to_string());
+        let token_str = token.to_string();
         let token: PaginateToken<String> = PaginateToken::try_from(token_str.as_str()).unwrap();
         // we lose some precision while serializing the timestamp making tests flaky
         let created_at =
