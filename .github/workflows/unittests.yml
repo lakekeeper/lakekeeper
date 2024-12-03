@@ -152,15 +152,15 @@ jobs:
       - name: Setup cargo nextest
         run: cargo install cargo-nextest
 
-      - name: Migrate database
-        run: |
-          sudo apt-get install libpq-dev -y
-          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
-          cd crates/iceberg-catalog
-          sqlx database create
-          sqlx migrate run
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+#      - name: Migrate database
+#        run: |
+#          sudo apt-get install libpq-dev -y
+#          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
+#          cd crates/iceberg-catalog
+#          sqlx database create
+#          sqlx migrate run
+#        env:
+#          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
       - name: Setup vault
         run: |
           export VAULT_ADDR=http://localhost:8200

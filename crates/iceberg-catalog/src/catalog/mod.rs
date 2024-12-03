@@ -92,6 +92,17 @@ pub struct FetchResult<Entity, EntityId> {
     pub page_size: usize,
 }
 
+impl<T, Z> Debug for FetchResult<T, Z> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchResult")
+            .field("page_tokens", &self.page_tokens)
+            .field("authz_mask", &self.authz_approved)
+            .field("n_filtered", &self.n_filtered)
+            .field("page_size", &self.page_size)
+            .finish()
+    }
+}
+
 impl<Entity, EntityId> FetchResult<Entity, EntityId> {
     #[must_use]
     pub(crate) fn new(
