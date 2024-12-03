@@ -66,6 +66,8 @@ nav:
       - Code of Conduct: about/code-of-conduct.md
 
 markdown_extensions:
+  - toc:
+      permalink: true
   - tables
   - markdown_grid_tables
   - pymdownx.snippets:

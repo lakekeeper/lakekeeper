@@ -1,10 +1,10 @@
 # Getting Started
 
-There are multiple ways to deploy Lakekeeper. You can use one of our [self-contained examples](#self-contained-examples), deploy on [Kubernetes](#kubernetes) or deploy the [Binary](#binary) directly.
+There are multiple ways to deploy Lakekeeper. You can use one of our [self-contained examples](#option-1-examples), deploy on [Kubernetes](#option-2-kubernetes) or deploy the [Binary](#option-3-binary) directly.
 
 ## Deployment
 
-### Self-Contained Examples
+### Option 1: 🐳 Examples
 !!! note
 
     Our docker compose examples are not designed to be used with compute outside of the docker network (e.g. external Spark).
@@ -29,12 +29,12 @@ All docker expose examples come with batteries included (Identity Provider, Stor
 
 Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8080` for the Lakekeeper UI.
 
-### Kubernetes
+### Option 2: Kubernetes
 We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values. To enable Authentication and Authorization, and external identity provider is required.
 
 A community driven [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 
-### Binary
+### Option 3: Binary
 
 For single node deployments, you can also download the Binary for your architecture from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look something like this:
 
@@ -56,7 +56,7 @@ Now that the catalog is up-and-running, the following endpoints are available:
 1. `<LAKEKEEPER__BASE_URI>` - the UI
 1. `<LAKEKEEPER__BASE_URI>/catalog` is the Iceberg REST API
 1. `<LAKEKEEPER__BASE_URI>/management` contains the management API
-1. `<LAKEKEEPER__>/swagger-ui` hosts Swagger to inspect the API specifications
+1. `<LAKEKEEPER__BASE_URI>/swagger-ui` hosts Swagger to inspect the API specifications
 
 ### Bootstrapping
 Our self-contained docker compose examples are already bootstrapped and require no further actions.
