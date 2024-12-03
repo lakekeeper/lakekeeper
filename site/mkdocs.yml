@@ -84,6 +84,8 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.tabbed:
       alternate_style: true
+  - admonition
+  - pymdownx.details
 
 copyright: Copyright &copy; 2024 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
 

@@ -21,7 +21,7 @@ Lakekeeper is an implementation of the Apache Iceberg REST Catalog API.  Lakekee
 
 ## 🐳 Docker
 
-Deploy Lakekeeper using Docker Compose for a quick and easy setup. This method is ideal for local development and testing as well as smaller deployments that don't require high availability. Please check our [Examples]() for simple standalone deployments that come with batteries included (Identity Provider, Storage (S3), Spark, Jupyter) but are not accessible (by default) for compute outside of the docker network. For real-world deployments that are usable for external compute, please continue here.
+Deploy Lakekeeper using Docker Compose for a quick and easy setup. This method is ideal for local development and testing as well as smaller deployments that don't require high availability. Please check our [Examples](ToDo) for simple standalone deployments that come with batteries included (Identity Provider, Storage (S3), Spark, Jupyter) but are not accessible (by default) for compute outside of the docker network. For real-world deployments that are usable for external compute, please continue here.
 
 To run Lakekeeper with Authentication and Authorization an external Identity Provider is required. Please check the [Authentication Guide](./authentication.md) for more information.
 
@@ -31,7 +31,6 @@ To run Lakekeeper with Authentication and Authorization an external Identity Pro
     git clone https://github.com/lakekeeper/lakekeeper
     cd docker-compose
     export LAKEKEEPER__OPENID_PROVIDER_URI="<open-id-provider-url>"
-    export LAKEKEEPER__ ToDo Audience
     docker-compose up -d
     ```
 

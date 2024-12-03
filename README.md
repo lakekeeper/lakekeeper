@@ -1,63 +1,61 @@
 # Lakekeeper Catalog for Apache Iceberg
 
+[![Website](https://img.shields.io/badge/https-lakekeeper.io-blue?color=3d4db3&logo=firefox&style=for-the-badge&logoColor=white)](https://lakekeeper.io/)
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/jkAGG8p93B)
+[![Docker on quay](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://quay.io/repository/lakekeeper/catalog?tab=tags&filter_tag_name=like%3Av)
+[![Helm Chart](https://img.shields.io/badge/Helm-0F1689?style=for-the-badge&logo=Helm&labelColor=0F1689)](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/lakekeeper&color=3f6ec6&labelColor=&style=for-the-badge&logoColor=white)](https://artifacthub.io/packages/helm/lakekeeper/lakekeeper)
+
+
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Unittests](https://github.com/lakekeeper/lakekeeper/actions/workflows/unittests.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/unittests.yml)
 [![Spark Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/spark-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/spark-integration.yml)
 [![Pyiceberg Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/pyiceberg-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/pyiceberg-integration.yml)
 [![Trino Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/trino-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/trino-integration.yml)
 [![Starrocks Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml)
-[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/tip-catalog)](https://artifacthub.io/packages/helm/lakekeeper/lakekeeper)
-[![Docker on quay](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://quay.io/repository/lakekeeper/catalog?tab=tags&filter_tag_name=like%3Av)
-[![Helm Chart](https://img.shields.io/badge/Helm-0F1689?style=for-the-badge&logo=Helm&labelColor=0F1689)](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper)
-[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/jkAGG8p93B)
 
-This is Lakekeeper: A Rust-native implementation of the [Apache Iceberg](https://iceberg.apache.org/) REST Catalog specification based on [apache/iceberg-rust](https://github.com/apache/iceberg-rust).
 
-If you have questions, feature requests or just want a chat, we are hanging around in [Discord](https://discord.gg/jkAGG8p93B)!
+Please visit [docs.lakekeeper.io](docs.lakekeeper.io) for more information and the documentation.
+
+This is Lakekeeper: A **secure**, **fast** and **easy to use**  implementation of the [Apache Iceberg](https://iceberg.apache.org/) REST Catalog specification based on [apache/iceberg-rust](https://github.com/apache/iceberg-rust). If you have questions, feature requests or just want a chat, we are hanging around in [Discord](https://discord.gg/jkAGG8p93B)!
 
 <p align="center">
 <img src="https://github.com/lakekeeper/lakekeeper/raw/main/assets/Lakekeeper-Overview.png" width="500">
 </p>
 
-# Next Steps
-The catalog is evolving quickly. Especially internal rust APIs are not stable and subject to change. External REST APIs are kept as stable as possible, especially the `/catalog` API is stable as of today.
-
-* **Release 0.5.0**: Our biggest release yet is coming early November. It includes **Fine Grained Access Control**, a first simple **UI** and much more.
-* **Release 0.6.0**: With Release 0.6.0 we focus on stabilizing some of our most recent features and significantly improve our **Docs**. Docusaurus is coming!
-
 # Quickstart
 
 A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/lakekeeper?tab=info).
-We have prepared a self-contained docker-compose file to demonstrate the usage of `spark` with our catalog:
+We have prepared a minimal docker-compose file to demonstrate the usage of `spark` with our catalog:
 
 ```sh
 git clone https://github.com/lakekeeper/lakekeeper.git
-cd lakekeeper/examples/self-contained
+cd lakekeeper/examples/minimal
 docker compose up
 ```
 
-Then open your browser and head to `localhost:8888`.
+Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8080` for the Lakekeeper UI.
 
-For more information on deployment, please check the [User Guide](USER_GUIDE.md).
+For more information on deployment, please check the [Getting Started Guide](docs.lakekeeper.io/getting-started/).
 
 # Scope and Features
 
 The Iceberg Catalog REST interface has become the standard for catalogs in open Lakehouses. It natively enables multi-table commits, server-side deconflicting and much more. It is figuratively the (**TIP**) of the Iceberg.
 
-We have started this implementation because we were missing customizability, support for on-premise deployments and other features that are important for us in existing Iceberg Catalogs. Please find following some of our focuses with this implementation:
-
-- **Customizable**: Our implementation is meant to be extended. We expose the Database implementation, Secrets, Authorization, EventPublishing and ContractValidation as interfaces (Traits). This allows you to tap into any Access management system of your company or stream change events to any system you like - simply by implementing a handful methods. Please find more details in the [Customization Guide](CUSTOMIZING.md).
+- **Written in Rust**: Single all-in-one binary - no JVM or Python env required.
+- **Storage Access Management**: Lakekeeper secures access to your data using [Vended-Credentials](ToDo) and [remote signing for S3](ToDo). All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
+- **Openid Provider Integration**: Use your own identity provider for authentication, just set `LAKEKEEPER__OPENID_PROVIDER_URI` and you are good to go.
+- **Native Kubernetes Integration**: Use our helm chart to easily deploy high available setups and natively authenticate kubernetes service accounts with Lakekeeper. Kubernetes and OpenID authentication can be used simultaneously. A [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 - **Change Events**: Built-in support to emit change events (CloudEvents), which enables you to react to any change that happen to your tables.
 - **Change Approval**: Changes can also be prohibited by external systems. This can be used to prohibit changes to tables that would invalidate Data Contracts, Quality SLOs etc. Simply integrate with your own change approval via our `ContractVerification` trait.
-- **Multi-Tenant capable**: A single deployment of our catalog can serve multiple projects - all with a single entrypoint. All Iceberg and Warehouse configurations are completely separated between Warehouses.
-- **Written in Rust**: Single 30Mb all-in-one binary - no JVM or Python env required.
-- **Storage Access Management**: Built-in S3-Signing that enables support for self-hosted as well as AWS S3 WITHOUT sharing S3 credentials with clients. We are also working on `vended-credentials`!
+- **Multi-Tenant capable**: A single deployment of Lakekeeper can serve multiple projects - all with a single entrypoint. Each project itself supports multiple Warehouses to which compute engines can connect.
+- **Customizable**: Lakekeeper is meant to be extended. We expose the Database implementation (`Catalog`), `SecretsStore`, `Authorizer`, Events (`CloudEventBackend`) and `ContractVerification` as interfaces (Traits). This allows you to tap into any access management system of your company or stream change events to any system you like - simply by implementing a handful methods.
 - **Well-Tested**: Integration-tested with `spark`, `pyiceberg`, `trino` and `starrocks`.
-- **High Available & Horizontally Scalable**: There is no local state - the catalog can be scaled horizontally and updated without downtimes.
-- **Openid provider integration**: Use your own identity provider to secure access to the APIs, just set `LAKEKEEPER__OPENID_PROVIDER_URI` and you are good to go.
-- **Fine Grained Access (FGA) (Coming soon):** Simple Role-Based access control is not enough for many rapidly evolving Data & Analytics initiatives. We are leveraging [OpenFGA](https://openfga.dev/) based on googles [Zanzibar-Paper](https://research.google/pubs/zanzibar-googles-consistent-global-authorization-system/) to implement authorization. If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `AuthZHandler` trait.
+- **High Available & Horizontally Scalable**: There is no local state - the catalog can be scaled horizontally easily.
+- **Fine Grained Access (FGA):** Lakekeeper's default Authorization system leverages [OpenFGA](https://openfga.dev/). If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `Authorizer` trait.
 
-Please find following an overview of currently supported features. Please also check the Issues if you are missing something.
+If you are missing something, we would love to hear about it in a [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/new).
+
 
 # Status
 
@@ -99,10 +97,10 @@ Details on how to configure the storage profiles can be found in the [Storage Gu
 
 ### Supported Event Stores
 
-| Backend | Status  | Comment |
-|---------|:-------:|---------|
-| Nats    | ![done] |         |
-| Kafka   | ![open] |         |
+| Backend | Status  | Comment                                                                          |
+|---------|:-------:|----------------------------------------------------------------------------------|
+| Nats    | ![done] |                                                                                  |
+| Kafka   | ![open] | Available in branch already, we are currently struggling with cross-compilation. |
 
 ### Supported Operations - Management API
 
@@ -119,26 +117,6 @@ Details on how to configure the storage profiles can be found in the [Storage Gu
 | OIDC (AuthN)    | ![done] | Secure access to the catalog via OIDC                                                                              |
 | Custom (AuthZ)  | ![done] | If you are willing to implement a single rust Trait, the `AuthZHandler` can be implement to connect to your system |
 | OpenFGA (AuthZ) | ![open] | Internal Authorization management                                                                                  |
-
-# Multiple Projects / Multi-Tenancy
-
-Lakekeeper can host multiple independent projects that each host multiple warehouses. The overall
-structure looks like this:
-
-```
-<project-1-uuid>/
-├─ foo-warehouse
-├─ bar-warehouse
-<project-2-uuid>/
-├─ foo-warehouse
-├─ bas-warehouse
-```
-
-Each Project in Lakekeeper corresponds to a distinct Application Object within your IdP, enabling genuine Multi-Tenancy. A single instance of Lakekeeper can host multiple Projects, ensuring separation at all levels, including Authentication. Our Multi-Tenancy definition is broader than most catalogs. While other catalogs may consider hosting multiple warehouses under a single IdP Application as Multi-Tenancy, a single Lakekeeper Project can achieve that and more.
-
-As this additional layer isn't necessary for most deployments, the `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` configuration option is set to true by default. This setting effectively disables multi-tenancy by defaulting to a project with the NIL UUID ("00000000-0000-0000-0000-000000000000") as the project-id.
-
-To enable multi-project setups, simply set `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` to `false`. Multi-project setups require additional configuration to include project-ids in HTTP headers and separate authentication audiences. This documentation does not cover these steps yet. Of course, hosting multiple warehouses within a single Lakekeeper Project is also possible.
 
 # Undrop Tables
 
@@ -235,15 +213,17 @@ If you want the server to publish events to a NATS server, set the following env
 If you want to limit ac
 cess to the API, set `LAKEKEEPER__OPENID_PROVIDER_URI` to the URI of your OpenID Connect Provider. The catalog will then verify access tokens against this provider. The provider must have the `.well-known/openid-configuration` endpoint under `${LAKEKEEPER__OPENID_PROVIDER_URI}/.well-known/openid-configuration` and the openid-configuration needs to have the `jwks_uri` and `issuer` defined.
 
-If `LAKEKEEPER__OPENID_PROVIDER_URI` is set, every request needs have an authorization header, e.g.
+If `LAKEKEEPER__OPENID_PROVIDER_URI` or `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set, every request needs have an authorization header, e.g.
 
 ```sh
 curl {your-catalog-url}/catalog/v1/transactions/commit -X POST -H "authorization: Bearer {your-token-here}" -H "content-type: application/json" -d ...
 ```
 
-| Variable                          | Example                                      | Description                                                                                                                                                                                                                                                  |
-|-----------------------------------|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LAKEKEEPER__OPENID_PROVIDER_URI` | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL, with keycloak this is the url pointing to your realm, for Azure App Registration it would be something like `https://login.microsoftonline.com/{your-tenant-id-here}/v2.0/`. If this variable is not set, endpoints are **not** secured |
+| Variable                                       | Example                                      | Description                                                                                                                                                                                                                                                  |
+|------------------------------------------------|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LAKEKEEPER__OPENID_PROVIDER_URI`              | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL, with keycloak this is the url pointing to your realm, for Azure App Registration it would be something like `https://login.microsoftonline.com/{your-tenant-id-here}/v2.0/`. If this variable is not set, endpoints are **not** secured |
+| `LAKEKEEPER__OPENID_AUDIENCE`                  | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided.                                                                                                                                                                                       |
+| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true                                         | If true, kubernetes service accounts can authenticate using their tokens to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and kubernetes) can be enabled simultaneously.                                |
 
 ## License
 
