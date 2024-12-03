@@ -1807,7 +1807,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NamespaceAssignment'
-    GetNamespaceResponse:
+    GetNamespaceAuthPropertiesResponse:
       type: object
       required:
       - managed-access
@@ -1939,6 +1939,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WarehouseAssignment'
+    GetWarehouseAuthPropertiesResponse:
+      type: object
+      required:
+      - managed-access
+      properties:
+        managed-access:
+          type: boolean
     GetWarehouseResponse:
       type: object
       required:
