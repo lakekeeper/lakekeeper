@@ -643,10 +643,10 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
     #[allow(clippy::too_many_lines)]
     async fn list_soft_deleted_tabulars(
-        request_metadata: RequestMetadata,
         warehouse_id: WarehouseIdent,
-        context: ApiContext<State<A, C, S>>,
         query: ListDeletedTabularsQuery,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
     ) -> Result<ListDeletedTabularsResponse> {
         // ------------------- AuthZ -------------------
         let catalog = context.v1_state.catalog;
@@ -846,17 +846,109 @@ mod test {
 
     use crate::api::iceberg::types::Prefix;
     use crate::api::iceberg::v1::{DataAccess, DropParams, NamespaceParameters, ViewParameters};
-    use crate::catalog::test::random_request_metadata;
+    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
     use crate::catalog::CatalogServer;
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use iceberg::TableIdent;
+    use sqlx::PgPool;
 
     use crate::api::iceberg::v1::views::Service;
     use crate::api::management::v1::warehouse::{
         ListDeletedTabularsQuery, Service as _, TabularDeleteProfile,
     };
     use crate::api::management::v1::ApiServer;
+    use crate::api::ApiContext;
+    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
+    use crate::service::State;
+    use crate::WarehouseIdent;
     use itertools::Itertools;
+
+    async fn setup_pagination_test(
+        pool: sqlx::PgPool,
+        n_tabulars: usize,
+        hidden_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        WarehouseIdent,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(10),
+            },
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        // create 10 staged tables
+        for i in 0..n_tabulars {
+            let v = CatalogServer::create_view(
+                ns_params.clone(),
+                crate::catalog::views::create::test::create_view_request(
+                    Some(&format!("{i}")),
+                    None,
+                ),
+                ctx.clone(),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            CatalogServer::drop_view(
+                ViewParameters {
+                    prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                    view: TableIdent {
+                        name: format!("{i}"),
+                        namespace: ns.namespace.clone(),
+                    },
+                },
+                DropParams {
+                    purge_requested: None,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            if hidden_ranges
+                .iter()
+                .any(|(start, end)| i >= *start && i < *end)
+            {
+                hiding_mock.hide(&format!("view:{}", v.metadata.uuid()));
+            }
+        }
+
+        (ctx, warehouse.warehouse_id.into())
+    }
+
+    impl_pagination_tests!(
+        soft_deleted_tabular,
+        setup_pagination_test,
+        ApiServer,
+        ListDeletedTabularsQuery,
+        tabulars,
+        |tid| { tid.name }
+    );
 
     #[sqlx::test]
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
@@ -922,14 +1014,14 @@ mod test {
 
         // list 1 more than existing tables
         let all = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 11,
                 page_token: None,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();
@@ -937,14 +1029,14 @@ mod test {
 
         // list exactly amount of existing tables
         let all = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 10,
                 page_token: None,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();
@@ -952,14 +1044,14 @@ mod test {
 
         // next page is empty
         let next = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 10,
                 page_token: all.next_page_token,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();
@@ -967,14 +1059,14 @@ mod test {
         assert!(next.next_page_token.is_none());
 
         let first_six = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 6,
                 page_token: None,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();
@@ -992,14 +1084,14 @@ mod test {
         }
 
         let next_four = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 6,
                 page_token: first_six.next_page_token,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();
@@ -1025,14 +1117,14 @@ mod test {
         }
 
         let page = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 5,
                 page_token: None,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();
@@ -1051,14 +1143,14 @@ mod test {
         }
 
         let next_page = ApiServer::list_soft_deleted_tabulars(
-            random_request_metadata(),
             warehouse.warehouse_id.into(),
-            ctx.clone(),
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 6,
                 page_token: page.next_page_token,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
         .await
         .unwrap();

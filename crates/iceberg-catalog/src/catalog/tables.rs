@@ -1615,7 +1615,7 @@ mod test {
     use std::collections::HashMap;
     use uuid::Uuid;
 
-    use crate::catalog::tabular::test::impl_tabular_pagination_tests;
+    use crate::catalog::test::impl_pagination_tests;
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use iceberg_ext::configs::Location;
     use std::str::FromStr;
@@ -2555,7 +2555,14 @@ mod test {
         (ctx, ns_params)
     }
 
-    impl_tabular_pagination_tests!(table, pagination_test_setup);
+    impl_pagination_tests!(
+        table,
+        pagination_test_setup,
+        CatalogServer,
+        ListTablesQuery,
+        identifiers,
+        |tid| { tid.name }
+    );
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {

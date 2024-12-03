@@ -79,7 +79,7 @@ mod test {
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
     use crate::api::management::v1::warehouse::TabularDeleteProfile;
-    use crate::catalog::test::random_request_metadata;
+    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
     use crate::catalog::CatalogServer;
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
 
@@ -147,7 +147,14 @@ mod test {
         (ctx, ns_params)
     }
 
-    crate::catalog::tabular::test::impl_tabular_pagination_tests!(view, pagination_test_setup);
+    impl_pagination_tests!(
+        view,
+        pagination_test_setup,
+        CatalogServer,
+        ListTablesQuery,
+        identifiers,
+        |tid| { tid.name }
+    );
 
     #[sqlx::test]
     async fn test_view_pagination(pool: sqlx::PgPool) {

@@ -614,8 +614,9 @@ mod tests {
 
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::namespace::Service;
-    use crate::api::management::v1::warehouse::{CreateWarehouseResponse, TabularDeleteProfile};
+    use crate::api::management::v1::warehouse::TabularDeleteProfile;
     use crate::api::ApiContext;
+    use crate::catalog::test::impl_pagination_tests;
     use crate::catalog::test::random_request_metadata;
     use crate::catalog::CatalogServer;
     use crate::implementations::postgres::namespace::namespace_to_id;
@@ -635,7 +636,7 @@ mod tests {
         hide_ranges: &[(usize, usize)],
     ) -> (
         ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
-        CreateWarehouseResponse,
+        Option<Prefix>,
     ) {
         let prof = crate::catalog::test::test_io_profile();
 
@@ -652,7 +653,7 @@ mod tests {
         .await;
 
         for n in 0..number_of_namespaces {
-            let ns = format!("ns-{n}");
+            let ns = format!("{n}");
             let ns = CatalogServer::create_namespace(
                 Some(Prefix(warehouse.warehouse_id.to_string())),
                 CreateNamespaceRequest {
@@ -683,182 +684,17 @@ mod tests {
                 }
             }
         }
-        (ctx, warehouse)
+        (ctx, Some(Prefix(warehouse.warehouse_id.to_string())))
     }
 
-    #[sqlx::test]
-    async fn test_pagination_with_no_items(pool: sqlx::PgPool) {
-        let (ctx, warehouse) = ns_paginate_test_setup(pool, 0, &[]).await;
-
-        let page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(10),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(page.namespaces.len(), 0);
-    }
-
-    #[sqlx::test]
-    async fn test_pagination_with_all_items_hidden(pool: PgPool) {
-        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(0, 20)]).await;
-
-        let page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(10),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(page.namespaces.len(), 0);
-    }
-
-    #[sqlx::test]
-    async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
-        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(5, 15)]).await;
-
-        let mut first_page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(5),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(first_page.namespaces.len(), 5);
-
-        for i in (0..5).rev() {
-            assert_eq!(
-                first_page.namespaces.pop().map(NamespaceIdent::inner),
-                Some(vec![format!("ns-{i}")])
-            );
-        }
-
-        let mut next_page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: first_page.next_page_token.into(),
-                page_size: Some(6),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(next_page.namespaces.len(), 5);
-        for i in (15..20).rev() {
-            assert_eq!(
-                next_page.namespaces.pop().map(NamespaceIdent::inner),
-                Some(vec![format!("ns-{i}")])
-            );
-        }
-        assert_eq!(next_page.next_page_token, None);
-    }
-
-    #[sqlx::test]
-    async fn test_pagination_first_page_is_hidden(pool: sqlx::PgPool) {
-        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(0, 10)]).await;
-
-        let mut first_page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(10),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-        for i in (11..20).rev() {
-            assert_eq!(
-                first_page.namespaces.pop().map(NamespaceIdent::inner),
-                Some(vec![format!("ns-{i}")])
-            );
-        }
-    }
-
-    #[sqlx::test]
-    async fn test_pagination_middle_page_is_hidden(pool: sqlx::PgPool) {
-        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(5, 15)]).await;
-
-        let mut first_page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(10),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(first_page.namespaces.len(), 10);
-
-        for i in (0..5).chain(15..20).rev() {
-            assert_eq!(
-                first_page.namespaces.pop().map(NamespaceIdent::inner),
-                Some(vec![format!("ns-{i}")])
-            );
-        }
-    }
-
-    #[sqlx::test]
-    async fn test_pagination_last_page_is_hidden(pool: PgPool) {
-        let (ctx, warehouse) = ns_paginate_test_setup(pool, 20, &[(10, 20)]).await;
-
-        let mut first_page = CatalogServer::list_namespaces(
-            Some(Prefix(warehouse.warehouse_id.to_string())),
-            ListNamespacesQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: Some(10),
-                parent: None,
-                return_uuids: true,
-            },
-            ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(first_page.namespaces.len(), 10);
-
-        for i in (0..=9).rev() {
-            assert_eq!(
-                first_page.namespaces.pop().map(NamespaceIdent::inner),
-                Some(vec![format!("ns-{i}")])
-            );
-        }
-    }
+    impl_pagination_tests!(
+        namespace,
+        ns_paginate_test_setup,
+        CatalogServer,
+        ListNamespacesQuery,
+        namespaces,
+        |ns| ns.inner()[0].to_string()
+    );
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {

@@ -7,7 +7,7 @@ pub(crate) mod namespace;
 #[cfg(feature = "s3-signer")]
 mod s3_signer;
 pub(crate) mod tables;
-mod tabular;
+pub(crate) mod tabular;
 pub(crate) mod views;
 
 use iceberg::spec::{TableMetadata, ViewMetadata};
@@ -112,7 +112,7 @@ impl<Entity, EntityId> FetchResult<Entity, EntityId> {
         authz_approved_items: Vec<bool>,
         page_size: usize,
     ) -> Self {
-        let n_filtered = &authz_approved_items
+        let n_filtered = authz_approved_items
             .iter()
             .map(|allowed| usize::from(!*allowed))
             .sum();
@@ -382,4 +382,235 @@ pub(crate) mod test {
             auth_details: AuthDetails::Unauthenticated,
         }
     }
+
+    macro_rules! impl_pagination_tests {
+        ($typ:ident, $setup_fn:ident, $server_typ:ident, $query_typ:ident, $entity_ident:ident, $map_block:expr) => {
+            use paste::paste;
+            // we're constructing queries via json here to sidestep different query types, going
+            // from json to rust doesn't blow up with extra params so we can pass return uuids to
+            // list fns that dont support it without having to care about it.
+            paste! {
+                #[sqlx::test]
+                async fn [<test_$typ _pagination_with_no_items>](pool: sqlx::PgPool) {
+                    let (ctx, ns_params) = $setup_fn(pool, 0, &[]).await;
+                    let all = $server_typ::[<list_ $typ s>](
+                        ns_params.clone(),
+                        serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                            "pageSize": 10,
+                            "return_uuids": true,
+                            }
+                        )).unwrap(),
+                        ctx.clone(),
+                        random_request_metadata(),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(all.$entity_ident.len(), 0);
+                    assert!(all.next_page_token.is_none());
+                }
+            }
+            paste! {
+
+                    #[sqlx::test]
+                    async fn [<test_$typ _pagination_with_all_items_hidden>](pool: PgPool) {
+                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 20)]).await;
+                        let all = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                             serde_json::from_value::<$query_typ>(serde_json::json!({
+                                "pageSize": 10,
+                                "returnUuids": true,
+                            })).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(all.$entity_ident.len(), 0);
+                        assert!(all.next_page_token.is_none());
+                    }
+
+                    #[sqlx::test]
+                    async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
+                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(5, 15)]).await;
+
+                        let mut first_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                             serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                            "pageSize": 5,
+                            "returnUuids": true,
+                            }
+                            )).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(first_page.$entity_ident.len(), 5);
+
+                        for i in (0..5).rev() {
+                            assert_eq!(
+                                first_page.$entity_ident.pop().map($map_block),
+                                Some(format!("{i}"))
+                            );
+                        }
+
+                        let mut next_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                             serde_json::from_value::<$query_typ>(serde_json::json!({
+                                "pageToken": first_page.next_page_token.unwrap(),
+                                "pageSize": 6,
+                                "returnUuids": true,
+                                })).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(next_page.$entity_ident.len(), 5);
+                        for i in (15..20).rev() {
+                            assert_eq!(
+                                next_page.$entity_ident.pop().map($map_block),
+                                Some(format!("{i}"))
+                            );
+                        }
+                        assert_eq!(next_page.next_page_token, None);
+                    }
+
+                    #[sqlx::test]
+                    async fn test_pagination_first_page_is_hidden(pool: PgPool) {
+                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(0, 10)]).await;
+
+                        let mut first_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                             serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                            "pageSize": 10,
+                            "returnUuids": true,
+                            }
+                            )).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(first_page.$entity_ident.len(), 10);
+                        // In this case, next_page_token is None since first page is hidden and we fetch 100 items
+                        // if we have an empty page. Since there only 10 items left, the returned page is considered
+                        // partial and we get no next_page_token, leaving this comment here in case someone changes
+                        // the fetch amount and wonders why this test starts failing.
+                        assert_eq!(first_page.next_page_token, None);
+                        for i in (10..20).rev() {
+                            assert_eq!(
+                                first_page.$entity_ident.pop().map($map_block),
+                                Some(format!("{i}"))
+                            );
+                        }
+                    }
+
+                    #[sqlx::test]
+                    async fn test_pagination_middle_page_is_hidden(pool: PgPool) {
+                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(5, 15)]).await;
+
+                        let mut first_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                            serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                            "pageSize": 5,
+                            "returnUuids": true,
+                            }
+                            )).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(first_page.$entity_ident.len(), 5);
+
+                        for i in (0..5).rev() {
+                            assert_eq!(
+                                first_page.$entity_ident.pop().map($map_block),
+                                Some(format!("{i}"))
+                            );
+                        }
+
+                        let mut next_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                            serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                                "pageToken": first_page.next_page_token.unwrap(),
+                                "pageSize": 6,
+                                "returnUuids": true,
+                            }
+                            )).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(next_page.$entity_ident.len(), 5);
+                        for i in (15..20).rev() {
+                            assert_eq!(
+                                next_page.$entity_ident.pop().map($map_block),
+                                Some(format!("{i}"))
+                            );
+                        }
+                        assert_eq!(next_page.next_page_token, None);
+                    }
+
+                    #[sqlx::test]
+                    async fn test_pagination_last_page_is_hidden(pool: PgPool) {
+                        let (ctx, ns_params) = $setup_fn(pool, 20, &[(10, 20)]).await;
+
+                        let mut first_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                            serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                                "pageSize": 10,
+                                "returnUuids": true,
+                            }
+                            )).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(first_page.$entity_ident.len(), 10);
+
+                        for i in (0..10).rev() {
+                            assert_eq!(
+                                first_page.$entity_ident.pop().map($map_block),
+                                Some(format!("{i}"))
+                            );
+                        }
+
+                        let next_page = $server_typ::[<list_$typ s>](
+                            ns_params.clone(),
+                            serde_json::from_value::<$query_typ>(serde_json::json!(
+                           {
+                                "pageToken": first_page.next_page_token.unwrap(),
+                                "pageSize": 11,
+                                "returnUuids": true,
+                            }
+                            )).unwrap(),
+                            ctx.clone(),
+                            random_request_metadata(),
+                        )
+                        .await
+                        .unwrap();
+
+                        assert_eq!(next_page.$entity_ident.len(), 0);
+                        assert_eq!(next_page.next_page_token, None);
+                    }
+            }
+        };
+    }
+    pub(crate) use impl_pagination_tests;
 }
