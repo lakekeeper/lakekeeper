@@ -64,6 +64,7 @@ fn get_config() -> DynAppConfig {
     config
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
@@ -132,6 +133,9 @@ pub struct DynAppConfig {
 
     // ------------- AUTHENTICATION -------------
     pub openid_provider_uri: Option<Url>,
+    /// Expected audience for the provided token.
+    pub openid_audience: Option<String>,
+    pub enable_kubernetes_authentication: bool,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -322,6 +326,8 @@ impl Default for DynAppConfig {
             nats_password: None,
             nats_token: None,
             openid_provider_uri: None,
+            openid_audience: None,
+            enable_kubernetes_authentication: false,
             listen_port: 8080,
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,

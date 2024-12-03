@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO users (id, name, email, last_updated_with, user_type)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (id)\n        DO UPDATE SET name = $2, email = $3, last_updated_with = $4, user_type = $5\n        returning (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\", user_type as \"user_type: DbUserType\"\n        ",
+  "query": "\n        INSERT INTO users (id, name, email, last_updated_with, user_type)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (id)\n        DO UPDATE SET name = $2, email = $3, last_updated_with = $4, user_type = $5, deleted_at = null\n        returning (xmax = 0) AS created, id, name, email, created_at, updated_at, last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\", user_type as \"user_type: DbUserType\"\n        ",
   "describe": {
     "columns": [
       {
@@ -106,5 +106,5 @@
       false
     ]
   },
-  "hash": "b6fb05ba2d9b7ceafde1c8d40ce1ec41de191762c6a7e446dfa509e16b4cf775"
+  "hash": "7ccf866841e291289987c72fd8cebdeec715e90d37db01f518b16893e3b74c58"
 }

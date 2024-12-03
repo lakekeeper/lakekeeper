@@ -75,7 +75,7 @@ jobs:
 
       - name: Test Examples
         run: |
-          cd examples/fine-grained-access-control
+          cd examples/access-control
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Manual-Bootstrap.ipynb"
         env:

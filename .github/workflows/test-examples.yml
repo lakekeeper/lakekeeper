@@ -81,7 +81,7 @@ jobs:
 
       - name: Test Examples
         run: |
-          cd examples/self-contained
+          cd examples/minimal
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
         env:

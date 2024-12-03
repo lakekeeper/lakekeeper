@@ -181,41 +181,10 @@ struct Claims {
     upn: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum Aud {
-    String(String),
-    Vec(Vec<String>),
-}
-
 #[cfg(test)]
 mod test {
     use crate::api::management::v1::user::UserType;
     use crate::service::authn::Claims;
-
-    #[test]
-    fn test_aud_with_array() {
-        let _: Claims = serde_json::from_value(serde_json::json!({
-            "sub": "1234567890",
-            "iat": 22,
-            "aud": ["aud1", "aud2"],
-            "iss": "https://example.com",
-            "exp": 9022
-        }))
-        .unwrap();
-    }
-
-    #[test]
-    fn test_aud_with_string() {
-        let _: Claims = serde_json::from_value(serde_json::json!({
-            "sub": "1234567890",
-            "iat": 22,
-            "aud": "aud1",
-            "iss": "https://example.com",
-            "exp": 9022
-        }))
-        .unwrap();
-    }
 
     #[test]
     fn test_machine_discovery_entra() {

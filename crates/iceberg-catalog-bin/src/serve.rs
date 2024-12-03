@@ -152,14 +152,22 @@ async fn serve_inner<A: Authorizer>(
         sinks: cloud_event_sinks,
     };
 
-    let k8s_token_verifier = K8sVerifier::try_new()
-        .await
-        .map_err(|e| {
-            tracing::info!(
-                "Failed to create K8s authorizer: {e}, assuming we are not running on kubernetes."
-            )
-        })
-        .ok();
+    let k8s_token_verifier = if CONFIG.enable_kubernetes_authentication {
+        Some(
+            K8sVerifier::try_new()
+                .await
+                .map_err(|e| {
+                    tracing::info!("Failed to create K8s authorizer: {e}");
+                    e
+                })
+                .map(|v| {
+                    tracing::info!("K8s authorizer created {:?}", v);
+                    v
+                })?,
+        )
+    } else {
+        None
+    };
 
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
         authorizer: authorizer.clone(),
@@ -169,7 +177,7 @@ async fn serve_inner<A: Authorizer>(
         publisher: CloudEventsPublisher::new(tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         token_verifier: if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-            Some(IdpVerifier::new(uri).await?)
+            Some(IdpVerifier::new(uri, CONFIG.openid_audience.clone()).await?)
         } else {
             None
         },

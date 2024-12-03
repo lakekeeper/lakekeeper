@@ -257,13 +257,13 @@ struct UpdateRoleAssignmentsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
-struct GetWarehouseResponse {
+struct GetWarehouseAuthPropertiesResponse {
     managed_access: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
-struct GetNamespaceResponse {
+struct GetNamespaceAuthPropertiesResponse {
     managed_access: bool,
 }
 
@@ -459,14 +459,14 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = GetWarehouseResponse),
+            (status = 200, body = GetWarehouseAuthPropertiesResponse),
     )
 )]
 async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseIdent>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-) -> Result<(StatusCode, Json<GetWarehouseResponse>)> {
+) -> Result<(StatusCode, Json<GetWarehouseAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -480,7 +480,7 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
 
     Ok((
         StatusCode::OK,
-        Json(GetWarehouseResponse { managed_access }),
+        Json(GetWarehouseAuthPropertiesResponse { managed_access }),
     ))
 }
 
@@ -557,14 +557,14 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = GetNamespaceResponse),
+            (status = 200, body = GetNamespaceAuthPropertiesResponse),
     )
 )]
 async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
     Path(namespace_id): Path<NamespaceIdentUuid>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-) -> Result<(StatusCode, Json<GetNamespaceResponse>)> {
+) -> Result<(StatusCode, Json<GetNamespaceAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -578,7 +578,7 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
 
     Ok((
         StatusCode::OK,
-        Json(GetNamespaceResponse { managed_access }),
+        Json(GetNamespaceAuthPropertiesResponse { managed_access }),
     ))
 }
 
@@ -1276,7 +1276,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     components(schemas(
         GetNamespaceAccessResponse,
         GetNamespaceAssignmentsResponse,
-        GetNamespaceResponse,
+        GetNamespaceAuthPropertiesResponse,
         GetProjectAccessResponse,
         GetProjectAssignmentsResponse,
         GetRoleAccessResponse,
@@ -1289,7 +1289,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         GetViewAssignmentsResponse,
         GetWarehouseAccessResponse,
         GetWarehouseAssignmentsResponse,
-        GetWarehouseResponse,
+        GetWarehouseAuthPropertiesResponse,
         NamespaceAction,
         NamespaceAssignment,
         NamespaceRelation,
