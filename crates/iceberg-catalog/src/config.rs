@@ -17,7 +17,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use veil::Redact;
 
-const DEFAULT_RESERVED_NAMESPACES: [&str; 2] = ["system", "examples"];
+const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
 lazy_static::lazy_static! {

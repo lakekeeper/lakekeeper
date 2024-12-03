@@ -1,6 +1,6 @@
 # Getting Started
 
-There are multiple ways to deploy Lakekeeper. You can use one of our [self-contained examples](#self-contained-examples), deploy on [Kubernetes](#Kubernetes) or deploy the [Binary](#Binary) directly.
+There are multiple ways to deploy Lakekeeper. You can use one of our [self-contained examples](#self-contained-examples), deploy on [Kubernetes](#kubernetes) or deploy the [Binary](#binary) directly.
 
 ## Deployment
 
@@ -95,7 +95,7 @@ We now create a new Warehouse by POSTing the request to the management API:
 curl -X POST http://localhost:8080/management/v1/warehouse -H "Content-Type: application/json" -d @create-warehouse-request.json
 ```
 
-If you want to use a different storage backend, see the [STORAGE.MD](STORAGE.MD) for example configurations.
+If you want to use a different storage backend, see the [Storage Guide](../docs/nightly/storage/) for example configurations.
 
 ### Connect Compute
 
