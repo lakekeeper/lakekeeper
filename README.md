@@ -28,15 +28,15 @@ The catalog is evolving quickly. Especially internal rust APIs are not stable an
 # Quickstart
 
 A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/lakekeeper?tab=info).
-We have prepared a self-contained docker-compose file to demonstrate the usage of `spark` with our catalog:
+We have prepared a minimal docker-compose file to demonstrate how to use the Lakekeeper catalog with common query engines.
 
 ```sh
 git clone https://github.com/lakekeeper/lakekeeper.git
-cd lakekeeper/minimal
+cd lakekeeper/examples/minimal
 docker compose up
 ```
 
-Then open your browser and head to `localhost:8888`.
+Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks.
 
 For more information on deployment, please check the [User Guide](USER_GUIDE.md).
 
