@@ -440,13 +440,13 @@ pub(crate) mod test {
 
                     #[sqlx::test]
                     async fn test_pagination_multiple_pages_hidden(pool: sqlx::PgPool) {
-                        let (ctx, ns_params) = $setup_fn(pool, 110, &[(35, 40),(109, 110)]).await;
+                        let (ctx, ns_params) = $setup_fn(pool, 200, &[(95, 150),(195,200)]).await;
 
                         let mut first_page = $server_typ::[<list_$typ s>](
                             ns_params.clone(),
                              serde_json::from_value::<$query_typ>(serde_json::json!(
                            {
-                            "pageSize": 40,
+                            "pageSize": 105,
                             "returnUuids": true,
                             }
                             )).unwrap(),
@@ -456,9 +456,9 @@ pub(crate) mod test {
                         .await
                         .unwrap();
 
-                        assert_eq!(first_page.$entity_ident.len(), 40);
+                        assert_eq!(first_page.$entity_ident.len(), 105);
 
-                        for i in (0..35).chain(40..45).rev() {
+                        for i in (0..95).chain(150..160).rev() {
                             assert_eq!(
                                 first_page.$entity_ident.pop().map($map_block),
                                 Some(format!("{i}"))
@@ -478,8 +478,8 @@ pub(crate) mod test {
                         .await
                         .unwrap();
 
-                        assert_eq!(next_page.$entity_ident.len(), 64);
-                        for i in (45..109).rev() {
+                        assert_eq!(next_page.$entity_ident.len(), 35);
+                        for i in (160..195).rev() {
                             assert_eq!(
                                 next_page.$entity_ident.pop().map($map_block),
                                 Some(format!("{i}"))

@@ -914,6 +914,7 @@ mod test {
             )
             .await
             .unwrap();
+
             CatalogServer::drop_view(
                 ViewParameters {
                     prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
