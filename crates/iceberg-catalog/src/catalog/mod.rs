@@ -226,9 +226,8 @@ where
         if (number_of_new_items < number_of_requested_items) && !page_was_authz_reduced {
             next_page_token = None;
             break;
-        } else {
-            next_page_token = n_page;
         }
+        next_page_token = n_page;
     }
 
     Ok((entities, entity_ids, next_page_token))
