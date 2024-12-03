@@ -459,7 +459,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = GetWarehouseResponse),
+            (status = 200, body = GetWarehouseAuthPropertiesResponse),
     )
 )]
 async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
@@ -557,7 +557,7 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = GetNamespaceResponse),
+            (status = 200, body = GetNamespaceAuthPropertiesResponse),
     )
 )]
 async fn get_namespace_by_id<C: Catalog, S: SecretStore>(

@@ -107,7 +107,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetNamespaceResponse'
+                $ref: '#/components/schemas/GetNamespaceAuthPropertiesResponse'
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
@@ -689,7 +689,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetWarehouseResponse'
+                $ref: '#/components/schemas/GetWarehouseAuthPropertiesResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
