@@ -683,6 +683,7 @@ mod tests {
                     ));
                 }
             }
+            trx.commit().await.unwrap();
         }
         (ctx, Some(Prefix(warehouse.warehouse_id.to_string())))
     }
