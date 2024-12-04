@@ -265,6 +265,7 @@ struct GetWarehouseAuthPropertiesResponse {
 #[serde(rename_all = "kebab-case")]
 struct GetNamespaceAuthPropertiesResponse {
     managed_access: bool,
+    managed_access_inherited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -476,7 +477,7 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
         )
         .await?;
 
-    let managed_access = get_managed_access(authorizer, &warehouse_id).await?;
+    let managed_access = get_managed_access(&authorizer, &warehouse_id).await?;
 
     Ok((
         StatusCode::OK,
@@ -574,11 +575,21 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
         )
         .await?;
 
-    let managed_access = get_managed_access(authorizer, &namespace_id).await?;
+    let managed_access = get_managed_access(&authorizer, &namespace_id).await?;
+    let managed_access_inherited = authorizer
+        .check(openfga_rs::CheckRequestTupleKey {
+            user: "user:*".to_string(),
+            relation: AllNamespaceRelations::ManagedAccessInheritance.to_string(),
+            object: namespace_id.to_openfga(),
+        })
+        .await?;
 
     Ok((
         StatusCode::OK,
-        Json(GetNamespaceAuthPropertiesResponse { managed_access }),
+        Json(GetNamespaceAuthPropertiesResponse {
+            managed_access,
+            managed_access_inherited,
+        }),
     ))
 }
 
@@ -1558,7 +1569,7 @@ async fn checked_write<RA: Assignment>(
 }
 
 async fn get_managed_access<T: OpenFgaEntity>(
-    authorizer: OpenFGAAuthorizer,
+    authorizer: &OpenFGAAuthorizer,
     entity: &T,
 ) -> OpenFGAResult<bool> {
     let tuples = authorizer
@@ -1582,7 +1593,7 @@ async fn set_managed_access<T: OpenFgaEntity>(
     entity: &T,
     managed: bool,
 ) -> OpenFGAResult<()> {
-    let has_managed_access = get_managed_access(authorizer.clone(), entity).await?;
+    let has_managed_access = get_managed_access(&authorizer, entity).await?;
     if managed == has_managed_access {
         return Ok(());
     }
@@ -1986,7 +1997,7 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
             let namespace_id = NamespaceIdentUuid::from(uuid::Uuid::now_v7());
-            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+            let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -1995,7 +2006,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+            let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -2004,7 +2015,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+            let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
             assert!(managed);
@@ -2019,7 +2030,7 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
             let warehouse_id = WarehouseIdent::from(uuid::Uuid::now_v7());
-            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+            let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -2028,7 +2039,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+            let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -2037,7 +2048,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+            let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();
             assert!(managed);

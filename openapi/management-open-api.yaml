@@ -1811,8 +1811,11 @@ components:
       type: object
       required:
       - managed-access
+      - managed-access-inherited
       properties:
         managed-access:
+          type: boolean
+        managed-access-inherited:
           type: boolean
     GetProjectAccessResponse:
       type: object
