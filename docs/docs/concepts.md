@@ -52,3 +52,8 @@ Projects can contain multiple Roles, allowing Roles to be reused in all Warehous
 ## Soft Deletion
 
 In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse.
+
+
+## Migration
+
+ToDo

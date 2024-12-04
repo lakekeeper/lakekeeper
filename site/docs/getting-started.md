@@ -29,18 +29,16 @@ All docker expose examples come with batteries included (Identity Provider, Stor
 
 Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8080` for the Lakekeeper UI.
 
-### Option 2: Kubernetes
+### Option 2: ☸️ Kubernetes
 We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values. To enable Authentication and Authorization, and external identity provider is required.
 
 A community driven [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 
 ### Option 3: Binary
 
-For single node deployments, you can also download the Binary for your architecture from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look something like this:
+For single node deployments, you can also download the Binary for your architecture from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look like this:
 
 ```bash
-export LAKEKEEPER__BASE_URI=http://localhost:8080
-export LAKEKEEPER__LISTEN_PORT=8080
 export LAKEKEEPER__PG_DATABASE_URL_READ="postgres://postgres_user:postgres_urlencoded_password@hostname:5432/catalog_database"
 export LAKEKEEPER__PG_DATABASE_URL_WRITE="postgres://postgres_user:postgres_urlencoded_password@hostname:5432/catalog_database"
 export LAKEKEEPER__PG_ENCRYPTION_KEY="MySecretEncryptionKeyThatIBetterNotLoose"
@@ -48,6 +46,12 @@ export LAKEKEEPER__PG_ENCRYPTION_KEY="MySecretEncryptionKeyThatIBetterNotLoose"
 ./lakekeeper migrate
 ./lakekeeper serve
 ```
+
+To expose Lakekeeper behind a reverse proxy, most deployments also set:
+```bash
+export LAKEKEEPER__BASE_URI=<https://<Url-where-Lakekeeper-is-externally-reachable>
+```
+The default `LAKEKEEPER__BASE_URI` is `https://localhost:8080`.
 
 ## First Steps
 

@@ -1,18 +1,19 @@
 site_name: docs/latest
 
 plugins:
-    - search
+  - search
 
 nav:
-    - Concepts: concepts.md
-    - User Guide:
-          - deployment.md
-          - bootstrap.md
-          - configuration.md
-          - storage.md
-          - production.md
-    - Security:
-          - authorization.md
-    - Contribute:
-          - developer-guide.md
-          - customize.md
+  - Concepts: concepts.md
+  - User Guide:
+      - deployment.md
+      - bootstrap.md
+      - configuration.md
+      - storage.md
+      - authentication.md
+      - authorization.md
+      - production.md
+
+  - Contribute:
+      - developer-guide.md
+      - customize.md
