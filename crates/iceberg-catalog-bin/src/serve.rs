@@ -201,6 +201,10 @@ async fn serve_inner<A: Authorizer>(
             get(|| async { axum::response::Redirect::permanent("/ui/") }),
         )
         .route(
+            "/",
+            get(|| async { axum::response::Redirect::permanent("/ui/") }),
+        )
+        .route(
             "/ui/index.html",
             get(|| async { axum::response::Redirect::permanent("/ui/") }),
         )
