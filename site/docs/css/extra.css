@@ -1,0 +1,21 @@
+.md-header {
+  background-color: #091f34;
+}
+.md-nav__title {
+  background-color: #091f34;
+}
+/* 
+:root {
+  --md-primary-fg-color: #091f34;
+  --md-primary-fg-color--dark: #091f34;
+} */
+
+.md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color: #091f34;
+}
+.md-nav__source {
+  background-color: #32485c;
+}
+.md-tabs {
+  background-color: #32485c;
+}
