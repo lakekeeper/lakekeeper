@@ -2,7 +2,7 @@
 members = [
     "crates/iceberg-catalog",
     "crates/iceberg-catalog-bin",
-    "crates/iceberg-ext"
+    "crates/iceberg-ext",
 ]
 resolver = "2"
 
@@ -14,16 +14,8 @@ rust-version = "1.80.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-rdkafka = { version = "0.36.2", default-features = false, features = [
-    "tokio",
-    "zstd",
-    "gssapi-vendored",
-    "curl-static",
-    "ssl-vendored",
-    "libz-static",
-] }
-async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 async-nats = "0.38.0"
+async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
@@ -48,7 +40,6 @@ google-cloud-auth = { version = "0.17.0", features = [
 ], default-features = false }
 google-cloud-token = "0.1.2"
 figment = { version = "0.10.19", features = ["env"] }
-figment_file_provider_adapter = "0.1.1"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"
@@ -92,7 +83,10 @@ http-body-util = "^0.1"
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
-kube = { version = "0.97", default-features = false, features = ["rustls-tls", "client"] }
+kube = { version = "0.97", default-features = false, features = [
+    "rustls-tls",
+    "client",
+] }
 k8s-openapi = { version = "0.23.0", features = ["v1_26"] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lru = "0.12.4"
@@ -108,7 +102,7 @@ sqlx = { version = "^0.8.2", default-features = false, features = [
     "uuid",
     "chrono",
 ] }
-thiserror = "1.0.63"
+thiserror = "2.0.0"
 tokio = { version = "1", default-features = false, features = [
     "signal",
     "rt-multi-thread",
@@ -123,6 +117,7 @@ tower-http = { version = "^0.6", features = [
 ] }
 tracing = { version = "^0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
 utoipa = { version = "4.2.3", features = [

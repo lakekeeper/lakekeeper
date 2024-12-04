@@ -1,20 +1,22 @@
 //! Contains Configuration of the service Module
+
+#![allow(clippy::ref_option)]
+
+use anyhow::{anyhow, Context};
+use http::HeaderValue;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::str::FromStr;
+use url::Url;
 
 use crate::service::task_queue::TaskQueueConfig;
 use crate::{ProjectIdent, WarehouseIdent};
-use anyhow::{anyhow, Context};
-use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
-use url::Url;
 use veil::Redact;
 
-use crate::service::event_publisher::kafka::KafkaConfig;
 const DEFAULT_RESERVED_NAMESPACES: [&str; 2] = ["system", "examples"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
@@ -36,14 +38,9 @@ fn get_config() -> DynAppConfig {
     #[cfg(test)]
     let prefixes = &["LAKEKEEPER_TEST__"];
 
-    let file_keys = &["kafka_config"];
-
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        let env = figment::providers::Env::prefixed(prefix).split("__");
-        config = config
-            .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
-            .merge(env);
+        config = config.merge(figment::providers::Env::prefixed(prefix).split("__"));
     }
 
     let mut config = config
@@ -67,6 +64,7 @@ fn get_config() -> DynAppConfig {
     config
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
@@ -133,12 +131,11 @@ pub struct DynAppConfig {
     #[redact]
     pub nats_token: Option<String>,
 
-    // ------------- KAFKA CLOUDEVENTS -------------
-    pub kafka_topic: Option<String>,
-    pub kafka_config: Option<KafkaConfig>,
-
     // ------------- AUTHENTICATION -------------
     pub openid_provider_uri: Option<Url>,
+    /// Expected audience for the provided token.
+    pub openid_audience: Option<String>,
+    pub enable_kubernetes_authentication: bool,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -212,6 +209,7 @@ where
         .transpose()
 }
 
+#[allow(clippy::ref_option)]
 fn serialize_origin<S>(value: &Option<Vec<HeaderValue>>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -327,9 +325,9 @@ impl Default for DynAppConfig {
             nats_user: None,
             nats_password: None,
             nats_token: None,
-            kafka_config: None,
-            kafka_topic: None,
             openid_provider_uri: None,
+            openid_audience: None,
+            enable_kubernetes_authentication: false,
             listen_port: 8080,
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,
@@ -522,6 +520,7 @@ where
     }))
 }
 
+#[allow(clippy::ref_option)]
 fn serialize_openfga_config<S>(
     value: &Option<OpenFGAConfig>,
     serializer: S,

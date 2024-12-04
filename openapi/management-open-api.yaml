@@ -35,7 +35,7 @@ paths:
               $ref: '#/components/schemas/BootstrapRequest'
         required: true
       responses:
-        '200':
+        '204':
           description: Server bootstrapped successfully
   /management/v1/default-project:
     get:
@@ -107,7 +107,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetNamespaceResponse'
+                $ref: '#/components/schemas/GetNamespaceAuthPropertiesResponse'
   /management/v1/permissions/namespace/{namespace_id}/access:
     get:
       tags:
@@ -689,7 +689,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetWarehouseResponse'
+                $ref: '#/components/schemas/GetWarehouseAuthPropertiesResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/access:
     get:
       tags:
@@ -1829,12 +1829,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NamespaceAssignment'
-    GetNamespaceResponse:
+    GetNamespaceAuthPropertiesResponse:
       type: object
       required:
       - managed-access
+      - managed-access-inherited
       properties:
         managed-access:
+          type: boolean
+        managed-access-inherited:
           type: boolean
     GetProjectAccessResponse:
       type: object
@@ -1961,6 +1964,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WarehouseAssignment'
+    GetWarehouseAuthPropertiesResponse:
+      type: object
+      required:
+      - managed-access
+      properties:
+        managed-access:
+          type: boolean
     GetWarehouseResponse:
       type: object
       required:

@@ -1,4 +1,6 @@
+use super::compression_codec::CompressionCodec;
 use crate::api::{ErrorModel, Result};
+use crate::retry::retry_fn;
 use crate::service::storage::path_utils;
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -6,8 +8,6 @@ use iceberg::io::FileIO;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use iceberg_ext::configs::Location;
 use serde::Serialize;
-
-use super::compression_codec::CompressionCodec;
 
 pub(crate) async fn write_metadata_file(
     metadata_location: &Location,
@@ -27,23 +27,17 @@ pub(crate) async fn write_metadata_file(
         .new_output(metadata_location)
         .map_err(IoError::FileCreation)?;
 
-    let mut writer = metadata_file
-        .writer()
-        .await
-        .map_err(IoError::FileWriterCreation)?;
-
     let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
 
     let metadata_bytes = compression_codec.compress(&buf[..])?;
 
-    writer
-        .write(metadata_bytes.into())
-        .await
-        .map_err(|e| IoError::FileWrite(Box::new(e)))?;
-
-    writer.close().await.map_err(IoError::FileClose)?;
-
-    Ok(())
+    retry_fn(|| async {
+        metadata_file
+            .write(metadata_bytes.clone().into())
+            .await
+            .map_err(IoError::FileWriterCreation)
+    })
+    .await
 }
 
 pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
@@ -54,12 +48,14 @@ pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result
         location.to_string()
     };
 
-    file_io
-        .delete(location)
-        .await
-        .map_err(IoError::FileDelete)?;
-
-    Ok(())
+    retry_fn(|| async {
+        file_io
+            .clone()
+            .delete(location.clone())
+            .await
+            .map_err(IoError::FileDelete)
+    })
+    .await
 }
 
 pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u8>, IoError> {
@@ -70,11 +66,18 @@ pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u
         file.to_string()
     };
 
-    let inp = file_io.new_input(file).map_err(IoError::FileCreation)?;
-    inp.read()
-        .await
-        .map_err(|e| IoError::FileRead(Box::new(e)))
-        .map(|r| r.to_vec())
+    retry_fn(|| async {
+        // InputFile isn't clone hence it's here
+        file_io
+            .clone()
+            .new_input(file.clone())
+            .map_err(IoError::FileCreation)?
+            .read()
+            .await
+            .map_err(|e| IoError::FileRead(Box::new(e)))
+            .map(Into::into)
+    })
+    .await
 }
 
 pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
@@ -85,12 +88,14 @@ pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<
         location.to_string()
     };
 
-    file_io
-        .remove_all(location)
-        .await
-        .map_err(IoError::FileRemoveAll)?;
-
-    Ok(())
+    retry_fn(|| async {
+        file_io
+            .clone()
+            .remove_all(location.clone())
+            .await
+            .map_err(IoError::FileRemoveAll)
+    })
+    .await
 }
 
 pub(crate) const DEFAULT_LIST_LOCATION_PAGE_SIZE: usize = 1000;
@@ -102,21 +107,29 @@ pub(crate) async fn list_location<'a>(
 ) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
     let location = path_utils::reduce_scheme_string(location.as_str(), false);
     tracing::debug!("Listing location: {}", location);
-    let entries = file_io
-        .list_paginated(
-            format!("{}/", location.trim_end_matches('/')).as_str(),
-            true,
-            page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE),
-        )
-        .await
-        .map_err(IoError::List)?
-        .map(|res| match res {
-            Ok(entries) => Ok(entries
-                .into_iter()
-                .map(|it| it.path().to_string())
-                .collect()),
-            Err(e) => Err(IoError::List(e)),
-        });
+    let location = format!("{}/", location.trim_end_matches('/'));
+    let size = page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE);
+
+    let entries = retry_fn(|| async {
+        file_io
+            .list_paginated(location.clone().as_str(), true, size)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    ?e,
+                    "Failed to list files in location, gonna retry three times.."
+                );
+                IoError::List(e)
+            })
+    })
+    .await?
+    .map(|res| match res {
+        Ok(entries) => Ok(entries
+            .into_iter()
+            .map(|it| it.path().to_string())
+            .collect()),
+        Err(e) => Err(IoError::List(e)),
+    });
     Ok(entries.boxed())
 }
 

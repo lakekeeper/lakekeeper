@@ -257,14 +257,15 @@ struct UpdateRoleAssignmentsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
-struct GetWarehouseResponse {
+struct GetWarehouseAuthPropertiesResponse {
     managed_access: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
-struct GetNamespaceResponse {
+struct GetNamespaceAuthPropertiesResponse {
     managed_access: bool,
+    managed_access_inherited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -297,7 +298,7 @@ async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &role_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -329,7 +330,7 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &OPENFGA_SERVER,
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -366,7 +367,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &project_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -402,7 +403,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &project_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -438,7 +439,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &warehouse_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -459,14 +460,14 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
         ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
-            (status = 200, body = GetWarehouseResponse),
+            (status = 200, body = GetWarehouseAuthPropertiesResponse),
     )
 )]
 async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
     Path(warehouse_id): Path<WarehouseIdent>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-) -> Result<(StatusCode, Json<GetWarehouseResponse>)> {
+) -> Result<(StatusCode, Json<GetWarehouseAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -476,11 +477,11 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
         )
         .await?;
 
-    let managed_access = get_managed_access(authorizer, &warehouse_id).await?;
+    let managed_access = get_managed_access(&authorizer, &warehouse_id).await?;
 
     Ok((
         StatusCode::OK,
-        Json(GetWarehouseResponse { managed_access }),
+        Json(GetWarehouseAuthPropertiesResponse { managed_access }),
     ))
 }
 
@@ -557,14 +558,14 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
     responses(
-            (status = 200, body = GetNamespaceResponse),
+            (status = 200, body = GetNamespaceAuthPropertiesResponse),
     )
 )]
 async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
     Path(namespace_id): Path<NamespaceIdentUuid>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
-) -> Result<(StatusCode, Json<GetNamespaceResponse>)> {
+) -> Result<(StatusCode, Json<GetNamespaceAuthPropertiesResponse>)> {
     let authorizer = api_context.v1_state.authz;
     authorizer
         .require_action(
@@ -574,11 +575,21 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
         )
         .await?;
 
-    let managed_access = get_managed_access(authorizer, &namespace_id).await?;
+    let managed_access = get_managed_access(&authorizer, &namespace_id).await?;
+    let managed_access_inherited = authorizer
+        .check(openfga_rs::CheckRequestTupleKey {
+            user: "user:*".to_string(),
+            relation: AllNamespaceRelations::ManagedAccessInheritance.to_string(),
+            object: namespace_id.to_openfga(),
+        })
+        .await?;
 
     Ok((
         StatusCode::OK,
-        Json(GetNamespaceResponse { managed_access }),
+        Json(GetNamespaceAuthPropertiesResponse {
+            managed_access,
+            managed_access_inherited,
+        }),
     ))
 }
 
@@ -606,7 +617,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &namespace_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -642,7 +653,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &table_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -678,7 +689,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
         authorizer,
         metadata.actor(),
         &view_id.to_openfga(),
-        &query.principal,
+        query.principal.as_ref(),
     )
     .await?;
 
@@ -1276,7 +1287,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     components(schemas(
         GetNamespaceAccessResponse,
         GetNamespaceAssignmentsResponse,
-        GetNamespaceResponse,
+        GetNamespaceAuthPropertiesResponse,
         GetProjectAccessResponse,
         GetProjectAssignmentsResponse,
         GetRoleAccessResponse,
@@ -1289,7 +1300,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         GetViewAssignmentsResponse,
         GetWarehouseAccessResponse,
         GetWarehouseAssignmentsResponse,
-        GetWarehouseResponse,
+        GetWarehouseAuthPropertiesResponse,
         NamespaceAction,
         NamespaceAssignment,
         NamespaceRelation,
@@ -1438,7 +1449,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     authorizer: OpenFGAAuthorizer,
     actor: &Actor,
     object: &str,
-    for_principal: &Option<UserOrRole>,
+    for_principal: Option<&UserOrRole>,
 ) -> OpenFGAResult<Vec<A>> {
     let openfga_actor = actor.to_openfga();
     let openfga_object = object.to_string();
@@ -1464,7 +1475,6 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 
     let actions = A::iter().collect::<Vec<_>>();
     let for_principal = for_principal
-        .as_ref()
         .map(super::entities::OpenFgaEntity::to_openfga)
         .unwrap_or(openfga_actor.to_string());
 
@@ -1559,7 +1569,7 @@ async fn checked_write<RA: Assignment>(
 }
 
 async fn get_managed_access<T: OpenFgaEntity>(
-    authorizer: OpenFGAAuthorizer,
+    authorizer: &OpenFGAAuthorizer,
     entity: &T,
 ) -> OpenFGAResult<bool> {
     let tuples = authorizer
@@ -1583,7 +1593,7 @@ async fn set_managed_access<T: OpenFgaEntity>(
     entity: &T,
     managed: bool,
 ) -> OpenFGAResult<()> {
-    let has_managed_access = get_managed_access(authorizer.clone(), entity).await?;
+    let has_managed_access = get_managed_access(&authorizer, entity).await?;
     if managed == has_managed_access {
         return Ok(());
     }
@@ -1741,7 +1751,7 @@ mod tests {
             let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
             let actor = Actor::Principal(user_id.clone());
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1760,7 +1770,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1778,7 +1788,7 @@ mod tests {
                 assumed_role: role_id,
             };
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1797,7 +1807,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, &None)
+                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1829,7 +1839,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &OPENFGA_SERVER,
-                &Some(role_id.into()),
+                Some(&role_id.into()),
             )
             .await
             .unwrap();
@@ -1852,7 +1862,7 @@ mod tests {
                 authorizer.clone(),
                 &actor,
                 &OPENFGA_SERVER,
-                &Some(role_id.into()),
+                Some(&role_id.into()),
             )
             .await
             .unwrap();
@@ -1987,7 +1997,7 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
             let namespace_id = NamespaceIdentUuid::from(uuid::Uuid::now_v7());
-            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+            let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -1996,7 +2006,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+            let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -2005,7 +2015,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &namespace_id)
+            let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
             assert!(managed);
@@ -2020,7 +2030,7 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
             let warehouse_id = WarehouseIdent::from(uuid::Uuid::now_v7());
-            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+            let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -2029,7 +2039,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+            let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();
             assert!(!managed);
@@ -2038,7 +2048,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let managed = get_managed_access(authorizer.clone(), &warehouse_id)
+            let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();
             assert!(managed);

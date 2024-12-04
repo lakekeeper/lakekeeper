@@ -1,7 +1,7 @@
 use super::commit_tables::apply_commit;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer, PageStatus,
+    require_warehouse_id, CatalogServer,
 };
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{
@@ -18,7 +18,9 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction};
 use crate::service::contract_verification::{ContractVerification, ContractVerificationOutcome};
 use crate::service::event_publisher::{CloudEventsPublisher, EventMetadata};
-use crate::service::storage::{StorageLocations as _, StoragePermissions, StorageProfile};
+use crate::service::storage::{
+    StorageLocations as _, StoragePermissions, StorageProfile, ValidationError,
+};
 use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
 use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
 use crate::service::TabularIdentUuid;
@@ -36,6 +38,7 @@ use std::str::FromStr as _;
 
 use crate::catalog;
 use crate::catalog::tabular::list_entities;
+use crate::retry::retry_fn;
 use http::StatusCode;
 use iceberg::spec::{
     FormatVersion, MetadataLog, SchemaId, SortOrder, TableMetadata, TableMetadataBuildResult,
@@ -222,20 +225,38 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         let file_io = storage_profile.file_io(storage_secret.as_ref())?;
-
-        crate::service::storage::check_location_is_empty(
-            &file_io,
-            &table_location,
-            storage_profile,
-            || crate::service::storage::ValidationError::InvalidLocation {
-                reason: "Unexpected files in location, tabular locations have to be empty"
-                    .to_string(),
-                location: table_location.to_string(),
-                source: None,
-                storage_type: storage_profile.storage_type(),
-            },
-        )
-        .await?;
+        retry_fn(|| async {
+            match crate::service::storage::check_location_is_empty(
+                &file_io,
+                &table_location,
+                storage_profile,
+                || crate::service::storage::ValidationError::InvalidLocation {
+                    reason: "Unexpected files in location, tabular locations have to be empty"
+                        .to_string(),
+                    location: table_location.to_string(),
+                    source: None,
+                    storage_type: storage_profile.storage_type(),
+                },
+            )
+            .await
+            {
+                Err(e @ ValidationError::IoOperationFailed(_, _)) => {
+                    tracing::warn!(
+                        "Error while checking location is empty: {e}, retrying up to three times.."
+                    );
+                    Err(e)
+                }
+                Ok(()) => {
+                    tracing::debug!("Location is empty");
+                    Ok(Ok(()))
+                }
+                Err(other) => {
+                    tracing::error!("Unrecoverable error: {other:?}");
+                    Ok(Err(other))
+                }
+            }
+        })
+        .await??;
 
         if let Some(metadata_location) = &metadata_location {
             let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
@@ -414,7 +435,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             storage_secret_ident,
             storage_profile,
         } = remove_table(&table_id, &table, &mut metadatas)?;
-        require_not_staged(&metadata_location)?;
+        require_not_staged(metadata_location.as_ref())?;
 
         let table_location =
             parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -457,7 +478,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<CommitTableResponse> {
         request.identifier = Some(determine_table_ident(
             parameters.table,
-            &request.identifier,
+            request.identifier.as_ref(),
         )?);
         let t = commit_tables_internal(
             parameters.prefix,
@@ -927,7 +948,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 expired_metadata_logs: mut this_expired,
             } = apply_commit(
                 previous_table.table_metadata.clone(),
-                &previous_table.metadata_location,
+                previous_table.metadata_location.as_ref(),
                 &change.requirements,
                 change.updates.clone(),
             )?;
@@ -1237,7 +1258,7 @@ pub(crate) struct TableMetadataDiffs {
 
 pub(crate) fn determine_table_ident(
     parameters_ident: TableIdent,
-    request_ident: &Option<TableIdent>,
+    request_ident: Option<&TableIdent>,
 ) -> Result<TableIdent> {
     let Some(identifier) = request_ident else {
         return Ok(parameters_ident);
@@ -1347,7 +1368,7 @@ fn require_table_id(
     })
 }
 
-fn require_not_staged<T>(metadata_location: &Option<T>) -> Result<()> {
+fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
     if metadata_location.is_none() {
         return Err(ErrorModel::not_found(
             "Table not found or staged.",
@@ -1594,6 +1615,8 @@ mod test {
     use std::collections::HashMap;
     use uuid::Uuid;
 
+    use crate::catalog::test::impl_pagination_tests;
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use iceberg_ext::configs::Location;
     use std::str::FromStr;
 
@@ -2478,6 +2501,68 @@ mod test {
         assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
+
+    async fn pagination_test_setup(
+        pool: PgPool,
+        n_tables: usize,
+        hidden_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        NamespaceParameters,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+        let base_location = prof.base_location().unwrap();
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        for i in 0..n_tables {
+            let mut create_request = create_request(Some(format!("{i}")));
+            create_request.location = Some(format!("{base_location}/bucket/{i}"));
+            let tab = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request,
+                DataAccess::none(),
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            for (start, end) in hidden_ranges.iter().copied() {
+                if i >= start && i < end {
+                    hiding_mock.hide(&format!("table:{}", tab.metadata.uuid()));
+                }
+            }
+        }
+
+        (ctx, ns_params)
+    }
+
+    impl_pagination_tests!(
+        table,
+        pagination_test_setup,
+        CatalogServer,
+        ListTablesQuery,
+        identifiers,
+        |tid| { tid.name }
+    );
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {

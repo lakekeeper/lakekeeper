@@ -11,7 +11,7 @@ use crate::service::{ErrorModel, Result};
 /// Apply the commits to table metadata.
 pub(super) fn apply_commit(
     metadata: TableMetadata,
-    metadata_location: &Option<Location>,
+    metadata_location: Option<&Location>,
     requirements: &[TableRequirement],
     updates: Vec<TableUpdate>,
 ) -> Result<TableMetadataBuildResult> {
@@ -38,7 +38,7 @@ pub(super) fn apply_commit(
     let previous_uuid = metadata.uuid();
     let mut builder = TableMetadataBuilder::new_from_metadata(
         metadata,
-        metadata_location.clone().map(|l| l.to_string()),
+        metadata_location.map(std::string::ToString::to_string),
     );
 
     // Update!

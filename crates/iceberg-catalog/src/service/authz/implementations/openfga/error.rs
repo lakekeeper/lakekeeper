@@ -49,7 +49,7 @@ pub enum OpenFGAError {
     },
     #[error("Authentication to Authorization system failed")]
     Unauthenticated(tonic::Status),
-    #[error("Unexpected entity for type {r#type:?}: {value}")]
+    #[error("Unexpected entity for type {type:?}: {value}")]
     UnexpectedEntity { r#type: Vec<FgaType>, value: String },
     #[error("Unknown type: {0}")]
     UnknownType(String),

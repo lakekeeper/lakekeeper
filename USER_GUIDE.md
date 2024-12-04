@@ -8,7 +8,7 @@ There are multiple ways to deploy the catalog. It ships as a single standalone b
 
 ## Deployment on Kubernetes
 
-We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/hansetag/tip-catalog-charts/tree/main/charts/tip-catalog). Please check the Helm Chart's documentation for possible values.
+We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values.
 
 ## Deployment Standalone
 
@@ -20,7 +20,7 @@ A basic configuration via environment variables would look something like this:
 export ICEBERG_REST__BASE_URI=http://localhost:8080
 export ICEBERG_REST__PG_DATABASE_URL_READ="postgres://postgres_user:postgres_urlencoded_password@hostname:5432/catalog_database"
 export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgres://postgres_user:postgres_urlencoded_password@hostname:5432/catalog_database"
-export ICEBERG_REST__PG_ENCRYPTION_KEY="MySecretEncryptionKeyThatIBetterNotLoose"
+export ICEBERG_REST__PG_ENCRYPTION_KEY="MySecretEncryptionKeyThatIBetterNotLose"
 ```
 
 Now we need to migrate the Database:
