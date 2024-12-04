@@ -11,6 +11,10 @@ help:
 serve: 
   dev/serve.sh
 
+# Deploy the docs site to GitHub Pages.
+deploy: 
+  dev/deploy.sh
+
 # Clean and build the docs site locally.
 build: 
   dev/build.sh

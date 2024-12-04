@@ -1,0 +1,28 @@
+name: site
+on:
+  #  Uncomment this when we're ready to switch this to an automated push to main
+  #
+  #  push:
+  #    branches:
+  #      - main
+  #    paths:
+  #      - docs/**
+  #      - site/**
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - uses: extractions/setup-just@v2
+        with:
+          just-version: 1.x
+      - name: Deploy Lakekeeper documentation
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          just deploy
+        working-directory: ./site

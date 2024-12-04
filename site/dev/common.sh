@@ -1,5 +1,3 @@
-
-
 set -e
 
 export REMOTE="lakekeeper_docs"
@@ -59,7 +57,6 @@ install_deps () {
 # Arguments:
 #   $1: Argument to check for emptiness
 assert_not_empty () {
-    
     if [ -z "$1" ]; then
         echo "No argument supplied"
         
@@ -110,48 +107,81 @@ create_nightly () {
     cd -
 }
 
+# Finds and retrieves the latest version of the documentation based on the directory structure.
+# Assumes the documentation versions are numeric folders within 'docs/docs/'.
+get_latest_version () {
+  # Find the latest numeric folder within 'docs/docs/' structure
+  local latest=$(ls -d docs/docs/[0-9]* | sort -V | tail -1)
+
+  # Extract the version number from the latest directory path
+  local latest_version=$(basename "${latest}")
+  
+  # Return the latest version number
+  echo "${latest_version}"
+}
+
+# Creates a 'latest' version of the documentation based on a specified ICEBERG_VERSION.
+# Arguments:
+#   $1: LAKEKEEPER_VERSION - The version number of the documentation to be treated as the latest.
+create_latest () {
+  echo " --> create latest"
+
+  local LAKEKEEPER_VERSION="$1"
+
+  assert_not_empty "${LAKEKEEPER_VERSION}"
+
+
+  # Remove any existing 'latest' directory and recreate it
+  rm -rf docs/docs/latest/
+  mkdir docs/docs/latest/
+
+  # Create symbolic links and copy configuration files for the 'latest' documentation
+  ln -s "../${LAKEKEEPER_VERSION}/docs" docs/docs/latest/docs
+  cp "docs/docs/${LAKEKEEPER_VERSION}/mkdocs.yml" docs/docs/latest/
+
+  cd docs/docs/
+
+  # Update version information within the 'latest' documentation
+  update_version "latest"
+  cd -
+}
+
 # Sets up local worktrees for the documentation and performs operations related to different versions.
 pull_versioned_docs () {
-    echo " --> pull versioned docs"
-    
-    # Ensure the remote repository for documentation exists and is up-to-date
-    #create_or_update_docs_remote
-    
-    # Add local worktrees for documentation and javadoc either from the remote repository
-    # or from a local branch.
-    #local docs_branch="${ICEBERG_VERSIONED_DOCS_BRANCH:-${REMOTE}/docs}"
-    # git worktree add -f docs/docs "${docs_branch}"
-    
-    # Retrieve the latest version of documentation for processing
-    #local latest_version=$(get_latest_version)
-    
-    # Output the latest version for debugging purposes
-    #echo "Latest version is: ${latest_version}"
-    
-    # Create the 'latest' version of documentation
-    #create_latest "${latest_version}"
-    
-    # Create the 'nightly' version of documentation
-    create_nightly
-    
+  echo " --> pull versioned docs"
+
+  # Ensure the remote repository for documentation exists and is up-to-date
+  create_or_update_docs_remote
+
+  # Add local worktrees for documentation and javadoc either from the remote repository
+  # or from a local branch.
+  local docs_branch="${LAKEKEEPER_VERSIONED_DOCS_BRANCH:-${REMOTE}/docs}"
+  git worktree add -f docs/docs "${docs_branch}"
+
+  # Retrieve the latest version of documentation for processing
+  local latest_version=$(get_latest_version)
+
+  # Create the 'latest' version of documentation
+  create_latest "${latest_version}"
+
+  # Create the 'nightly' version of documentation
+  create_nightly
 }
 
 clean () {
-    echo " --> clean"
-    
-    # Temporarily disable script exit on errors to ensure cleanup continues
-    set +e
-    
-    # Remove temp directories and related Git worktrees
-    #
-    # examples
-    #
-    # e.g. rm -rf docs/docs/latest &> /dev/null
-    # e.g. git worktree remove docs/docs &> /dev/null
-    rm -rf docs/docs/nightly &> /dev/null
-    
-    # Remove any remaining artifacts
-    rm -rf site/
-    
-    set -e # Re-enable script exit on errors
+  echo " --> clean"
+
+  # Temporarily disable script exit on errors to ensure cleanup continues
+  set +e
+
+  # Remove temp directories and related Git worktrees
+  rm -rf docs/docs/latest &> /dev/null
+  git worktree remove docs/docs &> /dev/null
+
+  rm -rf docs/docs/nightly &> /dev/null
+
+  # Remove any remaining artifacts
+  rm -rf site/
+
+  set -e # Re-enable script exit on errors
 }
