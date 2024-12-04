@@ -25,6 +25,8 @@ Deploy Lakekeeper using Docker Compose for a quick and easy setup. This method i
 
 To run Lakekeeper with Authentication and Authorization an external Identity Provider is required. Please check the [Authentication Guide](./authentication.md) for more information.
 
+ToDo: Compose
+
 === "With Authentication & Authorization"
 
     ```bash

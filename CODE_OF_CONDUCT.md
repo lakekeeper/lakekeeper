@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Lakekeeper adheres to the [Rust Code of Conduct][coc]. This describes the _minimum_ behavior expected from all contributors. Instances of violations of the Code of Conduct can be reported by contacting the project team at [moderation@hansetag.com](mailto:moderation@hansetag.com).
+Lakekeeper adheres to the [Rust Code of Conduct][coc]. This describes the _minimum_ behavior expected from all contributors. Instances of violations of the Code of Conduct can be reported by contacting the project team at [moderation@vakamo.com](mailto:moderation@vakamo.com).
 
 [coc]: https://www.rust-lang.org/policies/code-of-conduct
 

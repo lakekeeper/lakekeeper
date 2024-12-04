@@ -1,20 +1,23 @@
 # Authorization
-Authorization can only be enabled if Authentication is setup as well. Please check the [Authentication Docs](ToDo) for more information.
+
+Authorization can only be enabled if Authentication is set up. Please check the [Authentication Docs](./authentication.md) for more information.
+
+Lakekeeper's default permission model uses the CNCF project [OpenFGA](http://openfga.dev) to store and evaluate permissions. OpenFGA enables a powerful permission model with bi-directional inheritance, essential for managing modern lakehouses with hierarchical namespaces. Our model balances usability and control for administrators.
+
+Please check the [Authorization Configuration](./configuration.md#authorization) for details on enabling Authorization with Lakekeeper.
 
 ## Grants
-Lakekeeper's default permission model uses the CNCF project [OpenFGA](http://openfga.dev) to store and evaluate permissions. OpenFGA allows us to implement a powerful permission model with bi-directional inheritance that is required to efficiently manage modern lakehouses with hierarchical namespaces. With our permission model, we try to find the balance between usability and control for administrators.
-
 The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on Github](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/v1/schema.fga). The following grants are available:
 
-Entity    | Grant
-----------|------------------------------------------------------------------------------------------
-server    | admin, operator
-project   | project_admin, security_admin, data_admin, role_creator, describe, select, create, modify
-warehouse | ownership, pass_grants, manage_grants, describe, select, create, modify
-namespace | ownership, pass_grants, manage_grants, describe, select, create, modify
-table     | ownership, pass_grants, manage_grants, describe, select, modify
-view      | ownership, pass_grants, manage_grants, describe, modify
-role      | assignee, ownership
+| Entity    | Grant                                                            |
+|-----------|------------------------------------------------------------------|
+| server    | admin, operator                                                  |
+| project   | project_admin, security_admin, data_admin, role_creator, describe, select, create, modify |
+| warehouse | ownership, pass_grants, manage_grants, describe, select, create, modify |
+| namespace | ownership, pass_grants, manage_grants, describe, select, create, modify |
+| table     | ownership, pass_grants, manage_grants, describe, select, modify  |
+| view      | ownership, pass_grants, manage_grants, describe, modify          |
+| role      | assignee, ownership                                              |
 
 
 ### Ownership
