@@ -109,3 +109,6 @@ extra:
       link: https://discord.gg/jkAGG8p93B
     - icon: fontawesome/brands/github
       link: https://github.com/lakekeeper/lakekeeper
+
+extra_css:
+  - css/extra.css
