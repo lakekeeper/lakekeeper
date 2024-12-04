@@ -1,3 +1,5 @@
+#![allow(clippy::borrow_interior_mutable_const)]
+
 use clap::{Parser, Subcommand};
 use iceberg_catalog::api::management::v1::api_doc as v1_api_doc;
 use iceberg_catalog::service::authz::implementations::openfga::UnauthenticatedOpenFGAAuthorizer;
@@ -8,6 +10,8 @@ use tracing_subscriber::EnvFilter;
 
 mod healthcheck;
 mod serve;
+#[cfg(feature = "ui")]
+mod ui;
 mod wait_for_db;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
