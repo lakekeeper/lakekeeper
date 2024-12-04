@@ -10,6 +10,7 @@ Start by reading [Getting Started](getting-started.md), then check [Documentatio
 ## Features
 
 - **Written in Rust**: Single all-in-one binary - no JVM or Python env required.
+- **User Friendly**: We offer a UI, Helm-Charts, Binary executables for all major platform, a comprehensive documentation and much more. Let us know if you miss anything!
 - **Storage Access Management**: Lakekeeper secures access to your data using [Vended-Credentials](ToDo) and [remote signing for S3](ToDo). All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
 - **Openid Provider Integration**: Use your own identity provider for authentication, just set `LAKEKEEPER__OPENID_PROVIDER_URI` and you are good to go.
 - **Native Kubernetes Integration**: Use our helm chart to easily deploy high available setups and natively authenticate kubernetes service accounts with Lakekeeper. Kubernetes and OpenID authentication can be used simultaneously. A [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
@@ -20,5 +21,6 @@ Start by reading [Getting Started](getting-started.md), then check [Documentatio
 - **Well-Tested**: Integration-tested with `spark`, `pyiceberg`, `trino` and `starrocks`.
 - **High Available & Horizontally Scalable**: There is no local state - the catalog can be scaled horizontally easily.
 - **Fine Grained Access (FGA):** Lakekeeper's default Authorization system leverages [OpenFGA](https://openfga.dev/). If your company already has a different system in place, you can integrate with it by implementing a handful of methods in the `Authorizer` trait.
+- **Ecosystem First**: We are not bound to a vendor. We care about the whole ecosystem and not just a single query engine.
 
 If you are missing something, we would love to hear about it in a [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/new).

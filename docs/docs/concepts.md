@@ -11,7 +11,7 @@ In addition to entities defined in the Apache Iceberg specification or the REST 
 </figure>
 <br>
 
-Project, Server, User and Roles are entities unknown to the Iceberg Rest Specification.Lakekeeper serves two APIs:
+Project, Server, User and Roles are entities unknown to the Iceberg Rest Specification. Lakekeeper serves two APIs:
 
 1. The Iceberg REST API is served at endpoints prefixed with `/catalog`. External query engines connect to this API to interact with the Lakekeeper. Lakekeeper also implements the S3 remote signing API which is hosted at `/<warehouse-id>/v1/aws/s3/sign`. ToDo: Swagger
 1. The Lakekeeper Management API is served at endpoints prefixed with `/management`. It is used to configure Lakekeeper and manage entities that are not part of the Iceberg REST Catalog specification, such as permissions.
@@ -39,7 +39,7 @@ Each Namespace can contain multiple Tables and Views. When creating new Tables a
 ### Users
 Lakekeeper is no Identity Provider. The identities of users are exclusively managed via an external Identity Provider to ensure compliance with basic security standards. Lakekeeper does not store any Password / Certificates / API Keys or any other secret that grants access to data for users. Instead, we only store Name, Email and type of users with the sole purpose of providing a convenient search while assigning privileges.
 
-Users can be provisioned to lakekeeper by either of the following endpoints:
+Users can be provisioned to Lakekeeper by either of the following endpoints:
 
 * Explicit user creation via the POST `/management/user` endpoint. This endpoint is called automatically by the UI upon login. Thus, users are "searchable" after their first login to the UI.
 * Implicit on-the-fly creation when calling GET `/catalog/v1/config` (Todo check). This can be used to register technical users simply by connecting to the Lakekeeper with your favorite tool (i.e. Spark). The initial connection will probably fail because privileges are missing to use this endpoint, but the user is provisioned anyway so that privileges can be assigned before re-connecting.
@@ -56,4 +56,6 @@ In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled 
 
 ## Migration
 
-ToDo
+Migration is a crucial step that must be performed before starting the Lakekeeper. It initializes the persistent backend storage and, if enabled, the authorization system. 
+
+For each Lakekeeper update, migration must be executed before the `serve` command can be called. This ensures that all necessary updates and configurations are applied to the system. It is possible to skip Lakekeeper versions during migration.

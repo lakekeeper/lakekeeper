@@ -1,6 +1,6 @@
 # Getting Started
 
-There are multiple ways to deploy Lakekeeper. You can use one of our [self-contained examples](#option-1-examples), deploy on [Kubernetes](#option-2-kubernetes) or deploy the [Binary](#option-3-binary) directly.
+There are multiple ways to deploy Lakekeeper. You can use one of our [self-contained examples](#option-1-examples), deploy on [Kubernetes](#option-2-kubernetes), deploy the pre-build [Binary](#option-3-binary) directly or [compile Lakekeeper yourself](#option-4-build-from-sources).
 
 ## Deployment
 
@@ -30,11 +30,11 @@ All docker expose examples come with batteries included (Identity Provider, Stor
 Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8080` for the Lakekeeper UI.
 
 ### Option 2: ☸️ Kubernetes
-We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values. To enable Authentication and Authorization, and external identity provider is required.
+We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values. To enable Authentication and Authorization, an external identity provider is required.
 
 A community driven [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 
-### Option 3: Binary
+### Option 3: ⚙️ Binary
 
 For single node deployments, you can also download the Binary for your architecture from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look like this:
 
@@ -53,6 +53,9 @@ export LAKEKEEPER__BASE_URI=<https://<Url-where-Lakekeeper-is-externally-reachab
 ```
 The default `LAKEKEEPER__BASE_URI` is `https://localhost:8080`.
 
+### Option 4: 👨‍💻 Build from Sources
+To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](../docs/nightly/developer-guide/) for more information. 
+
 ## First Steps
 
 Now that the catalog is up-and-running, the following endpoints are available:
@@ -65,12 +68,12 @@ Now that the catalog is up-and-running, the following endpoints are available:
 ### Bootstrapping
 Our self-contained docker compose examples are already bootstrapped and require no further actions.
 
-After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the bootstrap endpoint. Among others, bootstrapping sets the initial administrator of lakekeeper and creates the first project. Please find more information on bootstrapping in the [Bootstrap Docs](../docs/nightly/bootstrap/).
+After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the bootstrap endpoint. Among others, bootstrapping sets the initial administrator of Lakekeeper and creates the first project. Please find more information on bootstrapping in the [Bootstrap Docs](../docs/nightly/bootstrap/).
 
 ### Creating a Warehouse
-Now that the server is running, we need to create a new warehouse. We recommend to do this via the UI. Alternatively, we can use the REST-API directly.
+Now that the server is running, we need to create a new warehouse. We recommend to do this via the UI.
 
-For an S3 backed warehouse, create a file called `create-warehouse-request.json`:
+Alternatively, we can use the REST-API directly. For an S3 backed warehouse, create a file called `create-warehouse-request.json`:
 
 ```json
 {
