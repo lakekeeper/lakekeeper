@@ -13,14 +13,58 @@ If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify acces
 In the following section we describe common setups for popular IdPs. Please refer to the documentation of your IdP for further information.
 
 ### Entra-ID (Azure)
-We are creating two App-Registrations: One for Lakekeeper and a second one for a machine client (Spark) to access Lakekeeper.
+We are creating three App-Registrations: One for Lakekeeper itself and a second one for a machine client (Spark) to access Lakekeeper.
 
-#### 1. Lakekeeper Application
+#### App 1: Lakekeeper Application
+
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper`
-    - **Redirect URI**:
+    - **Redirect URI**: Add the URL where the Lakekeeper UI is reachable for the user suffixed by `/callback`. E.g.: `http://localhost:8181/ui/callback`
+2. When the App Registration is created, select "Manage" -> "Expose an API" and on the top select "Add" beside `Application ID URI`. ![](../../../assets/idp-azure-application-id-uri.png) Note down the `Application ID URI`.
+3. In the "Overview" page of the "App Registration" note down the `Application (client) ID`. In the top bar click on "Endpoints" and copy the `Authority URL`
 
-ToDo
+We are now ready to deploy Lakekeeper and login via the UI. Set the following environment variables / configurations.
+We are using one Application to secure the Lakekeeper API and login with UI using public flows (Authorization Code Flow):
+```bash
+LAKEKEEPER__BASE_URI=<URI where lakekeeper is reachable, in my example http://localhost:8181>
+LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID from step 3>
+LAKEKEEPER__OPENID_AUDIENCE="<Client ID from step 3>"
+LAKEKEEPER__UI__IDP_CLIENT_ID="<Client ID from step 3>"
+LAKEKEEPER__UI__IDP_SCOPE=".default oidc profile email"
+LAKEKEEPER__UI__IDP_RESOURCE="<Client ID from step 3>"
+```
+Before continuing with App 2, we recommend to create a first Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 2.
+
+#### App 2: Machine User / Spark
+
+1. Create a new "App Registration"
+    - **Name**: choose any, for this example we choose `Spark`
+    - **Redirect URI**: Leave empty - we are going to use the Client Credential Flow
+2. When the App Registration is created, select "Manage" -> "Certificates & secrets" and create a "New client secret". Note down the secrets "Value".
+
+That's it! We can now use the second App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
+
+```python
+import pyiceberg.catalog
+import pyiceberg.catalog.rest
+import pyiceberg.typedef
+
+catalog = pyiceberg.catalog.rest.RestCatalog(
+    name="my_catalog_name",
+    uri="http://localhost:8181/catalog",
+    warehouse="azure-docs",
+    credential="<Client-ID of App 2>:<Client-ID of App 1>",
+    resource="<Client-ID of App 1>",
+    scope="profile oidc",
+    **{
+        "oauth2-server-uri": "https://login.microsoftonline.com/<Tenant ID>/oauth2/token"
+    },
+)
+
+print(catalog.list_namespaces())
+```
+If Authorization is enabled, the client will throw an error as no permissions have been granted yet. During this initial connect to the `/config` endpoint of Lakekeeper, the user is automatically provisioned so that it should show up when searching for users in the "Grant" dialog and user search endpoints. While we try to extract the name of the application from its token, this might not be possible in all setups. As a fallback we use the `Client ID` as the name of the user. Once permissions have been granted, the user is able to perform actions.
+
 
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:

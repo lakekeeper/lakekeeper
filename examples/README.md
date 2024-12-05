@@ -12,7 +12,7 @@ cd examples/minimal
 docker compose up
 ```
 
-Most examples come with a jupyter notebook that can now be accessed at `http://localhost:8888` in your browser. You can also access the UI of Lakekeeper at `http://localhost:8080`.
+Most examples come with a jupyter notebook that can now be accessed at `http://localhost:8888` in your browser. You can also access the UI of Lakekeeper at `http://localhost:8181`.
 
 Running `docker compose up` starts the latest release of Lakekeeper. To build a new image based on the latest code, run:
 

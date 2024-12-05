@@ -86,7 +86,7 @@ pub struct DynAppConfig {
     /// reverse proxy before routing to the catalog service.
     /// Example value: `{warehouse_id}`
     prefix_template: String,
-    /// CORS allowed origins. If not set, CORS is disabled.
+    /// CORS allowed origins.
     #[serde(
         deserialize_with = "deserialize_origin",
         serialize_with = "serialize_origin"
@@ -170,7 +170,7 @@ pub struct DynAppConfig {
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
     /// If not specified, 00000000-0000-0000-0000-000000000000 is used.
-    /// This ID may not be changed after start!
+    /// This ID must not be changed after start!
     #[serde(default = "uuid::Uuid::nil")]
     pub server_id: uuid::Uuid,
 }
@@ -571,6 +571,25 @@ mod test {
             assert_eq!(
                 config.allow_origin,
                 Some(vec![HeaderValue::from_str("*").unwrap()])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multiple_allow_origin() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__ALLOW_ORIGIN",
+                "http://localhost,http://example.com",
+            );
+            let config = get_config();
+            assert_eq!(
+                config.allow_origin,
+                Some(vec![
+                    HeaderValue::from_str("http://localhost").unwrap(),
+                    HeaderValue::from_str("http://example.com").unwrap()
+                ])
             );
             Ok(())
         });

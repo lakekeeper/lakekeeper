@@ -1,5 +1,25 @@
 # Concepts
 
+## Architecture 
+
+Lakekeeper is an implementation of the Apache Iceberg REST Catalog API.  Lakekeeper depends on the following, partially optional, external dependencies:
+
+<figure markdown="span">
+  ![Lakekeeper Overview](../../assets/interfaces-v1.svg){ width="100%" }
+  <figcaption>Connected systems. Green boxes are recommended for production.</figcaption>
+</figure>
+
+* **Persistence Backend / Catalog** (required): We currently support only Postgres, but plan to expand our support to more Databases in the future.
+* **Warehouse Storage** (required): When a new Warehouse is created, storage credentials are required.
+* **Identity Provider** (optional): Lakekeeper can authenticate incoming requests using any OIDC capable Identity Provider (IdP). Lakekeeper can also natively authenticate kubernetes service accounts.
+* **Authorization System** (optional): For permission management, Lakekeeper uses the wonderful [OpenFGA](http://openfga.dev) Project. OpenFGA is automatically deployed in our docker-compose and helm installations. Authorization can only be used if Lakekeeper is connected to an Identity Provider.
+* **Secret Store** (optional): By default, Lakekeeper stores all secrets (i.e. S3 access credentials) encrypted in the Persistence Backend. To increase security, Lakekeeper can also use external systems to store secrets. Currently all Hashicorp-Vault like stores are supported.
+* **Event Store** (optional): Lakekeeper can send Change Events to an Event Store. Currently [Nats](http://nats.io) is supported, we are working on support for [Apache Kafka](http://kafka.apache.org)
+* **Data Contract System** (optional): Lakekeeper can interface with external data contract systems to prohibit breaking changes to your tables.
+
+To get started quickly with the latest version of Lakekeeper check our [Getting Started Guide](../../getting-started.md).
+
+
 ## Entity Hierarchy
 
 In addition to entities defined in the Apache Iceberg specification or the REST specification (Namespaces, Tables, etc.), Lakekeeper introduces new entities for permission management and multi-tenant setups. The following entities are available in Lakekeeper:
@@ -17,10 +37,10 @@ Project, Server, User and Roles are entities unknown to the Iceberg Rest Specifi
 1. The Lakekeeper Management API is served at endpoints prefixed with `/management`. It is used to configure Lakekeeper and manage entities that are not part of the Iceberg REST Catalog specification, such as permissions.
 
 ### Server
-The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` may not be changed after the initial [bootstrapping](mysubheadline) or permissions might not work.
+The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` must not be changed after the initial [bootstrapping](mysubheadline) or permissions might not work.
 
 ### Project
-For single-company setups, we recommend using a single Project setup, which is the default. For multi-project/multi-tenant setups, please check our dedicated guide (ToDo: Link). Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](bootstrapping)! with the nil UUID.
+For single-company setups, we recommend using a single Project setup, which is the default. For multi-project/multi-tenant setups, please check our dedicated guide (ToDo: Link). Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](bootstrapping) with the nil UUID.
 
 ### Warehouse
 Each Project can contain multiple Warehouses. Query engines connect to Lakekeeper by specifying a Warehouse name in the connection configuration.
@@ -46,16 +66,16 @@ Users can be provisioned to Lakekeeper by either of the following endpoints:
 
 
 ### Roles
-Projects can contain multiple Roles, allowing Roles to be reused in all Warehouses within the Project. Roles can be nested arbitrarily. Roles can be provisioned automatically using the `/management/v1/roles` (Todo check) endpoint or manually created via the UI. We are looking into SCIM support to simplify role provisioning. Please consider upvoting the corresponding [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/497) if this would be of interest to you.
+Projects can contain multiple Roles, allowing Roles to be reused in all Warehouses within the Project. Roles can be nested arbitrarily, meaning that a role can contain other roles within it. Roles can be provisioned automatically using the `/management/v1/roles` (Todo check) endpoint or manually created via the UI. We are looking into SCIM support to simplify role provisioning. Please consider upvoting the corresponding [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/497) if this would be of interest to you.
 
+## Dropping Tables
+Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeeper. The concept of "external" tables will follow in a later release. When managed tables are dropped, Lakekeeper removes all files of these tables in the storage.
 
 ## Soft Deletion
-
 In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse.
 
 
 ## Migration
-
 Migration is a crucial step that must be performed before starting the Lakekeeper. It initializes the persistent backend storage and, if enabled, the authorization system. 
 
 For each Lakekeeper update, migration must be executed before the `serve` command can be called. This ensures that all necessary updates and configurations are applied to the system. It is possible to skip Lakekeeper versions during migration.
