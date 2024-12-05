@@ -3124,6 +3124,7 @@ dependencies = [
  "iceberg-catalog",
  "lakekeeper-console",
  "mime_guess",
+ "moka",
  "reqwest",
  "tokio",
  "tower-http 0.6.2",
@@ -3542,7 +3543,7 @@ dependencies = [
 [[package]]
 name = "lakekeeper-console"
 version = "0.1.0"
-source = "git+https://github.com/lakekeeper/console?rev=d7e9010#d7e901001dcf9a0a29554aaa2939fe772c9e3d5c"
+source = "git+https://github.com/lakekeeper/console?rev=669ce0c#669ce0c91e530ea66e9982035b1ac79e76ce3307"
 dependencies = [
  "derivative",
  "fs_extra",
