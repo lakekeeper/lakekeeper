@@ -25,10 +25,18 @@ use iceberg_catalog::service::task_queue::TaskQueues;
 use std::sync::Arc;
 
 pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow::Error> {
-    let read_pool =
-        iceberg_catalog::implementations::postgres::get_reader_pool(CONFIG.to_pool_opts()).await?;
-    let write_pool =
-        iceberg_catalog::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
+    let read_pool = iceberg_catalog::implementations::postgres::get_reader_pool(
+        CONFIG
+            .to_pool_opts()
+            .max_connections(CONFIG.pg_read_pool_connections),
+    )
+    .await?;
+    let write_pool = iceberg_catalog::implementations::postgres::get_writer_pool(
+        CONFIG
+            .to_pool_opts()
+            .max_connections(CONFIG.pg_write_pool_connections),
+    )
+    .await?;
 
     let catalog_state = CatalogState::from_pools(read_pool.clone(), write_pool.clone());
 
