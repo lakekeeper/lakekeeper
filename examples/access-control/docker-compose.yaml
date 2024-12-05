@@ -42,6 +42,7 @@ services:
       - LAKEKEEPER__AUTHZ_BACKEND=openfga
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - LAKEKEEPER__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg
+      - LAKEKEEPER__UI__IDP_CLIENT_ID=iceberg-catalog
       - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
     command: [ "serve" ]
     healthcheck:
@@ -57,6 +58,18 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    networks:
+      iceberg_net:
+
+  firefox:
+    image: jlesage/firefox:latest
+    pull_policy: always
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      - WEB_LISTENING_PORT=8181
+      - FF_OPEN_URL=http://server:8181/ui/
     ports:
       - "8181:8181"
     networks:
