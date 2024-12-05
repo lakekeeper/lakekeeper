@@ -24,6 +24,11 @@ use iceberg_catalog::service::authn::K8sVerifier;
 use iceberg_catalog::service::task_queue::TaskQueues;
 use std::sync::Arc;
 
+#[cfg(feature = "ui")]
+use crate::ui;
+#[cfg(feature = "ui")]
+use axum::routing::get;
+
 pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow::Error> {
     let read_pool =
         iceberg_catalog::implementations::postgres::get_reader_pool(CONFIG.to_pool_opts()).await?;
@@ -188,6 +193,24 @@ async fn serve_inner<A: Authorizer>(
             iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?,
         ),
     })?;
+
+    #[cfg(feature = "ui")]
+    let router = router
+        .route(
+            "/ui",
+            get(|| async { axum::response::Redirect::permanent("/ui/") }),
+        )
+        .route(
+            "/",
+            get(|| async { axum::response::Redirect::permanent("/ui/") }),
+        )
+        .route(
+            "/ui/index.html",
+            get(|| async { axum::response::Redirect::permanent("/ui/") }),
+        )
+        .route("/ui/", get(ui::index_handler))
+        .route("/ui/assets/*file", get(ui::static_handler))
+        .route("/ui/*file", get(ui::index_handler));
 
     let publisher_handle = tokio::task::spawn(async move {
         match x.publish().await {

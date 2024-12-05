@@ -848,6 +848,7 @@ pub(super) enum NamespaceRelation {
     Child,
     // -- Managed relations --
     ManagedAccess,
+    ManagedAccessInheritance,
     // -- Direct relations --
     Ownership,
     PassGrants,

@@ -1,7 +1,7 @@
 use super::commit_tables::apply_commit;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer, PageStatus,
+    require_warehouse_id, CatalogServer,
 };
 use crate::api::iceberg::types::DropParams;
 use crate::api::iceberg::v1::{
@@ -1615,6 +1615,8 @@ mod test {
     use std::collections::HashMap;
     use uuid::Uuid;
 
+    use crate::catalog::test::impl_pagination_tests;
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use iceberg_ext::configs::Location;
     use std::str::FromStr;
 
@@ -2499,6 +2501,68 @@ mod test {
         assert_eq!(e.error.code, StatusCode::BAD_REQUEST, "{e:?}");
         assert_eq!(e.error.r#type.as_str(), "LocationAlreadyTaken");
     }
+
+    async fn pagination_test_setup(
+        pool: PgPool,
+        n_tables: usize,
+        hidden_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        NamespaceParameters,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+        let base_location = prof.base_location().unwrap();
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        for i in 0..n_tables {
+            let mut create_request = create_request(Some(format!("{i}")));
+            create_request.location = Some(format!("{base_location}/bucket/{i}"));
+            let tab = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request,
+                DataAccess::none(),
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            for (start, end) in hidden_ranges.iter().copied() {
+                if i >= start && i < end {
+                    hiding_mock.hide(&format!("table:{}", tab.metadata.uuid()));
+                }
+            }
+        }
+
+        (ctx, ns_params)
+    }
+
+    impl_pagination_tests!(
+        table,
+        pagination_test_setup,
+        CatalogServer,
+        ListTablesQuery,
+        identifiers,
+        |tid| { tid.name }
+    );
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {

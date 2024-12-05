@@ -26,7 +26,7 @@ This is Lakekeeper: A **secure**, **fast** and **easy to use**  implementation o
 # Quickstart
 
 A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/lakekeeper?tab=info).
-We have prepared a minimal docker-compose file to demonstrate the usage of `spark` with our catalog:
+We have prepared a minimal docker-compose file to demonstrate how to use the Lakekeeper catalog with common query engines.
 
 ```sh
 git clone https://github.com/lakekeeper/lakekeeper.git
@@ -34,7 +34,7 @@ cd lakekeeper/examples/minimal
 docker compose up
 ```
 
-Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8080` for the Lakekeeper UI.
+Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8181` for the Lakekeeper UI.
 
 For more information on deployment, please check the [Getting Started Guide](docs.lakekeeper.io/getting-started/).
 

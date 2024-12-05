@@ -1,4 +1,4 @@
-use super::{require_warehouse_id, CatalogServer, PageStatus};
+use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
 use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
 use crate::api::iceberg::v1::{
     ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
@@ -95,36 +95,33 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         list_namespaces.into_iter_with_page_tokens().multiunzip();
 
-                    let before_filter_len = ids.len();
+                    let (next_namespaces, next_uuids, next_page_tokens, mask): (
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<_>,
+                        Vec<bool>,
+                    ) = futures::future::try_join_all(ids.iter().map(|n| {
+                        authorizer.is_allowed_namespace_action(
+                            &request_metadata,
+                            warehouse_id,
+                            *n,
+                            &CatalogNamespaceAction::CanGetMetadata,
+                        )
+                    }))
+                    .await?
+                    .into_iter()
+                    .zip(idents.into_iter().zip(ids.into_iter()))
+                    .zip(tokens.into_iter())
+                    .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
+                    .multiunzip();
 
-                    let (next_namespaces, next_uuids, next_page_tokens): (Vec<_>, Vec<_>, Vec<_>) =
-                        futures::future::try_join_all(ids.iter().map(|n| {
-                            authorizer.is_allowed_namespace_action(
-                                &request_metadata,
-                                warehouse_id,
-                                *n,
-                                &CatalogNamespaceAction::CanGetMetadata,
-                            )
-                        }))
-                        .await?
-                        .into_iter()
-                        .zip(idents.into_iter().zip(ids.into_iter()))
-                        .zip(tokens.into_iter())
-                        .filter_map(|((allowed, namespace), token)| {
-                            allowed.then_some((namespace.0, namespace.1, token))
-                        })
-                        .multiunzip();
-                    let p = if before_filter_len == next_namespaces.len() {
-                        if before_filter_len == usize::try_from(ps).expect("we sanitize page size")
-                        {
-                            PageStatus::Full
-                        } else {
-                            PageStatus::Partial
-                        }
-                    } else {
-                        PageStatus::AuthFiltered
-                    };
-                    Ok((next_namespaces, next_uuids, next_page_tokens, p))
+                    Ok(UnfilteredPage::new(
+                        next_namespaces,
+                        next_uuids,
+                        next_page_tokens,
+                        mask,
+                        ps.clamp(0, i64::MAX).try_into().expect("We clamped it"),
+                    ))
                 }
                 .boxed()
             },
@@ -618,14 +615,87 @@ mod tests {
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::namespace::Service;
     use crate::api::management::v1::warehouse::TabularDeleteProfile;
+    use crate::api::ApiContext;
+    use crate::catalog::test::impl_pagination_tests;
     use crate::catalog::test::random_request_metadata;
     use crate::catalog::CatalogServer;
+    use crate::implementations::postgres::namespace::namespace_to_id;
+    use crate::implementations::postgres::{PostgresCatalog, PostgresTransaction, SecretsState};
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
-    use crate::service::ListNamespacesQuery;
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
+    use crate::service::{ListNamespacesQuery, State, Transaction};
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+    use sqlx::PgPool;
     use std::collections::HashSet;
     use std::hash::RandomState;
+
+    async fn ns_paginate_test_setup(
+        pool: PgPool,
+        number_of_namespaces: usize,
+        hide_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        Option<Prefix>,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+
+        for n in 0..number_of_namespaces {
+            let ns = format!("{n}");
+            let ns = CatalogServer::create_namespace(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                CreateNamespaceRequest {
+                    namespace: NamespaceIdent::new(ns),
+                    properties: None,
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            let mut trx = PostgresTransaction::begin_read(ctx.v1_state.catalog.clone())
+                .await
+                .unwrap();
+            for (range_start, range_end) in hide_ranges {
+                if n >= *range_start && n < *range_end {
+                    hiding_mock.hide(&format!(
+                        "namespace:{}",
+                        *namespace_to_id(
+                            warehouse.warehouse_id.into(),
+                            &ns.namespace,
+                            trx.transaction(),
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap()
+                    ));
+                }
+            }
+            trx.commit().await.unwrap();
+        }
+        (ctx, Some(Prefix(warehouse.warehouse_id.to_string())))
+    }
+
+    impl_pagination_tests!(
+        namespace,
+        ns_paginate_test_setup,
+        CatalogServer,
+        ListNamespacesQuery,
+        namespaces,
+        |ns| ns.inner()[0].to_string()
+    );
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {

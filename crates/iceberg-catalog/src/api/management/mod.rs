@@ -865,10 +865,10 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<Json<ListDeletedTabularsResponse>> {
         ApiServer::<C, A, S>::list_soft_deleted_tabulars(
-            metadata,
             warehouse_id.into(),
-            api_context,
             query,
+            api_context,
+            metadata,
         )
         .await
         .map(Json)

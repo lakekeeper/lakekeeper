@@ -2,8 +2,8 @@ use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQu
 use crate::api::ApiContext;
 use crate::api::Result;
 use crate::catalog::namespace::validate_namespace_ident;
+use crate::catalog::require_warehouse_id;
 use crate::catalog::tabular::list_entities;
-use crate::catalog::{require_warehouse_id, PageStatus};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{
     Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,
@@ -79,12 +79,82 @@ mod test {
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
     use crate::api::management::v1::warehouse::TabularDeleteProfile;
-    use crate::catalog::test::random_request_metadata;
+    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
     use crate::catalog::CatalogServer;
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
 
     use crate::api::iceberg::v1::views::Service;
+    use crate::api::ApiContext;
+    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
+    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
+    use crate::service::State;
     use itertools::Itertools;
+    use sqlx::PgPool;
+
+    async fn pagination_test_setup(
+        pool: PgPool,
+        n_tables: usize,
+        hidden_ranges: &[(usize, usize)],
+    ) -> (
+        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        NamespaceParameters,
+    ) {
+        let prof = crate::catalog::test::test_io_profile();
+        let hiding_mock = ObjectHidingMock::new();
+        let authz = hiding_mock.to_authorizer();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz,
+            TabularDeleteProfile::Hard {},
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        for i in 0..n_tables {
+            let view = CatalogServer::create_view(
+                ns_params.clone(),
+                crate::catalog::views::create::test::create_view_request(
+                    Some(&format!("{i}")),
+                    None,
+                ),
+                ctx.clone(),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            for (start, end) in hidden_ranges.iter().copied() {
+                if i >= start && i < end {
+                    hiding_mock.hide(&format!("view:{}", view.metadata.uuid()));
+                }
+            }
+        }
+
+        (ctx, ns_params)
+    }
+
+    impl_pagination_tests!(
+        view,
+        pagination_test_setup,
+        CatalogServer,
+        ListTablesQuery,
+        identifiers,
+        |tid| { tid.name }
+    );
 
     #[sqlx::test]
     async fn test_view_pagination(pool: sqlx::PgPool) {
@@ -176,6 +246,7 @@ mod test {
         assert_eq!(next.identifiers.len(), 0);
         assert!(next.next_page_token.is_none());
 
+        // Fetch in two steps - 6 and 4
         let first_six = CatalogServer::list_views(
             ns_params.clone(),
             ListTablesQuery {
@@ -228,6 +299,7 @@ mod test {
             assert_eq!(next_four_items[idx], format!("view-{i}"));
         }
 
+        // Hiding 2 views
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {

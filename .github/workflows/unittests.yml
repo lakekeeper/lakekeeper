@@ -181,7 +181,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.6 run
 
       - name: Test
-        run: cargo nextest run --profile ci --all-targets --all-features --workspace
+        run: cargo test --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           TEST_KV2: 1
