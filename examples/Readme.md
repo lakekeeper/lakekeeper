@@ -22,7 +22,7 @@ Now open in your Browser:
 
 
 ## Access Control
-This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark as query engines, OpenFGA as Authorization backend and Keycloak as IdP. As Lakekeeper validates the issuer URL of tokens, it is not possible to login to the Lakekeeper UI with the browser of your local machine, as Keycloak is visible for Lakekeeper under a different URL inside docker (`keycloak:8080` instead of `localhost:30080`). To expose the UI, we included a Firefox container inside docker compose.
+This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark as query engines, OpenFGA as Authorization backend and Keycloak as IdP. As Lakekeeper validates the issuer URL of tokens, it is not possible to login to the Lakekeeper UI with the browser of your local machine, as Keycloak is visible for Lakekeeper under a different URL inside docker (`keycloak:8080` instead of `localhost:30080`).
 
 Run the example with the following command:
 ```bash
@@ -32,8 +32,7 @@ docker compose up
 
 Now open in your Browser:
 * Jupyter: [http://localhost:8888](http://localhost:8888)
-* Lakekeeper UI (via Firefox in Docker): [http://localhost:8181](http://localhost:8181)
-* Keycloak UI (via Firefox in Docker): [http://localhost:30080](http://localhost:30080)
+* Keycloak UI: [http://localhost:30080](http://localhost:30080)
 
 Login the the UI with the following user:
 * Username: Peter

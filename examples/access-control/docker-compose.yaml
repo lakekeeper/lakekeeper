@@ -58,22 +58,24 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    networks:
-      iceberg_net:
-
-  firefox:
-    image: jlesage/firefox:latest
-    pull_policy: always
-    depends_on:
-      server:
-        condition: service_healthy
-    environment:
-      - WEB_LISTENING_PORT=8181
-      - FF_OPEN_URL=http://server:8181/ui/
     ports:
       - "8181:8181"
     networks:
       iceberg_net:
+
+  # firefox:
+  #   image: jlesage/firefox:latest
+  #   pull_policy: always
+  #   depends_on:
+  #     server:
+  #       condition: service_healthy
+  #   environment:
+  #     - WEB_LISTENING_PORT=8181
+  #     - FF_OPEN_URL=http://server:8181/ui/
+  #   ports:
+  #     - "8181:8181"
+  #   networks:
+  #     iceberg_net:
 
   migrate:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
