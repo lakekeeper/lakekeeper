@@ -13,29 +13,48 @@ If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify acces
 In the following section we describe common setups for popular IdPs. Please refer to the documentation of your IdP for further information.
 
 ### Entra-ID (Azure)
-We are creating three App-Registrations: One for Lakekeeper itself and a second one for a machine client (Spark) to access Lakekeeper.
+We are creating three App-Registrations: One for Lakekeeper itself, one for the Lakekeeper UI and one for a machine client (Spark) to access Lakekeeper. While App-Registrations can also be shared, the recommended setup we propose here offers more flexibility and best security.
 
-#### App 1: Lakekeeper Application
+#### App 1: Lakekeeper UI Application
+1. Create a new "App Registration"
+    - **Name**: choose any, for this example we choose `Lakekeeper-UI`
+    - **Redirect URI**: Add the URL where the Lakekeeper UI is reachable for the user suffixed by `/callback`. E.g.: `http://localhost:8181/ui/callback`. If asked, select type "Single Page Application (SPA)".
+1. In the "Overview" page of the "App Registration" note down the `Application (client) ID`. Also note the `Directory (tenant) ID`.
+
+#### App 2: Lakekeeper Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper`
-    - **Redirect URI**: Add the URL where the Lakekeeper UI is reachable for the user suffixed by `/callback`. E.g.: `http://localhost:8181/ui/callback`
-2. When the App Registration is created, select "Manage" -> "Expose an API" and on the top select "Add" beside `Application ID URI`. ![](../../../assets/idp-azure-application-id-uri.png) Note down the `Application ID URI`.
-3. In the "Overview" page of the "App Registration" note down the `Application (client) ID`. In the top bar click on "Endpoints" and copy the `Authority URL`
+    - **Redirect URI**: Leave empty.
+1. When the App Registration is created, select "Manage" -> "Expose an API" and on the top select "Add" beside `Application ID URI`. ![](../../../assets/idp-azure-application-id-uri.png) Note down the `Application ID URI` (should be `api://<Client ID>`).
+1. Still in the "Expose an API" menus, select "Add a Scope". Fill the fields as follows:
+    - **Scope name**: lakekeeper
+    - **Who can consent?** Admins and users
+    - **Admin consent display name**: Lakekeeper API
+    - **Admin consent description**: Access Lakekeeper API
+    - **State**: Enabled
+1. After the `lakekeeper` scope is created, click "Add a client application" under the "Authorized client applications" headline. Select the previously created scope and paste as `Client ID` the previously noted ID from App 1.
+1. In the "Overview" page of the "App Registration" note down the `Application (client) ID`.
 
 We are now ready to deploy Lakekeeper and login via the UI. Set the following environment variables / configurations.
 We are using one Application to secure the Lakekeeper API and login with UI using public flows (Authorization Code Flow):
 ```bash
 LAKEKEEPER__BASE_URI=<URI where lakekeeper is reachable, in my example http://localhost:8181>
-LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID from step 3>
-LAKEKEEPER__OPENID_AUDIENCE="<Client ID from step 3>"
-LAKEKEEPER__UI__IDP_CLIENT_ID="<Client ID from step 3>"
-LAKEKEEPER__UI__IDP_SCOPE=".default oidc profile email"
-LAKEKEEPER__UI__IDP_RESOURCE="<Client ID from step 3>"
+// Note the v2.0 at the End of the provider URI!
+LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID>/v2.0
+LAKEKEEPER__OPENID_AUDIENCE="api://<Client ID from App 2 (lakekeeper)>"
+LAKEKEEPER__UI__IDP_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
+LAKEKEEPER__UI__IDP_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
+LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
+// The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
+// shows https://login.microsoftonline.com as the issuer but actually
+// issues tokens for https://sts.windows.net/. This is a well-known
+// problem in Entra ID.
 ```
-Before continuing with App 2, we recommend to create a first Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 2.
 
-#### App 2: Machine User / Spark
+Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
+
+#### App 3: Machine User / Spark
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Spark`
@@ -53,11 +72,10 @@ catalog = pyiceberg.catalog.rest.RestCatalog(
     name="my_catalog_name",
     uri="http://localhost:8181/catalog",
     warehouse="azure-docs",
-    credential="<Client-ID of App 2>:<Client-ID of App 1>",
-    resource="<Client-ID of App 1>",
-    scope="profile oidc",
+    credential="<Client-ID of App 3 (spark)>:<Client-Secret of App 3 (spark)>",
+    scope="profile oidc api://<Client-ID of App 2 (lakekeeper)>/.default",
     **{
-        "oauth2-server-uri": "https://login.microsoftonline.com/<Tenant ID>/oauth2/token"
+        "oauth2-server-uri": "https://login.microsoftonline.com/<Tenant ID>/oauth2/v2.0/token"
     },
 )
 
