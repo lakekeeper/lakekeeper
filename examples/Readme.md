@@ -43,7 +43,7 @@ Keycloak also contains a non-admin user:
 * Password: Iceberg
 
 
-## Self-Build images
+## Development / Re-Build image
 Running `docker compose up` starts the `latest-main` release of Lakekeeper. To build a fresh image use:
 
 ```bash
