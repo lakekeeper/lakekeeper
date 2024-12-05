@@ -294,7 +294,7 @@ pub struct KV2Config {
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
-            base_uri: "https://localhost:8080".parse().expect("Valid URL"),
+            base_uri: "https://localhost:8181".parse().expect("Valid URL"),
             metrics_port: 9000,
             enable_default_project: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -328,7 +328,7 @@ impl Default for DynAppConfig {
             openid_provider_uri: None,
             openid_audience: None,
             enable_kubernetes_authentication: false,
-            listen_port: 8080,
+            listen_port: 8181,
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,
             kv2: None,

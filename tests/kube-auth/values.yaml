@@ -101,7 +101,8 @@ catalog:
   # ICEBERG_REST__BASE_URI is required if ingress is disabled - otherwise
   # the catalog will only work inside the cluster.
   # Specify the external URL of the catalog as ICEBERG_REST__BASE_URI
-  config: {}
+  config:
+    LAKEKEEPER__LISTEN_PORT: 8080
   # ---- EXAMPLE ----
   # config:
   #   ICEBERG_REST__OPENID_PROVIDER_URI: "https://my-oidc-provider.com"
@@ -243,7 +244,7 @@ catalog:
     # -- catalog service type
     type: ClusterIP
     # -- catalog service external port
-    externalPort: 8080
+    externalPort: 8181
     # -- catalog service ip of the load balancer service.
     # Only used when `type: LoadBalancer`
     loadBalancerIP: ""
@@ -435,4 +436,3 @@ auth:
     # -- The client id of the OIDC App of the catalog.
     # The aud (audience) claim of the JWT token must match this id.
     client_id: ""
-

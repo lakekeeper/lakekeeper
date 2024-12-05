@@ -18,7 +18,7 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
-      - ICEBERG_REST__BASE_URI=http://server:8080
+      - ICEBERG_REST__BASE_URI=http://server:8181
       - ICEBERG_REST__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
@@ -40,7 +40,7 @@ services:
     networks:
       iceberg_net:
     ports:
-      - "8080:8080"
+      - "8181:8181"
 
   migrate:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
@@ -70,7 +70,7 @@ services:
       - "-X"
       - "POST"
       - "-v"
-      - "http://server:8080/management/v1/bootstrap"
+      - "http://server:8181/management/v1/bootstrap"
       - "-H"
       - "Content-Type: application/json"
       - "--data"
@@ -95,7 +95,7 @@ services:
       - "-X"
       - "POST"
       - "-v"
-      - "http://server:8080/management/v1/warehouse"
+      - "http://server:8181/management/v1/warehouse"
       - "-H"
       - "Content-Type: application/json"
       - "--data"

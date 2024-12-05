@@ -30,8 +30,8 @@ services:
       - LAKEKEEPER_TEST__S3_ENDPOINT=http://minio:9000
       - LAKEKEEPER_TEST__S3_PATH_STYLE_ACCESS=1
       - LAKEKEEPER_TEST__S3_REGION=local
-      - LAKEKEEPER_TEST__MANAGEMENT_URL=http://server:8080/management
-      - LAKEKEEPER_TEST__CATALOG_URL=http://server:8080/catalog
+      - LAKEKEEPER_TEST__MANAGEMENT_URL=http://server:8181/management
+      - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog
       - LAKEKEEPER_TEST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
       - LAKEKEEPER_TEST__OPENID_CLIENT_ID=iceberg-rest-test
       - LAKEKEEPER_TEST__OPENID_CLIENT_SECRET=very-secret
@@ -79,7 +79,7 @@ services:
   server:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
     environment:
-      - ICEBERG_REST__BASE_URI=http://server:8080
+      - ICEBERG_REST__BASE_URI=http://server:8181
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
@@ -110,7 +110,7 @@ services:
       keycloak:
         condition: service_healthy
     ports:
-      - 31101:8080
+      - 31101:8181
     networks:
       - iceberg_rest_tests
 
@@ -172,7 +172,7 @@ services:
     image: trinodb/trino:latest
     environment:
       - CATALOG_MANAGEMENT=dynamic
-      - LAKEKEEPER_TEST__CATALOG_URL=http://server:8080/catalog
+      - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog
     healthcheck:
       test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
       interval: 2s
