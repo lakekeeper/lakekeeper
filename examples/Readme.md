@@ -34,13 +34,14 @@ Now open in your Browser:
 * Jupyter: [http://localhost:8888](http://localhost:8888)
 * Keycloak UI: [http://localhost:30080](http://localhost:30080)
 
-Login the the UI with the following user:
-* Username: Peter
-* Password: Iceberg
-
 You can also login to Keycloak using:
 * Username: admin
 * Password: admin
+
+Keycloak also contains a non-admin user:
+* Username: Peter
+* Password: Iceberg
+
 
 ## Self-Build images
 Running `docker compose up` starts the `latest-main` release of Lakekeeper. To build a fresh image use:
