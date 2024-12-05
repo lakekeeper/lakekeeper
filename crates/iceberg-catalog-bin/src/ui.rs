@@ -50,10 +50,9 @@ enum CacheItem {
     },
 }
 
-const FILE_CACHE: LazyCell<moka::sync::Cache<String, CacheItem>> = LazyCell::new(|| {
-    let cache = moka::sync::Cache::new(1000);
-    cache
-});
+#[allow(clippy::declare_interior_mutable_const)]
+const FILE_CACHE: LazyCell<moka::sync::Cache<String, CacheItem>> =
+    LazyCell::new(|| moka::sync::Cache::new(1000));
 
 // We use static route matchers ("/" and "/index.html") to serve our home
 // page.
