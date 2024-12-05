@@ -173,7 +173,8 @@ async fn serve_inner<A: Authorizer>(
     } else {
         None
     };
-
+    let (layer, metrics_future) =
+        iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?;
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
@@ -189,9 +190,7 @@ async fn serve_inner<A: Authorizer>(
         k8s_token_verifier,
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
-        metrics_layer: Some(
-            iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?,
-        ),
+        metrics_layer: Some(layer),
     })?;
 
     #[cfg(feature = "ui")]
@@ -222,6 +221,7 @@ async fn serve_inner<A: Authorizer>(
     tokio::select!(
         _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
+        _ = metrics_future => tracing::error!("Metrics server failed"),
     );
 
     tracing::debug!("Sending shutdown signal to event publisher.");
