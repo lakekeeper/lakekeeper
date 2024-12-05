@@ -2,6 +2,7 @@ use axum::{
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
+use core::result::Result::Err;
 use iceberg_catalog::CONFIG;
 use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
 use std::cell::LazyCell;
@@ -70,17 +71,31 @@ pub async fn static_handler(uri: Uri) -> impl IntoResponse {
         path = path.replace("ui/", "");
     }
 
-    StaticFile(path)
+    get_file_cached(&path).await
 }
 
-fn get_file_cached(file_path: &str) -> Response {
+async fn get_file_cached(file_path: &str) -> Response {
     let cached = FILE_CACHE.get(file_path);
 
     if let Some(cache_item) = cached {
         cache_item.into_response()
     } else {
         let mime = mime_guess::from_path(file_path).first_or_octet_stream();
-        let content = get_file(file_path, &UI_CONFIG);
+        let file_path_owned = file_path.to_string();
+
+        let content =
+            match tokio::task::spawn_blocking(move || get_file(&file_path_owned, &UI_CONFIG)).await
+            {
+                Err(e) => {
+                    tracing::error!("Error while fetching asset: {:?}", e);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "500 Internal Server Error while fetching asset",
+                    )
+                        .into_response();
+                }
+                Ok(c) => c,
+            };
 
         let cache_item = match content {
             Some(content) => CacheItem::Found {
@@ -95,8 +110,6 @@ fn get_file_cached(file_path: &str) -> Response {
     }
 }
 
-pub struct StaticFile<T>(pub T);
-
 impl IntoResponse for CacheItem {
     fn into_response(self) -> Response {
         match self {
@@ -105,16 +118,6 @@ impl IntoResponse for CacheItem {
                 ([(header::CONTENT_TYPE, mime.as_ref())], data).into_response()
             }
         }
-    }
-}
-
-impl<T> IntoResponse for StaticFile<T>
-where
-    T: Into<String>,
-{
-    fn into_response(self) -> Response {
-        let path = self.0.into();
-        get_file_cached(&path)
     }
 }
 
