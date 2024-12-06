@@ -260,7 +260,6 @@ jobs:
         if: failure()
         uses: jwalton/gh-docker-logs@v2
 
-
   debug:
     name: Debug Artifacts
     runs-on: ubuntu-24.04
