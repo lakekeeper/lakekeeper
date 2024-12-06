@@ -40,6 +40,12 @@ Currently Lakekeeper supports only Postgres as a persistence store. You may eith
 | `LAKEKEEPER__PG_TEST_BEFORE_ACQUIRE`                   | `true`                                                | Test connections before acquiring from the pool |
 | `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME`               | `1800`                                                | Maximum lifetime of connections in seconds |
 
+### UI
+
+When using the built-in UI which is hosted as part of the Lakekeeper binary, most values are pre-set with the corresponding values of Lakekeeper itself. Customization is typically required if Authentication is enabled. Please check the [Authentication guide](./authentication.md) for more information.
+
+
+
 ### Vault KV Version 2
 
 Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatible storage is used as a backend. Currently, we only support the `userpass` authentication method. Configuration may be passed as single values like `LAKEKEEPER__KV2__URL=http://vault.local` or as a compound value:
@@ -97,7 +103,8 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | Variable                                       | Example                                      | Description |
 |------------------------------------------------|----------------------------------------------|-----|
 | <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr> | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                  | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. |
+| `LAKEKEEPER__OPENID_AUDIENCE`                  | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
+| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`        | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 
 ### Authorization
