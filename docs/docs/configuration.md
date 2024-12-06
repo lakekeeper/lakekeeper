@@ -44,7 +44,7 @@ Currently Lakekeeper supports only Postgres as a persistence store. You may eith
 
 When using the built-in UI which is hosted as part of the Lakekeeper binary, most values are pre-set with the corresponding values of Lakekeeper itself. Customization is typically required if Authentication is enabled. Please check the [Authentication guide](./authentication.md) for more information.
 
-
+ToDo
 
 ### Vault KV Version 2
 
