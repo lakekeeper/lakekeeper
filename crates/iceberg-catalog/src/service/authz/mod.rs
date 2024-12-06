@@ -95,6 +95,7 @@ pub enum CatalogNamespaceAction {
     CanListTables,
     CanListViews,
     CanListNamespaces,
+    CanUndropAll,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
@@ -107,6 +108,7 @@ pub enum CatalogTableAction {
     CanCommit,
     CanRename,
     CanIncludeInList,
+    CanUndrop,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
@@ -117,6 +119,7 @@ pub enum CatalogViewAction {
     CanCommit,
     CanIncludeInList,
     CanRename,
+    CanUndrop,
 }
 
 pub trait TableUuid {

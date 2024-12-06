@@ -23,11 +23,14 @@ use crate::api::management::v1::user::{
 use crate::implementations::postgres::role::search_role;
 use crate::implementations::postgres::tabular::table::commit_table_transaction;
 use crate::implementations::postgres::tabular::table::create_table;
-use crate::implementations::postgres::tabular::{list_tabulars, mark_tabular_as_deleted};
+use crate::implementations::postgres::tabular::{
+    clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
+};
 use crate::implementations::postgres::user::{
     create_or_update_user, delete_user, list_users, search_user,
 };
 use crate::service::authn::UserId;
+use crate::service::task_queue::TaskId;
 use crate::service::{
     storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
@@ -55,6 +58,7 @@ use crate::{
 use iceberg::spec::ViewMetadata;
 use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::{catalog::rest::CatalogConfig, configs::Location};
+use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]
@@ -336,6 +340,13 @@ impl Catalog for super::PostgresCatalog {
         drop_table(table_id, transaction).await
     }
 
+    async fn undrop_tabulars(
+        tabular_ids: &[TableIdentUuid],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskId>> {
+        clear_tabular_deleted_at(&tabular_ids.iter().map(|i| **i).collect_vec(), transaction).await
+    }
+
     async fn mark_tabular_as_deleted(
         table_id: TabularIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -565,7 +576,7 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseIdent,
         namespace_id: Option<NamespaceIdentUuid>,
         list_flags: ListFlags,
-        catalog_state: CatalogState,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
     {
@@ -574,7 +585,7 @@ impl Catalog for super::PostgresCatalog {
             None,
             namespace_id,
             list_flags,
-            &catalog_state.read_pool(),
+            &mut **transaction,
             None,
             pagination_query,
             false,

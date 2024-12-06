@@ -12,6 +12,7 @@ use iceberg_ext::NamespaceIdent;
 use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
 
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
+use crate::service::task_queue::TaskId;
 use crate::service::DeletionDetails;
 use crate::service::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
 use chrono::Utc;
@@ -572,6 +573,62 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
             TabularType::View => crate::api::management::v1::TabularType::View,
         }
     }
+}
+
+pub(crate) async fn clear_tabular_deleted_at(
+    tabular_ids: &[Uuid],
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Vec<TaskId>> {
+    let deleted = sqlx::query!(
+        r#"
+        UPDATE tabular t
+        SET deleted_at = NULL
+        WHERE t.tabular_id = any($1)
+        "#,
+        tabular_ids
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        tracing::warn!("Error marking tabular as undeleted: {}", e);
+        e.into_error_model("Error marking tabular as undeleted")
+    })?;
+    if deleted.rows_affected() != tabular_ids.len() as u64 {
+        return Err(ErrorModel::internal(
+            "Mismatch between deleted_at entries in tabular to-be-deleted tabulars.",
+            "InternalDatabaseError",
+            None,
+        )
+        .into());
+    }
+
+    let task_id = sqlx::query!(
+        r#"
+        SELECT task_id FROM tabular_expirations
+        WHERE tabular_id = any($1)
+        "#,
+        tabular_ids
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| {
+        tracing::warn!("Error fetching task IDs for tabulars: {}", e);
+        e.into_error_model("Error fetching task IDs for tabulars")
+    })?;
+
+    if task_id.len() != tabular_ids.len() {
+        return Err(ErrorModel::internal(
+            "Mismatch between task IDs in tabular_expirations and to-be-deleted tabulars.",
+            "InternalDatabaseError",
+            None,
+        )
+        .into());
+    }
+
+    Ok(task_id
+        .into_iter()
+        .map(|task_id| TaskId::from(task_id.task_id))
+        .collect::<Vec<TaskId>>())
 }
 
 pub(crate) async fn mark_tabular_as_deleted(

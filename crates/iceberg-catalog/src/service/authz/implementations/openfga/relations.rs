@@ -877,6 +877,7 @@ pub(super) enum NamespaceRelation {
     CanGrantManageGrants,
     CanChangeOwnership,
     CanSetManagedAccess,
+    CanUndropAll,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
@@ -1052,6 +1053,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::CanListViews => NamespaceRelation::CanListViews,
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
+            CatalogNamespaceAction::CanUndropAll => NamespaceRelation::CanUndropAll,
         }
     }
 }
@@ -1083,6 +1085,7 @@ pub(super) enum TableRelation {
     CanGrantSelect,
     CanGrantModify,
     CanChangeOwnership,
+    CanUndrop,
 }
 
 impl OpenFgaRelation for TableRelation {}
@@ -1246,6 +1249,7 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::CanCommit => TableRelation::CanCommit,
             CatalogTableAction::CanRename => TableRelation::CanRename,
             CatalogTableAction::CanIncludeInList => TableRelation::CanIncludeInList,
+            CatalogTableAction::CanUndrop => TableRelation::CanUndrop,
         }
     }
 }
@@ -1273,6 +1277,7 @@ pub(super) enum ViewRelation {
     CanGrantDescribe,
     CanGrantModify,
     CanChangeOwnership,
+    CanUndrop,
 }
 
 impl OpenFgaRelation for ViewRelation {}
@@ -1418,6 +1423,7 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::CanGetMetadata => ViewRelation::CanGetMetadata,
             CatalogViewAction::CanRename => ViewRelation::CanRename,
             CatalogViewAction::CanIncludeInList => ViewRelation::CanIncludeInList,
+            CatalogViewAction::CanUndrop => ViewRelation::CanUndrop,
         }
     }
 }
