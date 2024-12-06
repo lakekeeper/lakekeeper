@@ -1,10 +1,10 @@
 [build]
 pre-build = ["""
     apt-get update -qq && apt-get install -yqq curl --no-install-recommends && \
-    curl -sL https://deb.nodesource.com/setup_22.x | bash - && \
+    curl -sL https://deb.nodesource.com/setup_23.x | bash - && \
     apt-get install -y nodejs  && \
     node -v && npm -v
     """]
 
 [target.aarch64-unknown-linux-musl]
-image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5"
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main@sha256:08ee3c5659d0c39f1fe4de4206ee3597260804f4411630416b5db38412d8eb2b"
