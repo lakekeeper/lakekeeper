@@ -30,5 +30,12 @@
     ],
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
-    "include-component-in-tag": false
+    "include-component-in-tag": false,
+    "extra-files": [
+        {
+            "type": "yaml",
+            "path": "openapi/management-open-api.yaml",
+            "jsonpath": "$.info.version"
+        }
+    ]
 }
