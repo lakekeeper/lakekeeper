@@ -140,7 +140,7 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub openid_audience: Option<Vec<String>>,
-    /// Additional issuers to trust for OpenID Connect
+    /// Additional issuers to trust for `OpenID` Connect
     #[serde(
         deserialize_with = "deserialize_audience",
         serialize_with = "serialize_audience"
