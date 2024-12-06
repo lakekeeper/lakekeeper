@@ -239,6 +239,12 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
       - name: Load Docker
         run: |
           docker load -i ${{ matrix.file }}
