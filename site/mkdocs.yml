@@ -60,8 +60,9 @@ nav:
   - Docs:
       - nightly: "!include docs/docs/nightly/mkdocs.yml"
       - latest: "!include docs/docs/latest/mkdocs.yml"
-      - 0.4.3: "!include docs/docs/0.4.3/mkdocs.yml"
+      - Release 0.4.3: "!include docs/docs/0.4.3/mkdocs.yml"
   - Community: support.md
+  - API: /docs/nightly/api/
   - About:
       - Release Notes: about/release-notes.md
       - License: about/license.md
@@ -85,9 +86,6 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences
-  - pymdownx.emoji:
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.tabbed:
       alternate_style: true
   - admonition
@@ -99,6 +97,8 @@ plugins:
   - monorepo
   - search
   - autorefs
+  - neoteroi.mkdocsoad:
+      use_pymdownx: true
 
 watch:
   - docs
