@@ -33,7 +33,7 @@ Then open your browser and head to `localhost:8888` to load the example Jupyter 
 
 
 ### Option 2: 🐳 Docker Compose
-For a Docker-Compose deployment that is used with external object storage, potentially an external Database and an external Identity Provider, we recommend to start from the [Example](#option-1--examples) closest to your use-case, and start modifying the compose file according to our [User Guides](./docs/nightly/docs/configuration.md).
+For a Docker-Compose deployment that is used with external object storage, potentially an external Database and an external Identity Provider, we recommend to start from the [Example](#option-1-examples) closest to your use-case, and start modifying the compose file according to our [User Guides](./docs/nightly/docs/configuration.md).
 
 
 ### Option 3: ☸️ Kubernetes
