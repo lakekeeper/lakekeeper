@@ -1,7 +1,7 @@
 # Lakekeeper
 
 Lakekeeper is a **secure**, **fast** and **easy to use** Apache Iceberg REST Catalog implementation written in Rust.
-Start by reading [Getting Started](getting-started.md), then check [Documentation & Concepts](docs/nightly/concepts/) for more details information.
+Start by reading [Getting Started](getting-started.md), then check [Documentation & Concepts](docs/nightly/concepts.md) for more details information.
 
 <p align="center">
 <img src="./assets/Lakekeeper-Overview.png" width="70%">

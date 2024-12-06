@@ -1,5 +1,5 @@
 # Bootstrap / Initialize
-After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the [bootstrap endpoint](todo). A typical REST request to bootstrap Lakekeeper looks like this:
+After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the `/management/v1/bootstrap` endpoint. A typical POST request to bootstrap Lakekeeper looks like this:
 
 ```bash
 curl --location 'https://<lakekeeper-url>/management/v1/bootstrap' \

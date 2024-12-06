@@ -12,7 +12,6 @@ nav:
       - authentication.md
       - authorization.md
       - production.md
-  - API: api.md
   - Contribute:
       - developer-guide.md
       - customize.md
