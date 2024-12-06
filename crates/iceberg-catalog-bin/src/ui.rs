@@ -13,26 +13,27 @@ use std::default::Default;
 const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
     let default_config = LakekeeperConsoleConfig::default();
     LakekeeperConsoleConfig {
-        idp_authority: std::env::var("LAKEKEEPER__UI__IDP_AUTHORITY")
+        idp_authority: std::env::var("LAKEKEEPER__UI__OPENID_PROVIDER_URI")
             .ok()
             .or(CONFIG
                 .openid_provider_uri
                 .clone()
                 .map(|uri| uri.to_string()))
             .unwrap_or(default_config.idp_authority),
-        idp_client_id: std::env::var("LAKEKEEPER__UI__IDP_CLIENT_ID")
+        idp_client_id: std::env::var("LAKEKEEPER__UI__OPENID_CLIENT_ID")
             .unwrap_or(default_config.idp_client_id),
-        idp_redirect_path: std::env::var("LAKEKEEPER__UI__IDP_REDIRECT_PATH")
+        idp_redirect_path: std::env::var("LAKEKEEPER__UI__OPENID_REDIRECT_PATH")
             .unwrap_or(default_config.idp_redirect_path),
-        idp_scope: std::env::var("LAKEKEEPER__UI__IDP_SCOPE").unwrap_or(default_config.idp_scope),
-        idp_resource: std::env::var("LAKEKEEPER__UI__IDP_RESOURCE")
+        idp_scope: std::env::var("LAKEKEEPER__UI__OPENID_SCOPE")
+            .unwrap_or(default_config.idp_scope),
+        idp_resource: std::env::var("LAKEKEEPER__UI__OPENID_RESOURCE")
             .unwrap_or(default_config.idp_resource),
         idp_post_logout_redirect_path: std::env::var(
-            "LAKEKEEPER__UI__IDP_POST_LOGOUT_REDIRECT_PATH",
+            "LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH",
         )
         .unwrap_or(default_config.idp_post_logout_redirect_path),
         enable_authorization: CONFIG.openid_provider_uri.is_some(),
-        app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__ICEBERG_CATALOG_URL").unwrap_or(
+        app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL").unwrap_or(
             CONFIG
                 .base_uri
                 .to_string()

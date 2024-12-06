@@ -68,6 +68,7 @@ impl IdpVerifier {
         let main_issuer = config.issuer.clone();
         let mut issuers = additional_issuers.unwrap_or_default();
         issuers.push(main_issuer.clone());
+        tracing::info!("Created IdpVerifier for issuers: {:?}", issuers);
 
         Ok(Self {
             client,
@@ -167,7 +168,6 @@ impl IdpVerifier {
         } else {
             validation.validate_aud = false;
         }
-        println!("Issuers: {:?}", self.issuers);
         validation.set_issuer(&self.issuers);
 
         Ok(validation)

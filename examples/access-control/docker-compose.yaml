@@ -42,8 +42,11 @@ services:
       - LAKEKEEPER__AUTHZ_BACKEND=openfga
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - LAKEKEEPER__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg
-      - LAKEKEEPER__UI__IDP_CLIENT_ID=iceberg-catalog
-      - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
+      - LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS=http://localhost:30080/realms/iceberg
+      - LAKEKEEPER__UI__OPENID_CLIENT_ID=iceberg-catalog
+      - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
+      - LAKEKEEPER__UI__LAKEKEEPER_URL=http://localhost:8181
+      - RUST_LOG=info
     command: [ "serve" ]
     healthcheck:
       test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]

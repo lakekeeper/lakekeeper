@@ -17,12 +17,13 @@ cd examples/minimal
 docker compose up
 ```
 Now open in your Browser:
-* Jupyter: [`http://localhost:8888`](`http://localhost:8888`)
-* Lakekeeper UI: [`http://localhost:8181`](`http://localhost:8181`)
+* Jupyter: [http://localhost:8888](http://localhost:8888)
+* Lakekeeper UI: [http://localhost:8181](http://localhost:8181)
+* Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)
 
 
 ## Access Control
-This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark as query engines, OpenFGA as Authorization backend and Keycloak as IdP. As Lakekeeper validates the issuer URL of tokens, it is not possible to login to the Lakekeeper UI with the browser of your local machine, as Keycloak is visible for Lakekeeper under a different URL inside docker (`keycloak:8080` instead of `localhost:30080`).
+This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark as query engines, OpenFGA as Authorization backend and Keycloak as IdP.
 
 Run the example with the following command:
 ```bash
@@ -32,16 +33,19 @@ docker compose up
 
 Now open in your Browser:
 * Jupyter: [http://localhost:8888](http://localhost:8888)
+* Lakekeeper UI: [http://localhost:8181](http://localhost:8181)
 * Keycloak UI: [http://localhost:30080](http://localhost:30080)
+* Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/) (Note that more endpoints are available than in the Minimal example as permissions are enabled)
+
+You can login into the UI as:
+* Username: Peter
+* Password: Iceberg
 
 You can also login to Keycloak using:
 * Username: admin
 * Password: admin
 
-Keycloak also contains a non-admin user:
-* Username: Peter
-* Password: Iceberg
-
+The Keycloak Ream "iceberg" is pre-configured.
 
 ## Development / Re-Build image
 Running `docker compose up` starts the `latest-main` release of Lakekeeper. To build a fresh image use:
