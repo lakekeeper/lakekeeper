@@ -2401,7 +2401,7 @@ components:
       type: string
       enum:
       - aws
-      - minio
+      - s3-compat
     S3Profile:
       type: object
       required:

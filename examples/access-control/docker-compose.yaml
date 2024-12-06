@@ -35,14 +35,18 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
-      - LAKEKEEPER__BASE_URI=http://server:8080
+      - LAKEKEEPER__BASE_URI=http://server:8181
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__AUTHZ_BACKEND=openfga
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - LAKEKEEPER__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg
-      - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
+      - LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS=http://localhost:30080/realms/iceberg
+      - LAKEKEEPER__UI__OPENID_CLIENT_ID=iceberg-catalog
+      - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
+      - LAKEKEEPER__UI__LAKEKEEPER_URL=http://localhost:8181
+      - RUST_LOG=info
     command: [ "serve" ]
     healthcheck:
       test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
@@ -58,9 +62,23 @@ services:
       minio:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "8181:8181"
     networks:
       iceberg_net:
+
+  # firefox:
+  #   image: jlesage/firefox:latest
+  #   pull_policy: always
+  #   depends_on:
+  #     server:
+  #       condition: service_healthy
+  #   environment:
+  #     - WEB_LISTENING_PORT=8181
+  #     - FF_OPEN_URL=http://server:8181/ui/
+  #   ports:
+  #     - "8181:8181"
+  #   networks:
+  #     iceberg_net:
 
   migrate:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}

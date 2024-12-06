@@ -59,7 +59,8 @@ pub struct S3Profile {
 pub enum S3Flavor {
     #[default]
     Aws,
-    Minio,
+    #[serde(alias = "minio")]
+    S3Compat,
 }
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -302,7 +303,7 @@ impl S3Profile {
                     session_token,
                     expiration: _,
                     ..
-                } = if let (S3Flavor::Minio, Some(cred)) = (self.flavor, cred) {
+                } = if let (S3Flavor::S3Compat, Some(cred)) = (self.flavor, cred) {
                     self.get_minio_sts_token(table_location, cred, storage_permissions)
                         .await?
                 } else if let (Some(cred), Some(arn)) = (cred, self.sts_role_arn.as_ref()) {
@@ -897,7 +898,7 @@ mod test {
                         region,
                         path_style_access: Some(true),
                         sts_role_arn: None,
-                        flavor: S3Flavor::Minio,
+                        flavor: S3Flavor::S3Compat,
                         sts_enabled: true,
                     };
                     let mut profile: StorageProfile = profile.into();

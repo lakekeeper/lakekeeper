@@ -18,10 +18,11 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
-      - ICEBERG_REST__BASE_URI=http://server:8080
-      - ICEBERG_REST__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
-      - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
-      - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__BASE_URI=http://server:8181
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__UI__LAKEKEEPER_URL=http://localhost:8181
       - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
     command: [ "serve" ]
     healthcheck:
@@ -40,15 +41,15 @@ services:
     networks:
       iceberg_net:
     ports:
-      - "8080:8080"
+      - "8181:8181"
 
   migrate:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
-      - ICEBERG_REST__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
-      - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
-      - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=info
     restart: "no"
     entrypoint: [ "/home/nonroot/iceberg-catalog", "migrate" ]
@@ -70,14 +71,14 @@ services:
       - "-X"
       - "POST"
       - "-v"
-      - "http://server:8080/management/v1/bootstrap"
+      - "http://server:8181/management/v1/bootstrap"
       - "-H"
       - "Content-Type: application/json"
       - "--data"
       - '{"accept-terms-of-use": true}'
       - "-o"
       - "/dev/null"
-      - "--fail-with-body"
+      # - "--fail-with-body"
     networks:
       iceberg_net:
 
@@ -95,14 +96,14 @@ services:
       - "-X"
       - "POST"
       - "-v"
-      - "http://server:8080/management/v1/warehouse"
+      - "http://server:8181/management/v1/warehouse"
       - "-H"
       - "Content-Type: application/json"
       - "--data"
       - "@create-default-warehouse.json"
       - "-o"
       - "/dev/null"
-      - "--fail-with-body"
+      # - "--fail-with-body"
     volumes:
       - ./create-default-warehouse.json:/home/curl_user/create-default-warehouse.json
     networks:

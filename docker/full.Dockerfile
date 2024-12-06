@@ -1,9 +1,20 @@
 FROM rust:1.83-slim-bookworm AS chef
+
+ENV NODE_VERSION=23.3.0
+ENV NVM_DIR=/root/.nvm
+
 # We only pay the installation cost once, 
 # it will be cached from the second build onwards
 RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yqq curl build-essential libpq-dev pkg-config libssl-dev make perl wget zip unzip --no-install-recommends && \
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
+    . "$NVM_DIR/nvm.sh" && nvm install ${NODE_VERSION}  && \
+    . "$NVM_DIR/nvm.sh" && nvm use v${NODE_VERSION}  && \
+    . "$NVM_DIR/nvm.sh" && nvm alias default v${NODE_VERSION}  && \
+    node -v && npm -v && \
     cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
+
+ENV PATH="/root/.nvm/versions/node/v${NODE_VERSION}/bin/:${PATH}"
 
 RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v28.2/protoc-28.2-linux-x86_64.zip && \
     unzip protoc-28.2-linux-x86_64.zip -d /usr/local/ && \
@@ -25,7 +36,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --bin iceberg-catalog
+RUN cargo build --release --all-features --bin iceberg-catalog
 
 # our final base
 FROM gcr.io/distroless/cc-debian12:nonroot as base

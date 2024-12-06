@@ -44,14 +44,16 @@ pub(crate) async fn db_health_check() -> anyhow::Result<()> {
     let reader = get_reader_pool(
         CONFIG
             .to_pool_opts()
-            .acquire_timeout(std::time::Duration::from_secs(1)),
+            .acquire_timeout(std::time::Duration::from_secs(1))
+            .max_connections(1),
     )
     .await
     .with_context(|| "Read pool failed.")?;
     let writer = get_writer_pool(
         CONFIG
             .to_pool_opts()
-            .acquire_timeout(std::time::Duration::from_secs(1)),
+            .acquire_timeout(std::time::Duration::from_secs(1))
+            .max_connections(1),
     )
     .await
     .with_context(|| "Write pool failed.")?;

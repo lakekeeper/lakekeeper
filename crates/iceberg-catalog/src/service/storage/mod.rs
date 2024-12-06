@@ -921,7 +921,7 @@ mod tests {
                     region,
                     path_style_access: Some(true),
                     sts_role_arn: None,
-                    flavor: S3Flavor::Minio,
+                    flavor: S3Flavor::S3Compat,
                     sts_enabled: true,
                 }
                 .into();

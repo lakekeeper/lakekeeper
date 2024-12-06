@@ -30,10 +30,18 @@ use crate::ui;
 use axum::routing::get;
 
 pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow::Error> {
-    let read_pool =
-        iceberg_catalog::implementations::postgres::get_reader_pool(CONFIG.to_pool_opts()).await?;
-    let write_pool =
-        iceberg_catalog::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
+    let read_pool = iceberg_catalog::implementations::postgres::get_reader_pool(
+        CONFIG
+            .to_pool_opts()
+            .max_connections(CONFIG.pg_read_pool_connections),
+    )
+    .await?;
+    let write_pool = iceberg_catalog::implementations::postgres::get_writer_pool(
+        CONFIG
+            .to_pool_opts()
+            .max_connections(CONFIG.pg_write_pool_connections),
+    )
+    .await?;
 
     let catalog_state = CatalogState::from_pools(read_pool.clone(), write_pool.clone());
 
@@ -173,7 +181,8 @@ async fn serve_inner<A: Authorizer>(
     } else {
         None
     };
-
+    let (layer, metrics_future) =
+        iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?;
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
@@ -182,16 +191,21 @@ async fn serve_inner<A: Authorizer>(
         publisher: CloudEventsPublisher::new(tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         token_verifier: if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-            Some(IdpVerifier::new(uri, CONFIG.openid_audience.clone()).await?)
+            Some(
+                IdpVerifier::new(
+                    uri,
+                    CONFIG.openid_audience.clone(),
+                    CONFIG.openid_additional_issuers.clone(),
+                )
+                .await?,
+            )
         } else {
             None
         },
         k8s_token_verifier,
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
-        metrics_layer: Some(
-            iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?,
-        ),
+        metrics_layer: Some(layer),
     })?;
 
     #[cfg(feature = "ui")]
@@ -222,6 +236,7 @@ async fn serve_inner<A: Authorizer>(
     tokio::select!(
         _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
+        _ = metrics_future => tracing::error!("Metrics server failed"),
     );
 
     tracing::debug!("Sending shutdown signal to event publisher.");
