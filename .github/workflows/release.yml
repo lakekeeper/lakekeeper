@@ -120,6 +120,9 @@ jobs:
         with:
           tool: cross
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 23
       #      - name: Setup cmake
       #        # C Toolchain for windows for protoc compilation
       #        if: matrix.os == 'windows-latest'
