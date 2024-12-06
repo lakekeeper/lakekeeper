@@ -756,7 +756,7 @@ mod test {
             key_prefix: None,
             sts_role_arn: None,
             sts_enabled: false,
-            flavor: S3Flavor::Minio,
+            flavor: S3Flavor::S3Compat,
         };
 
         let result = validate_region("my-region", &storage_profile);
