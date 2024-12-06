@@ -1,0 +1,13 @@
+[build.env]
+passthrough = [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/nvm/versions/node/v23.3.0/bin/",
+    "HOME=/target",
+]
+
+[build]
+pre-build = ["""
+    apt-get update -qq && apt-get install -yqq curl --no-install-recommends && \
+    curl -sL https://deb.nodesource.com/setup_23.x | bash - && \
+    apt-get install -y nodejs  && \
+    node -v && npm -v
+    """]
