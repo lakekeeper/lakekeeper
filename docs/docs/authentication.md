@@ -63,24 +63,60 @@ Before continuing with App 2, we recommend to create a Warehouse using any of th
 
 That's it! We can now use the second App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
 
-```python
-import pyiceberg.catalog
-import pyiceberg.catalog.rest
-import pyiceberg.typedef
+=== "PyIceberg"
 
-catalog = pyiceberg.catalog.rest.RestCatalog(
-    name="my_catalog_name",
-    uri="http://localhost:8181/catalog",
-    warehouse="azure-docs",
-    credential="<Client-ID of App 3 (spark)>:<Client-Secret of App 3 (spark)>",
-    scope="profile oidc api://<Client-ID of App 2 (lakekeeper)>/.default",
-    **{
-        "oauth2-server-uri": "https://login.microsoftonline.com/<Tenant ID>/oauth2/v2.0/token"
-    },
-)
+    ```python
+    import pyiceberg.catalog
+    import pyiceberg.catalog.rest
+    import pyiceberg.typedef
 
-print(catalog.list_namespaces())
-```
+    catalog = pyiceberg.catalog.rest.RestCatalog(
+        name="my_catalog_name",
+        uri="http://localhost:8181/catalog",
+        warehouse="<warehouse name>",
+        credential="<Client-ID of App 3 (spark)>:<Client-Secret of App 3 (spark)>",
+        scope="email openid api://<Client-ID of App 2 (lakekeeper)>/.default",
+        **{
+            "oauth2-server-uri": "https://login.microsoftonline.com/<Tenant ID>/oauth2/v2.0/token"
+        },
+    )
+
+    print(catalog.list_namespaces())
+    ```
+
+=== "PySpark"
+
+    ```python
+    import pyspark
+
+    conf = {
+        "spark.jars.packages": "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.0,org.apache.iceberg:iceberg-azure-bundle:1.7.0",
+        "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        "spark.sql.catalog.azure-docs": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.azure-docs.type": "rest",
+        "spark.sql.catalog.azure-docs.uri": "http://localhost:8181/catalog",
+        "spark.sql.catalog.azure-docs.credential": "<Client-ID of App 3 (spark)>:<Client-Secret of App 3 (spark)>",
+        "spark.sql.catalog.azure-docs.warehouse": "<warehouse name>",
+        "spark.sql.catalog.azure-docs.scope": "email openid api://<Client-ID of App 2 (lakekeeper)>/.default",
+        "spark.sql.catalog.azure-docs.oauth2-server-uri": "https://login.microsoftonline.com/<Tenant ID>/oauth2/v2.0/token",
+    }
+    config = pyspark.SparkConf().setMaster("local")
+
+    for k, v in conf.items():
+        config = config.set(k, v)
+
+    spark = pyspark.sql.SparkSession.builder.config(conf=config).getOrCreate()
+
+    try:
+        spark.sql("USE `azure-docs2`")
+    except Exception as e:
+        print(e.stackTrace)
+        raise e
+    spark.sql("CREATE NAMESPACE IF NOT EXISTS `test`")
+    spark.sql("CREATE OR REPLACE TABLE `test`.`test_tbl` AS SELECT 1 a")
+    ```
+
+
 If Authorization is enabled, the client will throw an error as no permissions have been granted yet. During this initial connect to the `/config` endpoint of Lakekeeper, the user is automatically provisioned so that it should show up when searching for users in the "Grant" dialog and user search endpoints. While we try to extract the name of the application from its token, this might not be possible in all setups. As a fallback we use the `Client ID` as the name of the user. Once permissions have been granted, the user is able to perform actions.
 
 
