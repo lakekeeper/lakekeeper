@@ -1,7 +1,7 @@
 [build]
 pre-build = ["""
     apt-get update -qq && apt-get install -yqq curl --no-install-recommends && \
-    curl -sL https://deb.nodesource.com/setup_23.x | bash - && \
+    curl -sL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs  && \
     node -v && npm -v
     """]
