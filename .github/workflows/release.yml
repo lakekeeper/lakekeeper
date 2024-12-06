@@ -69,7 +69,7 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
-            cross: false
+            cross: true
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
@@ -119,16 +119,6 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cross
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 23
-      #      - name: Setup cmake
-      #        # C Toolchain for windows for protoc compilation
-      #        if: matrix.os == 'windows-latest'
-      #        uses: jwlawson/actions-setup-cmake@v2
-      #        with:
-      #          cmake-version: '3.16'
 
       - name: Build [Cargo]
         if: matrix.cross == false
@@ -222,6 +212,12 @@ jobs:
             --build-arg "BIN=bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz/iceberg-catalog" .
           docker save -o /tmp/docker-iceberg-catalog-arm64.tar localhost/iceberg-catalog-local:arm64
 
+      - name: Save Docker
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-iceberg-catalog
+          path: /tmp/docker-iceberg-catalog-*.tar
+
       - name: Test Docker (arm64)
         run: |
           cd tests
@@ -260,12 +256,6 @@ jobs:
       - name: Dump docker logs on failure  (amd64)
         if: failure()
         uses: jwalton/gh-docker-logs@v2
-
-      - name: Save Docker
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-iceberg-catalog
-          path: /tmp/docker-iceberg-catalog-*.tar
 
       - name: Test Login to Quay.io (Lakekeeper)
         uses: docker/login-action@v3
