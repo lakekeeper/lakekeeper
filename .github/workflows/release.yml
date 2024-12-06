@@ -309,7 +309,7 @@ jobs:
       - build-binary
       - release_please
       - test-docker
-    if: ${{ needs.release_please.outputs.releases_created != 'true' }}
+    if: ${{ needs.release_please.outputs.releases_created != 'true' }} && github.ref == 'refs/heads/main'
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
