@@ -233,6 +233,9 @@ jobs:
           - file: docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
             arch: arm64
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download Artifacts
         uses: actions/download-artifact@v4
 
@@ -299,6 +302,7 @@ jobs:
       - build-docker
       - build-binary
       - release_please
+      - test-docker
     if: ${{ needs.release_please.outputs.releases_created != 'true' }}
     steps:
       - name: Download Artifacts
@@ -335,6 +339,7 @@ jobs:
       - build-binary
       - build-docker
       - release_please
+      - test-docker
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
@@ -358,6 +363,7 @@ jobs:
       - build-docker
       - build-binary
       - release_please
+      - test-docker
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
