@@ -16,7 +16,7 @@ jobs:
         name: ${{ inputs.test_name }}
         env:
           current_test: ${{ inputs.test_name }}
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         steps:
           - uses: actions/checkout@v4
 

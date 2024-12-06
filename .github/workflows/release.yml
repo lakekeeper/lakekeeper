@@ -25,7 +25,7 @@ jobs:
   # Update release PR
   release_please:
     name: Release Please
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.repository == 'lakekeeper/lakekeeper'
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
@@ -67,17 +67,17 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
             cross: false
 
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
             cross: true
 
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
             cross: true
 
@@ -160,7 +160,7 @@ jobs:
 
   build-docker:
     name: Build Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-binary
       - release_please
@@ -276,7 +276,7 @@ jobs:
 
   debug:
     name: Debug Artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-binary
       - build-docker
@@ -301,7 +301,7 @@ jobs:
 
   publish-container-main:
     name: Publish Container (main branch)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-docker
       - build-binary
@@ -337,7 +337,7 @@ jobs:
   # Create GitHub release with Rust build targets and release notes
   publish-binary:
     name: Publish Binary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-binary
       - build-docker
@@ -360,7 +360,7 @@ jobs:
 
   publish-container-lakekeeper:
     name: Publish Container (Lakekeeper)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-docker
       - build-binary
