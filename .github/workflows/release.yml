@@ -217,14 +217,36 @@ jobs:
         with:
           name: docker-iceberg-catalog
           path: /tmp/docker-iceberg-catalog-*.tar
+  
+  test-docker:
+    name: Test Docker
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    needs:
+      - build-docker
+      - release_please
+    strategy:
+      matrix:
+        include:
+          - file: docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
+            arch: amd64
+          - file: docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+            arch: arm64
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
 
-      - name: Test Docker (arm64)
+      - name: Load Docker
+        run: |
+          docker load -i ${{ matrix.file }}
+          docker images
+
+      - name: Test Docker
         run: |
           cd tests
           docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
-          docker compose down
         env:
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:arm64
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:${{ matrix.arch }}
           LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -234,35 +256,10 @@ jobs:
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
 
-      - name: Dump docker logs on failure  (arm64)
+      - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
 
-      - name: Test Docker (amd64)
-        run: |
-          cd tests
-          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
-        env:
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
-          AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
-          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-
-      - name: Dump docker logs on failure  (amd64)
-        if: failure()
-        uses: jwalton/gh-docker-logs@v2
-
-      - name: Test Login to Quay.io (Lakekeeper)
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: lakekeeper+github
-          password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
   debug:
     name: Debug Artifacts
@@ -288,6 +285,13 @@ jobs:
 
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
+
+      - name: Test Login to Quay.io (Lakekeeper)
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: lakekeeper+github
+          password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
   publish-container-main:
     name: Publish Container (main branch)
