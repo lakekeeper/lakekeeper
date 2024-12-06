@@ -3,21 +3,53 @@
 > [!IMPORTANT]  
 > Our examples are not designed to be used with compute outside of the docker network (e.g. external Spark). For production deployments external object storage is required. Please check our [docs](http://docs.lakekeeper.io) for more information
 
-Multiple examples are provided in the `examples` directory. All examples are self-contained and run all services required for the specific scenarios inside of docker compose. To run each scenario, you need to have `docker` installed on your machine. Most docker distributes come with built-in `docker compose` today.
+All examples are self-contained and run all services required for the specific scenarios inside of docker compose. To run each scenario, you need to have `docker` installed on your machine. Most docker distributes come with built-in `docker compose` today.
 
-To run each example run the following commands (example for `minimal` example):
+Currently two szenarios are available:
+
+## Minimal
+Runs Lakekeeper without Authentication and Authorization (unprotected). The example contains Jupyter (with Spark), Trino and Starrocks as query engines, Minio as storage and Lakekeeper connected to a Postgres database.
+
+To run the example run the following commands:
 
 ```bash
 cd examples/minimal
 docker compose up
 ```
+Now open in your Browser:
+* Jupyter: [http://localhost:8888](http://localhost:8888)
+* Lakekeeper UI: [http://localhost:8181](http://localhost:8181)
+* Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)
 
-Most examples come with a jupyter notebook that can now be accessed at `http://localhost:8888` in your browser. You can also access the UI of Lakekeeper at `http://localhost:8181`.
 
-Running `docker compose up` starts the latest release of Lakekeeper. To build a new image based on the latest code, run:
+## Access Control
+This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark as query engines, OpenFGA as Authorization backend and Keycloak as IdP.
+
+Run the example with the following command:
+```bash
+cd examples/access-control
+docker compose up
+```
+
+Now open in your Browser:
+* Jupyter: [http://localhost:8888](http://localhost:8888)
+* Lakekeeper UI: [http://localhost:8181](http://localhost:8181)
+* Keycloak UI: [http://localhost:30080](http://localhost:30080)
+* Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/) (Note that more endpoints are available than in the Minimal example as permissions are enabled)
+
+You can login into the UI as:
+* Username: Peter
+* Password: Iceberg
+
+You can also login to Keycloak using:
+* Username: admin
+* Password: admin
+
+The Keycloak Ream "iceberg" is pre-configured.
+
+## Development / Re-Build image
+Running `docker compose up` starts the `latest-main` release of Lakekeeper. To build a fresh image use:
 
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose-build.yaml up --build
 ```
-
-Once jupyter is started, you can browse and run the available notebooks.

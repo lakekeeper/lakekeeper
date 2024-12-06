@@ -37,17 +37,17 @@ Project, Server, User and Roles are entities unknown to the Iceberg Rest Specifi
 1. The Lakekeeper Management API is served at endpoints prefixed with `/management`. It is used to configure Lakekeeper and manage entities that are not part of the Iceberg REST Catalog specification, such as permissions.
 
 ### Server
-The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` must not be changed after the initial [bootstrapping](mysubheadline) or permissions might not work.
+The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` must not be changed after the initial [bootstrapping](./bootstrap.md) or permissions might not work.
 
 ### Project
-For single-company setups, we recommend using a single Project setup, which is the default. For multi-project/multi-tenant setups, please check our dedicated guide (ToDo: Link). Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](bootstrapping) with the nil UUID.
+For single-company setups, we recommend using a single Project setup, which is the default. Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](./bootstrap.md) with the nil UUID.
 
 ### Warehouse
 Each Project can contain multiple Warehouses. Query engines connect to Lakekeeper by specifying a Warehouse name in the connection configuration.
 
 Each Warehouse is associated with a unique location on object stores. Never share locations between Warehouses to ensure no data is leaked via vended credentials. Each Warehouse stores information on how to connect to its location via a `storage-profile` and an optional `storage-credential`.
 
-Warehouses can be configured to use [Soft-Deletes](ToDo: Link). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Please find more information on Soft-Deletes [here](ToDo: Link). Please not that Warehouses and Namespaces cannot be deleted via the `/catalog` API while child objects are present. This includes soft-deleted Tables. A cascade-drop API is added in one of the next releases as part of the `/management` API.
+Warehouses can be configured to use [Soft-Deletes](./concepts.md#soft-deletion). When enabled, tables are not eagerly deleted but kept in a deleted state for a configurable amount of time. During this time, they can be restored. Please note that Warehouses and Namespaces cannot be deleted via the `/catalog` API if child objects are present. This includes soft-deleted Tables. A cascade-drop API is added in one of the next releases as part of the `/management` API.
 
 ### Namespaces
 Each Warehouses can contain multiple Namespaces. Namespaces can be nested and serve as containers for Namespaces, Tables and Views. Using the `/catalog` API, a Namespace cannot be dropped unless it is empty. A cascade-drop API is added in one of the next releases as part of the `/management` API.
@@ -73,6 +73,8 @@ Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeepe
 
 ## Soft Deletion
 In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse.
+
+The undropping Endpoint is going to be release in Lakekeeper 0.6.0.
 
 
 ## Migration

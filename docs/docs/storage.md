@@ -12,7 +12,8 @@ When creating a Warehouse or updating storage information, Lakekeeper validates 
 
 ## S3
 
-We support remote signing and vended-credentials with minio & aws. Both provide a secure way to access data on S3:
+We support remote signing and vended-credentials with Minio & AWS. Both provide a secure way to access data on S3:
+
 * **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
 * **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
 
@@ -108,9 +109,9 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 ```
 
 
-### Minio
+### S3 Compatible
 
-Unlike for AWS, we do not need any special trust-setup for vended credentials / STS with Minio. Instead, we just need a bucket and an access key / secret key combination that is able to read and write from it. If `sts-role-arn` is provided, it is ignored. Make sure to select `flavor` to have the value `minio`! This setting should work for most self-hosted S3 solutions.
+Unlike for AWS, we do not need any special trust-setup for vended credentials / STS with most S3 compatible solutions like Minio. Instead, we just need a bucket and an access key / secret key combination that is able to read and write from it. If `sts-role-arn` is provided, it is ignored. Make sure to select `flavor` to have the value `s3-compat`! This setting should work for most self-hosted S3 solutions.
 
 An warehouse create call could look like this:
 
@@ -129,7 +130,7 @@ An warehouse create call could look like this:
         "bucket": "<name of the bucket>",
         "region": "local-01",
         "sts-enabled": true,
-        "flavor": "minio",
+        "flavor": "s3-compat",
         "key-prefix": "lakekeeper-dev-warehouse",
     },
     "delete-profile": {

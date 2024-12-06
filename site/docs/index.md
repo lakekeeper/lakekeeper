@@ -1,7 +1,7 @@
 # Lakekeeper
 
 Lakekeeper is a **secure**, **fast** and **easy to use** Apache Iceberg REST Catalog implementation written in Rust.
-Start by reading [Getting Started](getting-started.md), then check [Documentation & Concepts](../docs/nightly/entities/) for more details information.
+Start by reading [Getting Started](getting-started.md), then check [Documentation & Concepts](docs/nightly/concepts/) for more details information.
 
 <p align="center">
 <img src="./assets/Lakekeeper-Overview.png" width="70%">
@@ -11,7 +11,7 @@ Start by reading [Getting Started](getting-started.md), then check [Documentatio
 
 - **Written in Rust**: Single all-in-one binary - no JVM or Python env required.
 - **User Friendly**: We offer a UI, Helm-Charts, Binary executables for all major platform, a comprehensive documentation and much more. Let us know if you miss anything!
-- **Storage Access Management**: Lakekeeper secures access to your data using [Vended-Credentials](ToDo) and [remote signing for S3](ToDo). All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
+- **Storage Access Management**: Lakekeeper secures access to your data using [Vended-Credentials and remote signing for S3](docs/nightly/storage.md#s3). All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
 - **Openid Provider Integration**: Use your own identity provider for authentication, just set `LAKEKEEPER__OPENID_PROVIDER_URI` and you are good to go.
 - **Native Kubernetes Integration**: Use our helm chart to easily deploy high available setups and natively authenticate kubernetes service accounts with Lakekeeper. Kubernetes and OpenID authentication can be used simultaneously. A [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 - **Change Events**: Built-in support to emit change events (CloudEvents), which enables you to react to any change that happen to your tables.

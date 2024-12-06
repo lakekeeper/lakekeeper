@@ -2,7 +2,7 @@
 
 There are multiple ways to deploy Lakekeeper. Our [self-contained examples](#option-1-examples) are the easiest way to get started and deploy everything you need (including S3, Query Engines, Jupyter, ...). By default, compute outside of the docker network cannot access the example Warehouses due to docker networking.
 
-If you have your own Storage (e.g. S3) available, you can deploy Lakekeeper using [docker compose](#option-2--docker-compose), deploy on [Kubernetes](#option-3-kubernetes), deploy the pre-build [Binary](#option-4-binary) directly or [compile Lakekeeper yourself](#option-5-build-from-sources).
+If you have your own Storage (e.g. S3) available, you can deploy Lakekeeper using [docker compose](#option-2-docker-compose), deploy on [Kubernetes](#option-3-kubernetes), deploy the pre-build [Binary](#option-4-binary) directly or [compile Lakekeeper yourself](#option-5-build-from-sources).
 
 ## Deployment
 
@@ -31,7 +31,9 @@ All docker expose examples come with batteries included (Identity Provider, Stor
 
 Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8181` for the Lakekeeper UI.
 
+
 ### Option 2: 🐳 Docker Compose
+For a Docker-Compose deployment that is used with external object storage, potentially an external Database and an external Identity Provider, we recommend to start from the [Example](#option-1--examples) closest to your use-case, and start modifying the compose file according to our [User Guides](./docs/nightly/docs/configuration.md).
 
 
 ### Option 3: ☸️ Kubernetes
@@ -39,8 +41,8 @@ We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://
 
 A community driven [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 
-### Option 4: ⚙️ Binary
 
+### Option 4: ⚙️ Binary
 For single node deployments, you can also download the Binary for your architecture from [Github Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look like this:
 
 ```bash
@@ -59,7 +61,7 @@ export LAKEKEEPER__BASE_URI=<https://<Url-where-Lakekeeper-is-externally-reachab
 The default `LAKEKEEPER__BASE_URI` is `https://localhost:8181`.
 
 ### Option 5: 👨‍💻 Build from Sources
-To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](../docs/nightly/developer-guide/) for more information. 
+To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](./docs/nightly/docs/developer-guide.md) for more information. 
 
 ## First Steps
 
@@ -73,14 +75,14 @@ Now that the catalog is up-and-running, the following endpoints are available:
 ### Bootstrapping
 Our self-contained docker compose examples are already bootstrapped and require no further actions.
 
-After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the bootstrap endpoint. Among others, bootstrapping sets the initial administrator of Lakekeeper and creates the first project. Please find more information on bootstrapping in the [Bootstrap Docs](../docs/nightly/bootstrap/).
+After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the bootstrap endpoint. Among others, bootstrapping sets the initial administrator of Lakekeeper and creates the first project. Please find more information on bootstrapping in the [Bootstrap Docs](docs/nightly/bootstrap.md).
 
 ### Creating a Warehouse
 Now that the server is running, we need to create a new warehouse. We recommend to do this via the UI.
 
 <br>
 <figure markdown="span">
-  ![Create a Warehouse](../../assets/create-warehouse-v1.png){ width="100%" }
+  ![Create a Warehouse](assets/create-warehouse-v1.png){ width="100%" }
   <figcaption>Create a Warehouse via UI</figcaption>
 </figure>
 <br>
@@ -115,7 +117,7 @@ We now create a new Warehouse by POSTing the request to the management API:
 curl -X POST http://localhost:8181/management/v1/warehouse -H "Content-Type: application/json" -d @create-warehouse-request.json
 ```
 
-If you want to use a different storage backend, see the [Storage Guide](../docs/nightly/storage/) for example configurations.
+If you want to use a different storage backend, see the [Storage Guide](docs/nightly/storage.md) for example configurations.
 
 ### Connect Compute
 

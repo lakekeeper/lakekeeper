@@ -40,12 +40,6 @@ Currently Lakekeeper supports only Postgres as a persistence store. You may eith
 | `LAKEKEEPER__PG_TEST_BEFORE_ACQUIRE`                   | `true`                                                | Test connections before acquiring from the pool |
 | `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME`               | `1800`                                                | Maximum lifetime of connections in seconds |
 
-### UI
-
-When using the built-in UI which is hosted as part of the Lakekeeper binary, most values are pre-set with the corresponding values of Lakekeeper itself. Customization is typically required if Authentication is enabled. Please check the [Authentication guide](./authentication.md) for more information.
-
-ToDo
-
 ### Vault KV Version 2
 
 Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatible storage is used as a backend. Currently, we only support the `userpass` authentication method. Configuration may be passed as single values like `LAKEKEEPER__KV2__URL=http://vault.local` or as a compound value:
@@ -121,6 +115,20 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`         | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
 
 
+### UI
+
+When using the built-in UI which is hosted as part of the Lakekeeper binary, most values are pre-set with the corresponding values of Lakekeeper itself. Customization is typically required if Authentication is enabled. Please check the [Authentication guide](./authentication.md) for more information.
+
+| Variable                                           | Example                                      | Description |
+|----------------------------------------------------|----------------------------------------------|-----|
+| <nobr>`LAKEKEEPER__UI__OPENID_PROVIDER_URI`</nobr> | `https://keycloak.local/realms/{your-realm}` | OpenID provider URI used for login in the UI. Defaults to `LAKEKEEPER__OPENID_PROVIDER_URI`. Set this only if the IdP is reachable under a different URI from the users browser and lakekeeper. |
+| `LAKEKEEPER__UI__OPENID_CLIENT_ID`                 | `lakekeeper-ui`                              | Client ID to use for the Authorization Code Flow of the UI. Required if Authentication is enabled. |
+| `LAKEKEEPER__UI__OPENID_REDIRECT_PATH`             | `/callback`                                  | Path where the UI receives the callback including the tokens from the users browser. Defaults to: `/callback` |
+| <nobr>`LAKEKEEPER__UI__OPENID_SCOPE`</nobr>        | `openid email`                               | Scopes to request from the IdP. If supported by the IdP, we recommend setting at least `openid email` |
+| <nobr>`LAKEKEEPER__UI__OPENID_RESOURCE`</nobr>     | `lakekeeper-api`                             | Resources to request from the IdP. |
+| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. |
+
+
 ### SSL Dependencies
 
-You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
+You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. Minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.

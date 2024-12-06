@@ -26,7 +26,7 @@ We are creating three App-Registrations: One for Lakekeeper itself, one for the 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper`
     - **Redirect URI**: Leave empty.
-1. When the App Registration is created, select "Manage" -> "Expose an API" and on the top select "Add" beside `Application ID URI`. ![](../../../assets/idp-azure-application-id-uri.png) Note down the `Application ID URI` (should be `api://<Client ID>`).
+1. When the App Registration is created, select "Manage" -> "Expose an API" and on the top select "Add" beside `Application ID URI`. ![](../../assets/idp-azure-application-id-uri.png) Note down the `Application ID URI` (should be `api://<Client ID>`).
 1. Still in the "Expose an API" menus, select "Add a Scope". Fill the fields as follows:
     - **Scope name**: lakekeeper
     - **Who can consent?** Admins and users

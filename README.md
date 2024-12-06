@@ -15,7 +15,7 @@
 [![Starrocks Integration](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml/badge.svg)](https://github.com/lakekeeper/lakekeeper/actions/workflows/starrocks-integration.yml)
 
 
-Please visit [docs.lakekeeper.io](docs.lakekeeper.io) for more information and the documentation.
+Please visit [docs.lakekeeper.io](docs.lakekeeper.io) for Documentation!
 
 This is Lakekeeper: A **secure**, **fast** and **easy to use**  implementation of the [Apache Iceberg](https://iceberg.apache.org/) REST Catalog specification based on [apache/iceberg-rust](https://github.com/apache/iceberg-rust). If you have questions, feature requests or just want a chat, we are hanging around in [Discord](https://discord.gg/jkAGG8p93B)!
 
@@ -34,7 +34,7 @@ cd lakekeeper/examples/minimal
 docker compose up
 ```
 
-Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8181` for the Lakekeeper UI.
+Then open your browser and head to [localhost:8888](localhost:8888) to load the example Jupyter notebooks or head to [localhost:8181](localhost:8181) for the Lakekeeper UI.
 
 For more information on deployment, please check the [Getting Started Guide](docs.lakekeeper.io/getting-started/).
 
@@ -43,7 +43,7 @@ For more information on deployment, please check the [Getting Started Guide](doc
 The Iceberg Catalog REST interface has become the standard for catalogs in open Lakehouses. It natively enables multi-table commits, server-side deconflicting and much more. It is figuratively the (**TIP**) of the Iceberg.
 
 - **Written in Rust**: Single all-in-one binary - no JVM or Python env required.
-- **Storage Access Management**: Lakekeeper secures access to your data using [Vended-Credentials](ToDo) and [remote signing for S3](ToDo). All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
+- **Storage Access Management**: Lakekeeper secures access to your data using Vended-Credentials and remote signing for S3. All major Hyperscalers (AWS, Azure, GCP) as well as on-premise deployments with S3 are supported.
 - **Openid Provider Integration**: Use your own identity provider for authentication, just set `LAKEKEEPER__OPENID_PROVIDER_URI` and you are good to go.
 - **Native Kubernetes Integration**: Use our helm chart to easily deploy high available setups and natively authenticate kubernetes service accounts with Lakekeeper. Kubernetes and OpenID authentication can be used simultaneously. A [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 - **Change Events**: Built-in support to emit change events (CloudEvents), which enables you to react to any change that happen to your tables.
@@ -73,13 +73,13 @@ If you are missing something, we would love to hear about it in a [Github Issue]
 | Storage              |    Status    | Comment                                |
 |----------------------|:------------:|----------------------------------------|
 | S3 - AWS             | ![semi-done] | vended-credentials & remote-signing, assume role missing |
-| S3 - Custom          |   ![done]    | vended-credentials & remote-signing, tested against minio |
+| S3 - Custom          |   ![done]    | vended-credentials & remote-signing, tested against Minio |
 | Azure ADLS Gen2      |   ![done]    |                                        |
 | Azure Blob           |   ![open]    |                                        |
 | Microsoft OneLake    |   ![open]    |                                        |
 | Google Cloud Storage |   ![done]    |                                        |
 
-Details on how to configure the storage profiles can be found in the [Storage Guide](STORAGE.md).
+Details on how to configure the storage profiles can be found in the [Docs](https://docs.lakekeeper.io).
 
 ### Supported Catalog Backends
 
