@@ -38,6 +38,8 @@ pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStor
         )
         .await
         .map_err(set_not_found_status_code)?;
+    t.commit().await?;
+
     Ok(())
 }
 
