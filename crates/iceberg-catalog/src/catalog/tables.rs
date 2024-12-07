@@ -427,6 +427,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             t.transaction(),
         )
         .await?;
+        t.commit().await?;
         let CatalogLoadTableResult {
             table_id: _,
             namespace_id: _,
