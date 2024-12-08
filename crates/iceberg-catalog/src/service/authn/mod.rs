@@ -59,7 +59,7 @@ impl AuthDetails {
         let user_id = UserId::oidc(sub)?;
 
         let first_name = claims.given_name.or(claims.first_name);
-        let last_name = claims.family_name.or(claims.last_name);
+        let last_name = claims.family_name.clone().or(claims.last_name);
         let name =
             claims
                 .name
@@ -97,7 +97,9 @@ impl AuthDetails {
             issuer: claims.iss,
             email,
             application_id,
-            idtyp: claims.idtyp,
+            idtyp: claims
+                .idtyp
+                .or(claims.family_name.map(|_| "user".to_string())),
         };
 
         Ok(Self::Principal(principal))
@@ -225,11 +227,55 @@ mod test {
     }
 
     #[test]
+    fn test_human_discovery_entra_2() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+          "aud": "api://xyz",
+          "iss": "https://sts.windows.net/my-tenant-id/",
+          "iat": 1_733_673_952,
+          "nbf": 1_733_673_952,
+          "exp": 1_733_679_587,
+          "acr": "1",
+          "aio": "...",
+          "amr": [
+            "pwd",
+            "mfa"
+          ],
+          "appid": "xyz",
+          "appidacr": "0",
+          "family_name": "Peter",
+          "given_name": "Cold",
+          "ipaddr": "192.168.5.1",
+          "name": "Peter Cold",
+          "oid": "user-oid",
+          "pwd_exp": "49828",
+          "pwd_url": "https://portal.microsoftonline.com/ChangePassword.aspx",
+          "scp": "lakekeeper",
+          "sub": "user-sub",
+          "tid": "my-tenant-id",
+          "unique_name": "peter@example.com",
+          "upn": "peter@example.com",
+          "uti": "...",
+          "ver": "1.0"
+        }))
+        .unwrap();
+
+        let auth_details = super::AuthDetails::try_from_jwt_claims(claims).unwrap();
+        let principal = match auth_details {
+            super::AuthDetails::Principal(principal) => principal,
+            super::AuthDetails::Unauthenticated => panic!("Expected principal"),
+        };
+        let (name, user_type) = principal.get_name_and_type().unwrap();
+        assert_eq!(name, "Peter Cold");
+        assert_eq!(user_type, UserType::Human);
+        assert_eq!(principal.email(), Some("peter@example.com"));
+    }
+
+    #[test]
     fn test_human_discovery_entra() {
         let claims: Claims = serde_json::from_value(serde_json::json!({
             "acct": 0,
             "acr": "1",
-            "aio": "AVQAq/8YAAAAkP/tBF3Bd+1dl8nN3d7MY7maGp32OtfupUwxJPaOxxkEiLSzd1yMjh/2AZIg0NB97mxp1+Q0ZfCQVCjKyUINhp2XYMuKtQSy3FC3WiM4aFM=",
+            "aio": "...",
             "amr": ["pwd", "mfa"],
             "app_displayname": "ht-testing-lakekeeper-oauth",
             "appid": "d53edae2-1b58-4c56-a243-xxxxxxxxxxxx",
@@ -263,7 +309,8 @@ mod test {
             "xms_st": {"sub": "VZ5XLBqhasu6qISBjalO9e45lQjr_EyLLtKzCFcWw-8"},
             "xms_tcdt": 1_638_946_153,
             "xms_tdbr": "EU"
-        })).unwrap();
+        }))
+        .unwrap();
 
         let auth_details = super::AuthDetails::try_from_jwt_claims(claims).unwrap();
         let principal = match auth_details {
