@@ -7,11 +7,11 @@ nav:
   - Concepts: concepts.md
   - User Guide:
       - bootstrap.md
-      - configuration.md
       - storage.md
       - authentication.md
       - authorization.md
       - production.md
+  - Configuration: configuration.md
   - Contribute:
       - developer-guide.md
       - customize.md
