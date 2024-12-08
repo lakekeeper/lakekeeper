@@ -5,6 +5,8 @@
 
 All examples are self-contained and run all services required for the specific scenarios inside of docker compose. To run each scenario, you need to have `docker` installed on your machine. Most docker distributes come with built-in `docker compose` today.
 
+After starting the examples, please wait for a Minute after all images are pulled - especially keycloak takes some time to start and setup.
+
 Currently two szenarios are available:
 
 ## Minimal
@@ -33,13 +35,13 @@ docker compose up
 
 Now open in your Browser:
 * Jupyter: [http://localhost:8888](http://localhost:8888)
-* Lakekeeper UI: [http://localhost:8181](http://localhost:8181)
 * Keycloak UI: [http://localhost:30080](http://localhost:30080)
 * Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/) (Note that more endpoints are available than in the Minimal example as permissions are enabled)
+* Lakekeeper UI (DON'T USE IT FOR BOOTSTRAPPING, There is a Notebook for it.): [http://localhost:8181](http://localhost:8181)
 
-You can login into the UI as:
-* Username: Peter
-* Password: Iceberg
+Start by running the `01-Bootstrap.ipynb` Notebook. After that, you can login to the [UI](http://localhost:8181) as:
+* Username: `peter`
+* Password: `iceberg`
 
 You can also login to Keycloak using:
 * Username: admin

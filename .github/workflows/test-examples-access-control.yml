@@ -77,7 +77,7 @@ jobs:
         run: |
           cd examples/access-control
           sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Manual-Bootstrap.ipynb"
+          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb"
         env:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure

@@ -146,7 +146,7 @@ services:
       - "9001:9001"
   
   trino:
-    image: trinodb/trino:latest
+    image: trinodb/trino:467
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:
@@ -161,7 +161,7 @@ services:
       - iceberg_net
 
   starrocks:
-    image: starrocks/allin1-ubuntu:3.3.2
+    image: starrocks/allin1-ubuntu:3.3.6
     healthcheck:
       test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
       interval: 2s
