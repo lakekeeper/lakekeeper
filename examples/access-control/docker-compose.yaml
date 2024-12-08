@@ -13,10 +13,10 @@ services:
       - "8888:8888"
 
   keycloak:
-    image: quay.io/keycloak/keycloak:latest
+    image: quay.io/keycloak/keycloak:26.0.7
     environment:
-      - KEYCLOAK_ADMIN=admin
-      - KEYCLOAK_ADMIN_PASSWORD=admin
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
     volumes:
       - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
