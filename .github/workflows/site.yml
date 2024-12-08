@@ -9,6 +9,8 @@ on:
   #      - docs/**
   #      - site/**
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   deploy:
     runs-on: ubuntu-24.04
