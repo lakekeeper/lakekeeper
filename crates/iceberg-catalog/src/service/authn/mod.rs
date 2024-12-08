@@ -231,9 +231,9 @@ mod test {
         let claims: Claims = serde_json::from_value(serde_json::json!({
           "aud": "api://xyz",
           "iss": "https://sts.windows.net/my-tenant-id/",
-          "iat": 1733673952,
-          "nbf": 1733673952,
-          "exp": 1733679587,
+          "iat": 1_733_673_952,
+          "nbf": 1_733_673_952,
+          "exp": 1_733_679_587,
           "acr": "1",
           "aio": "...",
           "amr": [
