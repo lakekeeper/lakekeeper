@@ -124,7 +124,7 @@ impl TaskQueue for TabularPurgeQueue {
         };
 
         let it = sqlx::query!(
-                "INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location) VALUES ($1, $2, $3, $4, $5) RETURNING task_id",
+                "INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING task_id",
                 task_id,
                 tabular_id,
                 *warehouse_ident,

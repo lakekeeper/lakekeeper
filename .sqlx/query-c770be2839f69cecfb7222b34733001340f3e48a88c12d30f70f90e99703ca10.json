@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind) VALUES ($1, $2, $3, $4, $5) RETURNING task_id",
+  "query": "INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING task_id",
   "describe": {
     "columns": [
       {
@@ -42,5 +42,5 @@
       false
     ]
   },
-  "hash": "90e82527e93a4d252a4d9f0959c788a64d5f75ba9c66d02b14f7f25f2ffb69b7"
+  "hash": "c770be2839f69cecfb7222b34733001340f3e48a88c12d30f70f90e99703ca10"
 }

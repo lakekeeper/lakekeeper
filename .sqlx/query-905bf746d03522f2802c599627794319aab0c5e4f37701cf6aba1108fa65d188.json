@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO task(\n                task_id,\n                queue_name,\n                status,\n                parent_task_id,\n                idempotency_key,\n                warehouse_id,\n                suspend_until)\n        VALUES ($1, $2, 'pending', $3, $4, $5, $6)\n        ON CONFLICT ON CONSTRAINT unique_idempotency_key\n        DO UPDATE SET\n            status = EXCLUDED.status,\n            suspend_until = EXCLUDED.suspend_until\n        WHERE task.status = 'cancelled'\n        RETURNING task_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "905bf746d03522f2802c599627794319aab0c5e4f37701cf6aba1108fa65d188"
+}

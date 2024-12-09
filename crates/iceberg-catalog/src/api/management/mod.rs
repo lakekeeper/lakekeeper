@@ -892,9 +892,10 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UndropTabularsRequest>,
-    ) -> Result<()> {
+    ) -> Result<StatusCode> {
         ApiServer::<C, A, S>::undrop_tabulars(metadata, warehouse_id.into(), request, api_context)
-            .await
+            .await?;
+        Ok(StatusCode::NO_CONTENT)
     }
 
     #[derive(Debug, Serialize, utoipa::ToSchema)]

@@ -66,15 +66,19 @@ async fn queue_task(
     let task_id = Uuid::now_v7();
     Ok(sqlx::query_scalar!(
         r#"INSERT INTO task(
-                        task_id,
-                        queue_name,
-                        status,
-                        parent_task_id,
-                        idempotency_key,
-                        warehouse_id,
-                        suspend_until)
+                task_id,
+                queue_name,
+                status,
+                parent_task_id,
+                idempotency_key,
+                warehouse_id,
+                suspend_until)
         VALUES ($1, $2, 'pending', $3, $4, $5, $6)
-        ON CONFLICT ON CONSTRAINT unique_idempotency_key DO NOTHING
+        ON CONFLICT ON CONSTRAINT unique_idempotency_key
+        DO UPDATE SET
+            status = EXCLUDED.status,
+            suspend_until = EXCLUDED.suspend_until
+        WHERE task.status = 'cancelled'
         RETURNING task_id"#,
         task_id,
         queue_name,
