@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE tabular t\n        SET deleted_at = NULL\n        WHERE t.tabular_id = any($1)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fbf90e8d2900e986c76b04a7d8fe4144683726fd4dc21029b9f0bc9b4283c540"
+}

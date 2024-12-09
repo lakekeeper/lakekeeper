@@ -1,3 +1,5 @@
+import json
+
 import conftest
 import pandas as pd
 import pytest
@@ -299,6 +301,81 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
             purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
         ).raise_for_status()
         time.sleep(5)
+
+
+def test_undrop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):
+    if storage_config["storage-profile"]["type"] == "adls":
+        # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
+        # https://github.com/apache/iceberg-python/issues/1146 is resolved
+        pytest.skip("ADLS currently doesn't work with pyiceberg.")
+
+    namespace = "test_undrop_table_purge_http"
+    spark.sql(f"CREATE NAMESPACE {namespace}")
+    dfs = []
+    for n in range(2):
+        data = pd.DataFrame(
+            [[1 + n, "a-string", 2.2 + n]], columns=["id", "strings", "floats"]
+        )
+        dfs.append(data)
+        sdf = spark.createDataFrame(data)
+        sdf.writeTo(f"{namespace}.my_table_{n}").create()
+
+    for n, df in enumerate(dfs):
+        table = warehouse.pyiceberg_catalog.load_table((namespace, f"my_table_{n}"))
+        assert table
+        assert table.scan().to_pandas().equals(df)
+
+    table_0 = warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
+
+    purge_uri = (
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            str(warehouse.warehouse_id),
+            "namespaces",
+            namespace,
+            "tables",
+            "my_table_0?purgeRequested=True",
+        ]
+    )
+    )
+    requests.delete(
+        purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
+    ).raise_for_status()
+    with pytest.raises(Exception) as e:
+        warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
+
+    undrop_uri = (
+            warehouse.server.management_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            "warehouse",
+            str(warehouse.warehouse_id),
+            "deleted_tabulars",
+            "undrop",
+        ]
+    ))
+
+    print(json.dumps({
+        "undrop": {"tabulars": [{"type": "table", "id": str(table_0.metadata.table_uuid)}]}
+    }))
+    resp = requests.post(undrop_uri, json={
+        "undrop": {"tabulars": [{"type": "table", "id": str(table_0.metadata.table_uuid)}]}
+    }, headers={"Authorization": f"Bearer {warehouse.access_token}"})
+    resp.raise_for_status()
+    time.sleep(5)
+
+    tables = warehouse.pyiceberg_catalog.list_tables(namespace)
+
+    assert len(tables) == 2
+    for n, ((_, table), df) in enumerate(zip(sorted(tables), dfs)):
+        assert table == f"my_table_{n}"
+        table = warehouse.pyiceberg_catalog.load_table((namespace, table))
+        assert table.scan().to_pandas().equals(df)
 
 
 def test_query_empty_table(spark, warehouse: conftest.Warehouse):

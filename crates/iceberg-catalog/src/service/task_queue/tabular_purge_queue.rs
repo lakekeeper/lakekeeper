@@ -45,7 +45,7 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
             location = %purge_task.tabular_location,
             warehouse_id = %purge_task.warehouse_ident,
             tabular_type = %purge_task.tabular_type,
-            task_name = %purge_task.task.task_name,
+            queue_name = %purge_task.task.queue_name,
             task = ?purge_task.task,
         );
 

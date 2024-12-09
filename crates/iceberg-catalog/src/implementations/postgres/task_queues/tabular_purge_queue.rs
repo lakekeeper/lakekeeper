@@ -10,6 +10,8 @@ use crate::implementations::postgres::task_queues::{
 use crate::service::task_queue::tabular_purge_queue::{TabularPurgeInput, TabularPurgeTask};
 use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
 
+use super::{cancel_pending_tasks, TaskFilter};
+
 super::impl_pg_task_queue!(TabularPurgeQueue);
 
 #[async_trait]
@@ -51,7 +53,7 @@ impl TaskQueue for TabularPurgeQueue {
         .await
         .map_err(|e| {
             tracing::error!(?e, "error selecting tabular expiration");
-            e.into_error_model("failed to read task after picking one up".into())
+            e.into_error_model("failed to read task after picking one up")
         })?;
 
         Ok(Some(TabularPurgeTask {
@@ -94,7 +96,7 @@ impl TaskQueue for TabularPurgeQueue {
             .write_pool
             .begin()
             .await
-            .map_err(|e| e.into_error_model("fail".into()))?;
+            .map_err(|e| e.into_error_model("failed begin transaction to purge task"))?;
 
         tracing::info!(
             "Queuing expiration for '{tabular_id}' of type: '{}' under warehouse: '{warehouse_ident}'",
@@ -116,13 +118,13 @@ impl TaskQueue for TabularPurgeQueue {
             tracing::debug!("Task already exists");
             transaction.commit().await.map_err(|e| {
                 tracing::error!(?e, "failed to commit");
-                e.into_error_model("fail".into())
+                e.into_error_model("failed commiting transaction")
             })?;
             return Ok(());
         };
 
         let it = sqlx::query!(
-                "INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location) VALUES ($1, $2, $3, $4, $5) RETURNING task_id",
+                "INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING task_id",
                 task_id,
                 tabular_id,
                 *warehouse_ident,
@@ -136,7 +138,7 @@ impl TaskQueue for TabularPurgeQueue {
             .await
             .map_err(|e| {
                 tracing::error!(?e, "failed to insert into tabular_purges");
-                e.into_error_model("fail".into())
+                e.into_error_model("failed to insert into tabular purges")
             })?;
 
         if let Some(row) = it {
@@ -147,10 +149,14 @@ impl TaskQueue for TabularPurgeQueue {
 
         transaction.commit().await.map_err(|e| {
             tracing::error!(?e, "failed to commit");
-            e.into_error_model("fail".into())
+            e.into_error_model("failed to commit tabular purge task")
         })?;
 
         Ok(())
+    }
+
+    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
+        cancel_pending_tasks(&self.pg_queue, filter, self.queue_name()).await
     }
 }
 

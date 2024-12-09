@@ -7,6 +7,8 @@ services:
     build:
       context: ../../
       dockerfile: docker/full.Dockerfile
+    environment:
+      - LAKEKEEPER__ALLOW_ORIGIN="*"
   migrate:
     image: localhost/iceberg-catalog-local:latest
     pull_policy: never

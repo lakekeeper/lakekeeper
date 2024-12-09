@@ -45,7 +45,7 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
 
         let span = tracing::debug_span!(
             "tabular_expiration",
-            task_name = %expiration.task.task_name,
+            queue_name = %expiration.task.queue_name,
             tabular_id = %expiration.tabular_id,
             warehouse_id = %expiration.warehouse_ident,
             tabular_type = %expiration.tabular_type,

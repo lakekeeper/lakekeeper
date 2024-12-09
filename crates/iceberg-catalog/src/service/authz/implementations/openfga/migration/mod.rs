@@ -1,9 +1,11 @@
+mod v2;
+
 use super::{ClientHelper, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use crate::service::authz::implementations::openfga::client::ClientConnection;
 use crate::service::authz::implementations::openfga::ModelVersion;
 use crate::service::authz::implementations::FgaType;
 use openfga_rs::open_fga_service_client::OpenFgaServiceClient;
-use openfga_rs::{ReadRequestTupleKey, Tuple, TupleKey, WriteRequest, WriteRequestWrites};
+use openfga_rs::{ReadRequestTupleKey, Store, Tuple, TupleKey, WriteRequest, WriteRequestWrites};
 use std::collections::{HashMap, HashSet};
 
 const AUTH_MODEL_ID_TYPE: &FgaType = &FgaType::AuthModelId;
@@ -30,7 +32,6 @@ pub(crate) async fn migrate(
 ) -> OpenFGAResult<()> {
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
     let store = client.get_or_create_store(&store_name).await?;
-    let active_model = ModelVersion::active();
 
     let existing_models = parse_existing_models(
         client
@@ -52,54 +53,96 @@ pub(crate) async fn migrate(
 
     if let Some(max_applied) = max_applied {
         tracing::info!(
-            "Applying OpenFGA Migration: Migrating from {max_applied} to {active_model}"
+            "Applying OpenFGA Migration: Rolling up from {max_applied} to {}",
+            ModelVersion::active()
         );
-        match max_applied {
-            ModelVersion::V1 => Ok(()),
+        for int_id in max_applied.as_monotonic_int()..ModelVersion::active().as_monotonic_int() {
+            let model_version = ModelVersion::from_monotonic_int(int_id)
+                .ok_or(OpenFGAError::UnknownModelVersionApplied(int_id))?;
+
+            tracing::info!("Writing model version {}", model_version);
+
+            let written_model = write_model(client, model_version, &store).await?;
+
+            tracing::info!("Applying migration for model version {}", model_version);
+            match model_version {
+                ModelVersion::V1 => {
+                    // no migration to be done, we start at v1
+                }
+                ModelVersion::V2 => v2::migrate(client, &written_model.auth_model_id, &store).await,
+            }
+            tracing::info!("Marking model version {} as applied", model_version);
+            mark_as_applied(client, &store, written_model).await?;
         }
     } else {
         tracing::info!("No authorization models found. Applying active model version.");
-
-        let active_int = active_model.as_monotonic_int();
-        let model = active_model.get_model();
-        let auth_model_id = client
-            .write_authorization_model(model.into_write_request(store.id.clone()))
-            .await
-            .map_err(OpenFGAError::write_authorization_model)?
-            .into_inner()
-            .authorization_model_id;
-
-        let write_request = WriteRequest {
-            store_id: store.id.clone(),
-            writes: Some(WriteRequestWrites {
-                tuple_keys: vec![
-                    TupleKey {
-                        user: format!("{AUTH_MODEL_ID_TYPE}:{auth_model_id}"),
-                        relation: MODEL_VERSION_APPLIED_RELATION.to_string(),
-                        object: format!("{MODEL_VERSION_TYPE}:{active_int}"),
-                        condition: None,
-                    },
-                    TupleKey {
-                        user: format!("{AUTH_MODEL_ID_TYPE}:*"),
-                        relation: MODEL_VERSION_EXISTS_RELATION.to_string(),
-                        object: format!("{MODEL_VERSION_TYPE}:{active_int}"),
-                        condition: None,
-                    },
-                ],
-            }),
-            deletes: None,
-            authorization_model_id: auth_model_id,
-        };
-        client
-            .write(write_request.clone())
-            .await
-            .map_err(|e| OpenFGAError::WriteFailed {
-                write_request,
-                source: e,
-            })?;
-
-        Ok(())
+        let written_model = write_model(client, ModelVersion::active(), &store).await?;
+        mark_as_applied(client, &store, written_model).await?;
     }
+    tracing::info!("OpenFGA Migration finished");
+    Ok(())
+}
+
+async fn mark_as_applied(
+    client: &mut OpenFgaServiceClient<ClientConnection>,
+    store: &Store,
+    written_active_model: ModelSpec,
+) -> Result<(), OpenFGAError> {
+    let active_int = written_active_model.model_version.as_monotonic_int();
+    let authorization_model_id = written_active_model.auth_model_id.as_str();
+
+    let write_request = WriteRequest {
+        store_id: store.id.clone(),
+        writes: Some(WriteRequestWrites {
+            tuple_keys: vec![
+                TupleKey {
+                    user: format!("{AUTH_MODEL_ID_TYPE}:{authorization_model_id}"),
+                    relation: MODEL_VERSION_APPLIED_RELATION.to_string(),
+                    object: format!("{MODEL_VERSION_TYPE}:{active_int}"),
+                    condition: None,
+                },
+                TupleKey {
+                    user: format!("{AUTH_MODEL_ID_TYPE}:*"),
+                    relation: MODEL_VERSION_EXISTS_RELATION.to_string(),
+                    object: format!("{MODEL_VERSION_TYPE}:{active_int}"),
+                    condition: None,
+                },
+            ],
+        }),
+        deletes: None,
+        authorization_model_id: authorization_model_id.to_string(),
+    };
+    client
+        .write(write_request.clone())
+        .await
+        .map_err(|e| OpenFGAError::WriteFailed {
+            write_request,
+            source: e,
+        })?;
+    Ok(())
+}
+
+struct ModelSpec {
+    model_version: ModelVersion,
+    auth_model_id: String,
+}
+
+async fn write_model(
+    client: &mut OpenFgaServiceClient<ClientConnection>,
+    model_version: ModelVersion,
+    store: &Store,
+) -> Result<ModelSpec, OpenFGAError> {
+    let model = model_version.get_model();
+    let auth_model_id = client
+        .write_authorization_model(model.into_write_request(store.id.clone()))
+        .await
+        .map_err(OpenFGAError::write_authorization_model)?
+        .into_inner()
+        .authorization_model_id;
+    Ok(ModelSpec {
+        model_version,
+        auth_model_id,
+    })
 }
 
 pub(crate) async fn get_auth_model_id(
@@ -144,7 +187,7 @@ pub(crate) async fn get_auth_model_id(
 }
 
 fn determine_migrate_from(
-    applied_models: &HashSet<i32>,
+    applied_models: &HashSet<u64>,
 ) -> OpenFGAResult<(bool, Option<ModelVersion>)> {
     let max_applied = if let Some(max_applied) = applied_models.iter().max() {
         if *max_applied >= ModelVersion::active().as_monotonic_int() {
@@ -163,7 +206,7 @@ fn determine_migrate_from(
     Ok((true, max_applied))
 }
 
-fn parse_existing_models(models: impl IntoIterator<Item = Tuple>) -> OpenFGAResult<HashSet<i32>> {
+fn parse_existing_models(models: impl IntoIterator<Item = Tuple>) -> OpenFGAResult<HashSet<u64>> {
     // Make sure each string starts with "<MODELVERSION_TYPE>:".
     // Then strip that prefix and parse the rest as an integer.
     // Only the object is relevant, user is always "auth_model_id:*".
@@ -175,7 +218,7 @@ fn parse_existing_models(models: impl IntoIterator<Item = Tuple>) -> OpenFGAResu
         .collect()
 }
 
-fn parse_model_version_from_str(model: &str) -> OpenFGAResult<i32> {
+fn parse_model_version_from_str(model: &str) -> OpenFGAResult<u64> {
     model
         .strip_prefix(&format!("{MODEL_VERSION_TYPE}:"))
         .ok_or(OpenFGAError::unexpected_entity(
@@ -183,7 +226,7 @@ fn parse_model_version_from_str(model: &str) -> OpenFGAResult<i32> {
             model.to_string(),
         ))
         .and_then(|version| {
-            version.parse::<i32>().map_err(|_e| {
+            version.parse::<u64>().map_err(|_e| {
                 OpenFGAError::unexpected_entity(vec![FgaType::ModelVersion], model.to_string())
             })
         })
@@ -191,7 +234,7 @@ fn parse_model_version_from_str(model: &str) -> OpenFGAResult<i32> {
 
 fn parse_applied_model_versions(
     models: impl IntoIterator<Item = Tuple>,
-) -> OpenFGAResult<HashMap<i32, String>> {
+) -> OpenFGAResult<HashMap<u64, String>> {
     // Make sure each string starts with "<MODELVERSION_TYPE>:".
     // Then strip that prefix and parse the rest as an integer.
 

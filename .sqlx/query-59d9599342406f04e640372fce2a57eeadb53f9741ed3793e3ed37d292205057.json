@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE task SET status = 'cancelled'\n                    WHERE status = 'pending'\n                    AND task_id = ANY($1)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "59d9599342406f04e640372fce2a57eeadb53f9741ed3793e3ed37d292205057"
+}

@@ -6,11 +6,13 @@ use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
 use std::fmt::Debug;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::time::Duration;
 use uuid::Uuid;
 
 use super::authz::Authorizer;
+use super::WarehouseIdent;
 
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
@@ -39,6 +41,14 @@ impl TaskQueues {
         task: TabularExpirationInput,
     ) -> crate::api::Result<()> {
         self.tabular_expiration.enqueue(task).await
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub(crate) async fn cancel_tabular_expiration(
+        &self,
+        filter: TaskFilter,
+    ) -> crate::api::Result<()> {
+        self.tabular_expiration.cancel_pending_tasks(filter).await
     }
 
     #[tracing::instrument(skip(self))]
@@ -88,6 +98,36 @@ impl TaskQueues {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskId(Uuid);
+
+impl From<Uuid> for TaskId {
+    fn from(id: Uuid) -> Self {
+        Self(id)
+    }
+}
+
+impl From<TaskId> for Uuid {
+    fn from(id: TaskId) -> Self {
+        id.0
+    }
+}
+
+impl Deref for TaskId {
+    type Target = Uuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// A filter to select tasks
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskFilter {
+    WarehouseId(WarehouseIdent),
+    TaskIds(Vec<TaskId>),
+}
+
 #[async_trait]
 pub trait TaskQueue: Debug {
     type Task: Send + Sync + 'static;
@@ -100,28 +140,29 @@ pub trait TaskQueue: Debug {
     async fn pick_new_task(&self) -> crate::api::Result<Option<Self::Task>>;
     async fn record_success(&self, id: Uuid) -> crate::api::Result<()>;
     async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()>;
+    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()>;
 
     async fn retrying_record_success(&self, task: &Task) {
-        self.retrying_record_success_or_failure(task, SuccessOrFailure::Success)
+        self.retrying_record_success_or_failure(task, Status::Success)
             .await;
     }
 
     async fn retrying_record_failure(&self, task: &Task, details: &str) {
-        self.retrying_record_success_or_failure(task, SuccessOrFailure::Failure(details))
+        self.retrying_record_success_or_failure(task, Status::Failure(details))
             .await;
     }
 
-    async fn retrying_record_success_or_failure(&self, task: &Task, result: SuccessOrFailure<'_>) {
+    async fn retrying_record_success_or_failure(&self, task: &Task, result: Status<'_>) {
         let mut retry = 0;
         while let Err(e) = match result {
-            SuccessOrFailure::Success => self.record_success(task.task_id).await,
-            SuccessOrFailure::Failure(details) => self.record_failure(task.task_id, details).await,
+            Status::Success => self.record_success(task.task_id).await,
+            Status::Failure(details) => self.record_failure(task.task_id, details).await,
         } {
-            tracing::error!("Failed to record {}: {:?}", result.as_str(), e);
+            tracing::error!("Failed to record {}: {:?}", result, e);
             tokio::time::sleep(Duration::from_secs(1 + retry)).await;
             retry += 1;
             if retry > 5 {
-                tracing::error!("Giving up trying to record {}.", result.as_str());
+                tracing::error!("Giving up trying to record {}.", result);
                 break;
             }
         }
@@ -132,7 +173,7 @@ pub trait TaskQueue: Debug {
 #[cfg_attr(feature = "sqlx-postgres", derive(FromRow))]
 pub struct Task {
     pub task_id: Uuid,
-    pub task_name: String,
+    pub queue_name: String,
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub parent_task_id: Option<Uuid>,
@@ -150,20 +191,20 @@ pub enum TaskStatus {
     Finished,
     Running,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug)]
-pub enum SuccessOrFailure<'a> {
+pub enum Status<'a> {
     Success,
     Failure(&'a str),
 }
 
-impl SuccessOrFailure<'_> {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
+impl std::fmt::Display for Status<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SuccessOrFailure::Success => "success",
-            SuccessOrFailure::Failure(_) => "failure",
+            Status::Success => write!(f, "success"),
+            Status::Failure(details) => write!(f, "failure ({details})"),
         }
     }
 }
@@ -227,6 +268,7 @@ mod test {
     use crate::api::management::v1::TabularType;
     use crate::implementations::postgres::tabular::table::tests::initialize_table;
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
+    use crate::implementations::postgres::PostgresTransaction;
     use crate::implementations::postgres::{CatalogState, PostgresCatalog};
     use crate::service::authz::AllowAllAuthorizer;
     use crate::service::storage::TestProfile;
@@ -295,7 +337,9 @@ mod test {
             Some("tab".to_string()),
         )
         .await;
-
+        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
+            .await
+            .unwrap();
         let (_, _) = <PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
             None,
@@ -304,14 +348,14 @@ mod test {
                 include_staged: false,
                 include_deleted: true,
             },
-            catalog_state.clone(),
+            trx.transaction(),
             PaginationQuery::empty(),
         )
         .await
         .unwrap()
         .remove(&tab.table_id.into())
         .unwrap();
-
+        trx.commit().await.unwrap();
         let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
             .await
             .unwrap();
@@ -333,6 +377,9 @@ mod test {
             })
             .await
             .unwrap();
+        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
+            .await
+            .unwrap();
 
         let (_, del) = <PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
@@ -342,7 +389,7 @@ mod test {
                 include_staged: false,
                 include_deleted: true,
             },
-            catalog_state.clone(),
+            trx.transaction(),
             PaginationQuery::empty(),
         )
         .await
@@ -350,8 +397,12 @@ mod test {
         .remove(&tab.table_id.into())
         .unwrap();
         del.unwrap();
-
+        trx.commit().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
+
+        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
+            .await
+            .unwrap();
 
         assert!(<PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
@@ -361,12 +412,13 @@ mod test {
                 include_staged: false,
                 include_deleted: true,
             },
-            catalog_state,
+            trx.transaction(),
             PaginationQuery::empty(),
         )
         .await
         .unwrap()
         .remove(&tab.table_id.into())
         .is_none());
+        trx.commit().await.unwrap();
     }
 }

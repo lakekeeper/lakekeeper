@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n    WITH updated_task AS (\n        SELECT task_id\n        FROM task\n        WHERE (status = 'pending' AND task_name = $1 AND ((suspend_until < now() AT TIME ZONE 'UTC') OR (suspend_until IS NULL)))\n                OR (status = 'running' AND (now() - picked_up_at) > $3)\n        FOR UPDATE SKIP LOCKED\n        LIMIT 1\n    )\n    UPDATE task\n    SET status = 'running', picked_up_at = $2, attempt = task.attempt + 1\n    FROM updated_task\n    WHERE task.task_id = updated_task.task_id\n    RETURNING task.task_id, task.status as \"status: TaskStatus\", task.picked_up_at, task.attempt, task.parent_task_id, task.task_name\n    ",
+  "query": "\n    WITH updated_task AS (\n        SELECT task_id\n        FROM task\n        WHERE (status = 'pending' AND queue_name = $1 AND ((suspend_until < now() AT TIME ZONE 'UTC') OR (suspend_until IS NULL)))\n                OR (status = 'running' AND (now() - picked_up_at) > $3)\n        FOR UPDATE SKIP LOCKED\n        LIMIT 1\n    )\n    UPDATE task\n    SET status = 'running', picked_up_at = $2, attempt = task.attempt + 1\n    FROM updated_task\n    WHERE task.task_id = updated_task.task_id\n    RETURNING task.task_id, task.status as \"status: TaskStatus\", task.picked_up_at, task.attempt, task.parent_task_id, task.queue_name\n    ",
   "describe": {
     "columns": [
       {
@@ -43,7 +43,7 @@
       },
       {
         "ordinal": 5,
-        "name": "task_name",
+        "name": "queue_name",
         "type_info": "Text"
       }
     ],
@@ -63,5 +63,5 @@
       false
     ]
   },
-  "hash": "816a86b7650bd9b6d874be86146528f57199962e08a167deeefb79902a7bed01"
+  "hash": "66c029536b177f0f1e6ff3b6745ef33b7edccb3372b86315a9ab15d770e213fd"
 }
