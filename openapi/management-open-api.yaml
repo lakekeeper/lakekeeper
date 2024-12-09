@@ -4,7 +4,7 @@ info:
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).
   license:
     name: Apache-2.0
-  version: 0.4.3
+  version: 0.5.0
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -2843,13 +2843,14 @@ components:
     UndropTabularsRequest:
       type: object
       required:
-      - undrop
+      - target
       properties:
-        undrop:
-          $ref: '#/components/schemas/Undroppable'
-    Undroppable:
+        target:
+          $ref: '#/components/schemas/UndropTarget'
+    UndropTarget:
       oneOf:
       - type: object
+        description: Undrop this list of tabulars
         required:
         - tabulars
         properties:
@@ -2858,12 +2859,14 @@ components:
             items:
               $ref: '#/components/schemas/TabularIdentUuid'
       - type: object
+        description: Undrop all soft-deleted tabulars in this namespace
         required:
         - namespace
         properties:
           namespace:
             type: string
             format: uuid
+      description: Enum specifying which tabulars to undrop
     UpdateNamespaceAssignmentsRequest:
       type: object
       properties:
