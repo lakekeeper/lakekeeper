@@ -1,0 +1,117 @@
+site_name: Lakekeeper Docs
+repo_url: https://github.com/lakekeeper/lakekeeper
+site_description: Lakekeeper is a rust native Iceberg REST Catalog
+site_author: Lakekeeper Team
+edit_uri: blob/main/docs/
+
+theme:
+  name: material
+  logo: assets/bear.svg
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  locale: en
+  highlightjs: true
+  hljs_languages:
+    - yaml
+    - rust
+    - bash
+    - json
+  shortcuts:
+    help: 191 # ?
+    next: 78 # n
+    previous: 80 # p
+    search: 83 # s
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.path
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - toc.follow
+    - offline
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.copy
+    - content.code.annotate
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Docs:
+      - nightly: "!include docs/docs/nightly/mkdocs.yml"
+      - latest: "!include docs/docs/latest/mkdocs.yml"
+      - Release 0.5.0: "!include docs/docs/0.5.0/mkdocs.yml"
+  - Community: support.md
+  - API: api.md
+  - About:
+      - Release Notes: about/release-notes.md
+      - License: about/license.md
+      - Code of Conduct: about/code-of-conduct.md
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - tables
+  - markdown_grid_tables
+  - pymdownx.snippets:
+      # check_paths: True
+      restrict_base_path: False
+      base_path: .
+  - markdown.extensions.attr_list
+  - md_in_html
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+
+copyright: Copyright &copy; 2024 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
+
+plugins:
+  - monorepo
+  - search
+  - exclude-search:
+      exclude:
+        - docs/0.5.0/*
+        - docs/nightly/*
+  - autorefs
+  - neoteroi.mkdocsoad:
+      use_pymdownx: true
+
+watch:
+  - docs
+
+extra:
+  social:
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/jkAGG8p93B
+    - icon: fontawesome/brands/github
+      link: https://github.com/lakekeeper/lakekeeper
+
+extra_css:
+  - css/extra.css

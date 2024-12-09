@@ -373,7 +373,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_read(context.v1_state.catalog).await?;
         let warehouses = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
-
+        transaction.commit().await?;
         Ok(warehouses.into())
     }
 
@@ -792,7 +792,6 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     "InternalDatabaseError",
                     None,
                 ))?;
-
                 Ok(DeletedTabularResponse {
                     id: *k,
                     name: i.name,
@@ -805,6 +804,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+
+        t.commit().await?;
 
         Ok(ListDeletedTabularsResponse {
             tabulars,

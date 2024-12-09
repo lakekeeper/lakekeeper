@@ -147,6 +147,7 @@ async fn maybe_register_user<D: Catalog>(
             t.transaction(),
         )
         .await?;
+        t.commit().await?;
     }
 
     Ok(())

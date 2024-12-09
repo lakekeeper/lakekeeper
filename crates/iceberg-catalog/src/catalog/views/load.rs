@@ -74,7 +74,8 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     let view_location = parse_view_location(&view_metadata.location)?;
 
-    // We don't commit the transaction yet, first we need to write the metadata file.
+    t.commit().await?;
+
     let storage_secret: Option<StorageCredential> = if let Some(secret_id) = &storage_secret_id {
         Some(
             state
@@ -103,7 +104,6 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         config: Some(access.into()),
     };
 
-    t.commit().await?;
     Ok(load_table_result)
 }
 

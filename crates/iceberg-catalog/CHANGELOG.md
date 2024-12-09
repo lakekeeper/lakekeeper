@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.5.0](https://github.com/lakekeeper/lakekeeper/compare/v0.4.3...v0.5.0) (2024-12-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rename S3 minio flavor to s3-compat ([#630](https://github.com/lakekeeper/lakekeeper/issues/630))
+* Change default port from 8080 to 8181
+* Default to single-tenant / single-project with NIL Project-ID
+
+### Features
+
+* Add iceberg openapi to swagger ([#431](https://github.com/lakekeeper/lakekeeper/issues/431)) ([bb3d12f](https://github.com/lakekeeper/lakekeeper/commit/bb3d12f2075e704eaab58b5a8292422fee3784fb))
+* Add Iceberg REST Spec to swagger ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* add kafka support [#271](https://github.com/lakekeeper/lakekeeper/issues/271) ([#340](https://github.com/lakekeeper/lakekeeper/issues/340)) ([7973586](https://github.com/lakekeeper/lakekeeper/commit/7973586282b0f09074f00bf455ea9fc1a9fe1cf3))
+* Add namespace_id filter to list deleted tabulars ([#443](https://github.com/lakekeeper/lakekeeper/issues/443)) ([cc82736](https://github.com/lakekeeper/lakekeeper/commit/cc82736e9507f69e33f68c54d21bd4638126ef72))
+* Add operator role ([#543](https://github.com/lakekeeper/lakekeeper/issues/543)) ([bcddb60](https://github.com/lakekeeper/lakekeeper/commit/bcddb60e458872f4ae88d0cd8f2ea1cc2d146445))
+* Allow configuration of additional Issuer URLs ([b712cf0](https://github.com/lakekeeper/lakekeeper/commit/b712cf062ae6ecfc6904123672f25515304f65b1))
+* Allow configuration of multiple Audiences ([b712cf0](https://github.com/lakekeeper/lakekeeper/commit/b712cf062ae6ecfc6904123672f25515304f65b1))
+* Change default port from 8080 to 8181 ([b712cf0](https://github.com/lakekeeper/lakekeeper/commit/b712cf062ae6ecfc6904123672f25515304f65b1))
+* Create default Project on Bootstrap ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Default to hard deletion ([#507](https://github.com/lakekeeper/lakekeeper/issues/507)) ([5d794aa](https://github.com/lakekeeper/lakekeeper/commit/5d794aa8c620157c8e437a9683f5c508a7659d86))
+* Default to single-tenant / single-project with NIL Project-ID ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* docs ([#605](https://github.com/lakekeeper/lakekeeper/issues/605)) ([c1d2348](https://github.com/lakekeeper/lakekeeper/commit/c1d23488c40a43af7f303ed78cadef76d9ccc06b))
+* Embedded UI ([#622](https://github.com/lakekeeper/lakekeeper/issues/622)) ([332f3b8](https://github.com/lakekeeper/lakekeeper/commit/332f3b87db9ffbc6fdaf1d48855b8e3cdcf3c017))
+* Enable K8s Auth explicitly ([#594](https://github.com/lakekeeper/lakekeeper/issues/594)) ([3773141](https://github.com/lakekeeper/lakekeeper/commit/3773141690cb2225571f4708509df90103bd3226))
+* Extend user search to email field ([#477](https://github.com/lakekeeper/lakekeeper/issues/477)) ([9f9f42b](https://github.com/lakekeeper/lakekeeper/commit/9f9f42b5ac3dfb6b978f4db20a698cbc7163dec7))
+* Fine Grained Access Controls with OpenFGA ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Generated TS Client ([#453](https://github.com/lakekeeper/lakekeeper/issues/453)) ([24bfccf](https://github.com/lakekeeper/lakekeeper/commit/24bfccf80fb1166f5a52f72ac0e8d2effb5b0bc0))
+* Hierarchical Namespaces ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* improve latency against aws by reusing http clients ([#540](https://github.com/lakekeeper/lakekeeper/issues/540)) ([8c384f7](https://github.com/lakekeeper/lakekeeper/commit/8c384f7aabc6f1ae0445f0c6c7fe4a4bab4ad147))
+* OIDC Audience validation ([#607](https://github.com/lakekeeper/lakekeeper/issues/607)) ([052bb3f](https://github.com/lakekeeper/lakekeeper/commit/052bb3f539e9247fb5d4312447b9ab1823f20d8b))
+* Optionally return uuids for Iceberg APIs ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* pagination without empty pages ([#450](https://github.com/lakekeeper/lakekeeper/issues/450)) ([c88a59d](https://github.com/lakekeeper/lakekeeper/commit/c88a59db4e99a01118a281a51c97aa21f69cdb0f))
+* Project Management APIs ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* Provide inherited managed access via API ([#619](https://github.com/lakekeeper/lakekeeper/issues/619)) ([e7b0394](https://github.com/lakekeeper/lakekeeper/commit/e7b039488e605bf64e7dca2df137565eda7ed8c2))
+* Rename S3 minio flavor to s3-compat ([#630](https://github.com/lakekeeper/lakekeeper/issues/630)) ([acb7419](https://github.com/lakekeeper/lakekeeper/commit/acb7419f08301fa3e1d84a96dc3da0014ee0bb65))
+* Server Info Endpoint ([2eaa10e](https://github.com/lakekeeper/lakekeeper/commit/2eaa10e7cb233282fe4452bf526deee7c07a5fb5))
+* split table metadata into tables ([#478](https://github.com/lakekeeper/lakekeeper/issues/478)) ([942fa97](https://github.com/lakekeeper/lakekeeper/commit/942fa97c98049d15a50168ce7d7a9e711d9de3d1))
+* support kubernetes service-accounts ([#538](https://github.com/lakekeeper/lakekeeper/issues/538)) ([2982210](https://github.com/lakekeeper/lakekeeper/commit/298221063ad61b0301c019dee2094aae64dd5447))
+
+
+### Bug Fixes
+
+* aws s3 signer ([#493](https://github.com/lakekeeper/lakekeeper/issues/493)) ([b7ad8f4](https://github.com/lakekeeper/lakekeeper/commit/b7ad8f44eaba31c6ce181ba0844d2f0f6b8b1e76))
+* **aws:** deal with closed connections via retries ([#569](https://github.com/lakekeeper/lakekeeper/issues/569)) ([bbda2c4](https://github.com/lakekeeper/lakekeeper/commit/bbda2c4dc2eb4d3d93443c86b48de6dfa606ad98))
+* azure connection reset ([#553](https://github.com/lakekeeper/lakekeeper/issues/553)) ([5d4b041](https://github.com/lakekeeper/lakekeeper/commit/5d4b0413f79b9ba217bbe079555a0447f982eaa5))
+* Bootstrap should return HTTP Code 204 ([#597](https://github.com/lakekeeper/lakekeeper/issues/597)) ([25d1d4e](https://github.com/lakekeeper/lakekeeper/commit/25d1d4e64902113173ecab7b86ebe82cefe0b580))
+* Delete Namespaces with children should not be possible ([#482](https://github.com/lakekeeper/lakekeeper/issues/482)) ([7ffd864](https://github.com/lakekeeper/lakekeeper/commit/7ffd8648fd058be72126e76abfedb9d860e7c69d))
+* flaky aws tests ([#545](https://github.com/lakekeeper/lakekeeper/issues/545)) ([f4d46b2](https://github.com/lakekeeper/lakekeeper/commit/f4d46b27770f2d62a41fab283d38098ef009d848))
+* Include Deletion Profile in GetWarehouseResponse ([#514](https://github.com/lakekeeper/lakekeeper/issues/514)) ([54a6420](https://github.com/lakekeeper/lakekeeper/commit/54a6420580b24e3b7f329b00106b3a98e50da062))
+* List Namespaces - Top level NS list should only contain top level Namespaces ([#512](https://github.com/lakekeeper/lakekeeper/issues/512)) ([795d4f0](https://github.com/lakekeeper/lakekeeper/commit/795d4f0be4f4432ce7e215b6885db92578ede748))
+* list-projects for non admins ([#546](https://github.com/lakekeeper/lakekeeper/issues/546)) ([d0066b8](https://github.com/lakekeeper/lakekeeper/commit/d0066b86e0df2f6d5cef75a591906ad6e4d88e23))
+* **management:** deleted tabulars endpoint should not contain underscore ([#556](https://github.com/lakekeeper/lakekeeper/issues/556)) ([b15a8fe](https://github.com/lakekeeper/lakekeeper/commit/b15a8fe9fd882c02e2c12691df6de849b80ff8cc))
+* only log table load failed when it actually happened ([#626](https://github.com/lakekeeper/lakekeeper/issues/626)) ([be5f58c](https://github.com/lakekeeper/lakekeeper/commit/be5f58ca5e2f72a4352629304bff641d77f9f85a))
+* **openapi:** Fix Soft-Deletion expiration seconds type ([#509](https://github.com/lakekeeper/lakekeeper/issues/509)) ([322a1a0](https://github.com/lakekeeper/lakekeeper/commit/322a1a01304f639211f168fa858141d0eb33e3c3))
+* pagination ([#604](https://github.com/lakekeeper/lakekeeper/issues/604)) ([0be19ed](https://github.com/lakekeeper/lakekeeper/commit/0be19ed14e5eb1b4fb66db19bc242c65d989a5f3))
+* permissions API Parameters ([#516](https://github.com/lakekeeper/lakekeeper/issues/516)) ([5133752](https://github.com/lakekeeper/lakekeeper/commit/51337524871622bdf4f04c26b7bdf993c152ba45))
+* prepend a version count to metadata files ([#524](https://github.com/lakekeeper/lakekeeper/issues/524)) ([0d9d06f](https://github.com/lakekeeper/lakekeeper/commit/0d9d06f784f03c2bdb95312873643f00b8b8253a))
+* recreate user ([#599](https://github.com/lakekeeper/lakekeeper/issues/599)) ([1194cb0](https://github.com/lakekeeper/lakekeeper/commit/1194cb05a1b2910f6535ac983a0ce53a69bebd85))
+* run metrics router ([#628](https://github.com/lakekeeper/lakekeeper/issues/628)) ([f6b47e5](https://github.com/lakekeeper/lakekeeper/commit/f6b47e5d9c6ae6d884dcea2dcf4f2a6b9b3baefd))
+* set pool idle timeout to &lt;20 not keepalive timeout ([#551](https://github.com/lakekeeper/lakekeeper/issues/551)) ([2ae5b8d](https://github.com/lakekeeper/lakekeeper/commit/2ae5b8de9d71d921dc46d53b337aa9f2d9388e17))
+* **tests:** give openfga a bit of time to delete things ([#557](https://github.com/lakekeeper/lakekeeper/issues/557)) ([71daf6f](https://github.com/lakekeeper/lakekeeper/commit/71daf6ffc9a34c9e25b3b8df9c5343ecaa5d3ea7))
+* **tests:** use a shared runtime for tests that share a static reqwest client ([#555](https://github.com/lakekeeper/lakekeeper/issues/555)) ([90c6880](https://github.com/lakekeeper/lakekeeper/commit/90c6880ae997bbaededb3c382e74e199088c5654))
+* Warehouse managed-access in openapi spec ([#610](https://github.com/lakekeeper/lakekeeper/issues/610)) ([c860506](https://github.com/lakekeeper/lakekeeper/commit/c860506c387fa20860fd2dedd6d2eb91c48c690c))
+* WarehouseAdmin renamed to DataAdmin ([#515](https://github.com/lakekeeper/lakekeeper/issues/515)) ([7ec4c01](https://github.com/lakekeeper/lakekeeper/commit/7ec4c01508ee108da30b3fd070e39d309df001ec))
+
+
+### Miscellaneous Chores
+
+* release 0.5.0 ([b1b2ee6](https://github.com/lakekeeper/lakekeeper/commit/b1b2ee6d0f068adf9a60719c1cfb88201825d389))
+
 ## [0.4.3](https://github.com/lakekeeper/lakekeeper/compare/v0.4.2...v0.4.3) (2024-11-13)
 
 

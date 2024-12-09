@@ -132,6 +132,12 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# website build
+docs/site/
+site/site/
+site/docs/docs/
+**.bkp
+
 # PyBuilder
 .pybuilder/
 target/
@@ -195,9 +201,6 @@ venv.bak/
 
 # Rope project settings
 .ropeproject
-
-# mkdocs documentation
-/site
 
 # mypy
 .mypy_cache/

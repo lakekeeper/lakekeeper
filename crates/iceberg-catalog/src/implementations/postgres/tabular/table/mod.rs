@@ -608,11 +608,12 @@ pub(crate) async fn load_tables(
             failed_to_fetch.insert((*t).into());
         }
     }
-
-    tracing::error!(
-        "Failed to fetch the following tables: '{:?}'",
-        failed_to_fetch
-    );
+    if !failed_to_fetch.is_empty() {
+        tracing::error!(
+            "Failed to fetch the following tables: '{:?}'",
+            failed_to_fetch
+        );
+    }
 
     Ok(tables)
 }

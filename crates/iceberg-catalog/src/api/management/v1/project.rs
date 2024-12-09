@@ -162,6 +162,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     "ProjectNotFound",
                     None,
                 ))?;
+        t.commit().await?;
 
         Ok(GetProjectResponse {
             project_id: *project_id,

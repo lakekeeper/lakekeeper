@@ -1,0 +1,24 @@
+set shell := ["bash", "-c"]
+set export
+
+#RUST_LOG := "debug"
+
+# Display the recipes and their documentation
+help: 
+  @just --list
+
+# Clean, build, and run the docs site locally.
+serve: 
+  dev/serve.sh
+
+# Deploy the docs site to GitHub Pages.
+deploy: 
+  dev/deploy.sh
+
+# Clean and build the docs site locally.
+build: 
+  dev/build.sh
+
+# Clean the local docs site.
+clean:
+  dev/clean.sh

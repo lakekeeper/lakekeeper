@@ -202,7 +202,7 @@ def storage_config(request) -> dict:
         return {
             "storage-profile": {
                 "type": "gcs",
-                "bucket": settings.gcs_bucket,
+                "bucket": "ht-catalog-dev",
             },
             "storage-credential": {
                 "type": "gcs",

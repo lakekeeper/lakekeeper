@@ -25,7 +25,7 @@ jobs:
   # Update release PR
   release_please:
     name: Release Please
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.repository == 'lakekeeper/lakekeeper'
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
@@ -67,17 +67,17 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
-            cross: false
+            cross: true
 
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
             cross: true
 
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
             cross: true
 
@@ -120,13 +120,6 @@ jobs:
         with:
           tool: cross
 
-      #      - name: Setup cmake
-      #        # C Toolchain for windows for protoc compilation
-      #        if: matrix.os == 'windows-latest'
-      #        uses: jwlawson/actions-setup-cmake@v2
-      #        with:
-      #          cmake-version: '3.16'
-
       - name: Build [Cargo]
         if: matrix.cross == false
         run: cargo build --all-features --release --locked --target ${{ matrix.target }}
@@ -157,7 +150,7 @@ jobs:
 
   build-docker:
     name: Build Docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-binary
       - release_please
@@ -219,61 +212,66 @@ jobs:
             --build-arg "BIN=bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz/iceberg-catalog" .
           docker save -o /tmp/docker-iceberg-catalog-arm64.tar localhost/iceberg-catalog-local:arm64
 
-      - name: Test Docker (arm64)
-        run: |
-          cd tests
-          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
-          docker compose down
-        env:
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:arm64
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
-          AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
-          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-
-      - name: Dump docker logs on failure  (arm64)
-        if: failure()
-        uses: jwalton/gh-docker-logs@v2
-
-      - name: Test Docker (amd64)
-        run: |
-          cd tests
-          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
-        env:
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
-          AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
-          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-
-      - name: Dump docker logs on failure  (amd64)
-        if: failure()
-        uses: jwalton/gh-docker-logs@v2
-
       - name: Save Docker
         uses: actions/upload-artifact@v4
         with:
           name: docker-iceberg-catalog
           path: /tmp/docker-iceberg-catalog-*.tar
+  
+  test-docker:
+    name: Test Docker
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    needs:
+      - build-docker
+      - release_please
+    strategy:
+      matrix:
+        include:
+          - file: docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
+            arch: amd64
+          - file: docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+            arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Test Login to Quay.io (Lakekeeper)
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: lakekeeper+github
-          password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Load Docker
+        run: |
+          docker load -i ${{ matrix.file }}
+          docker images
+
+      - name: Test Docker
+        run: |
+          cd tests
+          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
+        env:
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:${{ matrix.arch }}
+          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
+          AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
+          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
 
   debug:
     name: Debug Artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-binary
       - build-docker
@@ -296,14 +294,22 @@ jobs:
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
 
+      - name: Test Login to Quay.io (Lakekeeper)
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: lakekeeper+github
+          password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
+
   publish-container-main:
     name: Publish Container (main branch)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-docker
       - build-binary
       - release_please
-    if: ${{ needs.release_please.outputs.releases_created != 'true' }}
+      - test-docker
+    if: ${{ needs.release_please.outputs.releases_created != 'true' }} && github.ref == 'refs/heads/main'
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -334,11 +340,12 @@ jobs:
   # Create GitHub release with Rust build targets and release notes
   publish-binary:
     name: Publish Binary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-binary
       - build-docker
       - release_please
+      - test-docker
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
@@ -357,11 +364,12 @@ jobs:
 
   publish-container-lakekeeper:
     name: Publish Container (Lakekeeper)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - build-docker
       - build-binary
       - release_please
+      - test-docker
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts

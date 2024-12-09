@@ -427,6 +427,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             t.transaction(),
         )
         .await?;
+        t.commit().await?;
         let CatalogLoadTableResult {
             table_id: _,
             namespace_id: _,
@@ -679,6 +680,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await
             .map_err(set_not_found_status_code)?;
+        t.commit().await?;
 
         // ------------------- BUSINESS LOGIC -------------------
         Ok(())

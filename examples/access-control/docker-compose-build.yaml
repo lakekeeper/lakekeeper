@@ -7,8 +7,6 @@ services:
     build:
       context: ../../
       dockerfile: docker/full.Dockerfile
-    environment:
-      - ICEBERG_REST__ALLOW_ORIGIN=http://localhost:3002
   migrate:
     image: localhost/iceberg-catalog-local:latest
     pull_policy: never

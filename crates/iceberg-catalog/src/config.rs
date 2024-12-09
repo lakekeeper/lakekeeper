@@ -17,7 +17,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use veil::Redact;
 
-const DEFAULT_RESERVED_NAMESPACES: [&str; 2] = ["system", "examples"];
+const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
 lazy_static::lazy_static! {
@@ -86,7 +86,7 @@ pub struct DynAppConfig {
     /// reverse proxy before routing to the catalog service.
     /// Example value: `{warehouse_id}`
     prefix_template: String,
-    /// CORS allowed origins. If not set, CORS is disabled.
+    /// CORS allowed origins.
     #[serde(
         deserialize_with = "deserialize_origin",
         serialize_with = "serialize_origin"
@@ -134,7 +134,18 @@ pub struct DynAppConfig {
     // ------------- AUTHENTICATION -------------
     pub openid_provider_uri: Option<Url>,
     /// Expected audience for the provided token.
-    pub openid_audience: Option<String>,
+    /// Specify multiple audiences as a comma-separated list.
+    #[serde(
+        deserialize_with = "deserialize_audience",
+        serialize_with = "serialize_audience"
+    )]
+    pub openid_audience: Option<Vec<String>>,
+    /// Additional issuers to trust for `OpenID` Connect
+    #[serde(
+        deserialize_with = "deserialize_audience",
+        serialize_with = "serialize_audience"
+    )]
+    pub openid_additional_issuers: Option<Vec<String>>,
     pub enable_kubernetes_authentication: bool,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
@@ -170,7 +181,7 @@ pub struct DynAppConfig {
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
     /// If not specified, 00000000-0000-0000-0000-000000000000 is used.
-    /// This ID may not be changed after start!
+    /// This ID must not be changed after start!
     #[serde(default = "uuid::Uuid::nil")]
     pub server_id: uuid::Uuid,
 }
@@ -194,6 +205,29 @@ where
     S: serde::Serializer,
 {
     duration.num_seconds().to_string().serialize(serializer)
+}
+
+fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::deserialize(deserializer)?
+        .map(|buf: String| {
+            buf.split(',')
+                .map(|s| s.trim_end_matches(' ').to_string())
+                .collect::<Vec<_>>()
+        })
+        .filter(|vec| !vec.is_empty()))
+}
+
+fn serialize_audience<S>(value: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    value
+        .as_deref()
+        .map(|value| value.join(","))
+        .serialize(serializer)
 }
 
 fn deserialize_origin<'de, D>(deserializer: D) -> Result<Option<Vec<HeaderValue>>, D::Error>
@@ -294,7 +328,7 @@ pub struct KV2Config {
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
-            base_uri: "https://localhost:8080".parse().expect("Valid URL"),
+            base_uri: "https://localhost:8181".parse().expect("Valid URL"),
             metrics_port: 9000,
             enable_default_project: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -327,8 +361,9 @@ impl Default for DynAppConfig {
             nats_token: None,
             openid_provider_uri: None,
             openid_audience: None,
+            openid_additional_issuers: None,
             enable_kubernetes_authentication: false,
-            listen_port: 8080,
+            listen_port: 8181,
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,
             kv2: None,
@@ -571,6 +606,25 @@ mod test {
             assert_eq!(
                 config.allow_origin,
                 Some(vec![HeaderValue::from_str("*").unwrap()])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multiple_allow_origin() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__ALLOW_ORIGIN",
+                "http://localhost,http://example.com",
+            );
+            let config = get_config();
+            assert_eq!(
+                config.allow_origin,
+                Some(vec![
+                    HeaderValue::from_str("http://localhost").unwrap(),
+                    HeaderValue::from_str("http://example.com").unwrap()
+                ])
             );
             Ok(())
         });

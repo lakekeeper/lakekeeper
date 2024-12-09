@@ -222,12 +222,15 @@ enum ConnectionType {
 
 fn build_connect_ops(typ: ConnectionType) -> anyhow::Result<PgConnectOptions> {
     let url = match typ {
-        ConnectionType::Read => CONFIG.pg_database_url_read.as_deref(),
+        ConnectionType::Read => CONFIG
+            .pg_database_url_read
+            .as_deref()
+            .or(CONFIG.pg_database_url_write.as_deref()),
         ConnectionType::Write => CONFIG.pg_database_url_write.as_deref(),
     };
 
     let host = match typ {
-        ConnectionType::Read => CONFIG.pg_host_r.as_deref(),
+        ConnectionType::Read => CONFIG.pg_host_r.as_deref().or(CONFIG.pg_host_w.as_deref()),
         ConnectionType::Write => CONFIG.pg_host_w.as_deref(),
     };
     let opts = if let Some(cfg) = url {

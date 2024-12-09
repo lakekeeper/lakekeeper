@@ -1,10 +1,14 @@
-# Contributing to Iceberg-Catalog
+# Developer Guide
+
 All commits to main should go through a PR. CI checks should pass before merging the PR.
 Before merge commits are squashed. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## Foundation & CLA
+We hate red tape. Currently all committers need to sign the CLA in github. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently we prefer to spent our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
+
 ## Quickstart
 
-```shell
+```bash
 # start postgres
 docker run -d --name postgres-15 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:15
 # set envs
@@ -83,7 +87,7 @@ cargo test --all-features --all-targets
 
 ## Test cloud storage profiles
 
-Currently, we're not aware of a good way of testing cloud storage integration against local deployments. That means, in order to test against AWS s3 & Azure Datalake Storage Gen 2, you need to set the following environment variables for more information take a look at the storage guide ([STORAGE.md](STORAGE.md)), a sample `.env` could look like this:
+Currently, we're not aware of a good way of testing cloud storage integration against local deployments. That means, in order to test against AWS S3, GCS and ADLS Gen2, you need to set the following environment variables. For more information take a look at the [Storage Guide](storage.md). A sample `.env` could look like this:
 
 ```sh
 # TEST_AZURE=<some-value> controls a proc macro which either includes or excludes the azure tests
@@ -121,4 +125,4 @@ cargo test service::storage::s3::test::aws::test_can_validate
 
 ## Running integration test
 
-Please check the [Integration Test Docs](tests/README.md).
+Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests).
