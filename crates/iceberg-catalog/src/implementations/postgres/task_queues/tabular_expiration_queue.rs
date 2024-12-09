@@ -2,7 +2,7 @@ use crate::api::management::v1::TabularType;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::TabularType as DbTabularType;
 use crate::implementations::postgres::task_queues::{
-    pick_task, queue_task, record_failure, record_success,
+    pick_task, queue_task, record_failure, record_success, reschedule_pending_tasks,
 };
 use crate::implementations::postgres::DeletionKind;
 use crate::service::task_queue::tabular_expiration_queue::{
@@ -10,6 +10,7 @@ use crate::service::task_queue::tabular_expiration_queue::{
 };
 use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
 use async_trait::async_trait;
+use chrono::Utc;
 use uuid::Uuid;
 
 use super::cancel_pending_tasks;
@@ -163,6 +164,14 @@ impl TaskQueue for TabularExpirationQueue {
 
     async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
         cancel_pending_tasks(&self.pg_queue, filter, self.queue_name()).await
+    }
+
+    async fn reschedule_pending_tasks(
+        &self,
+        filter: TaskFilter,
+        execute_at: chrono::DateTime<Utc>,
+    ) -> crate::api::Result<()> {
+        reschedule_pending_tasks(&self.pg_queue, filter, self.queue_name(), execute_at).await
     }
 }
 

@@ -141,6 +141,11 @@ pub trait TaskQueue: Debug {
     async fn record_success(&self, id: Uuid) -> crate::api::Result<()>;
     async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()>;
     async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()>;
+    async fn reschedule_pending_tasks(
+        &self,
+        filter: TaskFilter,
+        execute_at: chrono::DateTime<Utc>,
+    ) -> crate::api::Result<()>;
 
     async fn retrying_record_success(&self, task: &Task) {
         self.retrying_record_success_or_failure(task, Status::Success)

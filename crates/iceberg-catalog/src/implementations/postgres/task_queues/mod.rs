@@ -205,6 +205,73 @@ macro_rules! impl_pg_task_queue {
 }
 use impl_pg_task_queue;
 
+/// Reschedule pending tasks for a warehouse
+/// If `task_ids` are provided in `filter` which are not pending, they are ignored
+async fn reschedule_pending_tasks(
+    queue: &PgQueue,
+    filter: TaskFilter,
+    queue_name: &'static str,
+    execute_at: DateTime<Utc>,
+) -> crate::api::Result<()> {
+    let mut transaction = queue
+        .read_write
+        .write_pool
+        .begin()
+        .await
+        .map_err(|e| e.into_error_model("Failed to get transaction to cancel Task"))?;
+
+    match filter {
+        TaskFilter::WarehouseId(warehouse_id) => {
+            sqlx::query!(
+                r#"
+                    UPDATE task SET suspend_until = $3
+                    WHERE status = 'pending'
+                    AND warehouse_id = $1
+                    AND queue_name = $2
+                "#,
+                *warehouse_id,
+                queue_name,
+                execute_at
+            )
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    ?e,
+                    "Failed to reschedule {queue_name} Tasks for warehouse {warehouse_id}"
+                );
+                e.into_error_model(format!(
+                    "Failed to reschedule {queue_name} Tasks for warehouse {warehouse_id}"
+                ))
+            })?;
+        }
+        TaskFilter::TaskIds(task_ids) => {
+            sqlx::query!(
+                r#"
+                    UPDATE task SET suspend_until = $2
+                    WHERE status = 'pending'
+                    AND task_id = ANY($1)
+                "#,
+                &task_ids.iter().map(|s| **s).collect::<Vec<_>>(),
+                execute_at
+            )
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "Failed to reschedule Tasks for task_ids {task_ids:?}");
+                e.into_error_model("Failed to reschedule Tasks for specified ids")
+            })?;
+        }
+    }
+
+    transaction.commit().await.map_err(|e| {
+        tracing::error!(?e, "Failed to commit transaction to reschedule Tasks");
+        e.into_error_model("failed to commit transaction reschedule tasks.")
+    })?;
+
+    Ok(())
+}
+
 /// Cancel pending tasks for a warehouse
 /// If `task_ids` are provided in `filter` which are not pending, they are ignored
 async fn cancel_pending_tasks(
