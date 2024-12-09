@@ -220,18 +220,21 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     }
 }
 
+/// Enum specifying which tabulars to undrop
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "kebab-case", untagged)]
-pub enum Undroppable {
+pub enum UndropTarget {
+    /// Undrop this list of tabulars
     Tabulars { tabulars: Vec<TabularIdentUuid> },
+    /// Undrop all soft-deleted tabulars in this namespace
     Namespace { namespace: uuid::Uuid },
 }
 
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
-    /// Tabular ID
-    pub undrop: Undroppable,
+    /// Undrop target specification
+    pub target: UndropTarget,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}

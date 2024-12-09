@@ -1,6 +1,6 @@
 use crate::api::iceberg::types::PageToken;
 use crate::api::iceberg::v1::PaginationQuery;
-use crate::api::management::v1::warehouse::{UndropTabularsRequest, Undroppable};
+use crate::api::management::v1::warehouse::{UndropTabularsRequest, UndropTarget};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::Authorizer;
 use crate::service::{Catalog, ListFlags, TableIdentUuid, TabularIdentUuid, Transaction};
@@ -13,11 +13,11 @@ pub(crate) async fn collect_tabular_ids<C: Catalog>(
     request: UndropTabularsRequest,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> api::Result<Vec<TableIdentUuid>> {
-    Ok(match request.undrop {
-        Undroppable::Tabulars { tabulars: tabs } => {
+    Ok(match request.target {
+        UndropTarget::Tabulars { tabulars: tabs } => {
             tabs.into_iter().map(|i| TableIdentUuid::from(*i)).collect()
         }
-        Undroppable::Namespace { namespace: ns } =>
+        UndropTarget::Namespace { namespace: ns } =>
         // TODO: do we want to paginate here?
         {
             C::list_tabulars(
@@ -44,8 +44,8 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer>(
     request_metadata: &RequestMetadata,
     warehouse_ident: WarehouseIdent,
 ) -> api::Result<()> {
-    match &request.undrop {
-        Undroppable::Tabulars { tabulars: tabs } => {
+    match &request.target {
+        UndropTarget::Tabulars { tabulars: tabs } => {
             let all_allowed = can_undrop_all_specified_tabulars(
                 request_metadata,
                 warehouse_ident,
@@ -62,7 +62,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer>(
                 .into());
             };
         }
-        Undroppable::Namespace { namespace: ns } => {
+        UndropTarget::Namespace { namespace: ns } => {
             let false = authorizer
                 .is_allowed_namespace_action(
                     request_metadata,
