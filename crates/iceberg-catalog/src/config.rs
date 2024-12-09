@@ -9,6 +9,7 @@ use std::convert::Infallible;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use url::Url;
 
 use crate::service::task_queue::TaskQueueConfig;
@@ -20,15 +21,12 @@ use veil::Redact;
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
-lazy_static::lazy_static! {
-    /// Configuration of the service module.
-    pub static ref CONFIG: DynAppConfig = {
-        get_config()
-    };
-    pub static ref DEFAULT_PROJECT_ID: Option<ProjectIdent> = {
-        CONFIG.enable_default_project.then_some(uuid::Uuid::nil().into())
-    };
-}
+pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
+pub static DEFAULT_PROJECT_ID: LazyLock<Option<ProjectIdent>> = LazyLock::new(|| {
+    CONFIG
+        .enable_default_project
+        .then_some(uuid::Uuid::nil().into())
+});
 
 fn get_config() -> DynAppConfig {
     let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
