@@ -56,7 +56,7 @@ pub enum OpenFGAError {
     #[error("Invalid entity string: `{0}`")]
     InvalidEntity(String),
     #[error("Unknown model version currently applied")]
-    UnknownModelVersionApplied(i32),
+    UnknownModelVersionApplied(u64),
     #[error("Failed to write Authorization model: {0}")]
     WriteAuthorizationModelFailed(tonic::Status),
     #[error("Failed to write Authorization tuples")]

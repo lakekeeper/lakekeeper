@@ -126,3 +126,37 @@ cargo test service::storage::s3::test::aws::test_can_validate
 ## Running integration test
 
 Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests).
+
+
+## Extending Authz
+
+When adding a new endpoint, you may need to extend the authorization model. Please check the [Authorization Docs](./authorization.md) for more information. For openfga, you'll have to perform the following steps:
+
+1. extend the respective enum in `crate::service::authz` by adding the new action, e.g. `crate::service::authz::CatalogViewAction::CanUndrop`
+2. add the relation to `crate::service::authz::implementations::openfga::relations`, e.g. add `ViewRelation::CanUndrop`
+3. add the mapping from the `implementations` type to the `service` type in `openfga::relations`, e.g. `CatalogViewAction::CanUndrop => ViewRelation::CanUndrop`
+4. create a new authz schema version by copying the latest existing one, e.g. `authz/openfga/v1/` to `authz/openfga/v2/`
+5. apply your changes, e.g. add `define can_undrop: modify` to the `view` type in `authz/openfga/v2/schema.fga`
+6. create a diff between the old and new schema via `diff -u authz/openfga/v1/schema.fga authz/openfga/v2/schema.fga > authz/openfga/v2/changed.diff` to help your reviewers
+7. regenerate `schema.json` via `./fga model transform --file authz/openfga/v2/schema.fga > authz/openfga/v2/schema.json` (download the `fga` binary from the [OpenFGA repo](https://github.com/openfga/cli/releases/))
+8. Head to `crate::service::authz::implementations::openfga::models.rs`, extend `CollaborationModels` with a field for your version, e.g., `v2` and then add your new model version on top of the file, like:
+```rust
+const V2_MODEL: &str = include_str!("../../../../../../../authz/openfga/v2/schema.json");
+
+static MODEL: LazyLock<CollaborationModels> = LazyLock::new(|| CollaborationModels {
+    v1: serde_json::from_str(V1_MODEL).expect("Failed to parse OpenFGA model V1 as JSON"),
+    // this is your added model below
+    v2: serde_json::from_str(V2_MODEL).expect("Failed to parse OpenFGA model V2 as JSON"),
+});
+```
+9. set your model as the active model like: `const ACTIVE_MODEL: ModelVersion = ModelVersion::V2;`
+10. implement the migration in `crate::service::authz::implementations::openfga::migrations::migrate` like:
+```rust             
+match model_version {
+    ModelVersion::V1 => {
+    // no migration to be done, we start at v1
+    }
+    ModelVersion::V2 => v2::migrate(client, &store).await,
+}
+```
+
