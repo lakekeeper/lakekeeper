@@ -51,38 +51,44 @@ pub(crate) async fn migrate(
         return Ok(());
     }
 
-    let written_active_model = write_active_model(client, &store).await?;
-
     if let Some(max_applied) = max_applied {
         tracing::info!(
             "Applying OpenFGA Migration: Rolling up from {max_applied} to {}",
-            written_active_model.active_model
+            ModelVersion::active()
         );
-        for int_id in max_applied.as_monotonic_int()..written_active_model.version_as_int() {
+        for int_id in max_applied.as_monotonic_int()..ModelVersion::active().as_monotonic_int() {
             let model_version = ModelVersion::from_monotonic_int(int_id)
                 .ok_or(OpenFGAError::UnknownModelVersionApplied(int_id))?;
+
+            tracing::info!("Writing model version {}", model_version);
+
+            let written_model = write_model(client, model_version, &store).await?;
+
             tracing::info!("Applying migration for model version {}", model_version);
             match model_version {
                 ModelVersion::V1 => {
                     // no migration to be done, we start at v1
                 }
-                ModelVersion::V2 => v2::migrate(client, &store).await,
+                ModelVersion::V2 => v2::migrate(client, &written_model.auth_model_id, &store).await,
             }
+            tracing::info!("Marking model version {} as applied", model_version);
+            mark_as_applied(client, &store, written_model).await?;
         }
     } else {
         tracing::info!("No authorization models found. Applying active model version.");
-
-        mark_as_applied(client, store, written_active_model).await?;
+        let written_model = write_model(client, ModelVersion::active(), &store).await?;
+        mark_as_applied(client, &store, written_model).await?;
     }
+    tracing::info!("OpenFGA Migration finished");
     Ok(())
 }
 
 async fn mark_as_applied(
     client: &mut OpenFgaServiceClient<ClientConnection>,
-    store: Store,
+    store: &Store,
     written_active_model: ModelSpec,
 ) -> Result<(), OpenFGAError> {
-    let active_int = written_active_model.version_as_int();
+    let active_int = written_active_model.model_version.as_monotonic_int();
     let authorization_model_id = written_active_model.auth_model_id.as_str();
 
     let write_request = WriteRequest {
@@ -117,22 +123,16 @@ async fn mark_as_applied(
 }
 
 struct ModelSpec {
-    active_model: ModelVersion,
+    model_version: ModelVersion,
     auth_model_id: String,
 }
 
-impl ModelSpec {
-    fn version_as_int(&self) -> u64 {
-        self.active_model.as_monotonic_int()
-    }
-}
-
-async fn write_active_model(
+async fn write_model(
     client: &mut OpenFgaServiceClient<ClientConnection>,
+    model_version: ModelVersion,
     store: &Store,
 ) -> Result<ModelSpec, OpenFGAError> {
-    let active_model = ModelVersion::active();
-    let model = active_model.get_model();
+    let model = model_version.get_model();
     let auth_model_id = client
         .write_authorization_model(model.into_write_request(store.id.clone()))
         .await
@@ -140,7 +140,7 @@ async fn write_active_model(
         .into_inner()
         .authorization_model_id;
     Ok(ModelSpec {
-        active_model,
+        model_version,
         auth_model_id,
     })
 }
