@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1](https://github.com/lakekeeper/lakekeeper/compare/v0.5.0...v0.5.1) (2024-12-09)
+
+
+### Bug Fixes
+
+* potential deadlock for views through uncommitted transactions ([#638](https://github.com/lakekeeper/lakekeeper/issues/638)) ([0dda8e3](https://github.com/lakekeeper/lakekeeper/commit/0dda8e3d9bc7cdb1a36c7fc23d57c0e7e7e1389a))
+* potential deadlock in load-table ([#636](https://github.com/lakekeeper/lakekeeper/issues/636)) ([c22b0e0](https://github.com/lakekeeper/lakekeeper/commit/c22b0e00ae76ad3458c91ed860c8410446f52173))
+* tokens of humans are wrongly identified as applications if "appid" claim is present ([#647](https://github.com/lakekeeper/lakekeeper/issues/647)) ([bc6b475](https://github.com/lakekeeper/lakekeeper/commit/bc6b475075354a66ae80b771ac7de3287b467841))
+
 ## [0.5.0](https://github.com/lakekeeper/lakekeeper/compare/v0.4.3...v0.5.0) (2024-12-06)
 
 
