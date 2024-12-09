@@ -2,13 +2,18 @@ use std::collections::HashMap;
 
 use crate::service::{authz::implementations::FgaType, RoleId};
 use openfga_rs::{Condition, TypeDefinition};
+use std::sync::LazyLock;
 
-lazy_static::lazy_static! {
-    static ref MODEL_V1_JSON: serde_json::Value = serde_json::from_str(include_str!("../../../../../../../authz/openfga/v1/schema.json")).expect("Failed to parse OpenFGA model V1 as JSON");
-    static ref MODEL: CollaborationModels = CollaborationModels {
-        v1: serde_json::from_value(MODEL_V1_JSON.clone()).expect("Failed to parse OpenFGA model V1 from JSON"),
-    };
-}
+static MODEL: LazyLock<CollaborationModels> = LazyLock::new(|| CollaborationModels {
+    v1: serde_json::from_str(include_str!(
+        "../../../../../../../authz/openfga/v1/schema.json"
+    ))
+    .expect("Failed to parse OpenFGA model V1 as JSON"),
+    v2: serde_json::from_str(include_str!(
+        "../../../../../../../authz/openfga/v2/schema.json"
+    ))
+    .expect("Failed to parse OpenFGA model V2 as JSON"),
+});
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -78,6 +83,7 @@ impl OpenFgaType for FgaType {
 #[derive(Debug)]
 pub(crate) struct CollaborationModels {
     v1: AuthorizationModel,
+    v2: AuthorizationModel,
 }
 
 impl CollaborationModels {
