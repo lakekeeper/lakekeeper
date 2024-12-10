@@ -380,7 +380,7 @@ def test_undropped_table_can_be_purged_again_http(spark, warehouse: conftest.War
         # https://github.com/apache/iceberg-python/issues/1146 is resolved
         pytest.skip("ADLS currently doesn't work with pyiceberg.")
 
-    namespace = "test_undrop_table_purge_http"
+    namespace = "test_undropped_table_can_be_purged_again_http"
     spark.sql(f"CREATE NAMESPACE {namespace}")
     dfs = []
     for n in range(2):
