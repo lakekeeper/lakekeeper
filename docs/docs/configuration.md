@@ -102,7 +102,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 
 ### Authorization
-Authorization is only effective if [Authentication](#authentication) is enabled.
+Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
 | Variable                                      | Example                                                                    | Description |
 |-----------------------------------------------|----------------------------------------------------------------------------|-----|
