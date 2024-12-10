@@ -124,22 +124,26 @@ impl TaskQueue for TabularPurgeQueue {
         };
 
         let it = sqlx::query!(
-                "INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING task_id",
-                task_id,
-                tabular_id,
-                *warehouse_ident,
-                match tabular_type {
-                    TabularType::Table => DbTabularType::Table,
-                    TabularType::View => DbTabularType::View,
-                } as _,
-                tabular_location,
-            )
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|e| {
-                tracing::error!(?e, "failed to insert into tabular_purges");
-                e.into_error_model("failed to insert into tabular purges")
-            })?;
+            r#"INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location)
+               VALUES ($1, $2, $3, $4, $5)
+               -- we update tabular_location since it may have changed from the last time we enqueued
+               ON CONFLICT (task_id) DO UPDATE SET tabular_location = $5
+               RETURNING task_id"#,
+            task_id,
+            tabular_id,
+            *warehouse_ident,
+            match tabular_type {
+                TabularType::Table => DbTabularType::Table,
+                TabularType::View => DbTabularType::View,
+            } as _,
+            tabular_location,
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "failed to insert into tabular_purges");
+            e.into_error_model("failed to insert into tabular purges")
+        })?;
 
         if let Some(row) = it {
             tracing::info!("Queued purge task: {:?}", row);

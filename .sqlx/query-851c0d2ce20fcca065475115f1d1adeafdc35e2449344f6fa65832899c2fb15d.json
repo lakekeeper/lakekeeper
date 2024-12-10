@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind)\n            VALUES ($1, $2, $3, $4, $5)\n            -- we update the deletion kind since our caller may now want to purge instead of just delete\n            ON CONFLICT (task_id) DO UPDATE SET deletion_kind = $5\n            RETURNING task_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "deletion_kind",
+            "kind": {
+              "Enum": [
+                "default",
+                "purge"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "851c0d2ce20fcca065475115f1d1adeafdc35e2449344f6fa65832899c2fb15d"
+}

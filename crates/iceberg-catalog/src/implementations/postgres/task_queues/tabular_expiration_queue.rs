@@ -74,7 +74,11 @@ impl TaskQueue for TabularExpirationQueue {
         };
 
         let it = sqlx::query!(
-            "INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING task_id",
+            r#"INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind)
+            VALUES ($1, $2, $3, $4, $5)
+            -- we update the deletion kind since our caller may now want to purge instead of just delete
+            ON CONFLICT (task_id) DO UPDATE SET deletion_kind = $5
+            RETURNING task_id"#,
             task_id,
             tabular_id,
             *warehouse_ident,
