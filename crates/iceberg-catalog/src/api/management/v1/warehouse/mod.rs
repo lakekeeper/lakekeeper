@@ -1,3 +1,5 @@
+mod undrop;
+
 use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse};
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
@@ -15,6 +17,7 @@ use crate::service::NamespaceIdentUuid;
 use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
 use crate::catalog::UnfilteredPage;
+use crate::service::task_queue::TaskFilter;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
@@ -215,6 +218,23 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
         (http::StatusCode::CREATED, axum::Json(self)).into_response()
     }
+}
+
+/// Enum specifying which tabulars to undrop
+#[derive(Deserialize, Debug, ToSchema)]
+#[serde(rename_all = "kebab-case", untagged)]
+pub enum UndropTarget {
+    /// Undrop this list of tabulars
+    Tabulars { tabulars: Vec<TabularIdentUuid> },
+    /// Undrop all soft-deleted tabulars in this namespace
+    Namespace { namespace: uuid::Uuid },
+}
+
+#[derive(Deserialize, Debug, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct UndropTabularsRequest {
+    /// Undrop target specification
+    pub target: UndropTarget,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -641,6 +661,40 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         Ok(())
     }
 
+    async fn undrop_tabulars(
+        request_metadata: RequestMetadata,
+        warehouse_ident: WarehouseIdent,
+        request: UndropTabularsRequest,
+        context: ApiContext<State<A, C, S>>,
+    ) -> Result<()> {
+        // ------------------- AuthZ -------------------
+        undrop::require_undrop_permissions(
+            &request,
+            &context.v1_state.authz,
+            &request_metadata,
+            warehouse_ident,
+        )
+        .await?;
+
+        // ------------------- Business Logic -------------------
+        let catalog = context.v1_state.catalog;
+        let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
+        let tabs =
+            undrop::collect_tabular_ids::<C>(warehouse_ident, request, transaction.transaction())
+                .await?;
+        let tasks_to_cancel = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
+        context
+            .v1_state
+            .queues
+            .cancel_tabular_expiration(TaskFilter::TaskIds(tasks_to_cancel))
+            .await?;
+        transaction.commit().await?;
+
+        // TODO: emit event
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn list_soft_deleted_tabulars(
         warehouse_id: WarehouseIdent,
@@ -667,8 +721,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             crate::catalog::fetch_until_full_page::<_, _, _, C>(
                 pagination_query.page_size,
                 pagination_query.page_token,
-                |page_size, page_token, _| {
-                    let catalog = catalog.clone();
+                |page_size, page_token, t| {
                     let authorizer = authorizer.clone();
                     let request_metadata = request_metadata.clone();
                     async move {
@@ -681,7 +734,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             warehouse_id,
                             namespace_id,
                             ListFlags::only_deleted(),
-                            catalog,
+                            t.transaction(),
                             query,
                         )
                         .await?;

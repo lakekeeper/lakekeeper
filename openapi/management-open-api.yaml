@@ -4,7 +4,7 @@ info:
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).
   license:
     name: Apache-2.0
-  version: 0.4.3
+  version: 0.5.0
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -1370,6 +1370,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListDeletedTabularsResponse'
+  /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
+    post:
+      tags:
+      - warehouse
+      operationId: undrop_tabulars
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        description: ''
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UndropTabularsRequest'
+        required: true
+      responses:
+        '204':
+          description: Tabular undropped successfully
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -2784,12 +2806,67 @@ components:
             - soft
       discriminator:
         propertyName: type
+    TabularIdentUuid:
+      oneOf:
+      - type: object
+        required:
+        - type
+        - id
+        properties:
+          id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            enum:
+            - table
+      - type: object
+        required:
+        - type
+        - id
+        properties:
+          id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            enum:
+            - view
+      discriminator:
+        propertyName: type
     TabularType:
       type: string
       description: Type of tabular
       enum:
       - table
       - view
+    UndropTabularsRequest:
+      type: object
+      required:
+      - target
+      properties:
+        target:
+          $ref: '#/components/schemas/UndropTarget'
+    UndropTarget:
+      oneOf:
+      - type: object
+        description: Undrop this list of tabulars
+        required:
+        - tabulars
+        properties:
+          tabulars:
+            type: array
+            items:
+              $ref: '#/components/schemas/TabularIdentUuid'
+      - type: object
+        description: Undrop all soft-deleted tabulars in this namespace
+        required:
+        - namespace
+        properties:
+          namespace:
+            type: string
+            format: uuid
+      description: Enum specifying which tabulars to undrop
     UpdateNamespaceAssignmentsRequest:
       type: object
       properties:

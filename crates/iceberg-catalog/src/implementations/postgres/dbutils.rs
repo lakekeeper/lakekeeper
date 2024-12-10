@@ -4,19 +4,19 @@ pub(crate) trait DBErrorHandler
 where
     Self: ToString + Sized + Send + Sync + std::error::Error + 'static,
 {
-    fn into_error_model(self, message: String) -> ErrorModel {
+    fn into_error_model(self, message: impl Into<String>) -> ErrorModel {
         ErrorModel::internal(message, "DatabaseError", Some(Box::new(self)))
     }
 }
 
 impl DBErrorHandler for sqlx::Error {
-    fn into_error_model(self, message: String) -> ErrorModel {
+    fn into_error_model(self, message: impl Into<String>) -> ErrorModel {
         match self {
             Self::Database(ref db) => {
                 if db.is_unique_violation() {
                     return ErrorModel::conflict(
                         message,
-                        "EntityAlreadyExists".to_string(),
+                        "EntityAlreadyExists",
                         Some(Box::new(self)),
                     );
                 }

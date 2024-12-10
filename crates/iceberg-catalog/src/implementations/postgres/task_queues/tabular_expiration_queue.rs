@@ -8,9 +8,11 @@ use crate::implementations::postgres::DeletionKind;
 use crate::service::task_queue::tabular_expiration_queue::{
     TabularExpirationInput, TabularExpirationTask,
 };
-use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
+use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
 use async_trait::async_trait;
 use uuid::Uuid;
+
+use super::cancel_pending_tasks;
 
 super::impl_pg_task_queue!(TabularExpirationQueue);
 
@@ -44,7 +46,7 @@ impl TaskQueue for TabularExpirationQueue {
             .write_pool
             .begin()
             .await
-            .map_err(|e| e.into_error_model("fail".into()))?;
+            .map_err(|e| e.into_error_model("failed to begin transaction for expiration queue"))?;
 
         tracing::info!(
             "Queuing expiration for '{tabular_id}' of type: '{}' under warehouse: '{warehouse_ident}'",
@@ -66,13 +68,17 @@ impl TaskQueue for TabularExpirationQueue {
             tracing::debug!("Task already exists");
             transaction.commit().await.map_err(|e| {
                 tracing::error!(?e, "failed to commit");
-                e.into_error_model("fail".into())
+                e.into_error_model("failed to commit transaction enqueuing task")
             })?;
             return Ok(());
         };
 
         let it = sqlx::query!(
-            "INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind) VALUES ($1, $2, $3, $4, $5) RETURNING task_id",
+            r#"INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind)
+            VALUES ($1, $2, $3, $4, $5)
+            -- we update the deletion kind since our caller may now want to purge instead of just delete
+            ON CONFLICT (task_id) DO UPDATE SET deletion_kind = $5
+            RETURNING task_id"#,
             task_id,
             tabular_id,
             *warehouse_ident,
@@ -89,7 +95,7 @@ impl TaskQueue for TabularExpirationQueue {
             .await
             .map_err(|e| {
                 tracing::error!(?e, "failed to insert into tabular_expirations");
-                e.into_error_model("fail".into()) })?;
+                e.into_error_model("failed to insert into tabular expirations") })?;
 
         if let Some(row) = it {
             tracing::debug!("Queued expiration task: {:?}", row.task_id);
@@ -99,7 +105,7 @@ impl TaskQueue for TabularExpirationQueue {
 
         transaction.commit().await.map_err(|e| {
             tracing::error!(?e, "failed to commit");
-            e.into_error_model("fail".into())
+            e.into_error_model("failed to commit transaction inserting tabular expiration task")
         })?;
 
         Ok(())
@@ -132,7 +138,7 @@ impl TaskQueue for TabularExpirationQueue {
             .map_err(|e| {
                 tracing::error!(?e, "error selecting tabular expiration");
                 // TODO: should we reset task status here?
-                e.into_error_model("failed to read task after picking one up".into())
+                e.into_error_model("failed to read task after picking one up")
             })?;
 
         tracing::info!("Expiration task: {:?}", expiration);
@@ -158,13 +164,18 @@ impl TaskQueue for TabularExpirationQueue {
         )
         .await
     }
+
+    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
+        cancel_pending_tasks(&self.pg_queue, filter, self.queue_name()).await
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::super::test::setup;
     use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-    use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
+    use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
+    use crate::WarehouseIdent;
     use sqlx::PgPool;
 
     #[sqlx::test]
@@ -201,5 +212,29 @@ mod test {
             task.is_none(),
             "There should only be one task, idempotency didn't work."
         );
+    }
+
+    #[sqlx::test]
+    async fn test_cancel_pending_tasks(pool: PgPool) {
+        let config = TaskQueueConfig::default();
+        let pg_queue = setup(pool, config);
+        let queue = super::TabularExpirationQueue { pg_queue };
+        let warehouse_ident: WarehouseIdent = uuid::Uuid::now_v7().into();
+        let input = TabularExpirationInput {
+            tabular_id: uuid::Uuid::new_v4(),
+            warehouse_ident,
+            tabular_type: crate::api::management::v1::TabularType::Table,
+            purge: false,
+            expire_at: chrono::Utc::now(),
+        };
+        queue.enqueue(input.clone()).await.unwrap();
+
+        queue
+            .cancel_pending_tasks(TaskFilter::WarehouseId(warehouse_ident))
+            .await
+            .unwrap();
+
+        let task = queue.pick_new_task().await.unwrap();
+        assert!(task.is_none(), "There should be no tasks");
     }
 }

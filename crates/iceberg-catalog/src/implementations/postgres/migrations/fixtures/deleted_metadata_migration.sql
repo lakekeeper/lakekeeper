@@ -142,7 +142,7 @@ VALUES ('01933eb6-720a-7f50-abc8-2bd8119129cf', '{
   "default-sort-order-id": 0
 }', '2024-11-18 09:59:24.426262+00', '2024-11-18 09:59:26.566115+00');
 
-INSERT INTO task (task_id, warehouse_id, idempotency_key, task_name, status, suspend_until, attempt)
+INSERT INTO task (task_id, warehouse_id, idempotency_key, queue_name, status, suspend_until, attempt)
 VALUES ('01933eb6-720a-7f50-abc8-2bd8119129cf', 'c66b1372-a593-11ef-8d1a-eb80a0602bd7',
         '01933eb6-720a-7f50-abc8-2bd8119129cf', 'tabular_expiration', 'pending', now(), 1);
 

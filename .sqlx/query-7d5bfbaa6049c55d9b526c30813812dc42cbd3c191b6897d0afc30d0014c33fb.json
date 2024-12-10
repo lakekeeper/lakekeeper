@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind) VALUES ($1, $2, $3, $4, $5) RETURNING task_id",
+  "query": "INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location)\n               VALUES ($1, $2, $3, $4, $5)\n               -- we update tabular_location since it may have changed from the last time we enqueued\n               ON CONFLICT (task_id) DO UPDATE SET tabular_location = $5\n               RETURNING task_id",
   "describe": {
     "columns": [
       {
@@ -25,22 +25,12 @@
             }
           }
         },
-        {
-          "Custom": {
-            "name": "deletion_kind",
-            "kind": {
-              "Enum": [
-                "default",
-                "purge"
-              ]
-            }
-          }
-        }
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "90e82527e93a4d252a4d9f0959c788a64d5f75ba9c66d02b14f7f25f2ffb69b7"
+  "hash": "7d5bfbaa6049c55d9b526c30813812dc42cbd3c191b6897d0afc30d0014c33fb"
 }

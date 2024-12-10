@@ -2,13 +2,17 @@ use std::collections::HashMap;
 
 use crate::service::{authz::implementations::FgaType, RoleId};
 use openfga_rs::{Condition, TypeDefinition};
+use std::sync::LazyLock;
 
-lazy_static::lazy_static! {
-    static ref MODEL_V1_JSON: serde_json::Value = serde_json::from_str(include_str!("../../../../../../../authz/openfga/v1/schema.json")).expect("Failed to parse OpenFGA model V1 as JSON");
-    static ref MODEL: CollaborationModels = CollaborationModels {
-        v1: serde_json::from_value(MODEL_V1_JSON.clone()).expect("Failed to parse OpenFGA model V1 from JSON"),
-    };
-}
+const V1_MODEL: &str = include_str!("../../../../../../../authz/openfga/v1/schema.json");
+const V2_MODEL: &str = include_str!("../../../../../../../authz/openfga/v2/schema.json");
+
+static MODEL: LazyLock<CollaborationModels> = LazyLock::new(|| CollaborationModels {
+    v1: serde_json::from_str(V1_MODEL).expect("Failed to parse OpenFGA model V1 as JSON"),
+    v2: serde_json::from_str(V2_MODEL).expect("Failed to parse OpenFGA model V2 as JSON"),
+});
+
+const ACTIVE_MODEL: ModelVersion = ModelVersion::V2;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -78,53 +82,60 @@ impl OpenFgaType for FgaType {
 #[derive(Debug)]
 pub(crate) struct CollaborationModels {
     v1: AuthorizationModel,
+    v2: AuthorizationModel,
 }
 
 impl CollaborationModels {
     #[must_use]
-    pub(crate) fn get_model(&self, version: &ModelVersion) -> &AuthorizationModel {
+    pub(crate) fn get_model(&self, version: ModelVersion) -> &AuthorizationModel {
         match version {
             ModelVersion::V1 => &self.v1,
+            ModelVersion::V2 => &self.v2,
         }
     }
 }
 
 #[derive(
-    Debug, Clone, PartialEq, strum_macros::EnumString, strum_macros::Display, strum_macros::EnumIter,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    strum_macros::EnumString,
+    strum::FromRepr,
+    strum_macros::Display,
+    strum_macros::EnumIter,
 )]
 #[strum(serialize_all = "lowercase")]
+#[repr(u64)]
 pub(crate) enum ModelVersion {
-    V1,
+    V1 = 1,
+    V2 = 2,
 }
 
 impl ModelVersion {
     #[must_use]
     pub(crate) fn active() -> Self {
-        ModelVersion::V1
+        ACTIVE_MODEL
     }
+
     #[must_use]
-    pub(crate) fn get_model(&self) -> AuthorizationModel {
+    pub(crate) fn get_model(self) -> AuthorizationModel {
         MODEL.get_model(self).clone()
     }
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn get_model_ref(&self) -> &AuthorizationModel {
+    pub(crate) fn get_model_ref(self) -> &'static AuthorizationModel {
         MODEL.get_model(self)
     }
 
     #[must_use]
-    pub(crate) fn as_monotonic_int(&self) -> i32 {
-        match self {
-            ModelVersion::V1 => 1,
-        }
+    pub(crate) fn as_monotonic_int(self) -> u64 {
+        self as u64
     }
     #[must_use]
-    pub(crate) fn from_monotonic_int(value: i32) -> Option<Self> {
-        match value {
-            1 => Some(ModelVersion::V1),
-            _ => None,
-        }
+    pub(crate) fn from_monotonic_int(value: u64) -> Option<Self> {
+        Self::from_repr(value)
     }
 }
 
@@ -813,29 +824,61 @@ mod test {
 
     #[test]
     fn test_load_model() {
-        let _model = MODEL.get_model(&ModelVersion::V1);
+        let _model = MODEL.get_model(ModelVersion::V1);
     }
 
     #[test]
     fn test_load_ser_de_roundtrip() {
-        let ser_model: ser_de::AuthorizationModel =
-            serde_json::from_value((*MODEL_V1_JSON).clone()).unwrap();
-        assert_eq!(serde_json::to_value(ser_model).unwrap(), *MODEL_V1_JSON);
+        for v in ModelVersion::iter() {
+            match v {
+                ModelVersion::V1 => {
+                    let ser_model: ser_de::AuthorizationModel =
+                        serde_json::from_str(V1_MODEL).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(ser_model).unwrap(),
+                        serde_json::from_str::<serde_json::Value>(V1_MODEL).unwrap()
+                    );
+                }
+                ModelVersion::V2 => {
+                    let ser_model: ser_de::AuthorizationModel =
+                        serde_json::from_str(V2_MODEL).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(ser_model).unwrap(),
+                        serde_json::from_str::<serde_json::Value>(V2_MODEL).unwrap()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn test_proto_roundtrip() {
-        let proto = MODEL.get_model(&ModelVersion::V1).clone();
-        let write: openfga_rs::WriteAuthorizationModelRequest =
-            proto.into_write_request("store_id".to_string());
-        let proto2 = AuthorizationModel {
-            schema_version: write.schema_version,
-            type_definitions: write.type_definitions,
-            conditions: Some(write.conditions).filter(|v| !v.is_empty()),
-        };
-        let model: ser_de::AuthorizationModel = proto2.clone().try_into().unwrap();
-        let value = serde_json::to_value(model).unwrap();
-        assert_eq!(value, *MODEL_V1_JSON);
+        for v in ModelVersion::iter() {
+            let proto = MODEL.get_model(v).clone();
+            let write: openfga_rs::WriteAuthorizationModelRequest =
+                proto.into_write_request("store_id".to_string());
+            let proto2 = AuthorizationModel {
+                schema_version: write.schema_version,
+                type_definitions: write.type_definitions,
+                conditions: Some(write.conditions).filter(|v| !v.is_empty()),
+            };
+            let model: ser_de::AuthorizationModel = proto2.clone().try_into().unwrap();
+            let value = serde_json::to_value(model).unwrap();
+            match v {
+                ModelVersion::V1 => {
+                    assert_eq!(
+                        value,
+                        serde_json::from_str::<serde_json::Value>(V1_MODEL).unwrap()
+                    );
+                }
+                ModelVersion::V2 => {
+                    assert_eq!(
+                        value,
+                        serde_json::from_str::<serde_json::Value>(V2_MODEL).unwrap()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -126,7 +126,7 @@ pub(crate) async fn list_namespaces(
         )
         .fetch_all(&mut **transaction)
         .await
-        .map_err(|e| e.into_error_model("Error fetching Namespace".into()))?
+        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
         .into_iter()
         .map(|r| (r.namespace_id, r.namespace_name, r.created_at))
         .collect()
@@ -153,7 +153,7 @@ pub(crate) async fn list_namespaces(
         )
         .fetch_all(&mut **transaction)
         .await
-        .map_err(|e| e.into_error_model("Error fetching Namespace".into()))?
+        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
         .into_iter()
         .map(|r| (r.namespace_id, r.namespace_name, r.created_at))
         .collect()
@@ -249,12 +249,12 @@ pub(crate) async fn create_namespace(
                     .build()
             }
         }
-        sqlx::Error::RowNotFound => ErrorModel::builder()
-            .code(StatusCode::NOT_FOUND.into())
-            .message("Warehouse not found".to_string())
-            .r#type("WarehouseNotFound".to_string())
-            .build(),
-        _ => e.into_error_model("Error creating Namespace".into()),
+        e @ sqlx::Error::RowNotFound => ErrorModel::not_found(
+            "Warehouse not found",
+            "WarehouseNotFound",
+            Some(Box::new(e)),
+        ),
+        _ => e.into_error_model("Error creating Namespace"),
     })?;
 
     // If inner is empty, return None
