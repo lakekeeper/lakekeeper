@@ -45,7 +45,7 @@ pub mod v1 {
         GcsProfile, GcsServiceKey, GetWarehouseResponse, ListDeletedTabularsQuery,
         ListWarehousesRequest, ListWarehousesResponse, RenameWarehouseRequest, S3Credential,
         S3Profile, Service as _, StorageCredential, StorageProfile, TabularDeleteProfile,
-        UndropTarget, UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
         UpdateWarehouseStorageRequest, WarehouseStatus,
     };
 
@@ -151,7 +151,6 @@ pub mod v1 {
             TabularType,
             TabularIdentUuid,
             UndropTabularsRequest,
-            UndropTarget,
             UpdateRoleRequest,
             UpdateUserRequest,
             UpdateWarehouseCredentialRequest,

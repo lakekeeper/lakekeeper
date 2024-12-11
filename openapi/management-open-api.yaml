@@ -2843,30 +2843,13 @@ components:
     UndropTabularsRequest:
       type: object
       required:
-      - target
+      - targets
       properties:
-        target:
-          $ref: '#/components/schemas/UndropTarget'
-    UndropTarget:
-      oneOf:
-      - type: object
-        description: Undrop this list of tabulars
-        required:
-        - tabulars
-        properties:
-          tabulars:
-            type: array
-            items:
-              $ref: '#/components/schemas/TabularIdentUuid'
-      - type: object
-        description: Undrop all soft-deleted tabulars in this namespace
-        required:
-        - namespace
-        properties:
-          namespace:
-            type: string
-            format: uuid
-      description: Enum specifying which tabulars to undrop
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TabularIdentUuid'
+          description: Undrop target specification
     UpdateNamespaceAssignmentsRequest:
       type: object
       properties:

@@ -346,6 +346,18 @@ def test_undrop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_c
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
 
+    undrop_table(table_0, warehouse)
+
+    tables = warehouse.pyiceberg_catalog.list_tables(namespace)
+
+    assert len(tables) == 2
+    for n, ((_, table), df) in enumerate(zip(sorted(tables), dfs)):
+        assert table == f"my_table_{n}"
+        table = warehouse.pyiceberg_catalog.load_table((namespace, table))
+        assert table.scan().to_pandas().equals(df)
+
+
+def undrop_table(table_0, warehouse):
     undrop_uri = (
             warehouse.server.management_url.strip("/")
             + "/"
@@ -358,20 +370,11 @@ def test_undrop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_c
             "undrop",
         ]
     ))
-
     resp = requests.post(undrop_uri, json={
-        "target": {"tabulars": [{"type": "table", "id": str(table_0.metadata.table_uuid)}]}
+        "targets": [{"type": "table", "id": str(table_0.metadata.table_uuid)}]
     }, headers={"Authorization": f"Bearer {warehouse.access_token}"})
     resp.raise_for_status()
     time.sleep(5)
-
-    tables = warehouse.pyiceberg_catalog.list_tables(namespace)
-
-    assert len(tables) == 2
-    for n, ((_, table), df) in enumerate(zip(sorted(tables), dfs)):
-        assert table == f"my_table_{n}"
-        table = warehouse.pyiceberg_catalog.load_table((namespace, table))
-        assert table.scan().to_pandas().equals(df)
 
 
 def test_undropped_table_can_be_purged_again_http(spark, warehouse: conftest.Warehouse, storage_config):
@@ -419,25 +422,8 @@ def test_undropped_table_can_be_purged_again_http(spark, warehouse: conftest.War
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table((namespace, drop_table))
 
-    undrop_uri = (
-            warehouse.server.management_url.strip("/")
-            + "/"
-            + "/".join(
-        [
-            "v1",
-            "warehouse",
-            str(warehouse.warehouse_id),
-            "deleted_tabulars",
-            "undrop",
-        ]
-    ))
-
-    resp = requests.post(undrop_uri, json={
-        "target": {"tabulars": [{"type": "table", "id": str(table_0.metadata.table_uuid)}]}
-    }, headers={"Authorization": f"Bearer {warehouse.access_token}"})
-    resp.raise_for_status()
-    time.sleep(5)
-
+    undrop_table(table_0, warehouse)
+    
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
 
     assert len(tables) == 2

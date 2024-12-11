@@ -12,7 +12,7 @@ use futures::FutureExt;
 use itertools::Itertools;
 
 use crate::api::iceberg::v1::{PageToken, PaginationQuery};
-use crate::service::NamespaceIdentUuid;
+use crate::service::{NamespaceIdentUuid, TableIdentUuid};
 
 use super::default_page_size;
 use crate::api::management::v1::role::require_project_id;
@@ -220,21 +220,11 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     }
 }
 
-/// Enum specifying which tabulars to undrop
-#[derive(Deserialize, Debug, ToSchema)]
-#[serde(rename_all = "kebab-case", untagged)]
-pub enum UndropTarget {
-    /// Undrop this list of tabulars
-    Tabulars { tabulars: Vec<TabularIdentUuid> },
-    /// Undrop all soft-deleted tabulars in this namespace
-    Namespace { namespace: uuid::Uuid },
-}
-
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
-    /// Undrop target specification
-    pub target: UndropTarget,
+    /// Tabulars to undrop
+    pub targets: Vec<TabularIdentUuid>,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -679,9 +669,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
         let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
-        let tabs =
-            undrop::collect_tabular_ids::<C>(warehouse_ident, request, transaction.transaction())
-                .await?;
+        let tabs = request
+            .targets
+            .into_iter()
+            .map(|i| TableIdentUuid::from(*i))
+            .collect::<Vec<_>>();
         let tasks_to_cancel = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
         context
             .v1_state
