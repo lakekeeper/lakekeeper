@@ -72,9 +72,7 @@ Projects can contain multiple Roles, allowing Roles to be reused in all Warehous
 Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeeper. The concept of "external" tables will follow in a later release. When managed tables are dropped, Lakekeeper removes all files of these tables in the storage.
 
 ## Soft Deletion
-In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse.
-
-The undropping Endpoint is going to be release in Lakekeeper 0.6.0.
+In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse. The expiration delay is determined at the time of dropping the table, that means changing the delay in the warehouse settings will only affect newly dropped tables. If you want "soft-deleted" tables to be gone faster, undrop the tables, change the expiration delay and re-drop them. 
 
 
 ## Migration
