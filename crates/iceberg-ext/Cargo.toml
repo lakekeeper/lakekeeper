@@ -36,6 +36,7 @@ tracing = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
+utoipa = { workspace = true }
 
 [dev-dependencies]
 futures-util = { version = "^0.3" }

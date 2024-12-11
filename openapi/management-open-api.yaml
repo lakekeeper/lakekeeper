@@ -37,6 +37,18 @@ paths:
       responses:
         '204':
           description: Server bootstrapped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: InternalError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/default-project:
     get:
       tags:
@@ -50,6 +62,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - project
@@ -58,6 +76,12 @@ paths:
       responses:
         '204':
           description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/default-project/rename:
     post:
       tags:
@@ -74,6 +98,12 @@ paths:
       responses:
         '200':
           description: Project renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/info:
     get:
       tags:
@@ -87,6 +117,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServerInfo'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -817,6 +859,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/project-list:
     get:
       tags:
@@ -830,6 +878,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListProjectsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/project/{project_id}:
     get:
       tags:
@@ -850,6 +904,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - project
@@ -865,6 +925,12 @@ paths:
       responses:
         '204':
           description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/project/{project_id}/rename:
     post:
       tags:
@@ -888,6 +954,12 @@ paths:
       responses:
         '200':
           description: Project renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/role:
     get:
       tags:
@@ -935,6 +1007,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListRolesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
       - role
@@ -953,6 +1031,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/role/{id}:
     get:
       tags:
@@ -973,6 +1057,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
       - role
@@ -998,6 +1088,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Role'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - role
@@ -1014,6 +1110,12 @@ paths:
       responses:
         '204':
           description: Role deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/search/role:
     post:
       tags:
@@ -1033,6 +1135,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchRoleResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/search/user:
     post:
       tags:
@@ -1052,6 +1160,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchUserResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/user:
     get:
       tags:
@@ -1089,6 +1203,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListUsersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
       - user
@@ -1116,6 +1236,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/user/{id}:
     get:
       tags:
@@ -1136,6 +1262,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       tags:
       - user
@@ -1158,6 +1290,12 @@ paths:
       responses:
         '200':
           description: User details updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - user
@@ -1176,6 +1314,12 @@ paths:
       responses:
         '204':
           description: User deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse:
     get:
       tags:
@@ -1215,6 +1359,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListWarehousesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
       - warehouse
@@ -1237,6 +1387,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -1257,6 +1413,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
       - warehouse
@@ -1272,6 +1434,12 @@ paths:
       responses:
         '204':
           description: Warehouse deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/activate:
     post:
       tags:
@@ -1288,6 +1456,12 @@ paths:
       responses:
         '200':
           description: Warehouse activated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deactivate:
     post:
       tags:
@@ -1304,6 +1478,12 @@ paths:
       responses:
         '200':
           description: Warehouse deactivated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/delete-profile:
     post:
       tags:
@@ -1326,6 +1506,12 @@ paths:
       responses:
         '200':
           description: Deletion Profile updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deleted-tabulars:
     get:
       tags:
@@ -1370,6 +1556,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListDeletedTabularsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
     post:
       tags:
@@ -1392,6 +1584,12 @@ paths:
       responses:
         '204':
           description: Tabular undropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -1414,6 +1612,12 @@ paths:
       responses:
         '200':
           description: Warehouse renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/storage:
     post:
       tags:
@@ -1436,6 +1640,12 @@ paths:
       responses:
         '200':
           description: Storage profile updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/warehouse/{warehouse_id}/storage-credential:
     post:
       tags:
@@ -1459,6 +1669,12 @@ paths:
       responses:
         '200':
           description: Storage credential updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /management/v1/whoami:
     get:
       tags:
@@ -1472,6 +1688,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   schemas:
     AdlsProfile:
@@ -1507,6 +1729,26 @@ components:
           description: 'The validity of the sas token in seconds. Default: 3600.'
           nullable: true
           minimum: 0
+    ApiErrorModel:
+      type: object
+      required:
+      - message
+      - type
+      - code
+      - stack
+      properties:
+        code:
+          type: integer
+          format: int32
+          minimum: 0
+        message:
+          type: string
+        stack:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
     AuthZBackend:
       type: string
       enum:
@@ -1720,6 +1962,13 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ApiErrorModel'
     GcsCredential:
       oneOf:
       - type: object

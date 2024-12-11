@@ -26,7 +26,7 @@ pub mod v1 {
     use axum::routing::{get, post};
     use bootstrap::{AuthZBackend, BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
-    use iceberg_ext::catalog::rest::ErrorModel;
+    use iceberg_ext::catalog::rest::{ApiErrorModel, ErrorModel, ErrorResponse};
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
@@ -108,6 +108,7 @@ pub mod v1 {
         ),
         components(schemas(
             AuthZBackend,
+            ApiErrorModel,
             AzCredential,
             AdlsProfile,
             BootstrapRequest,
@@ -126,6 +127,7 @@ pub mod v1 {
             GcsServiceKey,
             GetProjectResponse,
             GetWarehouseResponse,
+            ErrorResponse,
             ListDeletedTabularsResponse,
             ListProjectsResponse,
             ListRolesResponse,
@@ -196,6 +198,8 @@ pub mod v1 {
         path = "/management/v1/info",
         responses(
             (status = 200, description = "Server info", body = ServerInfo),
+            (status = "4XX", body = ErrorResponse),
+            (status = 500, description = "Unauthorized", body = ErrorResponse)
         )
     )]
     async fn get_server_info<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -217,6 +221,8 @@ pub mod v1 {
         request_body = BootstrapRequest,
         responses(
             (status = 204, description = "Server bootstrapped successfully"),
+            (status = "4XX", body = ErrorResponse),
+            (status = 500, description = "InternalError", body = ErrorResponse)
         )
     )]
     async fn bootstrap<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -239,6 +245,7 @@ pub mod v1 {
         responses(
             (status = 200, description = "User updated", body = User),
             (status = 201, description = "User created", body = User),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn create_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -262,6 +269,7 @@ pub mod v1 {
         request_body = SearchUserRequest,
         responses(
             (status = 200, description = "List of users", body = SearchUserResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn search_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -280,6 +288,7 @@ pub mod v1 {
         params(("id" = Uuid,)),
         responses(
             (status = 200, description = "User details", body = User),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn get_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -299,6 +308,7 @@ pub mod v1 {
         path = "/management/v1/whoami",
         responses(
             (status = 200, description = "User details", body = User),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn whoami<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -332,6 +342,7 @@ pub mod v1 {
         request_body = UpdateUserRequest,
         responses(
             (status = 200, description = "User details updated successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn update_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -351,6 +362,7 @@ pub mod v1 {
         params(ListUsersQuery),
         responses(
             (status = 200, description = "List of users", body = ListUsersResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn list_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -372,6 +384,7 @@ pub mod v1 {
         params(("id" = Uuid,)),
         responses(
             (status = 204, description = "User deleted successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn delete_user<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -392,6 +405,7 @@ pub mod v1 {
         request_body = CreateRoleRequest,
         responses(
             (status = 201, description = "Role successfully created", body = Role),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn create_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -413,6 +427,7 @@ pub mod v1 {
         request_body = SearchRoleRequest,
         responses(
             (status = 200, description = "List of users", body = SearchRoleResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn search_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -431,6 +446,7 @@ pub mod v1 {
         params(ListRolesQuery),
         responses(
             (status = 200, description = "List of roles", body = ListRolesResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn list_roles<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -451,6 +467,7 @@ pub mod v1 {
         params(("id" = Uuid,)),
         responses(
             (status = 204, description = "Role deleted successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn delete_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -471,6 +488,7 @@ pub mod v1 {
         params(("id" = Uuid,)),
         responses(
             (status = 200, description = "Role details", body = Role),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn get_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -492,6 +510,7 @@ pub mod v1 {
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = Role),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn update_role<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -517,6 +536,7 @@ pub mod v1 {
         request_body = CreateWarehouseRequest,
         responses(
             (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn create_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -533,7 +553,8 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/project-list",
         responses(
-            (status = 200, description = "List of projects", body = ListProjectsResponse)
+            (status = 200, description = "List of projects", body = ListProjectsResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn list_projects<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -549,7 +570,8 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/project",
         responses(
-            (status = 201, description = "Project created successfully", body = CreateProjectResponse)
+            (status = 201, description = "Project created successfully", body = CreateProjectResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn create_project<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -566,7 +588,8 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/default-project",
         responses(
-            (status = 200, description = "Project details", body = GetProjectResponse)
+            (status = 200, description = "Project details", body = GetProjectResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn get_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -583,7 +606,8 @@ pub mod v1 {
         path = "/management/v1/project/{project_id}",
         params(("project_id" = Uuid,)),
         responses(
-            (status = 200, description = "Project details", body = GetProjectResponse)
+            (status = 200, description = "Project details", body = GetProjectResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn get_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -600,7 +624,8 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/default-project",
         responses(
-            (status = 204, description = "Project deleted successfully")
+            (status = 204, description = "Project deleted successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn delete_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -619,7 +644,8 @@ pub mod v1 {
         path = "/management/v1/project/{project_id}",
         params(("project_id" = Uuid,)),
         responses(
-            (status = 204, description = "Project deleted successfully")
+            (status = 204, description = "Project deleted successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn delete_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -638,7 +664,8 @@ pub mod v1 {
         tag = "project",
         path = "/management/v1/default-project/rename",
         responses(
-            (status = 200, description = "Project renamed successfully")
+            (status = 200, description = "Project renamed successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn rename_default_project<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -656,7 +683,8 @@ pub mod v1 {
         path = "/management/v1/project/{project_id}/rename",
         params(("project_id" = Uuid,)),
         responses(
-            (status = 200, description = "Project renamed successfully")
+            (status = 200, description = "Project renamed successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn rename_project_by_id<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -678,7 +706,8 @@ pub mod v1 {
         path = "/management/v1/warehouse",
         params(ListWarehousesRequest),
         responses(
-            (status = 200, description = "List of warehouses", body = ListWarehousesResponse)
+            (status = 200, description = "List of warehouses", body = ListWarehousesResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn list_warehouses<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -695,7 +724,8 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}",
         responses(
-            (status = 200, description = "Warehouse details", body = GetWarehouseResponse)
+            (status = 200, description = "Warehouse details", body = GetWarehouseResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn get_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -712,7 +742,8 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}",
         responses(
-            (status = 204, description = "Warehouse deleted successfully")
+            (status = 204, description = "Warehouse deleted successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn delete_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -732,7 +763,8 @@ pub mod v1 {
         path = "/management/v1/warehouse/{warehouse_id}/rename",
         request_body = RenameWarehouseRequest,
         responses(
-            (status = 200, description = "Warehouse renamed successfully")
+            (status = 200, description = "Warehouse renamed successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn rename_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -752,7 +784,8 @@ pub mod v1 {
             path = "/management/v1/warehouse/{warehouse_id}/delete-profile",
             request_body = UpdateWarehouseDeleteProfileRequest,
             responses(
-                (status = 200, description = "Deletion Profile updated successfully")
+                (status = 200, description = "Deletion Profile updated successfully"),
+            (status = "4XX", body = ErrorResponse),
             )
         )]
     async fn update_warehouse_delete_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -776,7 +809,8 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deactivate",
         responses(
-            (status = 200, description = "Warehouse deactivated successfully")
+            (status = 200, description = "Warehouse deactivated successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn deactivate_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -793,7 +827,8 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/activate",
         responses(
-            (status = 200, description = "Warehouse activated successfully")
+            (status = 200, description = "Warehouse activated successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn activate_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -811,7 +846,8 @@ pub mod v1 {
         path = "/management/v1/warehouse/{warehouse_id}/storage",
         request_body = UpdateWarehouseStorageRequest,
         responses(
-            (status = 200, description = "Storage profile updated successfully")
+            (status = 200, description = "Storage profile updated successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn update_storage_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -832,7 +868,8 @@ pub mod v1 {
         path = "/management/v1/warehouse/{warehouse_id}/storage-credential",
         request_body = UpdateWarehouseCredentialRequest,
         responses(
-            (status = 200, description = "Storage credential updated successfully")
+            (status = 200, description = "Storage credential updated successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn update_storage_credential<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -859,7 +896,8 @@ pub mod v1 {
         path = "/management/v1/warehouse/{warehouse_id}/deleted-tabulars",
         params(ListDeletedTabularsQuery),
         responses(
-            (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse)
+            (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn list_deleted_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -883,7 +921,8 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop",
         responses(
-            (status = 204, description = "Tabular undropped successfully")
+            (status = 204, description = "Tabular undropped successfully"),
+            (status = "4XX", body = ErrorResponse),
         )
     )]
     async fn undrop_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
