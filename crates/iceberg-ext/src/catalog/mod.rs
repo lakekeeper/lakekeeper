@@ -22,7 +22,7 @@ pub mod rest {
     mod error;
     #[cfg(feature = "axum")]
     pub(crate) use error::impl_into_response;
-    pub use error::{ApiErrorModel, Error, ErrorModel, ErrorResponse, IcebergErrorResponse};
+    pub use error::{Error, ErrorModel, IcebergErrorResponse};
 
     mod table;
     pub use table::{

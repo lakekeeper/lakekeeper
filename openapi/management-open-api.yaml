@@ -42,13 +42,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
         '500':
           description: InternalError
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/default-project:
     get:
       tags:
@@ -67,7 +67,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
       - project
@@ -81,7 +81,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/default-project/rename:
     post:
       tags:
@@ -103,7 +103,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/info:
     get:
       tags:
@@ -122,13 +122,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
         '500':
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -864,7 +864,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project-list:
     get:
       tags:
@@ -883,7 +883,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/{project_id}:
     get:
       tags:
@@ -909,7 +909,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
       - project
@@ -930,7 +930,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/{project_id}/rename:
     post:
       tags:
@@ -959,7 +959,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role:
     get:
       tags:
@@ -1012,7 +1012,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
       - role
@@ -1036,7 +1036,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role/{id}:
     get:
       tags:
@@ -1062,7 +1062,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
       - role
@@ -1093,7 +1093,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
       - role
@@ -1115,7 +1115,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/search/role:
     post:
       tags:
@@ -1140,7 +1140,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/search/user:
     post:
       tags:
@@ -1165,7 +1165,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/user:
     get:
       tags:
@@ -1208,7 +1208,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
       - user
@@ -1241,7 +1241,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/user/{id}:
     get:
       tags:
@@ -1267,7 +1267,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     put:
       tags:
       - user
@@ -1295,7 +1295,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
       - user
@@ -1319,7 +1319,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse:
     get:
       tags:
@@ -1364,7 +1364,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
       - warehouse
@@ -1392,7 +1392,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -1418,7 +1418,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
       - warehouse
@@ -1439,7 +1439,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/activate:
     post:
       tags:
@@ -1461,7 +1461,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deactivate:
     post:
       tags:
@@ -1483,7 +1483,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/delete-profile:
     post:
       tags:
@@ -1511,7 +1511,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deleted-tabulars:
     get:
       tags:
@@ -1561,7 +1561,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
     post:
       tags:
@@ -1589,7 +1589,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -1617,7 +1617,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/storage:
     post:
       tags:
@@ -1645,7 +1645,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/storage-credential:
     post:
       tags:
@@ -1674,7 +1674,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/whoami:
     get:
       tags:
@@ -1693,7 +1693,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/IcebergErrorResponse'
 components:
   schemas:
     AdlsProfile:
@@ -1729,26 +1729,6 @@ components:
           description: 'The validity of the sas token in seconds. Default: 3600.'
           nullable: true
           minimum: 0
-    ApiErrorModel:
-      type: object
-      required:
-      - message
-      - type
-      - code
-      - stack
-      properties:
-        code:
-          type: integer
-          format: int32
-          minimum: 0
-        message:
-          type: string
-        stack:
-          type: array
-          items:
-            type: string
-        type:
-          type: string
     AuthZBackend:
       type: string
       enum:
@@ -1962,13 +1942,29 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
-    ErrorResponse:
+    ErrorModel:
       type: object
+      description: JSON error payload returned in a response with further details on the error
       required:
-      - error
+      - message
+      - type
+      - code
       properties:
-        error:
-          $ref: '#/components/schemas/ApiErrorModel'
+        code:
+          type: integer
+          format: int32
+          description: HTTP response code
+          minimum: 0
+        message:
+          type: string
+          description: Human-readable error message
+        stack:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+          description: Internal type definition of the error
     GcsCredential:
       oneOf:
       - type: object
@@ -2247,6 +2243,14 @@ components:
           $ref: '#/components/schemas/WarehouseStatus'
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
+    IcebergErrorResponse:
+      type: object
+      description: JSON wrapper for all error responses (non-2xx)
+      required:
+      - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorModel'
     ListDeletedTabularsResponse:
       type: object
       required:

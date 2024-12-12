@@ -20,7 +20,6 @@ macro_rules! impl_into_response {
 #[cfg(feature = "axum")]
 pub(crate) use impl_into_response;
 use typed_builder::TypedBuilder;
-use utoipa::ToSchema;
 
 impl From<IcebergErrorResponse> for iceberg::Error {
     fn from(resp: IcebergErrorResponse) -> iceberg::Error {
@@ -63,7 +62,7 @@ pub struct IcebergErrorResponse {
 
 /// JSON error payload returned in a response with further details on the error
 
-#[derive(Default, Debug, TypedBuilder, Serialize, Deserialize)]
+#[derive(Default, Debug, TypedBuilder, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ErrorModel {
     /// Human-readable error message
     #[builder(setter(into))]
@@ -235,30 +234,6 @@ impl ErrorModel {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ApiErrorModel {
-    pub message: String,
-    pub r#type: String,
-    pub code: u16,
-    pub stack: Vec<String>,
-}
-
-impl From<ErrorModel> for ApiErrorModel {
-    fn from(value: ErrorModel) -> Self {
-        ApiErrorModel {
-            message: value.message,
-            r#type: value.r#type,
-            code: value.code,
-            stack: value.stack,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ErrorResponse {
-    pub error: ApiErrorModel,
-}
-
 #[cfg(feature = "axum")]
 impl axum::response::IntoResponse for IcebergErrorResponse {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
@@ -274,11 +249,12 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
         let error_id = uuid::Uuid::now_v7();
         tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
 
-        let mut response = axum::Json(ErrorResponse {
-            error: ApiErrorModel {
+        let mut response = axum::Json(IcebergErrorResponse {
+            error: ErrorModel {
                 message,
                 r#type,
                 code,
+                source: None,
                 stack: vec![error_id.to_string()],
             },
         })
