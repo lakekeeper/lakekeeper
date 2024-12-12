@@ -1,13 +1,5 @@
 --- authz/openfga/v1/schema.fga	2024-12-09 12:10:28
 +++ authz/openfga/v2/schema.fga	2024-12-09 11:13:20
-@@ -188,6 +188,7 @@
-     define can_create_namespace: create
-     define can_delete: modify
-     define can_update_properties: modify
-+    define can_undrop_all: modify
-     define can_get_metadata: describe or can_get_metadata from child
-     define can_list_tables: can_get_metadata
-     define can_list_views: can_get_metadata
 @@ -221,6 +222,7 @@
  
      # ------------------ Actions ------------------

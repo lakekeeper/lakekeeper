@@ -403,7 +403,6 @@ tests:
           can_create_view: false
           can_create_namespace: false
           can_delete: false
-          can_undrop_all: false
           can_update_properties: false
           can_get_metadata: true
           can_list_tables: true
@@ -653,7 +652,6 @@ tests:
         assertions:
           can_create_table: false
           can_create_view: false
-          can_undrop_all: false
           can_create_namespace: false
           can_delete: false
           can_update_properties: false
@@ -747,7 +745,6 @@ tests:
           can_create_view: false
           can_create_namespace: false
           can_delete: false
-          can_undrop_all: false
           can_update_properties: false
           can_get_metadata: false
           can_list_tables: false
@@ -765,7 +762,6 @@ tests:
         object: namespace:namespace_1_1
         assertions:
           can_create_table: false
-          can_undrop_all: false
           can_create_view: false
           can_create_namespace: false
           can_delete: false
@@ -828,7 +824,6 @@ tests:
         assertions:
           can_create_table: true
           can_create_view: true
-          can_undrop_all: true
           can_create_namespace: true
           can_delete: true
           can_update_properties: true
@@ -1160,7 +1155,6 @@ tests:
           can_create_view: true
           can_create_namespace: true
           can_delete: true
-          can_undrop_all: true
           can_update_properties: true
           can_get_metadata: true
           can_list_tables: true
