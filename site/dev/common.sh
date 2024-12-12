@@ -120,7 +120,7 @@ get_latest_version () {
   echo "${latest_version}"
 }
 
-# Creates a 'latest' version of the documentation based on a specified ICEBERG_VERSION.
+# Creates a 'latest' version of the documentation based on a specified LAKEKEEPER_VERSION.
 # Arguments:
 #   $1: LAKEKEEPER_VERSION - The version number of the documentation to be treated as the latest.
 create_latest () {
@@ -176,9 +176,9 @@ clean () {
 
   # Remove temp directories and related Git worktrees
   rm -rf docs/docs/latest &> /dev/null
-  git worktree remove docs/docs &> /dev/null
-
   rm -rf docs/docs/nightly &> /dev/null
+
+  git worktree remove docs/docs &> /dev/null
 
   # Remove any remaining artifacts
   rm -rf site/

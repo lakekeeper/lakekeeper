@@ -94,12 +94,12 @@ jobs:
       - name: Regenerate management openapi
         run: just update-management-openapi
       - name: Fail on diff
-        run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock openapi/
+        run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - name: Build TS Client
-        run: npx @hey-api/openapi-ts -i openapi/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
+        run: npx @hey-api/openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 
   test:
     runs-on: ubuntu-24.04
