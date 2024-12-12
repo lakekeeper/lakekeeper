@@ -1485,7 +1485,6 @@ where
             )
             .into());
         }
-        validate_lowercase_property(prop)?;
     }
 
     Ok(())
