@@ -2,6 +2,18 @@
 
 
 
+## [0.5.1](https://github.com/lakekeeper/lakekeeper/compare/v0.5.0...v0.5.1) (2024-12-12)
+
+
+### Features
+
+* Update UI to 0.2.0 ([#661](https://github.com/lakekeeper/lakekeeper/issues/661)) ([fb7e2f5](https://github.com/lakekeeper/lakekeeper/commit/fb7e2f51d122ddf54a405684f5076e63d68d3cf6))
+
+
+### Miscellaneous Chores
+
+* release 0.5.1 ([f8aa87c](https://github.com/lakekeeper/lakekeeper/commit/f8aa87ca8b7a8074389cd43a39007b2652a46494))
+
 ## [0.5.0](https://github.com/lakekeeper/lakekeeper/compare/v0.4.3...v0.5.0) (2024-12-06)
 
 

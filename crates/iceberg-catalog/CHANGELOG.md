@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.1](https://github.com/lakekeeper/lakekeeper/compare/v0.5.0...v0.5.1) (2024-12-12)
+
+
+### Features
+
+* **openapi:** document error models in openapi ([#658](https://github.com/lakekeeper/lakekeeper/issues/658)) ([2a67196](https://github.com/lakekeeper/lakekeeper/commit/2a67196a9f9844db0f846cb2e9016c4d4620b0b5))
+* undrop  ([#517](https://github.com/lakekeeper/lakekeeper/issues/517)) ([658e757](https://github.com/lakekeeper/lakekeeper/commit/658e757663cd35a87ecccb2173e9e87247239c8e))
+
+
+### Bug Fixes
+
+* allow mixed-case properties ([#660](https://github.com/lakekeeper/lakekeeper/issues/660)) ([f435573](https://github.com/lakekeeper/lakekeeper/commit/f4355732583d396822ed7bbb55cc81537153b29e))
+* potential deadlock for views through uncommitted transactions ([#638](https://github.com/lakekeeper/lakekeeper/issues/638)) ([0dda8e3](https://github.com/lakekeeper/lakekeeper/commit/0dda8e3d9bc7cdb1a36c7fc23d57c0e7e7e1389a))
+* potential deadlock in load-table ([#636](https://github.com/lakekeeper/lakekeeper/issues/636)) ([c22b0e0](https://github.com/lakekeeper/lakekeeper/commit/c22b0e00ae76ad3458c91ed860c8410446f52173))
+* remove unused relation from openfga schema ([#659](https://github.com/lakekeeper/lakekeeper/issues/659)) ([764ca5b](https://github.com/lakekeeper/lakekeeper/commit/764ca5b2667de591a4c6bc2ba798c41eb6b5c59e))
+* tokens of humans are wrongly identified as applications if "appid" claim is present ([#647](https://github.com/lakekeeper/lakekeeper/issues/647)) ([bc6b475](https://github.com/lakekeeper/lakekeeper/commit/bc6b475075354a66ae80b771ac7de3287b467841))
+
+
+### Miscellaneous Chores
+
+* release 0.5.1 ([f8aa87c](https://github.com/lakekeeper/lakekeeper/commit/f8aa87ca8b7a8074389cd43a39007b2652a46494))
+
 ## [0.5.0](https://github.com/lakekeeper/lakekeeper/compare/v0.4.3...v0.5.0) (2024-12-06)
 
 

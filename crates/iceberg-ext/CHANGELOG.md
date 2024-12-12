@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1](https://github.com/lakekeeper/lakekeeper/compare/v0.5.0...v0.5.1) (2024-12-12)
+
+
+### Features
+
+* **openapi:** document error models in openapi ([#658](https://github.com/lakekeeper/lakekeeper/issues/658)) ([2a67196](https://github.com/lakekeeper/lakekeeper/commit/2a67196a9f9844db0f846cb2e9016c4d4620b0b5))
+
+
+### Miscellaneous Chores
+
+* release 0.5.1 ([f8aa87c](https://github.com/lakekeeper/lakekeeper/commit/f8aa87ca8b7a8074389cd43a39007b2652a46494))
+
 ## [0.5.0](https://github.com/lakekeeper/lakekeeper/compare/v0.4.3...v0.5.0) (2024-12-06)
 
 
