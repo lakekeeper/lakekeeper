@@ -211,7 +211,7 @@ mod test {
 
     #[test]
     fn test_mixed_case_properties() {
-        let properties = vec!["a".to_string(), "B".to_string()];
+        let properties = ["a".to_string(), "B".to_string()];
         assert!(validate_view_properties(properties.iter()).is_ok());
     }
 }
