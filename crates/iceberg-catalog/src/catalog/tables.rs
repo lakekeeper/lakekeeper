@@ -1444,18 +1444,6 @@ fn validate_table_updates(updates: &Vec<TableUpdate>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_lowercase_property(prop: &str) -> Result<()> {
-    if prop != prop.to_lowercase() {
-        return Err(ErrorModel::builder()
-            .code(StatusCode::BAD_REQUEST.into())
-            .message(format!("The property '{prop}' is not all lowercase."))
-            .r#type("PropertyNotLowercase")
-            .build()
-            .into());
-    }
-    Ok(())
-}
-
 pub(crate) fn get_delete_after_commit_enabled(properties: &HashMap<String, String>) -> bool {
     properties
         .get(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED)
@@ -1616,10 +1604,17 @@ mod test {
     use std::collections::HashMap;
     use uuid::Uuid;
 
+    use crate::catalog::tables::validate_table_properties;
     use crate::catalog::test::impl_pagination_tests;
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use iceberg_ext::configs::Location;
     use std::str::FromStr;
+
+    #[test]
+    fn test_mixed_case_properties() {
+        let properties = vec!["a".to_string(), "B".to_string()];
+        assert!(validate_table_properties(properties.iter()).is_ok());
+    }
 
     #[test]
     fn test_extract_count_from_metadata_location() {

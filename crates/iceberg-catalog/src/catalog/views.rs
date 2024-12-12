@@ -147,6 +147,7 @@ mod test {
 
     use iceberg::NamespaceIdent;
 
+    use crate::catalog::views::validate_view_properties;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use crate::service::task_queue::TaskQueues;
     use sqlx::PgPool;
@@ -206,5 +207,11 @@ mod test {
                 )
             },
         }
+    }
+
+    #[test]
+    fn test_mixed_case_properties() {
+        let properties = vec!["a".to_string(), "B".to_string()];
+        assert!(validate_view_properties(properties.iter()).is_ok());
     }
 }
