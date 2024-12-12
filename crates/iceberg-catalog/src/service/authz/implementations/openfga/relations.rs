@@ -877,7 +877,6 @@ pub(super) enum NamespaceRelation {
     CanGrantManageGrants,
     CanChangeOwnership,
     CanSetManagedAccess,
-    CanUndropAll,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
@@ -1053,7 +1052,6 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::CanListViews => NamespaceRelation::CanListViews,
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
-            CatalogNamespaceAction::CanUndropAll => NamespaceRelation::CanUndropAll,
         }
     }
 }
