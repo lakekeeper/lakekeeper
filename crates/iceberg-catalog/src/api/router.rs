@@ -25,7 +25,7 @@ use tower_http::{
 
 lazy_static::lazy_static! {
     static ref ICEBERG_OPENAPI_SPEC_YAML: serde_json::Value = {
-        let mut yaml_str = include_str!("../../../../openapi/rest-catalog-open-api.yaml").to_string();
+        let mut yaml_str = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
         yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
         serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
     };
