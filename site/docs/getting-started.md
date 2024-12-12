@@ -11,7 +11,7 @@ If you have your own Storage (e.g. S3) available, you can deploy Lakekeeper usin
 
     Our docker compose examples are not designed to be used with compute outside of the docker network (e.g. external Spark).
 
-All docker expose examples come with batteries included (Identity Provider, Storage (S3), Query Engines, Jupyter) but are not accessible (by default) for compute outside of the docker network.
+All docker compose examples come with batteries included (Identity Provider, Storage (S3), Query Engines, Jupyter) but are not accessible (by default) for compute outside of the docker network.
 
 === "🐳 With Authentication & Authorization"
 
