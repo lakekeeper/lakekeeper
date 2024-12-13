@@ -55,7 +55,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2454504", features = [
     "storage-all",
 ] }
-openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "f0c61a5775e87c55d9d9d9268d6d837d621c5a3a" }
+openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "08cb6a4" }
 typed-builder = "^0.20.0"
 strum_macros = "^0.26"
 axum = { version = "^0.7" }
@@ -103,7 +103,7 @@ sqlx = { version = "^0.8.2", default-features = false, features = [
     "chrono",
 ] }
 thiserror = "2.0.0"
-tokio = { version = "1", default-features = false, features = [
+tokio = { version = "1.41", default-features = false, features = [
     "signal",
     "rt-multi-thread",
 ] }
