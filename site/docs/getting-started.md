@@ -138,7 +138,7 @@ configuration = {
     "spark.sql.defaultCatalog": "demo",
     "spark.sql.catalog.demo": "org.apache.iceberg.spark.SparkCatalog",
     "spark.sql.catalog.demo.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
-    "spark.sql.catalog.demo.uri": "http://localhost:8080/catalog/",
+    "spark.sql.catalog.demo.uri": "http://localhost:8181/catalog/",
     "spark.sql.catalog.demo.token": "dummy",
     "spark.sql.catalog.demo.warehouse": "my-warehouse",
 }
