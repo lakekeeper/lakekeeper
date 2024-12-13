@@ -36,7 +36,7 @@ docker compose up
 
 Then open your browser and head to [localhost:8888](localhost:8888) to load the example Jupyter notebooks or head to [localhost:8181](localhost:8181) for the Lakekeeper UI.
 
-For more information on deployment, please check the [Getting Started Guide](docs.lakekeeper.io/getting-started/).
+For more information on deployment, please check the [Getting Started Guide](https://docs.lakekeeper.io/getting-started/).
 
 # Scope and Features
 
