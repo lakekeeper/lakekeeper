@@ -1,0 +1,69 @@
+services:
+  lakekeeper:
+    environment:
+      - LAKEKEEPER__AUTHZ_BACKEND=openfga
+      - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8181:8181"
+    networks:
+      iceberg_net:
+
+  openfga:
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    image: &openfga-image openfga/openfga:v1.6
+    container_name: openfga
+    command: run
+    environment: &openfga-environment
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
+      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=50
+      - OPENFGA_PLAYGROUND_ENABLED=false
+    networks:
+      iceberg_net:
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
+      interval: 5s
+      timeout: 30s
+      retries: 3
+
+  migrate:
+    environment:
+      - LAKEKEEPER__AUTHZ_BACKEND=openfga
+      - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
+    depends_on:
+      db:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  openfga-migrate:
+    image: *openfga-image
+    command: migrate
+    environment: *openfga-environment
+    networks:
+      iceberg_net:
+    depends_on:
+      openfga-db:
+        condition: service_healthy
+
+  openfga-db:
+    image: bitnami/postgresql:16.3.0
+    environment:
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_PASSWORD=postgres
+      - POSTGRESQL_DATABASE=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      iceberg_net:

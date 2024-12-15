@@ -11,21 +11,21 @@ If you have your own Storage (e.g. S3) available, you can deploy Lakekeeper usin
 
     Our docker compose examples are not designed to be used with compute outside of the docker network (e.g. external Spark).
 
-All docker compose examples come with batteries included (Identity Provider, Storage (S3), Query Engines, Jupyter) but are not accessible (by default) for compute outside of the docker network.
+All docker compose examples come with batteries included (Identity Provider, Storage (S3), Query Engines, Jupyter) but are not accessible (by default) for compute outside of the docker network. To use Lakekeeper with external tools outside of the docker network, please check [Option 2: Docker Compose](#option-2-docker-compose)
 
 === "🐳 With Authentication & Authorization"
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd docker-compose/access-control
+    cd examples/access-control
     docker-compose up -d
     ```
 
-=== "🐳 Without Authentication"
+=== "🐳 Unsecured"
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd docker-compose/minimal
+    cd examples/minimal
     docker-compose up -d
     ```
 
@@ -33,8 +33,31 @@ Then open your browser and head to `localhost:8888` to load the example Jupyter 
 
 
 ### Option 2: 🐳 Docker Compose
-For a Docker-Compose deployment that is used with external object storage, potentially an external Database and an external Identity Provider, we recommend to start from the [Example](#option-1-examples) closest to your use-case, and start modifying the compose file according to our [User Guides](./docs/nightly/docs/configuration.md).
+For a Docker-Compose deployment that is used with external object storage, and external Identity Providers, you can use the [`docker-compose` Setup](https://github.com/lakekeeper/lakekeeper/tree/main/docker-compose). Please also check the [Examples](#option-1-examples) and our [User Guides](./docs/nightly/docs/configuration.md) for additional information on customization.
 
+While you can start the "🐳 Unsecured" variant without any external dependencies, you will need at least an external object store (S3, ADLS, GCS) to create a Warehouse.
+
+=== "🐳 Unsecured"
+
+    ```bash
+    git clone https://github.com/lakekeeper/lakekeeper
+    cd docker-compose
+    docker-compose up -d
+    ```
+
+=== "🐳 Authentication & Authorization"
+
+    Please follow the [Authentication Guide](./docs/nightly/docs/authentication.md) to prepare your Identity Provider. Additional environment variables might be required.
+
+    ```bash
+    git clone https://github.com/lakekeeper/lakekeeper
+    cd docker-compose
+    export LAKEKEEPER__OPENID_PROVIDER_URI=... (required)
+    export LAKEKEEPER__OPENID_AUDIENCE=... (recommended)
+    export LAKEKEEPER__UI__OPENID_CLIENT_ID=... (required if UI is used)
+    export LAKEKEEPER__UI__OPENID_SCOPE=... (typically required if UI is used)
+    docker compose -f docker-compose.yaml -f openfga-overlay.yaml up
+    ```
 
 ### Option 3: ☸️ Kubernetes
 We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values. To enable Authentication and Authorization, an external identity provider is required.

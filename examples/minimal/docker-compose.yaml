@@ -52,7 +52,7 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=info
     restart: "no"
-    entrypoint: [ "/home/nonroot/iceberg-catalog", "migrate" ]
+    command: [ "migrate" ]
     depends_on:
       db:
         condition: service_healthy

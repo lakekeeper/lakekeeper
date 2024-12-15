@@ -1,0 +1,60 @@
+services:
+  lakekeeper:
+    image: &lakekeeper-image ${LAKEKEEPER__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: &lakekeeper-pull-policy always
+    environment: &lakekeeper-environment
+      - LAKEKEEPER__BASE_URI=http://localhost:8181
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__AUTHZ_BACKEND=allowall
+      # Externally taken from environment variables if set
+      - LAKEKEEPER__OPENID_PROVIDER_URI
+      - LAKEKEEPER__OPENID_AUDIENCE
+      - LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS
+      - LAKEKEEPER__UI__OPENID_CLIENT_ID
+      - LAKEKEEPER__UI__OPENID_SCOPE
+    command: [ "serve" ]
+    healthcheck:
+      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 3s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8181:8181"
+    networks:
+      iceberg_net:
+
+  migrate:
+    image: *lakekeeper-image
+    pull_policy: *lakekeeper-pull-policy
+    environment: *lakekeeper-environment
+    restart: "no"
+    command: [ "migrate" ]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  db:
+    image: bitnami/postgresql:16.3.0
+    environment:
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_PASSWORD=postgres
+      - POSTGRESQL_DATABASE=postgres
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      iceberg_net:
+
+networks:
+  iceberg_net:
