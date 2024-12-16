@@ -276,6 +276,30 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                 },
             ),
         )
+        // {prefix}/namespaces/{namespace}/tables/{table}/credentials
+        .route(
+            "/:prefix/namespaces/:namespace/tables/:table/credentials",
+            // Load a table from the catalog
+            get(
+                |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 State(api_context): State<ApiContext<S>>,
+                 headers: HeaderMap,
+                 Extension(metadata): Extension<RequestMetadata>| {
+                    I::load_table_credentials(
+                        TableParameters {
+                            prefix: Some(prefix),
+                            table: TableIdent {
+                                namespace: namespace.into(),
+                                name: table,
+                            },
+                        },
+                        parse_data_access(&headers),
+                        api_context,
+                        metadata,
+                    )
+                },
+            ),
+        )
         // /{prefix}/tables/rename
         .route(
             "/:prefix/tables/rename",

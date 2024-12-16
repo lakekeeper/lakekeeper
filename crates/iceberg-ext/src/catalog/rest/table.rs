@@ -94,3 +94,5 @@ impl_into_response!(LoadTableResult);
 impl_into_response!(ListTablesResponse);
 #[cfg(feature = "axum")]
 impl_into_response!(CommitTableResponse);
+#[cfg(feature = "axum")]
+impl_into_response!(LoadCredentialsResponse);

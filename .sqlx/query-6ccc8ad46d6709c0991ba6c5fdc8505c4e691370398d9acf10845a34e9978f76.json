@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.tabular_id, t.typ as \"typ: TabularType\"\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        WHERE n.namespace_name = $1 AND t.name = $2\n        AND n.warehouse_id = $3\n        AND w.status = 'active'\n        AND t.typ = $4\n        AND (t.deleted_at IS NULL OR $5)\n        AND (t.metadata_location IS NOT NULL OR $6)\n        ",
+  "query": "\n        SELECT t.tabular_id, t.typ as \"typ: TabularType\", location\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        WHERE n.namespace_name = $1 AND t.name = $2\n        AND n.warehouse_id = $3\n        AND w.status = 'active'\n        AND t.typ = $4\n        AND (t.deleted_at IS NULL OR $5)\n        AND (t.metadata_location IS NOT NULL OR $6)\n        ",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
             }
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "location",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -46,8 +51,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "7b562fd3ec7259c248ced06bf292ab8305258107da8c0d69768c2c1034058733"
+  "hash": "6ccc8ad46d6709c0991ba6c5fdc8505c4e691370398d9acf10845a34e9978f76"
 }
