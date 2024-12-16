@@ -9,7 +9,7 @@ pub struct CatalogConfig {
     pub overrides: std::collections::HashMap<String, String>,
     /// Properties that should be used as default configuration; applied before client configuration.
     pub defaults: std::collections::HashMap<String, String>,
-    pub endpoints: Vec<&'static str>,
+    pub endpoints: Vec<String>,
 }
 
 #[cfg(feature = "axum")]

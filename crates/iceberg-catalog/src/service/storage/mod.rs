@@ -73,23 +73,23 @@ pub struct TableConfig {
     pub(crate) config: TableProperties,
 }
 
-fn supported_endpoints() -> Vec<&'static str> {
+fn supported_endpoints() -> Vec<String> {
     vec![
-        "GET /v1/{prefix}/namespaces",
-        "POST /v1/{prefix}/namespaces",
-        "GET /v1/{prefix}/namespaces/{namespace}",
-        "DELETE /v1/{prefix}/namespaces/{namespace}",
-        "POST /v1/{prefix}/namespaces/{namespace}/properties",
-        "GET /v1/{prefix}/namespaces/{namespace}/tables",
-        "POST /v1/{prefix}/namespaces/{namespace}/tables",
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-        "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
-        "POST /v1/{prefix}/namespaces/{namespace}/register",
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics",
-        "POST /v1/{prefix}/tables/rename",
-        "POST /v1/{prefix}/transactions/commit",
+        "GET /v1/{prefix}/namespaces".into(),
+        "POST /v1/{prefix}/namespaces".into(),
+        "GET /v1/{prefix}/namespaces/{namespace}".into(),
+        "DELETE /v1/{prefix}/namespaces/{namespace}".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/properties".into(),
+        "GET /v1/{prefix}/namespaces/{namespace}/tables".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/tables".into(),
+        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
+        "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
+        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/register".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics".into(),
+        "POST /v1/{prefix}/tables/rename".into(),
+        "POST /v1/{prefix}/transactions/commit".into(),
     ]
 }
 
