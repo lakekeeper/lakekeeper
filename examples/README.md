@@ -1,13 +1,11 @@
 # How to run Examples
 
 > [!IMPORTANT]  
-> Our examples are not designed to be used with compute outside of the docker network (e.g. external Spark). For production deployments external object storage is required. Please check our [docs](http://docs.lakekeeper.io) for more information
+> Our examples are not designed to be used with compute outside of the docker network (e.g. external Spark). For production deployments external object storage is required. Please check our [docs](http://docs.lakekeeper.io) for more information.
 
 All examples are self-contained and run all services required for the specific scenarios inside of docker compose. To run each scenario, you need to have `docker` installed on your machine. Most docker distributes come with built-in `docker compose` today.
 
 After starting the examples, please wait for a Minute after all images are pulled - especially keycloak takes some time to start and setup.
-
-Currently two szenarios are available:
 
 ## Minimal
 Runs Lakekeeper without Authentication and Authorization (unprotected). The example contains Jupyter (with Spark), Trino and Starrocks as query engines, Minio as storage and Lakekeeper connected to a Postgres database.
