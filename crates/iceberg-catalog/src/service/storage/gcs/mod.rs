@@ -6,7 +6,7 @@ use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
 use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
-use crate::service::storage::{StoragePermissions, TableConfig};
+use crate::service::storage::{supported_endpoints, StoragePermissions, TableConfig};
 
 use super::StorageType;
 use base64::Engine;
@@ -138,6 +138,7 @@ impl GcsProfile {
         CatalogConfig {
             defaults: HashMap::with_capacity(0),
             overrides: HashMap::with_capacity(0),
+            endpoints: supported_endpoints(),
         }
     }
 

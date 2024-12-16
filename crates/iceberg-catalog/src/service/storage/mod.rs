@@ -73,6 +73,26 @@ pub struct TableConfig {
     pub(crate) config: TableProperties,
 }
 
+fn supported_endpoints() -> Vec<&'static str> {
+    vec![
+        "GET /v1/{prefix}/namespaces",
+        "POST /v1/{prefix}/namespaces",
+        "GET /v1/{prefix}/namespaces/{namespace}",
+        "DELETE /v1/{prefix}/namespaces/{namespace}",
+        "POST /v1/{prefix}/namespaces/{namespace}/properties",
+        "GET /v1/{prefix}/namespaces/{namespace}/tables",
+        "POST /v1/{prefix}/namespaces/{namespace}/tables",
+        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+        "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
+        "POST /v1/{prefix}/namespaces/{namespace}/register",
+        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics",
+        "POST /v1/{prefix}/tables/rename",
+        "POST /v1/{prefix}/transactions/commit",
+    ]
+}
+
 impl StorageProfile {
     #[must_use]
     pub fn generate_catalog_config(&self, warehouse_id: WarehouseIdent) -> CatalogConfig {
@@ -84,6 +104,7 @@ impl StorageProfile {
                 CatalogConfig {
                     overrides: HashMap::default(),
                     defaults: HashMap::default(),
+                    endpoints: supported_endpoints(),
                 }
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),

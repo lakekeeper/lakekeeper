@@ -6,7 +6,7 @@ use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
 use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
-use crate::service::storage::{StoragePermissions, TableConfig};
+use crate::service::storage::{supported_endpoints, StoragePermissions, TableConfig};
 use aws_config::{BehaviorVersion, SdkConfig};
 
 use iceberg_ext::configs::table::{client, custom, s3, TableProperties};
@@ -243,6 +243,7 @@ impl S3Profile {
                 configs::table::s3::SignerUri::KEY.to_string(),
                 CONFIG.s3_signer_uri_for_warehouse(warehouse_id).to_string(),
             )]),
+            endpoints: supported_endpoints(),
         }
     }
 
