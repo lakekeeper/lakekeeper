@@ -38,7 +38,7 @@ pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
     table: &TabularIdentBorrowed<'a>,
     list_flags: crate::service::ListFlags,
     transaction: E,
-) -> Result<Option<TabularIdentUuid>>
+) -> Result<Option<(TabularIdentUuid, String)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -47,7 +47,7 @@ where
 
     let rows = sqlx::query!(
         r#"
-        SELECT t.tabular_id, t.typ as "typ: TabularType"
+        SELECT t.tabular_id, t.typ as "typ: TabularType", location
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -69,8 +69,8 @@ where
     .await
     .map(|r| {
         Some(match r.typ {
-            TabularType::Table => TabularIdentUuid::Table(r.tabular_id),
-            TabularType::View => TabularIdentUuid::View(r.tabular_id),
+            TabularType::Table => (TabularIdentUuid::Table(r.tabular_id), r.location),
+            TabularType::View => (TabularIdentUuid::View(r.tabular_id), r.location),
         })
     });
 

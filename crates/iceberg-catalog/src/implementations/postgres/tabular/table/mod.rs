@@ -27,6 +27,7 @@ use iceberg::spec::{
 };
 use iceberg_ext::configs::Location;
 
+use crate::service::TabularDetails;
 use iceberg::TableUpdate;
 use sqlx::types::Json;
 use std::default::Default;
@@ -40,12 +41,12 @@ use uuid::Uuid;
 
 const MAX_PARAMETERS: usize = 30000;
 
-pub(crate) async fn table_ident_to_id<'e, 'c: 'e, E>(
+pub(crate) async fn resolve_table_ident<'e, 'c: 'e, E>(
     warehouse_id: WarehouseIdent,
     table: &TableIdent,
     list_flags: crate::service::ListFlags,
     catalog_state: E,
-) -> Result<Option<TableIdentUuid>>
+) -> Result<Option<TabularDetails>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -56,8 +57,11 @@ where
         catalog_state,
     )
     .await?
-    .map(|id| match id {
-        TabularIdentUuid::Table(tab) => Ok(tab.into()),
+    .map(|(id, location)| match id {
+        TabularIdentUuid::Table(tab) => Ok(TabularDetails {
+            ident: tab.into(),
+            location,
+        }),
         TabularIdentUuid::View(_) => Err(ErrorModel::builder()
             .code(StatusCode::INTERNAL_SERVER_ERROR.into())
             .message("DB returned a view when filtering for tables.".to_string())
@@ -439,6 +443,36 @@ impl TableQueryStruct {
             })?,
         ))
     }
+}
+
+pub(crate) async fn load_storage_profile(
+    warehouse_id: WarehouseIdent,
+    table: TableIdentUuid,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(Option<SecretIdent>, StorageProfile)> {
+    let secret = sqlx::query!(
+        r#"
+        SELECT w.storage_secret_id,
+        w.storage_profile as "storage_profile: Json<StorageProfile>"
+        FROM "table" t
+        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        WHERE w.warehouse_id = $1
+            AND t."table_id" = $2
+            AND w.status = 'active'
+        "#,
+        *warehouse_id,
+        *table
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| e.into_error_model("Error fetching storage secret".to_string()))?;
+
+    Ok((
+        secret.storage_secret_id.map(SecretIdent::from),
+        secret.storage_profile.0,
+    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1187,7 +1221,7 @@ pub(crate) mod tests {
             name: "my_table".to_string(),
         };
 
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &table_ident,
             ListFlags::default(),
@@ -1201,7 +1235,7 @@ pub(crate) mod tests {
         let table = initialize_table(warehouse_id, state.clone(), true, None, None).await;
 
         // Table is staged - no result if include_staged is false
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
             ListFlags::default(),
@@ -1211,7 +1245,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(exists.is_none());
 
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
             ListFlags {
@@ -1222,7 +1256,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists, Some(table.table_id));
+        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1346,7 +1380,7 @@ pub(crate) mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
             ListFlags::default(),
@@ -1356,7 +1390,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(exists.is_none());
 
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &new_table_ident,
             ListFlags::default(),
@@ -1365,7 +1399,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         // Table id should be the same
-        assert_eq!(exists, Some(table.table_id));
+        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1395,7 +1429,7 @@ pub(crate) mod tests {
         .unwrap();
         transaction.commit().await.unwrap();
 
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &table.table_ident,
             ListFlags::default(),
@@ -1405,7 +1439,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(exists.is_none());
 
-        let exists = table_ident_to_id(
+        let exists = resolve_table_ident(
             warehouse_id,
             &new_table_ident,
             ListFlags::default(),
@@ -1413,7 +1447,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists, Some(table.table_id));
+        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
     }
 
     #[sqlx::test]

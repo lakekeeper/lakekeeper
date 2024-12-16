@@ -40,13 +40,13 @@ pub mod v1 {
     pub fn new_v1_full_router<
         #[cfg(feature = "s3-signer")] T: config::Service<S>
             + namespace::Service<S>
-            + tables::Service<S>
+            + tables::TablesService<S>
             + metrics::Service<S>
             + s3_signer::Service<S>
             + views::Service<S>,
         #[cfg(not(feature = "s3-signer"))] T: config::Service<S>
             + namespace::Service<S>
-            + tables::Service<S>
+            + tables::TablesService<S>
             + metrics::Service<S>
             + views::Service<S>,
         S: ThreadSafe,

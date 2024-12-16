@@ -141,7 +141,7 @@ mod custom {
 /// A macro to implement accessors and mutators for property structs
 macro_rules! impl_properties {
     ($name:ident, $prop_type:ident) => {
-        #[derive(Debug, PartialEq, Default)]
+        #[derive(Debug, Clone, PartialEq, Default)]
         pub struct $name {
             props: std::collections::HashMap<String, String>,
         }

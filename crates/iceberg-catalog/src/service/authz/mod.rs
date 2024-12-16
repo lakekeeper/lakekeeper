@@ -1,7 +1,7 @@
 use super::health::HealthExt;
 use super::{
     Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
-    ViewIdentUuid, WarehouseIdent,
+    TabularDetails, ViewIdentUuid, WarehouseIdent,
 };
 use crate::api::iceberg::v1::Result;
 use crate::request_metadata::RequestMetadata;
@@ -128,6 +128,12 @@ pub trait TableUuid {
 impl TableUuid for TableIdentUuid {
     fn table_uuid(&self) -> TableIdentUuid {
         *self
+    }
+}
+
+impl TableUuid for TabularDetails {
+    fn table_uuid(&self) -> TableIdentUuid {
+        self.ident
     }
 }
 

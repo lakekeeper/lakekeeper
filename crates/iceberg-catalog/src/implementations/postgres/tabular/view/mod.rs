@@ -45,7 +45,7 @@ where
         catalog_state,
     )
     .await?
-    .map(|id| match id {
+    .map(|(id, _)| match id {
         TabularIdentUuid::Table(_) => Err(ErrorModel::builder()
             .code(StatusCode::INTERNAL_SERVER_ERROR.into())
             .message("DB returned a table when filtering for views.".to_string())

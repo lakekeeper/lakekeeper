@@ -4,6 +4,16 @@ use crate::spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec};
 #[cfg(feature = "axum")]
 use super::impl_into_response;
 
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StorageCredential {
+    pub prefix: String,
+    pub config: std::collections::HashMap<String, String>,
+}
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LoadCredentialsResponse {
+    pub credentials: Vec<StorageCredential>,
+}
+
 /// Result used when a table is successfully loaded.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -13,6 +23,7 @@ pub struct LoadTableResult {
     #[serde(rename = "metadata")]
     pub metadata: TableMetadata,
     pub config: Option<std::collections::HashMap<String, String>>,
+    pub storage_credentials: Option<Vec<StorageCredential>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

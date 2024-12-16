@@ -636,6 +636,25 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
     ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>;
+
+    async fn load_storage_profile(
+        warehouse_id: WarehouseIdent,
+        tabular_id: TableIdentUuid,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<(Option<SecretIdent>, StorageProfile)>;
+
+    async fn resolve_table_ident(
+        warehouse_id: WarehouseIdent,
+        table: &TableIdent,
+        list_flags: ListFlags,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<TabularDetails>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct TabularDetails {
+    pub ident: TableIdentUuid,
+    pub location: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
