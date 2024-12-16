@@ -179,9 +179,11 @@ impl AdlsProfile {
             key: self.iceberg_sas_property_key(),
             value: sas,
         });
+
         Ok(TableConfig {
+            // Due to backwards compat reasons we still return creds within config too
+            config: creds.clone(),
             creds,
-            config: TableProperties::default(),
         })
     }
 

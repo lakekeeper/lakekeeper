@@ -198,7 +198,8 @@ impl GcsProfile {
         }
 
         Ok(TableConfig {
-            config: TableProperties::default(),
+            // Due to backwards compat reasons we still return creds within config too
+            config: creds.clone(),
             creds,
         })
     }
