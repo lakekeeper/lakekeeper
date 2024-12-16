@@ -23,14 +23,14 @@ use crate::service::storage::{
 };
 use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
 use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
+use crate::service::TabularIdentUuid;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, CreateTableResponse, ListFlags,
-    LoadTableResponse as CatalogLoadTableResult, State, Transaction,
+    LoadTableResponse as CatalogLoadTableResult, State, TabularDetails, Transaction,
 };
 use crate::service::{
     GetNamespaceResponse, TableCommit, TableCreation, TableIdentUuid, WarehouseStatus,
 };
-use crate::service::{TabularDetails, TabularIdentUuid};
 use futures::FutureExt;
 use fxhash::FxHashSet;
 use std::collections::{HashMap, HashSet};
@@ -375,14 +375,15 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
         let catalog = state.v1_state.catalog;
+        let mut t = C::Transaction::begin_read(catalog).await?;
 
-        let (mut t, table_id, storage_permissions) = Self::load_prelude(
+        let (table_id, storage_permissions) = Self::resolve_and_authorize_table_access(
             &request_metadata,
             &table,
             warehouse_id,
             list_flags,
             authorizer,
-            catalog,
+            t.transaction(),
         )
         .await?;
 
@@ -454,19 +455,18 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix)?;
 
-        let list_flags = ListFlags {
-            include_active: true,
-            include_staged: false,
-            include_deleted: false,
-        };
-
-        let (mut t, table_id, storage_permissions) = Self::load_prelude(
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let (table_id, storage_permissions) = Self::resolve_and_authorize_table_access(
             &request_metadata,
             &table,
             warehouse_id,
-            list_flags,
+            ListFlags {
+                include_active: true,
+                include_staged: false,
+                include_deleted: false,
+            },
             state.v1_state.authz,
-            state.v1_state.catalog,
+            t.transaction(),
         )
         .await?;
         let storage_permission = storage_permissions.ok_or(ErrorModel::unauthorized(
@@ -838,18 +838,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
-    async fn load_prelude(
+    async fn resolve_and_authorize_table_access(
         request_metadata: &RequestMetadata,
         table: &TableIdent,
         warehouse_id: WarehouseIdent,
         list_flags: ListFlags,
         authorizer: A,
-        catalog: <C as Catalog>::State,
-    ) -> Result<(
-        <C as Catalog>::Transaction,
-        TabularDetails,
-        Option<StoragePermissions>,
-    )> {
+        transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+    ) -> Result<(TabularDetails, Option<StoragePermissions>)> {
         authorizer
             .require_warehouse_action(
                 request_metadata,
@@ -858,11 +854,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
             )
             .await?;
 
-        let mut t = C::Transaction::begin_read(catalog).await?;
-
         // We can't fail before AuthZ.
-        let table_id =
-            C::resolve_table_ident(warehouse_id, table, list_flags, t.transaction()).await;
+        let table_id = C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
 
         let table_id = authorizer
             .require_table_action(
@@ -896,7 +889,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         } else {
             None
         };
-        Ok((t, table_id, storage_permissions))
+        Ok((table_id, storage_permissions))
     }
 }
 

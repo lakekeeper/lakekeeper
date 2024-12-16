@@ -16,8 +16,8 @@ pub use catalog::{
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
     ListNamespacesResponse, LoadTableResponse, NamespaceIdent, Result, StartupValidationData,
-    TableCommit, TableCreation, TableIdent, TabularDetails, Transaction,
-    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
+    TableCommit, TableCreation, TableIdent, Transaction, UpdateNamespacePropertiesRequest,
+    UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
 };
 use std::ops::Deref;
 pub(crate) use tabular_idents::TabularIdentBorrowed;
@@ -449,4 +449,10 @@ impl TryFrom<Prefix> for WarehouseIdent {
         })?;
         Ok(WarehouseIdent(prefix))
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct TabularDetails {
+    pub ident: TableIdentUuid,
+    pub location: String,
 }

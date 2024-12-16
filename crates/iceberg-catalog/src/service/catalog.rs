@@ -1,7 +1,7 @@
 use super::authz::TableUuid;
 use super::{
     storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid,
-    ViewIdentUuid, WarehouseIdent, WarehouseStatus,
+    TabularDetails, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -649,12 +649,6 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TabularDetails>>;
-}
-
-#[derive(Debug, Clone)]
-pub struct TabularDetails {
-    pub ident: TableIdentUuid,
-    pub location: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
