@@ -494,12 +494,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // TODO: we may want to split the table config fn into a creds and a config part so that we
         //       can put only creds into this config and keep the rest in the storage_config
-        vec![StorageCredential {
-            prefix: table_id.location,
-            config: storage_config.into(),
-        }];
-
-        todo!()
+        Ok(LoadCredentialsResponse {
+            credentials: vec![StorageCredential {
+                prefix: table_id.location,
+                config: storage_config.into(),
+            }],
+        })
     }
 
     /// Commit updates to a table
