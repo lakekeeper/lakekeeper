@@ -426,8 +426,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         } else {
             None
         };
-        // TODO: we may want to split the table config fn into a creds and a config part so that we
-        //       can put only creds into this config and keep the rest in the storage_config
+
         let storage_credentials = storage_config.as_ref().map(|c| {
             vec![StorageCredential {
                 prefix: table_location.to_string(),
@@ -492,8 +491,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-        // TODO: we may want to split the table config fn into a creds and a config part so that we
-        //       can put only creds into this config and keep the rest in the storage_config
         Ok(LoadCredentialsResponse {
             storage_credentials: vec![StorageCredential {
                 prefix: table_id.location,
