@@ -47,8 +47,6 @@ fn get_config() -> DynAppConfig {
 
     // Remove trailing slash from base_uri
     let base_uri_path = config.base_uri.path().to_string();
-    println!("base_uri_path: {}", base_uri_path);
-    println!("base uri: {:?}", config.base_uri);
     if base_uri_path.ends_with('/') {
         config
             .base_uri
