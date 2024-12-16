@@ -23,7 +23,8 @@ mod test {
     fn test_catalog_serialization() {
         let j = serde_json::json!({
             "overrides": {"warehouse": "s3://bucket/warehouse/"},
-            "defaults": {"clients": "4"}
+            "defaults": {"clients": "4"},
+            "endpoints": vec![]
         });
 
         let c: CatalogConfig = serde_json::from_value(j.clone()).unwrap();
