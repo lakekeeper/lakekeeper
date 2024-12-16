@@ -83,6 +83,15 @@ pub(crate) async fn create_table(
     )
     .await?;
 
+    common::insert_partition_statistics(
+        tabular_id,
+        table_metadata.partition_statistics_iter(),
+        transaction,
+    )
+    .await?;
+    common::insert_table_statistics(tabular_id, table_metadata.statistics_iter(), transaction)
+        .await?;
+
     Ok(CreateTableResponse {
         table_metadata,
         staged_table_id,

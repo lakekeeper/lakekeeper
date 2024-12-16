@@ -2988,7 +2988,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.3.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=2454504#24545045be8ea82fc834bdfa92d06d640b70c7c6"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=cdd17def74cff306f20b79dc2249d3ca14f818f6#cdd17def74cff306f20b79dc2249d3ca14f818f6"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3011,6 +3011,7 @@ dependencies = [
  "itertools",
  "moka",
  "murmur3",
+ "num-bigint",
  "once_cell",
  "opendal",
  "ordered-float 4.2.2",
@@ -3030,6 +3031,7 @@ dependencies = [
  "typed-builder 0.20.0",
  "url",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

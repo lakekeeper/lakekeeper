@@ -22,8 +22,8 @@ use crate::implementations::postgres::tabular::{
     TabularIdentOwned, TabularIdentUuid, TabularType,
 };
 use iceberg::spec::{
-    BoundPartitionSpec, FormatVersion, Parts, Schema, SchemaId, SchemalessPartitionSpec,
-    SnapshotRetention, SortOrder, Summary, UnboundPartitionField, MAIN_BRANCH,
+    BlobMetadata, FormatVersion, PartitionSpec, Parts, Schema, SchemaId, SnapshotRetention,
+    SortOrder, Summary, MAIN_BRANCH,
 };
 use iceberg_ext::configs::Location;
 
@@ -255,7 +255,7 @@ struct TableQueryStruct {
     snapshot_sequence_number: Option<Vec<i64>>,
     snapshot_manifest_list: Option<Vec<String>>,
     snapshot_summary: Option<Vec<Json<Summary>>>,
-    snapshot_schema_id: Option<Vec<i32>>,
+    snapshot_schema_id: Option<Vec<Option<i32>>>,
     snapshot_timestamp_ms: Option<Vec<i64>>,
     metadata_location: Option<String>,
     table_location: String,
@@ -265,7 +265,7 @@ struct TableQueryStruct {
     table_properties_values: Option<Vec<String>>,
     default_partition_spec_id: Option<i32>,
     partition_spec_ids: Option<Vec<i32>>,
-    partition_specs: Option<Vec<Json<SchemalessPartitionSpec>>>,
+    partition_specs: Option<Vec<Json<PartitionSpec>>>,
     current_schema: Option<i32>,
     schemas: Option<Vec<Json<Schema>>>,
     schema_ids: Option<Vec<i32>>,
@@ -274,6 +274,15 @@ struct TableQueryStruct {
     last_column_id: Option<i32>,
     last_updated_ms: Option<i64>,
     last_partition_id: Option<i32>,
+    partition_stats_snapshot_ids: Option<Vec<i64>>,
+    partition_stats_statistics_paths: Option<Vec<String>>,
+    partition_stats_file_size_in_bytes: Option<Vec<i64>>,
+    table_stats_snapshot_ids: Option<Vec<i64>>,
+    table_stats_statistics_paths: Option<Vec<String>>,
+    table_stats_file_size_in_bytes: Option<Vec<i64>>,
+    table_stats_file_footer_size_in_bytes: Option<Vec<i64>>,
+    table_stats_key_metadata: Option<Vec<Option<String>>>,
+    table_stats_blob_metadata: Option<Vec<Json<Vec<BlobMetadata>>>>,
 }
 
 impl TableQueryStruct {
@@ -301,33 +310,14 @@ impl TableQueryStruct {
             )
             .collect::<HashMap<_, _>>();
 
-        let default_spec_schema = schemas
-            .get(&expect!(self.current_schema))
-            .ok_or(ErrorModel::internal(
-                "Default partition schema not found",
-                "InternalDefaultPartitionSchemaNotFound",
-                None,
-            ))?
-            .clone();
         let default_spec = partition_specs
             .get(&expect!(self.default_partition_spec_id))
             .ok_or(ErrorModel::internal(
                 "Default partition spec not found",
                 "InternalDefaultPartitionSpecNotFound",
                 None,
-            ))?;
-        let fields = default_spec.fields();
-        let default = BoundPartitionSpec::builder(default_spec_schema.clone())
-            .with_spec_id(default_spec.spec_id())
-            .add_unbound_fields(fields.iter().map(|f| UnboundPartitionField {
-                source_id: f.source_id,
-                field_id: Some(f.field_id),
-                name: f.name.clone(),
-                transform: f.transform,
-            }))
-            .unwrap();
-
-        let default = default.build().unwrap();
+            ))?
+            .clone();
 
         let properties = self
             .table_properties_keys
@@ -349,17 +339,20 @@ impl TableQueryStruct {
             |(snap_id, schema_id, summary, manifest, parent_snap, seq, timestamp_ms)| {
                 (
                     snap_id,
-                    Arc::new(
-                        iceberg::spec::Snapshot::builder()
+                    Arc::new({
+                        let builder = iceberg::spec::Snapshot::builder()
                             .with_manifest_list(manifest)
                             .with_parent_snapshot_id(parent_snap)
-                            .with_schema_id(schema_id)
                             .with_sequence_number(seq)
                             .with_snapshot_id(snap_id)
                             .with_summary(summary.0)
-                            .with_timestamp_ms(timestamp_ms)
-                            .build(),
-                    ),
+                            .with_timestamp_ms(timestamp_ms);
+                        if let Some(schema_id) = schema_id {
+                            builder.with_schema_id(schema_id).build()
+                        } else {
+                            builder.build()
+                        }
+                    }),
                 )
             },
         )
@@ -408,6 +401,56 @@ impl TableQueryStruct {
 
         let current_snapshot_id = refs.get(MAIN_BRANCH).map(|s| s.snapshot_id);
 
+        let partition_statistics = itertools::multizip((
+            self.partition_stats_snapshot_ids.unwrap_or_default(),
+            self.partition_stats_statistics_paths.unwrap_or_default(),
+            self.partition_stats_file_size_in_bytes.unwrap_or_default(),
+        ))
+        .map(|(snapshot_id, statistics_path, file_size_in_bytes)| {
+            (
+                snapshot_id,
+                iceberg::spec::PartitionStatisticsFile {
+                    snapshot_id,
+                    statistics_path,
+                    file_size_in_bytes,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+        let statistics = itertools::multizip((
+            self.table_stats_snapshot_ids.unwrap_or_default(),
+            self.table_stats_statistics_paths.unwrap_or_default(),
+            self.table_stats_file_size_in_bytes.unwrap_or_default(),
+            self.table_stats_file_footer_size_in_bytes
+                .unwrap_or_default(),
+            self.table_stats_key_metadata.unwrap_or_default(),
+            self.table_stats_blob_metadata.unwrap_or_default(),
+        ))
+        .map(
+            |(
+                snapshot_id,
+                statistics_path,
+                file_size_in_bytes,
+                file_footer_size_in_bytes,
+                key_metadata,
+                blob_metadata,
+            )| {
+                (
+                    snapshot_id,
+                    iceberg::spec::StatisticsFile {
+                        snapshot_id,
+                        statistics_path,
+                        file_size_in_bytes,
+                        file_footer_size_in_bytes,
+                        key_metadata,
+                        blob_metadata: blob_metadata.deref().clone(),
+                    },
+                )
+            },
+        )
+        .collect::<HashMap<_, _>>();
+
         Ok(Some(
             TableMetadata::try_from_parts(Parts {
                 format_version: FormatVersion::from(expect!(self.table_format_version)),
@@ -419,7 +462,7 @@ impl TableQueryStruct {
                 schemas,
                 current_schema_id: expect!(self.current_schema),
                 partition_specs,
-                default_spec: Arc::new(default),
+                default_spec,
                 last_partition_id: expect!(self.last_partition_id),
                 properties,
                 current_snapshot_id,
@@ -429,6 +472,8 @@ impl TableQueryStruct {
                 sort_orders,
                 default_sort_order_id: expect!(self.default_sort_order_id),
                 refs,
+                partition_statistics,
+                statistics,
             })
             .map_err(|e| {
                 ErrorModel::internal(
@@ -477,10 +522,10 @@ pub(crate) async fn load_tables(
             tsnap.manifest_lists as "snapshot_manifest_list: Vec<String>",
             tsnap.timestamp as "snapshot_timestamp_ms",
             tsnap.summaries as "snapshot_summary: Vec<Json<Summary>>",
-            tsnap.schema_ids as "snapshot_schema_id",
+            tsnap.schema_ids as "snapshot_schema_id: Vec<Option<i32>>",
             tdsort.sort_order_id as "default_sort_order_id?",
             tps.partition_spec_id as "partition_spec_ids",
-            tps.partition_spec as "partition_specs: Vec<Json<SchemalessPartitionSpec>>",
+            tps.partition_spec as "partition_specs: Vec<Json<PartitionSpec>>",
             tp.keys as "table_properties_keys",
             tp.values as "table_properties_values",
             tsl.snapshot_ids as "snapshot_log_ids",
@@ -491,7 +536,16 @@ pub(crate) async fn load_tables(
             tso.sort_orders as "sort_orders: Vec<Json<SortOrder>>",
             tr.table_ref_names as "table_ref_names",
             tr.snapshot_ids as "table_ref_snapshot_ids",
-            tr.retentions as "table_ref_retention: Vec<Json<SnapshotRetention>>"
+            tr.retentions as "table_ref_retention: Vec<Json<SnapshotRetention>>",
+            pstat.snapshot_ids as "partition_stats_snapshot_ids",
+            pstat.statistics_paths as "partition_stats_statistics_paths",
+            pstat.file_size_in_bytes_s as "partition_stats_file_size_in_bytes",
+            tstat.snapshot_ids as "table_stats_snapshot_ids",
+            tstat.statistics_paths as "table_stats_statistics_paths",
+            tstat.file_size_in_bytes_s as "table_stats_file_size_in_bytes",
+            tstat.file_footer_size_in_bytes_s as "table_stats_file_footer_size_in_bytes",
+            tstat.key_metadatas as "table_stats_key_metadata: Vec<Option<String>>",
+            tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
         FROM "table" t
         INNER JOIN tabular ti ON t.table_id = ti.tabular_id
         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
@@ -545,6 +599,21 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(retention) as retentions
                    FROM table_refs
                    GROUP BY table_id) tr ON tr.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(statistics_path) as statistics_paths,
+                          ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s
+                    FROM partition_statistics
+                    GROUP BY table_id) pstat ON pstat.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(statistics_path) as statistics_paths,
+                          ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s,
+                          ARRAY_AGG(file_footer_size_in_bytes) as file_footer_size_in_bytes_s,
+                          ARRAY_AGG(key_metadata) as key_metadatas,
+                          ARRAY_AGG(blob_metadata) as blob_metadatas
+                    FROM table_statistics
+                    GROUP BY table_id) tstat ON tstat.table_id = t.table_id
         WHERE w.warehouse_id = $1
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
@@ -957,7 +1026,7 @@ pub(crate) mod tests {
                     .with_snapshot_id(1)
                     .with_summary(Summary {
                         operation: Operation::Append,
-                        other: HashMap::default(),
+                        additional_properties: HashMap::default(),
                     })
                     .with_timestamp_ms(
                         SystemTime::now()

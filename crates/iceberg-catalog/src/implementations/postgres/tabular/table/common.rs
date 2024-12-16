@@ -1,8 +1,8 @@
 use crate::api;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use iceberg::spec::{
-    MetadataLog, SchemaRef, SchemalessPartitionSpecRef, SnapshotLog, SnapshotRef, SortOrderRef,
-    TableMetadata,
+    MetadataLog, PartitionSpecRef, PartitionStatisticsFile, SchemaRef, SnapshotLog, SnapshotRef,
+    SortOrderRef, StatisticsFile, TableMetadata,
 };
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::{PgConnection, Postgres, Transaction};
@@ -111,7 +111,7 @@ pub(super) async fn remove_partition_specs(
 }
 
 pub(crate) async fn insert_partition_specs(
-    partition_specs: impl ExactSizeIterator<Item = &SchemalessPartitionSpecRef>,
+    partition_specs: impl ExactSizeIterator<Item = &PartitionSpecRef>,
     transaction: &mut Transaction<'_, Postgres>,
     tabular_id: Uuid,
 ) -> api::Result<()> {
@@ -546,5 +546,131 @@ pub(crate) async fn set_table_properties(
         tracing::warn!("{}", message);
         e.into_error_model(message)
     })?;
+    Ok(())
+}
+
+pub(super) async fn insert_partition_statistics(
+    tabular_id: Uuid,
+    partition_statistics: impl ExactSizeIterator<Item = &PartitionStatisticsFile>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let n_stats = partition_statistics.len();
+    let mut snapshot_ids = Vec::with_capacity(n_stats);
+    let mut paths = Vec::with_capacity(n_stats);
+    let mut file_size_in_bytes = Vec::with_capacity(n_stats);
+
+    for stat in partition_statistics {
+        snapshot_ids.push(stat.snapshot_id);
+        paths.push(stat.statistics_path.clone());
+        file_size_in_bytes.push(stat.file_size_in_bytes);
+    }
+
+    let _ = sqlx::query!(
+        r#"INSERT INTO partition_statistics(snapshot_id, table_id, statistics_path, file_size_in_bytes)
+           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::TEXT[]), UNNEST($4::BIGINT[])"#,
+        &snapshot_ids,
+        tabular_id,
+        &paths,
+        &file_size_in_bytes
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting partition statistics".to_string())
+    })?;
+
+    Ok(())
+}
+
+pub(super) async fn remove_partition_statistics(
+    table_id: Uuid,
+    statistics_ids: Vec<i64>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_statistics WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        table_id,
+        &statistics_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error deleting table statistics".to_string())
+    })?;
+
+    Ok(())
+}
+
+pub(super) async fn insert_table_statistics(
+    tabular_id: Uuid,
+    statistics: impl ExactSizeIterator<Item = &StatisticsFile>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let n_stats = statistics.len();
+    let mut snapshot_ids = Vec::with_capacity(n_stats);
+    let mut paths = Vec::with_capacity(n_stats);
+    let mut file_size_in_bytes = Vec::with_capacity(n_stats);
+    let mut file_footer_size_in_bytes = Vec::with_capacity(n_stats);
+    let mut key_metadata = Vec::with_capacity(n_stats);
+    let mut blob_metadata = Vec::with_capacity(n_stats);
+
+    for stat in statistics {
+        snapshot_ids.push(stat.snapshot_id);
+        paths.push(stat.statistics_path.clone());
+        file_size_in_bytes.push(stat.file_size_in_bytes);
+        file_footer_size_in_bytes.push(stat.file_footer_size_in_bytes);
+        key_metadata.push(stat.key_metadata.clone());
+        blob_metadata.push(serde_json::to_value(&stat.blob_metadata).map_err(|er| {
+            tracing::warn!(
+                "Error creating table - failed to serialize BlobMetadata of StatisticsFile {er}",
+            );
+            ErrorModel::internal(
+                "Error serializing blob metadata",
+                "BlobMetadataSerializationError",
+                Some(Box::new(er)),
+            )
+        })?);
+    }
+
+    let _ = sqlx::query!(
+        r#"INSERT INTO table_statistics(snapshot_id, table_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
+           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::TEXT[]), UNNEST($4::BIGINT[]), UNNEST($5::BIGINT[]), UNNEST($6::TEXT[]), UNNEST($7::JSONB[])"#,
+        &snapshot_ids,
+        tabular_id,
+        &paths,
+        &file_size_in_bytes,
+        &file_footer_size_in_bytes,
+        &key_metadata as _,
+        &blob_metadata
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error inserting table statistics".to_string())
+    })?;
+
+    Ok(())
+}
+
+pub(super) async fn remove_table_statistics(
+    table_id: Uuid,
+    statistics_ids: Vec<i64>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> api::Result<()> {
+    let _ = sqlx::query!(
+        r#"DELETE FROM table_statistics WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        table_id,
+        &statistics_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|err| {
+        tracing::warn!("Error creating table: {}", err);
+        err.into_error_model("Error deleting table statistics".to_string())
+    })?;
+
     Ok(())
 }

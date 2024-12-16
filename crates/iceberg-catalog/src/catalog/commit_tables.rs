@@ -19,11 +19,9 @@ pub(super) fn apply_commit(
     requirements
         .iter()
         .map(|r| {
-            r.check(&metadata, metadata_location.is_some())
-                .map_err(|e| {
-                    ErrorModel::conflict(e.to_string(), e.kind().to_string(), Some(Box::new(e)))
-                        .into()
-                })
+            r.check(metadata_location.map(|_| &metadata)).map_err(|e| {
+                ErrorModel::conflict(e.to_string(), e.kind().to_string(), Some(Box::new(e))).into()
+            })
         })
         .collect::<Result<Vec<_>>>()?;
 

@@ -35,8 +35,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
-uuid = { workspace = true, features = ["serde"] }
 utoipa = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 futures-util = { version = "^0.3" }

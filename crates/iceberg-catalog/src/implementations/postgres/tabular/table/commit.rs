@@ -308,6 +308,45 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    if !diffs.added_partition_stats.is_empty() {
+        common::insert_partition_statistics(
+            new_metadata.uuid(),
+            diffs
+                .added_partition_stats
+                .into_iter()
+                .filter_map(|s| new_metadata.partition_statistics_for_snapshot(s))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+        )
+        .await?;
+    }
+    if !diffs.added_stats.is_empty() {
+        common::insert_table_statistics(
+            new_metadata.uuid(),
+            diffs
+                .added_stats
+                .into_iter()
+                .filter_map(|s| new_metadata.statistics_for_snapshot(s))
+                .collect::<Vec<_>>()
+                .into_iter(),
+            transaction,
+        )
+        .await?;
+    }
+    if !diffs.removed_stats.is_empty() {
+        common::remove_table_statistics(new_metadata.uuid(), diffs.removed_stats, transaction)
+            .await?;
+    }
+    if !diffs.removed_partition_stats.is_empty() {
+        common::remove_partition_statistics(
+            new_metadata.uuid(),
+            diffs.removed_partition_stats,
+            transaction,
+        )
+        .await?;
+    }
+
     if properties {
         common::set_table_properties(new_metadata.uuid(), new_metadata.properties(), transaction)
             .await?;
