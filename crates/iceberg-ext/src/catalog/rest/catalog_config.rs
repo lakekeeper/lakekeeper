@@ -24,7 +24,7 @@ mod test {
         let j = serde_json::json!({
             "overrides": {"warehouse": "s3://bucket/warehouse/"},
             "defaults": {"clients": "4"},
-            "endpoints": vec![]
+            "endpoints": vec!["GET /config"]
         });
 
         let c: CatalogConfig = serde_json::from_value(j.clone()).unwrap();
