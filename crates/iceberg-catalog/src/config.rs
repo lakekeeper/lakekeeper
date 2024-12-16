@@ -45,13 +45,11 @@ fn get_config() -> DynAppConfig {
         .extract::<DynAppConfig>()
         .expect("Valid Configuration");
 
-    // Remove trailing slash from base_uri
+    // Ensure base_uri has a trailing slash
     let base_uri_path = config.base_uri.path().to_string();
-    if base_uri_path.ends_with('/') {
-        config
-            .base_uri
-            .set_path(base_uri_path.trim_end_matches('/'));
-    }
+    config
+        .base_uri
+        .set_path(&format!("{}/", base_uri_path.trim_end_matches('/')));
 
     config
         .reserved_namespaces
@@ -609,13 +607,29 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
             let config = get_config();
-            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b");
+            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
+            assert_eq!(
+                config.base_uri_management().to_string(),
+                "https://localhost:8181/a/b/management"
+            );
+            assert_eq!(
+                config.base_uri_catalog().to_string(),
+                "https://localhost:8181/a/b/catalog"
+            );
             Ok(())
         });
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
             let config = get_config();
-            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b");
+            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
+            assert_eq!(
+                config.base_uri_management().to_string(),
+                "https://localhost:8181/a/b/management"
+            );
+            assert_eq!(
+                config.base_uri_catalog().to_string(),
+                "https://localhost:8181/a/b/catalog"
+            );
             Ok(())
         });
     }
