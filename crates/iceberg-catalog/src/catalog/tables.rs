@@ -285,13 +285,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let storage_credentials = vec![StorageCredential {
             prefix: table_location.to_string(),
-            config: config.clone().into(),
+            config: config.creds.into(),
         }];
 
         let load_table_result = LoadTableResult {
             metadata_location: metadata_location.map(|l| l.to_string()),
             metadata: table_metadata,
-            config: Some(config.into()),
+            config: Some(config.config.into()),
             storage_credentials: Some(storage_credentials),
         };
 
@@ -431,14 +431,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let storage_credentials = storage_config.as_ref().map(|c| {
             vec![StorageCredential {
                 prefix: table_location.to_string(),
-                config: c.clone().into(),
+                config: c.creds.clone().into(),
             }]
         });
 
         let load_table_result = LoadTableResult {
             metadata_location: metadata_location.as_ref().map(ToString::to_string),
             metadata: table_metadata,
-            config: storage_config.map(Into::into),
+            config: storage_config.map(|c| c.config.into()),
             storage_credentials,
         };
 
@@ -495,9 +495,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // TODO: we may want to split the table config fn into a creds and a config part so that we
         //       can put only creds into this config and keep the rest in the storage_config
         Ok(LoadCredentialsResponse {
-            credentials: vec![StorageCredential {
+            storage_credentials: vec![StorageCredential {
                 prefix: table_id.location,
-                config: storage_config.into(),
+                config: storage_config.creds.into(),
             }],
         })
     }

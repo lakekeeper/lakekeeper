@@ -6,7 +6,7 @@ use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
 use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
-use crate::service::storage::StoragePermissions;
+use crate::service::storage::{StoragePermissions, TableConfig};
 
 use super::StorageType;
 use base64::Engine;
@@ -171,8 +171,8 @@ impl GcsProfile {
         cred: Option<&GcsCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
-    ) -> Result<TableProperties, TableConfigError> {
-        let mut config = TableProperties::default();
+    ) -> Result<TableConfig, TableConfigError> {
+        let mut creds = TableProperties::default();
         if let Some(GcsCredential::ServiceAccountKey { key }) = cred {
             let token = sts::downscope(
                 key,
@@ -182,11 +182,11 @@ impl GcsProfile {
             )
             .await?;
 
-            config.insert(&gcs::Token(token.access_token));
-            config.insert(&gcs::ProjectId(key.project_id.clone()));
+            creds.insert(&gcs::Token(token.access_token));
+            creds.insert(&gcs::ProjectId(key.project_id.clone()));
 
             if let Some(expiry) = token.expires_in {
-                config.insert(&gcs::TokenExpiresAt(
+                creds.insert(&gcs::TokenExpiresAt(
                     (std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
@@ -197,7 +197,10 @@ impl GcsProfile {
             }
         }
 
-        Ok(config)
+        Ok(TableConfig {
+            config: TableProperties::default(),
+            creds,
+        })
     }
 
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {

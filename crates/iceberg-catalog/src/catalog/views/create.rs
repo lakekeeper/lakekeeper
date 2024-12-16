@@ -185,7 +185,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let load_view_result = LoadViewResult {
         metadata_location: metadata_location.to_string(),
         metadata,
-        config: Some(config.into()),
+        config: Some(config.config.into()),
     };
 
     Ok(load_view_result)

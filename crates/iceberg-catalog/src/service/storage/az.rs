@@ -6,7 +6,7 @@ use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
 use crate::service::storage::path_utils::reduce_scheme_string;
-use crate::service::storage::{StoragePermissions, StorageProfile, StorageType};
+use crate::service::storage::{StoragePermissions, StorageProfile, StorageType, TableConfig};
 use azure_storage::prelude::{BlobSasPermissions, BlobSignedResource};
 use azure_storage::shared_access_signature::service_sas::BlobSharedAccessSignature;
 use azure_storage::shared_access_signature::SasToken;
@@ -152,7 +152,7 @@ impl AdlsProfile {
         table_location: &Location,
         creds: &AzCredential,
         permissions: StoragePermissions,
-    ) -> Result<TableProperties, TableConfigError> {
+    ) -> Result<TableConfig, TableConfigError> {
         let AzCredential::ClientCredentials {
             client_id,
             tenant_id,
@@ -169,17 +169,20 @@ impl AdlsProfile {
             client_secret.clone(),
         );
         let cred = azure_storage::StorageCredentials::token_credential(Arc::new(token));
-        let mut config = TableProperties::default();
+        let mut creds = TableProperties::default();
 
         let sas = self
             .get_sas_token(table_location, cred, permissions)
             .await?;
 
-        config.insert(&custom::CustomConfig {
+        creds.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
             value: sas,
         });
-        Ok(config)
+        Ok(TableConfig {
+            creds,
+            config: TableProperties::default(),
+        })
     }
 
     /// Create a new `FileIO` instance for Adls.

@@ -10,8 +10,9 @@ pub struct StorageCredential {
     pub config: std::collections::HashMap<String, String>,
 }
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct LoadCredentialsResponse {
-    pub credentials: Vec<StorageCredential>,
+    pub storage_credentials: Vec<StorageCredential>,
 }
 
 /// Result used when a table is successfully loaded.
@@ -20,7 +21,6 @@ pub struct LoadCredentialsResponse {
 pub struct LoadTableResult {
     /// May be null if the table is staged as part of a transaction
     pub metadata_location: Option<String>,
-    #[serde(rename = "metadata")]
     pub metadata: TableMetadata,
     pub config: Option<std::collections::HashMap<String, String>>,
     pub storage_credentials: Option<Vec<StorageCredential>>,

@@ -197,7 +197,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     Ok(LoadViewResult {
         metadata_location: metadata_location.to_string(),
         metadata: requested_update_metadata,
-        config: Some(config.into()),
+        config: Some(config.config.into()),
     })
 }
 

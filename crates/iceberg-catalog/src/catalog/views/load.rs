@@ -101,7 +101,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     let load_table_result = LoadViewResult {
         metadata_location: metadata_location.clone(),
         metadata: view_metadata,
-        config: Some(access.into()),
+        config: Some(access.config.into()),
     };
 
     Ok(load_table_result)

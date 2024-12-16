@@ -67,6 +67,12 @@ pub enum StoragePermissions {
     ReadWriteDelete,
 }
 
+#[derive(Debug)]
+pub struct TableConfig {
+    pub(crate) creds: TableProperties,
+    pub(crate) config: TableProperties,
+}
+
 impl StorageProfile {
     #[must_use]
     pub fn generate_catalog_config(&self, warehouse_id: WarehouseIdent) -> CatalogConfig {
@@ -193,7 +199,7 @@ impl StorageProfile {
         secret: Option<&StorageCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
-    ) -> Result<TableProperties, TableConfigError> {
+    ) -> Result<TableConfig, TableConfigError> {
         match self {
             StorageProfile::S3(profile) => {
                 profile
@@ -220,7 +226,10 @@ impl StorageProfile {
                     .await
             }
             #[cfg(test)]
-            StorageProfile::Test(_) => Ok(TableProperties::default()),
+            StorageProfile::Test(_) => Ok(TableConfig {
+                creds: TableProperties::default(),
+                config: TableProperties::default(),
+            }),
             StorageProfile::Gcs(profile) => {
                 profile
                     .generate_table_config(
@@ -302,17 +311,18 @@ impl StorageProfile {
                 .await?;
             match &self {
                 StorageProfile::S3(_) => {
-                    let sts_file_io = s3::get_file_io_from_table_config(&tbl_config)?;
+                    let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
                 StorageProfile::Adls(_) => {
-                    az::validate_vended_credentials(&tbl_config, &test_location, self).await?;
+                    az::validate_vended_credentials(&tbl_config.config, &test_location, self)
+                        .await?;
                 }
                 #[cfg(test)]
                 StorageProfile::Test(_) => {}
                 StorageProfile::Gcs(_) => {
-                    let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config)?;
+                    let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
@@ -973,13 +983,13 @@ mod tests {
                 unimplemented!("Not supported")
             }
             StorageProfile::S3(_) => {
-                let downscoped1 = s3::get_file_io_from_table_config(&config1).unwrap();
-                let downscoped2 = s3::get_file_io_from_table_config(&config2).unwrap();
+                let downscoped1 = s3::get_file_io_from_table_config(&config1.config).unwrap();
+                let downscoped2 = s3::get_file_io_from_table_config(&config2.config).unwrap();
                 (downscoped1, downscoped2)
             }
             StorageProfile::Gcs(_) => {
-                let downscoped1 = gcs::get_file_io_from_table_config(&config1).unwrap();
-                let downscoped2 = gcs::get_file_io_from_table_config(&config2).unwrap();
+                let downscoped1 = gcs::get_file_io_from_table_config(&config1.config).unwrap();
+                let downscoped2 = gcs::get_file_io_from_table_config(&config2.config).unwrap();
                 (downscoped1, downscoped2)
             }
         };
