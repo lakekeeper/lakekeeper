@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.2](https://github.com/lakekeeper/lakekeeper/compare/v0.5.1...v0.5.2) (2024-12-17)
+
+
+### Features
+
+* Support for Statistic Files ([1e4fa38](https://github.com/lakekeeper/lakekeeper/commit/1e4fa3876919bf5b926ea73f370ff62efd9081b9))
+* **tables:** load table credentials ([#675](https://github.com/lakekeeper/lakekeeper/issues/675)) ([9fd272e](https://github.com/lakekeeper/lakekeeper/commit/9fd272ee831b3347c3d4e790fcaacba6f4ded273))
+
+
+### Bug Fixes
+
+* Make BASE_URI trailing slash insensitive ([#681](https://github.com/lakekeeper/lakekeeper/issues/681)) ([4799ea7](https://github.com/lakekeeper/lakekeeper/commit/4799ea78e60e5c908547f0cf1421384da919bfe3))
+* Snapshots without schema ([1e4fa38](https://github.com/lakekeeper/lakekeeper/commit/1e4fa3876919bf5b926ea73f370ff62efd9081b9))
+
+
+### Miscellaneous Chores
+
+* release 0.5.2 ([c5774b2](https://github.com/lakekeeper/lakekeeper/commit/c5774b26183dc41e938af130005e8df9230b3b82))
+
 ## [0.5.1](https://github.com/lakekeeper/lakekeeper/compare/v0.5.0...v0.5.1) (2024-12-12)
 
 
