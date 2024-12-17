@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use core::result::Result::Err;
-use iceberg_catalog::CONFIG;
+use iceberg_catalog::{AuthZBackend, CONFIG};
 use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
 use std::cell::LazyCell;
 use std::default::Default;
@@ -32,7 +32,8 @@ const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
             "LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH",
         )
         .unwrap_or(default_config.idp_post_logout_redirect_path),
-        enable_authorization: CONFIG.openid_provider_uri.is_some(),
+        enable_authentication: CONFIG.openid_provider_uri.is_some(),
+        enable_permissions: CONFIG.authz_backend == AuthZBackend::OpenFGA,
         app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL").unwrap_or(
             CONFIG
                 .base_uri

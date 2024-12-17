@@ -13,7 +13,7 @@ use iceberg_catalog::service::event_publisher::{
 };
 use iceberg_catalog::service::health::ServiceHealthProvider;
 use iceberg_catalog::service::{Catalog, StartupValidationData};
-use iceberg_catalog::{SecretBackend, CONFIG};
+use iceberg_catalog::{AuthZBackend, SecretBackend, CONFIG};
 use reqwest::Url;
 
 use iceberg_catalog::implementations::postgres::task_queues::{
@@ -181,6 +181,9 @@ async fn serve_inner<A: Authorizer>(
     } else {
         None
     };
+    if k8s_token_verifier.is_none() && CONFIG.authz_backend == AuthZBackend::AllowAll {
+        tracing::warn!("Authentication is disabled. This is not suitable for production!");
+    }
     let (layer, metrics_future) =
         iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?;
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
