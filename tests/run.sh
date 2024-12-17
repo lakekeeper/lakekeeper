@@ -9,4 +9,4 @@ setup_python
 # Running tests
 echo "Running tests ..."
 cd python
-tox -qe spark_adls
+tox -qe "${1}"
