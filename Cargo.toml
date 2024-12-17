@@ -3,6 +3,7 @@ members = [
     "crates/iceberg-catalog",
     "crates/iceberg-catalog-bin",
     "crates/iceberg-ext",
+    "my-workspace-hack",
 ]
 resolver = "2"
 

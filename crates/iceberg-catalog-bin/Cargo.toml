@@ -35,3 +35,4 @@ tower-http = { workspace = true, features = ["cors", "tracing"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 utoipa = { workspace = true, features = ['yaml'] }
+my-workspace-hack = { version = "0.1", path = "../../my-workspace-hack" }

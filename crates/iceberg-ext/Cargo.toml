@@ -37,6 +37,7 @@ typed-builder = { workspace = true }
 url = { workspace = true }
 utoipa = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
+my-workspace-hack = { version = "0.1", path = "../../my-workspace-hack" }
 
 [dev-dependencies]
 futures-util = { version = "^0.3" }
