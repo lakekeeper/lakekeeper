@@ -29,21 +29,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        names: [ pyiceberg, spark_openfga, spark_adls, spark_aws_remote_signing, spark_aws_sts, spark_gcs, spark_minio_sts, spark_minio_remote_signing, starrocks, trino ]
+        names:
+          - pyiceberg
+          - starrocks
+          - trino
+          - spark_openfga-1.5.2
+          - spark_openfga-1.6.1
+          - spark_openfga-1.7.1
+          - spark_adls-1.5.2
+          - spark_adls-1.6.1
+          - spark_adls-1.7.1
+          - spark_aws_remote_signing-1.5.2
+          - spark_aws_remote_signing-1.6.1
+          - spark_aws_remote_signing-1.7.1
+          - spark_aws_sts-1.5.2
+          - spark_aws_sts-1.6.1
+          - spark_aws_sts-1.7.1
+          - spark_gcs-1.5.2
+          - spark_gcs-1.6.1
+          - spark_gcs-1.7.1
+          - spark_minio_sts_1.5.2
+          - spark_minio_sts-1.6.1
+          - spark_minio_sts-1.7.1
+          - spark_minio_remote_signing-1.5.2
+          - spark_minio_remote_signing-1.6.1
+          - spark_minio_remote_signing-1.7.1
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
         test_name: ${{ matrix.names }}
     secrets: inherit
-  integration_tests_results:
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    name: Integration tests results
-    needs: [ tests ]
-    steps:
-      - run: |
-          result="${{ needs.tests.result }}"
-          if [[ $result == "success" || $result == "skipped" ]]; then
-            exit 0
-          else
-            exit 1
-          fi
