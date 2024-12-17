@@ -16,44 +16,11 @@ concurrency:
 
 jobs:
   docker:
-    runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Docker info
-        run: docker info
-
-      - name: Build Docker image (amd64)
-        run: |
-          DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
-          -f docker/full.Dockerfile .
-          #            --add-host=host.docker.internal:host-gateway \
-          #            --build-arg DATABASE_URL=postgres://postgres:postgres@host.docker.internal:5432/postgres .
-          docker save -o /tmp/iceberg-catalog-amd64.tar localhost/iceberg-catalog-local:amd64
-
-      - name: Save Docker
-        uses: actions/upload-artifact@v4
-        with:
-          name: iceberg-catalog-image
-          path: /tmp/*.tar
-
+    uses: ./.github/workflows/docker_build.yml
+    with:
+      platform: 'amd64'
+      dockerfile: 'docker/full.Dockerfile'
+      image_name: 'iceberg-catalog-local'
   test-examples:
     needs: docker
     runs-on: ubuntu-24.04

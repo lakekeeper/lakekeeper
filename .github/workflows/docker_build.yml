@@ -1,0 +1,43 @@
+name: Docker Build
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: 'Platform to build for (e.g., amd64)'
+        required: false
+        type: string
+        default: 'amd64'
+      dockerfile:
+        description: 'Path to the Dockerfile'
+        required: false
+        type: string
+        default: 'docker/full.Dockerfile'
+      image_name:
+        description: 'Name of the image to build'
+        required: false
+        type: string
+        default: 'iceberg-catalog-local'
+
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Build Docker image (${{ inputs.platform }})
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/${{ inputs.image_name }}:${{ inputs.platform }} \
+          -f ${{ inputs.dockerfile }} .
+          docker save -o /tmp/${{ inputs.image_name }}-${{ inputs.platform }}.tar localhost/${{ inputs.image_name }}:${{ inputs.platform }}
+
+      - name: Save Docker
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.image_name }}-image
+          path: /tmp/*.tar

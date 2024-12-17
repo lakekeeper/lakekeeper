@@ -15,27 +15,11 @@ concurrency:
 
 jobs:
   docker:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Docker info
-        run: docker info
-
-      - name: Build Docker image (amd64)
-        run: |
-          DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
-          -f docker/full.Dockerfile .
-          docker save -o /tmp/iceberg-catalog-amd64.tar localhost/iceberg-catalog-local:amd64
-
-      - name: Save Docker
-        uses: actions/upload-artifact@v4
-        with:
-          name: iceberg-catalog-image
-          path: /tmp/*.tar
+    uses: ./.github/workflows/docker_build.yml
+    with:
+      platform: 'amd64'
+      dockerfile: 'docker/full.Dockerfile'
+      image_name: 'iceberg-catalog-local'
   kube_auth:
     needs: docker
     runs-on: ubuntu-24.04
