@@ -16,6 +16,6 @@ fi
 
 
 # Running tests
-echo "Running tests ..."
+echo "Running tests test: $TOX_NAME iceberg version: $LAKEKEEPER_TEST__SPARK_ICEBERG_VERSION..."
 cd python
 tox -qe "${TOX_NAME}"
