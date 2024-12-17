@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        names: [ openfga, pyiceberg, spark_adls, spark_aws_remote_signing, spark_aws_sts, spark_gcs, spark_minio_sts, spark_minio_remote_signing, starrocks, trino ]
+        names: [ spark_openfga, pyiceberg, spark_adls, spark_aws_remote_signing, spark_aws_sts, spark_gcs, spark_minio_sts, spark_minio_remote_signing, starrocks, trino ]
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
         test_name: ${{ matrix.names }}
