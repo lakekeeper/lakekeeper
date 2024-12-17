@@ -38,7 +38,7 @@ jobs:
 
       - name: Restore Docker image
         run: |
-          docker load -i artifacts/iceberg-catalog-amd64.tar
+          docker load -i artifacts/iceberg-catalog-local-amd64.tar
 
       - name: Test Examples
         run: |
