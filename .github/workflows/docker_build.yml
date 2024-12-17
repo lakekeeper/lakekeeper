@@ -39,5 +39,5 @@ jobs:
       - name: Save Docker
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.image_name }}-image
+          name: iceberg-catalog-image
           path: /tmp/*.tar
