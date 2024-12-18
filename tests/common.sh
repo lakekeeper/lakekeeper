@@ -11,9 +11,13 @@ function setup_python() {
   pip3 install -q tox-uv
 
   echo "Modifying the PYTHONPATH ..."
+  # Initialize PYTHONPATH if not already set
+  : "${PYTHONPATH:=}"
+
   # Add pyspark to the PYTHONPATH
   # Iterate over all zips in $SPARK_HOME/python/lib and add them to the PYTHONPATH
   for i in /opt/spark/python/lib/*.zip; do
-      export PYTHONPATH=$PYTHONPATH:$i
+      PYTHONPATH="$PYTHONPATH:$i"
   done
+  export PYTHONPATH
 }

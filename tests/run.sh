@@ -1,6 +1,6 @@
 #!/bin/bash
 # This script is meant to run in  apache/spark:3.5.1-java17-python3 like docker images
-set -euo pipefail
+set -eo pipefail
 
 source common.sh
 

@@ -48,7 +48,7 @@ jobs:
           - spark_gcs-1.5.2
           - spark_gcs-1.6.1
           - spark_gcs-1.7.1
-          - spark_minio_sts_1.5.2
+          - spark_minio_sts-1.5.2
           - spark_minio_sts-1.6.1
           - spark_minio_sts-1.7.1
           - spark_minio_remote_signing-1.5.2
