@@ -80,7 +80,7 @@ impl StorageProfile {
             StorageProfile::S3(profile) => profile.generate_catalog_config(warehouse_id),
             #[cfg(test)]
             StorageProfile::Test(_) => {
-                use crate::{api, catalog};
+                use crate::api;
                 use std::collections::HashMap;
                 CatalogConfig {
                     overrides: HashMap::default(),
