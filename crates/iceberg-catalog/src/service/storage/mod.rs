@@ -75,6 +75,7 @@ pub struct TableConfig {
 
 fn supported_endpoints() -> Vec<String> {
     vec![
+        "GET /v1/config".into(),
         "GET /v1/{prefix}/namespaces".into(),
         "POST /v1/{prefix}/namespaces".into(),
         "GET /v1/{prefix}/namespaces/{namespace}".into(),
@@ -85,11 +86,20 @@ fn supported_endpoints() -> Vec<String> {
         "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
         "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
         "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
+        "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
         "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into(),
+        "POST /v1/{prefix}/tables/rename".into(),
         "POST /v1/{prefix}/namespaces/{namespace}/register".into(),
         "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics".into(),
         "POST /v1/{prefix}/tables/rename".into(),
         "POST /v1/{prefix}/transactions/commit".into(),
+        "GET /v1/{prefix}/namespaces/{namespace}/views".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/views".into(),
+        "GET /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
+        "POST /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
+        "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
+        "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
+        "POST /v1/{prefix}/views/rename".into(),
     ]
 }
 
