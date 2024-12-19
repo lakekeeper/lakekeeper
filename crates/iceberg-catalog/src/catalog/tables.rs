@@ -283,7 +283,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-        let storage_credentials = config.creds.inner().is_empty().then(|| {
+        let storage_credentials = (!config.creds.inner().is_empty()).then(|| {
             vec![StorageCredential {
                 prefix: table_location.to_string(),
                 config: config.creds.into(),
@@ -432,15 +432,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let storage_credentials = storage_config
             .as_ref()
-            .map(|c| {
-                c.creds.inner().is_empty().then(|| {
+            .and_then(|c| {
+                (!c.creds.inner().is_empty()).then(|| {
                     vec![StorageCredential {
                         prefix: table_location.to_string(),
                         config: c.creds.clone().into(),
                     }]
                 })
-            })
-            .flatten();
+            });
 
         let load_table_result = LoadTableResult {
             metadata_location: metadata_location.as_ref().map(ToString::to_string),
