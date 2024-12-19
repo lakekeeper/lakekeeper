@@ -28,7 +28,6 @@ async-stream = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { version = "^1.2", optional = true }
-aws-sdk-s3 = { workspace = true }
 aws-sdk-sts = { workspace = true }
 aws-sigv4 = { version = "^1.2", optional = true }
 aws-smithy-http = { workspace = true }
@@ -41,14 +40,13 @@ azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-cloudevents-sdk = { version = "0.7.0" }
+cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
 figment = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
 google-cloud-auth = { workspace = true }
-google-cloud-token = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
@@ -61,7 +59,6 @@ k8s-openapi = { workspace = true }
 kube = { workspace = true }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
-lru = { workspace = true }
 maplit = { workspace = true }
 openfga-rs = { workspace = true, optional = false }
 paste = { workspace = true }
@@ -69,7 +66,6 @@ percent-encoding = { workspace = true }
 rand = "0.8.5"
 reqwest = { workspace = true }
 serde = { workspace = true }
-serde-aux = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yml = { workspace = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
