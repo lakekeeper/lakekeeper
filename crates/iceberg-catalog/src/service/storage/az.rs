@@ -6,15 +6,14 @@ use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
 use crate::service::storage::path_utils::reduce_scheme_string;
-use crate::service::storage::{
-    supported_endpoints, StoragePermissions, StorageProfile, StorageType, TableConfig,
-};
+use crate::service::storage::{StoragePermissions, StorageProfile, StorageType, TableConfig};
 use azure_storage::prelude::{BlobSasPermissions, BlobSignedResource};
 use azure_storage::shared_access_signature::service_sas::BlobSharedAccessSignature;
 use azure_storage::shared_access_signature::SasToken;
 use azure_storage::StorageCredentials;
 use futures::StreamExt;
 
+use crate::api::iceberg::supported_endpoints;
 use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
 use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::AzdlsConfigKeys;

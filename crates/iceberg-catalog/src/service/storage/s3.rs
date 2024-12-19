@@ -6,9 +6,11 @@ use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
 use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
-use crate::service::storage::{supported_endpoints, StoragePermissions, TableConfig};
+use crate::service::storage::{StoragePermissions, TableConfig};
 use aws_config::{BehaviorVersion, SdkConfig};
 
+use super::StorageType;
+use crate::api::iceberg::supported_endpoints;
 use iceberg_ext::configs::table::{client, custom, s3, TableProperties};
 use iceberg_ext::configs::{self, ConfigProperty, Location};
 use serde::{Deserialize, Serialize};
@@ -16,8 +18,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::LazyLock;
 use veil::Redact;
-
-use super::StorageType;
 
 static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 

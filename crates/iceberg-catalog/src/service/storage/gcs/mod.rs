@@ -6,9 +6,10 @@ use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
 use crate::service::storage::error::{
     CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
 };
-use crate::service::storage::{supported_endpoints, StoragePermissions, TableConfig};
+use crate::service::storage::{StoragePermissions, TableConfig};
 
 use super::StorageType;
+use crate::api::iceberg::supported_endpoints;
 use base64::Engine;
 use iceberg_ext::configs::table::{gcs, TableProperties};
 use iceberg_ext::configs::Location;
