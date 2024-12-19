@@ -1,0 +1,42 @@
+:root {
+  --lakekeeper-primary-dark-color: #091F34;
+  --lakekeeper-primary-light-color: #32485C;
+  --lakekeeper-secondary-dark-color: #091F34;
+  --lakekeeper-secondary-blue-color: #32485C;
+  --lakekeeper-secondary-gray-color: #5D7389;
+  --lakekeeper-secondary-light-gray-color: #8DA5BA;
+  --lakekeeper-secondary-light-blue-color: #BCD4EB;
+
+  --lakekeeper-alert-color: #D81644;
+  --lakekeeper-warning-color: #FDB022;
+  --lakekeeper-success-color: #4DBB72;
+  --lakekeeper-font-dark-color: #101828;
+  --lakekeeper-font-light-color: #FFFFFF;
+
+}
+
+[data-md-color-primary=indigo] {
+  --md-primary-fg-color--light: var(--lakekeeper-primary-light-color);
+  --md-primary-fg-color--dark:  var(--lakekeeper-primary-dark-color);
+}
+
+/* A hack to get mkdocs-render-swagger-plugin to play nice with mkdocs dark
+mode. Gets the job done for now */
+[data-md-color-scheme="slate"] h1, [data-md-color-scheme="slate"] h2, [data-md-color-scheme="slate"] h3 {
+  color: var(--lakekeeper-secondary-light-gray-color) !important;
+}
+
+[data-md-color-scheme="slate"] .swagger-ui .header-example, [data-md-color-scheme="slate"]  p, [data-md-color-scheme="slate"]  .header-col, [data-md-color-scheme="slate"]  .response-col_status, [data-md-color-scheme="slate"]  .tabitem, [data-md-color-scheme="slate"]  .response-col_links, [data-md-color-scheme="slate"]  .response-col_description, [data-md-color-scheme="slate"]  .response+ .response p, [data-md-color-scheme="slate"]  tr+ tr .parameters-col_name, [data-md-color-scheme="slate"]  .parameter__in, [data-md-color-scheme="slate"]  .required, [data-md-color-scheme="slate"]  .parameter__type, [data-md-color-scheme="slate"]  .col_header, [data-md-color-scheme="slate"]  .model-box, [data-md-color-scheme="slate"]  .model-title__text, [data-md-color-scheme="slate"]  .model-title, [data-md-color-scheme="slate"]  .prop-enum, [data-md-color-scheme="slate"]  .opblock-summary-path, [data-md-color-scheme="slate"]  .opblock-summary-description, [data-md-color-scheme="slate"]  .info__license {
+  color: var(--lakekeeper-secondary-light-gray-color) !important;
+}
+
+[data-md-color-scheme="default"] .md-typeset a,
+[data-md-color-scheme="default"] .md-nav__link--active {
+  color: var(--md-primary-fg-color--light);
+}
+[data-md-color-scheme="slate"] .md-typeset a,
+[data-md-color-scheme="slate"] .md-nav__link--active {
+  color: var(--md-primary-fg-color--dark);
+}
+
+
