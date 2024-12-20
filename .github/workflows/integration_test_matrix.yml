@@ -58,3 +58,16 @@ jobs:
     with:
         test_name: ${{ matrix.names }}
     secrets: inherit
+  integration_tests_results:
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: Integration tests results
+    needs: [ tests ]
+    steps:
+      - run: |
+          result="${{ needs.tests.result }}"
+          if [[ $result == "success" || $result == "skipped" ]]; then
+            exit 0
+          else
+            exit 1
+          fi
