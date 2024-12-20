@@ -1,20 +1,28 @@
 # Authentication
-!!! warning
-
-    We recommend to use [Authorization](./authorization.md) always when Authentication is enabled. If `Authentication` is enabled, the UI only works if Authorization is also enabled.
-
 Authentication is crucial for securing access to Lakekeeper. By enabling authentication, you ensure that only authorized users can access and interact with your data. Lakekeeper supports authentication via any OpenID (or OAuth 2) capable identity provider as well as authentication for Kubernetes service accounts, allowing you to integrate with your existing identity providers.
 
-Authentication and Authorization are distinct processes in Lakekeeper. Authentication verifies the identity of users, ensuring that only authorized individuals can access the system. This is performed via an Identity Provider (IdP) such as OpenID or Kubernetes. Authorization, on the other hand, determines what authenticated users are allowed to do within the system. Lakekeeper uses OpenFGA to manage and evaluate permissions, providing a robust and flexible authorization model. For more details, see the [Authorization guide](./authorization.md).
+Authentication and Authorization are distinct processes in Lakekeeper. Authentication verifies the identity of users, ensuring that only authorized individuals can access the system. This is performed via an Identity Provider (IdP) such as OpenID or Kubernetes. Authorization, on the other hand, determines what authenticated users are allowed to do within the system. Lakekeeper is extendable and can connect to different authorization systems. By default, Lakekeeper uses OpenFGA to manage and evaluate permissions, providing a robust and flexible authorization model. For more details, see the [Authorization guide](./authorization.md).
 
-Lakekeeper does not issue API-Keys or Client-Credentials itself, as this can introduce multiple security risks. Instead, it relies on external IdPs for authentication, ensuring a secure and centralized management of user identities. This approach minimizes the risk of credential leakage and simplifies the integration with existing security infrastructures.
+Lakekeeper does not issue API-Keys or Client-Credentials itself. Instead, it relies on external IdPs for authentication, ensuring a secure and centralized management of user identities. This approach minimizes the risk of credential leakage and simplifies the integration with existing security infrastructures.
 
 ## OpenID Provider
 Lakekeeper can be configured to integrate with all common identity providers. For best performance, tokens are validated locally against the server keys (`jwks_uri`). This requires all incoming tokens to be JWT tokens. If you require support for opaque tokens, please upvote the corresponding [Github Issue](https://github.com/lakekeeper/lakekeeper/issues/620).
 
 If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token to match the specified value. We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
 
-In the following section we describe common setups for popular IdPs. Please refer to the documentation of your IdP for further information.
+### Authenticating Machine Users
+All common iceberg client and IdPs support the OAuth2 `Client-Credential` flow. The `Client-Credential` flow requires a `Client-ID` and `Client-Secret` that is provided in a secure way to the client. In the following sections we demonstrate for selected IdPs how applications can be setup for machine users to connect.
+
+### Authenticating Humans
+Human Authentication flows are interactive by nature and are typically performed directly by the IdP. This enables the use of all security options that the IdP supports, including 2FA, hardware keys, single-sign-on and more. The recommended flows for authentication are Authorization Code Flow [RFC6749#section-4.1](https://datatracker.ietf.org/doc/html/rfc6749#section-4.1) with PKCE and Device Code Flow [RFC8628](https://datatracker.ietf.org/doc/html/rfc8628).
+
+At the time of writing all common iceberg clients (spark, trino, starrocks, pyiceberg, ...) do not support any authorization flow that is suitable for human users natively. The iceberg community is working on introducing those flows and we started an [initiative](https://docs.google.com/document/d/1buW9PCNoHPeP7Br5_vZRTU-_3TExwLx6bs075gi94xc/edit?tab=t.0) to standardize and document them as part of the iceberg docs.
+
+Until iceberg clients are natively ready for human flows, authentication flows have to be performed outside of iceberg clients. To make this process as easy as possible, the Lakekeeper UI offers the option to get a new token for a human user:
+
+![](../../assets/generate-token.png)
+
+The lifetime of this token is specified in the corresponding application in your IdP. We recommend to set the lifetime to no longer than one day.
 
 ### Keycloak
 We are creating two Client: The first client with a "public" profile for the Lakekeeper API & UI and the second client for a machine client (e.g. Spark). Repeat step 2 for each machine client that is needed.
@@ -28,7 +36,8 @@ We are creating two Client: The first client with a "public" profile for the Lak
     - **Client authentication**: Leave "Off". We need a public client.
     - **Authentication Flows**: Enable "Standard flow", OAuth 2.0 Device Authorization Grant".
     - **Valid redirect URIs**: For testing a wildcard "*" can be set. Otherwise the URL where the Lakekeeper UI is reachable for the user suffixed by `/callback`. E.g.: `http://localhost:8181/ui/callback`.
-1. Create a new "Client scope":
+1. When the client is created, click on the "Advanced" tab of this client, scroll down to "Advanced settings" and set "Access Token Lifespan" to "Expires in" - 12 Hours.
+1. Create a new "Client scope" in the left side menu:
     - **Name**: choose any, for this example we choose  `lakekeeper` 
     - **Description**: `Client of Lakekeeper`
     - **Type**: Optional
@@ -126,6 +135,7 @@ We are creating three App-Registrations: The first for Lakekeeper itself, the se
     - **Name**: choose any, for this example we choose `Lakekeeper-UI`
     - **Redirect URI**: Add the URL where the Lakekeeper UI is reachable for the user suffixed by `/callback`. E.g.: `http://localhost:8181/ui/callback`. If asked, select type "Single Page Application (SPA)".
 1. In the "Overview" page of the "App Registration" note down the `Application (client) ID`. Also note the `Directory (tenant) ID`.
+1. Finally we recommend to set a policy for tokens to expire in 12 hours instead of the default ~1 hour. Please follow the [Microsoft Tutorial](https://learn.microsoft.com/en-us/entra/identity-platform/configure-token-lifetimes#create-a-policy-and-assign-it-to-an-app) to assign a corresponding policy to the Application. (If you find a good way to do this via the UI, please let us know so that we can update this documentation page!)
 
 #### App 2: Lakekeeper Application
 
