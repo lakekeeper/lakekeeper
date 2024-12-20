@@ -2,6 +2,8 @@
 
 
 
+
+
 ## [0.5.2](https://github.com/lakekeeper/lakekeeper/compare/v0.5.1...v0.5.2) (2024-12-17)
 
 
