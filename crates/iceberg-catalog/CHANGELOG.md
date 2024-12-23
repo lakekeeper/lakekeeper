@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/lakekeeper/lakekeeper/compare/v0.5.2...v0.6.0) (2024-12-23)
+
+
+### Features
+
+* **tests:** run integration tests with iceberg versions: 1.5.2, 1.6.1, 1.7.1 ([3f3b5ad](https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7))
+
+
+### Bug Fixes
+
+* credentials configs are never empty but are either null or an empty list ([3f3b5ad](https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7))
+* use correct list of supported endpoints ([3f3b5ad](https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7))
+
 ## [0.5.2](https://github.com/lakekeeper/lakekeeper/compare/v0.5.1...v0.5.2) (2024-12-17)
 
 
