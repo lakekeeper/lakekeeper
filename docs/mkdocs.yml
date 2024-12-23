@@ -5,6 +5,10 @@ plugins:
 
 nav:
   - Concepts: concepts.md
+  - API:
+      - Catalog: api/catalog.md
+      - Test: api/test.md
+      - Management: api/management.md
   - User Guide:
       - bootstrap.md
       - storage.md
@@ -15,3 +19,4 @@ nav:
   - Contribute:
       - developer-guide.md
       - customize.md
+
