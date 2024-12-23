@@ -14,7 +14,9 @@ pub mod v1 {
     use std::marker::PhantomData;
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
-    use crate::api::management::v1::warehouse::UndropTabularsRequest;
+    use crate::api::management::v1::warehouse::{
+        RescheduleSoftDeletionRequest, UndropTabularsRequest,
+    };
     use crate::service::authn::UserId;
     use crate::service::{
         authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
@@ -936,6 +938,31 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/reschedule",
+        responses(
+            (status = 204, description = "Tabular dropped successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn reschedule_soft_deletions<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<RescheduleSoftDeletionRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::reschedule_soft_deletions(
+            metadata,
+            warehouse_id.into(),
+            request,
+            api_context,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     #[derive(Debug, Serialize, utoipa::ToSchema)]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
@@ -948,6 +975,10 @@ pub mod v1 {
     pub struct DeletedTabularResponse {
         /// Unique identifier of the tabular
         pub id: uuid::Uuid,
+        /// Unique identifier of the deletion task
+        ///
+        /// Can be used to reschedule the deletion
+        pub task_id: uuid::Uuid,
         /// Name of the tabular
         pub name: String,
         /// List of namespace parts the tabular belongs to

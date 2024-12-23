@@ -1,4 +1,3 @@
-use crate::api::management::v1::warehouse::UndropTabularsRequest;
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::Authorizer;
 use crate::service::TabularIdentUuid;
@@ -6,18 +5,14 @@ use crate::{api, WarehouseIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer>(
-    request: &UndropTabularsRequest,
+    request: impl IntoIterator<Item = TabularIdentUuid>,
     authorizer: &A,
     request_metadata: &RequestMetadata,
     warehouse_ident: WarehouseIdent,
 ) -> api::Result<()> {
-    let all_allowed = can_undrop_all_specified_tabulars(
-        request_metadata,
-        warehouse_ident,
-        authorizer,
-        request.targets.as_slice(),
-    )
-    .await?;
+    let all_allowed =
+        can_undrop_all_specified_tabulars(request_metadata, warehouse_ident, authorizer, request)
+            .await?;
     if !all_allowed {
         return Err(ErrorModel::forbidden(
             "Not allowed to undrop at least one specified tabular.",
@@ -33,7 +28,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     request_metadata: &RequestMetadata,
     warehouse_ident: WarehouseIdent,
     authorizer: &A,
-    tabs: &[TabularIdentUuid],
+    tabs: impl IntoIterator<Item = TabularIdentUuid>,
 ) -> api::Result<bool> {
     let mut futs = vec![];
 
@@ -43,7 +38,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
                 futs.push(authorizer.is_allowed_view_action(
                     request_metadata,
                     warehouse_ident,
-                    (*id).into(),
+                    id.into(),
                     &crate::service::authz::CatalogViewAction::CanUndrop,
                 ));
             }
@@ -51,7 +46,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
                 futs.push(authorizer.is_allowed_table_action(
                     request_metadata,
                     warehouse_ident,
-                    (*id).into(),
+                    id.into(),
                     &crate::service::authz::CatalogTableAction::CanUndrop,
                 ));
             }

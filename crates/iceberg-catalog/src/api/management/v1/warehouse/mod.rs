@@ -227,6 +227,14 @@ pub struct UndropTabularsRequest {
     pub targets: Vec<TabularIdentUuid>,
 }
 
+#[derive(Deserialize, Debug, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct RescheduleSoftDeletionRequest {
+    /// Tabulars to reschedule
+    pub targets: Vec<TabularIdentUuid>,
+    pub reschedule_to: chrono::DateTime<chrono::Utc>,
+}
+
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
@@ -659,7 +667,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         undrop::require_undrop_permissions(
-            &request,
+            request.targets.iter().map(|i| *i),
             &context.v1_state.authz,
             &request_metadata,
             warehouse_ident,
@@ -681,6 +689,44 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .cancel_tabular_expiration(TaskFilter::TaskIds(tasks_to_cancel))
             .await?;
         transaction.commit().await?;
+
+        // TODO: emit event
+
+        Ok(())
+    }
+
+    async fn reschedule_soft_deletions(
+        request_metadata: RequestMetadata,
+        warehouse_ident: WarehouseIdent,
+        request: RescheduleSoftDeletionRequest,
+        context: ApiContext<State<A, C, S>>,
+    ) -> Result<()> {
+        // ------------------- AuthZ -------------------
+        undrop::require_undrop_permissions(
+            request.targets.iter().map(|t| *t),
+            &context.v1_state.authz,
+            &request_metadata,
+            warehouse_ident,
+        )
+        .await?;
+
+        // ------------------- Business Logic -------------------
+        let catalog = context.v1_state.catalog;
+        context
+            .v1_state
+            .queues
+            .reschedule_tabular_expiration(
+                // TODO: we're passing in tabular_ids but expect task_ids, so either we need to extend
+                //       the list deleted tabulars by task ids and accept those instead of tabular_id
+                //       or change the queue fn which internally boils down to call a generic task
+                //       queue fn, so probably rather the former
+                //       passing in task_ids means that undrop permission won't work anymore, I guess
+                //       we can only do this by taking list of tabular ids and then fetching task ids
+                //       from the db
+                todo!(),
+                request.reschedule_to,
+            )
+            .await?;
 
         // TODO: emit event
 
@@ -789,6 +835,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 ))?;
                 Ok(DeletedTabularResponse {
                     id: *k,
+                    task_id: deleted.expiration_task_id,
                     name: i.name,
                     namespace: i.namespace.inner(),
                     typ: k.into(),
