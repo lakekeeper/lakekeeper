@@ -17,6 +17,7 @@ use crate::api::iceberg::v1::{
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::Authorizer;
 use crate::service::{Catalog, SecretStore, State};
+pub(crate) use exists::authorized_view_ident_to_id;
 use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
 use iceberg_ext::configs::Location;
 use std::str::FromStr;
