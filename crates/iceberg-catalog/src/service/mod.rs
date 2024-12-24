@@ -62,19 +62,19 @@ impl From<uuid::Uuid> for ViewIdentUuid {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
 pub struct NamespaceIdentUuid(uuid::Uuid);
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
 pub struct TableIdentUuid(uuid::Uuid);
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]

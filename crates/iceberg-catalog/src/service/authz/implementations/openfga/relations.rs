@@ -175,7 +175,7 @@ impl Assignment for RoleAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[schema(as=RoleAction)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APIRoleAction {
@@ -304,7 +304,7 @@ impl Assignment for ServerAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[schema(as=ServerAction)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APIServerAction {
@@ -512,7 +512,7 @@ impl Assignment for ProjectAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[serde(rename_all = "snake_case")]
 #[schema(as=ProjectAction)]
 pub(super) enum APIProjectAction {
@@ -738,7 +738,7 @@ impl Assignment for WarehouseAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[serde(rename_all = "snake_case")]
 #[schema(as=WarehouseAction)]
 pub(super) enum APIWarehouseAction {
@@ -881,6 +881,18 @@ pub(super) enum NamespaceRelation {
 
 impl OpenFgaRelation for NamespaceRelation {}
 
+impl From<CatalogNamespaceAction> for NamespaceRelation {
+    fn from(namespace: CatalogNamespaceAction) -> Self {
+        namespace.to_openfga()
+    }
+}
+
+impl From<&CatalogNamespaceAction> for NamespaceRelation {
+    fn from(namespace: &CatalogNamespaceAction) -> Self {
+        namespace.to_openfga()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
 #[serde(rename_all = "snake_case")]
 #[schema(as=NamespaceRelation)]
@@ -981,7 +993,7 @@ impl Assignment for NamespaceAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[schema(as=NamespaceAction)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APINamespaceAction {
@@ -1088,6 +1100,18 @@ pub(super) enum TableRelation {
 
 impl OpenFgaRelation for TableRelation {}
 
+impl From<CatalogTableAction> for TableRelation {
+    fn from(action: CatalogTableAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl From<&CatalogTableAction> for TableRelation {
+    fn from(action: &CatalogTableAction) -> Self {
+        action.to_openfga()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
 #[serde(rename_all = "snake_case")]
 #[schema(as=TableRelation)]
@@ -1179,7 +1203,7 @@ impl Assignment for TableAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[schema(as=TableAction)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APITableAction {
@@ -1280,6 +1304,18 @@ pub(super) enum ViewRelation {
 
 impl OpenFgaRelation for ViewRelation {}
 
+impl From<CatalogViewAction> for ViewRelation {
+    fn from(action: CatalogViewAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl From<&CatalogViewAction> for ViewRelation {
+    fn from(action: &CatalogViewAction) -> Self {
+        action.to_openfga()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, ToSchema, EnumIter)]
 #[serde(rename_all = "snake_case")]
 #[schema(as=ViewRelation)]
@@ -1362,7 +1398,7 @@ impl Assignment for ViewAssignment {
     }
 }
 
-#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, ToSchema, EnumIter)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema, EnumIter)]
 #[schema(as=ViewAction)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum APIViewAction {

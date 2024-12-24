@@ -48,7 +48,6 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     let view_id = authorizer
         .require_view_action(
             &request_metadata,
-            warehouse_id,
             view_id,
             &CatalogViewAction::CanGetMetadata,
         )

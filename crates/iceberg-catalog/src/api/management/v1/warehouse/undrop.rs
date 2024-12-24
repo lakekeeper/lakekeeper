@@ -1,23 +1,18 @@
+use crate::api;
 use crate::api::management::v1::warehouse::UndropTabularsRequest;
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::Authorizer;
 use crate::service::TabularIdentUuid;
-use crate::{api, WarehouseIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer>(
     request: &UndropTabularsRequest,
     authorizer: &A,
     request_metadata: &RequestMetadata,
-    warehouse_ident: WarehouseIdent,
 ) -> api::Result<()> {
-    let all_allowed = can_undrop_all_specified_tabulars(
-        request_metadata,
-        warehouse_ident,
-        authorizer,
-        request.targets.as_slice(),
-    )
-    .await?;
+    let all_allowed =
+        can_undrop_all_specified_tabulars(request_metadata, authorizer, request.targets.as_slice())
+            .await?;
     if !all_allowed {
         return Err(ErrorModel::forbidden(
             "Not allowed to undrop at least one specified tabular.",
@@ -31,7 +26,6 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer>(
 
 async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     request_metadata: &RequestMetadata,
-    warehouse_ident: WarehouseIdent,
     authorizer: &A,
     tabs: &[TabularIdentUuid],
 ) -> api::Result<bool> {
@@ -42,7 +36,6 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
             TabularIdentUuid::View(id) => {
                 futs.push(authorizer.is_allowed_view_action(
                     request_metadata,
-                    warehouse_ident,
                     (*id).into(),
                     &crate::service::authz::CatalogViewAction::CanUndrop,
                 ));
@@ -50,7 +43,6 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
             TabularIdentUuid::Table(id) => {
                 futs.push(authorizer.is_allowed_table_action(
                     request_metadata,
-                    warehouse_ident,
                     (*id).into(),
                     &crate::service::authz::CatalogTableAction::CanUndrop,
                 ));

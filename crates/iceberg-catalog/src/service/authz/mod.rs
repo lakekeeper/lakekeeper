@@ -224,9 +224,8 @@ where
     async fn is_allowed_namespace_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
-        action: &CatalogNamespaceAction,
+        action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -234,9 +233,8 @@ where
     async fn is_allowed_table_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
         table_id: TableIdentUuid,
-        action: &CatalogTableAction,
+        action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -244,9 +242,8 @@ where
     async fn is_allowed_view_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
         view_id: ViewIdentUuid,
-        action: &CatalogViewAction,
+        action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<bool>;
 
     /// Hook that is called when a user is deleted.
@@ -458,12 +455,11 @@ where
     async fn require_namespace_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
         // Outer error: Internal error that failed to fetch the namespace.
         // Ok(None): Namespace does not exist.
         // Ok(Some(namespace_id)): Namespace exists.
         namespace_id: Result<Option<NamespaceIdentUuid>>,
-        action: &CatalogNamespaceAction,
+        action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
     ) -> Result<NamespaceIdentUuid> {
         // It is important to throw the same error if the namespace does not exist (None) or if the action is not allowed,
         // to avoid leaking information about the existence of the namespace.
@@ -474,7 +470,7 @@ where
             Ok(None) => Err(ErrorModel::forbidden(msg, typ, None).into()),
             Ok(Some(namespace_id)) => {
                 if self
-                    .is_allowed_namespace_action(metadata, warehouse_id, namespace_id, action)
+                    .is_allowed_namespace_action(metadata, namespace_id, action)
                     .await?
                 {
                     Ok(namespace_id)
@@ -493,9 +489,8 @@ where
     async fn require_table_action<T: TableUuid + Send>(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
         table_id: Result<Option<T>>,
-        action: &CatalogTableAction,
+        action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
         let msg = format!("Table action {action} forbidden");
         let typ = "TableActionForbidden";
@@ -504,7 +499,7 @@ where
             Ok(None) => Err(ErrorModel::forbidden(msg, typ, None).into()),
             Ok(Some(table_id)) => {
                 if self
-                    .is_allowed_table_action(metadata, warehouse_id, table_id.table_uuid(), action)
+                    .is_allowed_table_action(metadata, table_id.table_uuid(), action)
                     .await?
                 {
                     Ok(table_id)
@@ -523,9 +518,8 @@ where
     async fn require_view_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
         view_id: Result<Option<ViewIdentUuid>>,
-        action: &CatalogViewAction,
+        action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<ViewIdentUuid> {
         let msg = format!("View action {action} forbidden");
         let typ = "ViewActionForbidden";
@@ -534,7 +528,7 @@ where
             Ok(None) => Err(ErrorModel::forbidden(msg, typ, None).into()),
             Ok(Some(view_id)) => {
                 if self
-                    .is_allowed_view_action(metadata, warehouse_id, view_id, action)
+                    .is_allowed_view_action(metadata, view_id, action)
                     .await?
                 {
                     Ok(view_id)

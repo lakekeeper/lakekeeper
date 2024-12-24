@@ -62,7 +62,6 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let namespace_id = authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
             namespace_id,
             &CatalogNamespaceAction::CanCreateView,
         )

@@ -4,7 +4,7 @@ info:
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).
   license:
     name: Apache-2.0
-  version: 0.5.0
+  version: 0.5.2
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -129,6 +129,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/permissions/check:
+    get:
+      tags:
+      - permissions
+      summary: Check if a specific action is allowed on the given object
+      operationId: check
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRoleAccessResponse'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -248,7 +267,6 @@ paths:
           type: string
           format: uuid
       requestBody:
-        description: ''
         content:
           application/json:
             schema:
@@ -402,29 +420,17 @@ paths:
         '204':
           description: Permissions updated successfully
   /management/v1/permissions/role/{role_id}/access:
-    get:
+    post:
       tags:
       - permissions
       summary: Get my access to the default project
       operationId: get_role_access_by_id
-      parameters:
-      - name: principal
-        in: query
-        description: |-
-          The user or role to show access for.
-          If not specified, shows access for the current user.
-        required: false
-        schema:
-          allOf:
-          - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
-      - name: role_id
-        in: path
-        description: Role ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleAssignmentsRequest'
         required: true
-        schema:
-          type: string
-          format: uuid
       responses:
         '200':
           description: ''
@@ -1786,6 +1792,114 @@ components:
           allOf:
           - $ref: '#/components/schemas/UserType'
           nullable: true
+    CheckAction:
+      oneOf:
+      - type: object
+        required:
+        - action
+        - type
+        properties:
+          action:
+            $ref: '#/components/schemas/ServerAction'
+          type:
+            type: string
+            enum:
+            - server
+      - type: object
+        required:
+        - action
+        - type
+        properties:
+          action:
+            $ref: '#/components/schemas/ProjectAction'
+          project-id:
+            type: string
+            format: uuid
+            nullable: true
+          type:
+            type: string
+            enum:
+            - project
+      - type: object
+        required:
+        - action
+        - warehouse-id
+        - type
+        properties:
+          action:
+            $ref: '#/components/schemas/WarehouseAction'
+          type:
+            type: string
+            enum:
+            - warehouse
+          warehouse-id:
+            type: string
+            format: uuid
+      - type: object
+        required:
+        - action
+        - namespace
+        - type
+        properties:
+          action:
+            $ref: '#/components/schemas/NamespaceAction'
+          namespace:
+            $ref: '#/components/schemas/NamespaceIdentOrUuid'
+          type:
+            type: string
+            enum:
+            - namespace
+      - type: object
+        required:
+        - action
+        - table
+        - type
+        properties:
+          action:
+            $ref: '#/components/schemas/TableAction'
+          table:
+            $ref: '#/components/schemas/TabularIdentOrUuid'
+          type:
+            type: string
+            enum:
+            - table
+      - type: object
+        required:
+        - action
+        - view
+        - type
+        properties:
+          action:
+            $ref: '#/components/schemas/ViewAction'
+          type:
+            type: string
+            enum:
+            - view
+          view:
+            $ref: '#/components/schemas/TabularIdentOrUuid'
+      description: Represents an action on an object
+      discriminator:
+        propertyName: type
+    CheckRequest:
+      type: object
+      description: Check if a specific action is allowed on the given object
+      required:
+      - action
+      properties:
+        action:
+          $ref: '#/components/schemas/CheckAction'
+        for-principal:
+          allOf:
+          - $ref: '#/components/schemas/UserOrRole'
+          nullable: true
+    CheckResponse:
+      type: object
+      required:
+      - allowed
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the action is allowed.
     CreateProjectRequest:
       type: object
       required:
@@ -2422,6 +2536,38 @@ components:
         title: NamespaceAssignmentModify
       discriminator:
         propertyName: type
+    NamespaceIdentOrUuid:
+      oneOf:
+      - type: object
+        required:
+        - identifier
+        - identifier-type
+        properties:
+          identifier:
+            type: string
+            format: uuid
+          identifier-type:
+            type: string
+            enum:
+            - uuid
+      - type: object
+        required:
+        - namespace
+        - warehouse_id
+        - identifier-type
+        properties:
+          identifier-type:
+            type: string
+            enum:
+            - name
+          namespace:
+            $ref: '#/components/schemas/NamespaceIdent'
+          warehouse_id:
+            type: string
+            format: uuid
+      description: Identifier for a namespace, either a UUID or its name and warehouse ID
+      discriminator:
+        propertyName: identifier-type
     NamespaceRelation:
       type: string
       enum:
@@ -3059,6 +3205,42 @@ components:
             - soft
       discriminator:
         propertyName: type
+    TabularIdentOrUuid:
+      oneOf:
+      - type: object
+        required:
+        - identifier
+        - identifier-type
+        properties:
+          identifier:
+            type: string
+            format: uuid
+          identifier-type:
+            type: string
+            enum:
+            - uuid
+      - type: object
+        required:
+        - namespace
+        - name
+        - warehouse_id
+        - identifier-type
+        properties:
+          identifier-type:
+            type: string
+            enum:
+            - name
+          name:
+            type: string
+            description: Name of the table or view
+          namespace:
+            $ref: '#/components/schemas/NamespaceIdent'
+          warehouse_id:
+            type: string
+            format: uuid
+      description: Identifier for a table or view, either a UUID or its name and namespace
+      discriminator:
+        propertyName: identifier-type
     TabularIdentUuid:
       oneOf:
       - type: object
