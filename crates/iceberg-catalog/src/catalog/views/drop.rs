@@ -49,7 +49,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let purge_requested = purge_requested.unwrap_or(false);
+    let purge_requested = purge_requested.unwrap_or(true);
 
     let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 

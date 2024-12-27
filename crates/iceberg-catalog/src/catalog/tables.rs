@@ -596,7 +596,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let purge = purge_requested.unwrap_or(false);
+        let purge = purge_requested.unwrap_or(true);
 
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
