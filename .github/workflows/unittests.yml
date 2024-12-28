@@ -150,7 +150,7 @@ jobs:
           RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        run: cargo install cargo-nextest
+        run: cargo install cargo-nextest --force
 
       - name: Migrate database
         run: |
