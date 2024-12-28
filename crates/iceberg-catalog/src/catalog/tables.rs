@@ -1146,7 +1146,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                         "Failed to parse expired metadata file location {}: {:?}",
                         expired_metadata_log.metadata_file,
                         e
-                    )
+                    );
                 })
                 .ok()
         })
@@ -1154,7 +1154,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let _ = futures::future::join_all(
         expired_locations
             .iter()
-            .map(|location| delete_file(&file_io, &location))
+            .map(|location| delete_file(&file_io, location))
             .collect::<Vec<_>>(),
     )
     .await

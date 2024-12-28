@@ -139,7 +139,7 @@ where
             e
         })?;
 
-    let tabular_location = Location::parse_value(&tabular_location).map_err(|e| {
+    let tabular_location = Location::parse_value(tabular_location).map_err(|e| {
         tracing::error!(
             "Failed delete tabular - to parse location {}: {:?}",
             tabular_location,
