@@ -172,15 +172,32 @@ def test_merge_into(spark):
     assert pdf["floats"].tolist() == [4.4, 3.3]
 
 
-def test_drop_table(spark, warehouse: conftest.Warehouse):
+def test_drop_table(
+    spark,
+    warehouse: conftest.Warehouse,
+    io_fsspec: fsspec.AbstractFileSystem,
+):
     spark.sql("CREATE NAMESPACE test_drop_table")
     spark.sql(
         "CREATE TABLE test_drop_table.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
     )
     assert warehouse.pyiceberg_catalog.load_table(("test_drop_table", "my_table"))
+    log_entries = spark.sql(
+        f"SELECT * FROM test_drop_table.my_table.metadata_log_entries"
+    ).toPandas()
+    table_location = log_entries.iloc[0, :]["file"].rsplit("/", 2)[0]
+    # Check files exist
+    if table_location.startswith("s3") or table_location.startswith("abfs"):
+        n_files = len([f for f in io_fsspec.ls(table_location)])
+        assert io_fsspec.exists(table_location)
+        assert n_files > 0
     spark.sql("DROP TABLE test_drop_table.my_table")
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table(("test_drop_table", "my_table"))
+    # Files should be deleted for managed tables
+    time.sleep(5)
+    if table_location.startswith("s3") or table_location.startswith("abfs"):
+        assert io_fsspec.exists(table_location) is False
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
@@ -423,7 +440,7 @@ def test_undropped_table_can_be_purged_again_http(spark, warehouse: conftest.War
         warehouse.pyiceberg_catalog.load_table((namespace, drop_table))
 
     undrop_table(table_0, warehouse)
-    
+
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
 
     assert len(tables) == 2
@@ -817,11 +834,11 @@ def test_cannot_create_table_at_sub_location(
 
 @pytest.mark.parametrize("enable_cleanup", [False, True])
 def test_old_metadata_files_are_deleted(
-        spark,
-        namespace,
-        warehouse: conftest.Warehouse,
-        enable_cleanup,
-        io_fsspec: fsspec.AbstractFileSystem,
+    spark,
+    namespace,
+    warehouse: conftest.Warehouse,
+    enable_cleanup,
+    io_fsspec: fsspec.AbstractFileSystem,
 ):
     if not enable_cleanup:
         tbl_name = "old_metadata_files_are_deleted_no_cleanup"
@@ -862,7 +879,7 @@ def test_old_metadata_files_are_deleted(
     # remove_result = spark.sql(
     #     f"CALL {warehouse.normalized_catalog_name}.system.remove_orphan_files(table => '{namespace.spark_name}.{tbl_name}', dry_run => false)"
     # ).toPandas()
-    if metadata_location.startswith("s3"):
+    if metadata_location.startswith("s3") or metadata_location.startswith("abfs"):
         n_files = len(
             [f for f in io_fsspec.ls(metadata_location) if f.endswith("metadata.json")]
         )
@@ -873,8 +890,8 @@ def test_old_metadata_files_are_deleted(
 
 
 def test_hierarchical_namespaces(
-        spark,
-        namespace: conftest.Namespace,
+    spark,
+    namespace: conftest.Namespace,
 ):
     nested_namespace = [namespace.spark_name, "nest1", "nest2", "nest3", "nest4"]
 

@@ -1,4 +1,5 @@
 use super::commit_tables::apply_commit;
+use super::io::delete_file;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
     require_warehouse_id, CatalogServer,
@@ -48,7 +49,7 @@ use iceberg::spec::{
 use iceberg::{NamespaceIdent, TableUpdate};
 use iceberg_ext::catalog::rest::{LoadCredentialsResponse, StorageCredential};
 use iceberg_ext::configs::namespace::NamespaceProperties;
-use iceberg_ext::configs::Location;
+use iceberg_ext::configs::{Location, ParseFromStr};
 use itertools::Itertools;
 use serde::Serialize;
 use uuid::Uuid;
@@ -1136,16 +1137,30 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     transaction.commit().await?;
 
     // Delete files in parallel - if one delete fails, we still want to delete the rest
+    let expired_locations = expired_metadata_logs
+        .into_iter()
+        .filter_map(|expired_metadata_log| {
+            Location::parse_value(&expired_metadata_log.metadata_file)
+                .map_err(|e| {
+                    tracing::warn!(
+                        "Failed to parse expired metadata file location {}: {:?}",
+                        expired_metadata_log.metadata_file,
+                        e
+                    )
+                })
+                .ok()
+        })
+        .collect::<Vec<_>>();
     let _ = futures::future::join_all(
-        expired_metadata_logs
-            .into_iter()
-            .map(|expired_metadata_log| file_io.delete(expired_metadata_log.metadata_file))
+        expired_locations
+            .iter()
+            .map(|location| delete_file(&file_io, &location))
             .collect::<Vec<_>>(),
     )
     .await
     .into_iter()
     .map(|r| {
-        r.map_err(|e| tracing::warn!("Failed to delete metadata file: {:?}", e))
+        r.map_err(|e| tracing::warn!("Failed to delete expired metadata file: {:?}", e))
             .ok()
     });
 

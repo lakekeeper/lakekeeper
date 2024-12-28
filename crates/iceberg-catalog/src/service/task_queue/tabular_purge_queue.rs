@@ -1,5 +1,6 @@
 use crate::api::management::v1::TabularType;
 use crate::api::Result;
+use crate::catalog::io::remove_all;
 use crate::catalog::maybe_get_secret;
 use crate::service::task_queue::{Task, TaskQueue};
 use crate::service::{Catalog, SecretStore, Transaction};
@@ -7,6 +8,7 @@ use crate::WarehouseIdent;
 use std::sync::Arc;
 
 use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::configs::{Location, ParseFromStr};
 use std::time::Duration;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -69,10 +71,18 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
     match purge::<C, S>(purge_task, secret_state, catalog_state.clone()).await {
         Ok(()) => {
             fetcher.retrying_record_success(&purge_task.task).await;
-            tracing::info!("Successfully handled tabular cleanup");
+            tracing::info!(
+                "Successfully cleaned up tabular {} at location {}",
+                purge_task.tabular_id,
+                purge_task.tabular_location
+            );
         }
         Err(err) => {
-            tracing::error!("Failed to expire table: {}", err.error);
+            tracing::error!(
+                "Failed to expire table {}: {}",
+                purge_task.tabular_id,
+                err.error
+            );
             fetcher
                 .retrying_record_failure(&purge_task.task, &err.error.to_string())
                 .await;
@@ -129,7 +139,19 @@ where
             e
         })?;
 
-    file_io.remove_all(tabular_location).await.map_err(|e| {
+    let tabular_location = Location::parse_value(&tabular_location).map_err(|e| {
+        tracing::error!(
+            "Failed delete tabular - to parse location {}: {:?}",
+            tabular_location,
+            e
+        );
+        ErrorModel::internal(
+            "Failed to parse table location of deleted tabular.",
+            "ParseError",
+            Some(Box::new(e)),
+        )
+    })?;
+    remove_all(&file_io, &tabular_location).await.map_err(|e| {
         tracing::error!(
             ?e,
             "Failed to purge '{tabular_id}' at location: '{tabular_location}'",

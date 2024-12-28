@@ -774,8 +774,7 @@ mod test {
         use crate::service::storage::{AdlsProfile, AzCredential};
         use crate::service::storage::{StorageCredential, StorageProfile};
 
-        #[tokio::test]
-        async fn test_can_validate() {
+        fn azure_profile() -> (AdlsProfile, AzCredential) {
             let account_name = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").unwrap();
             let client_id = std::env::var("AZURE_CLIENT_ID").unwrap();
             let client_secret = std::env::var("AZURE_CLIENT_SECRET").unwrap();
@@ -790,15 +789,21 @@ mod test {
                 host: None,
                 sas_token_validity_seconds: None,
             };
-            let mut prof: StorageProfile = prof.into();
 
-            let cred: StorageCredential = AzCredential::ClientCredentials {
+            let cred = AzCredential::ClientCredentials {
                 client_id,
                 client_secret,
                 tenant_id,
-            }
-            .into();
+            };
 
+            (prof, cred)
+        }
+
+        #[tokio::test]
+        async fn test_can_validate() {
+            let (prof, cred) = azure_profile();
+            let mut prof: StorageProfile = prof.into();
+            let cred: StorageCredential = cred.into();
             prof.normalize().expect("failed to validate profile");
             prof.validate_access(Some(&cred), None).await.unwrap();
         }

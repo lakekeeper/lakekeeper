@@ -202,7 +202,7 @@ def storage_config(request) -> dict:
         return {
             "storage-profile": {
                 "type": "gcs",
-                "bucket": "ht-catalog-dev",
+                "bucket": settings.gcs_bucket,
             },
             "storage-credential": {
                 "type": "gcs",
@@ -236,6 +236,15 @@ def io_fsspec(storage_config: dict):
             client_kwargs=client_kwargs,
         )
 
+        return fs
+    if storage_config["storage-profile"]["type"] == "adls":
+        fs = fsspec.filesystem(
+            "abfs",
+            account_name=storage_config["storage-profile"]["account-name"],
+            tenant_id=storage_config["storage-credential"]["tenant-id"],
+            client_id=storage_config["storage-credential"]["client-id"],
+            client_secret=storage_config["storage-credential"]["client-secret"],
+        )
         return fs
 
 
