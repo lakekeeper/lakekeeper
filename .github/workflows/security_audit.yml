@@ -21,6 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo install cargo-audit --force
       - name: Run audit check
         run: cargo audit

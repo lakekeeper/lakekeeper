@@ -10,7 +10,6 @@ check-clippy:
 	cargo clippy --all-targets --all-features --workspace -- -D warnings
 
 check-cargo-sort:
-	cargo install cargo-sort
 	cargo sort -c -w
 
 check: check-format check-clippy check-cargo-sort
