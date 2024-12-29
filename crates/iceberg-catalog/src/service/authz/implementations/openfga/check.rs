@@ -139,7 +139,7 @@ async fn check_internal<C: Catalog, S: SecretStore>(
         action: action_request,
     } = request;
     // Set for_principal to None if the user is checking their own access
-    let user_or_role = authorizer.check_actor(metadata.actor()).await?;
+    let user_or_role = metadata.actor().to_user_or_role();
     if let Some(user_or_role) = &user_or_role {
         for_principal = for_principal.filter(|p| p != user_or_role);
     }
@@ -154,6 +154,8 @@ async fn check_internal<C: Catalog, S: SecretStore>(
                         &OPENFGA_SERVER,
                     )
                     .await?;
+            } else {
+                authorizer.check_actor(metadata.actor()).await?;
             }
             (action.to_openfga().to_string(), OPENFGA_SERVER.to_string())
         }

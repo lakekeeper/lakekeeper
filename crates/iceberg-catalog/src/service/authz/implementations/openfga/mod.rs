@@ -59,8 +59,8 @@ use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
 pub(crate) use models::{ModelVersion, OpenFgaType, RoleAssignee};
 use relations::{
-    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, UserOrRole,
-    ViewRelation, WarehouseRelation,
+    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
+    WarehouseRelation,
 };
 pub(crate) use service_ext::ClientHelper;
 use service_ext::MAX_TUPLES_PER_WRITE;
@@ -1051,10 +1051,10 @@ impl OpenFGAAuthorizer {
 
     /// Check if the requested actor combination is allowed - especially if the user
     /// is allowed to assume the specified role.
-    async fn check_actor(&self, actor: &Actor) -> Result<Option<UserOrRole>> {
+    async fn check_actor(&self, actor: &Actor) -> Result<()> {
         match actor {
-            Actor::Principal(user_id) => Ok(Some(UserOrRole::User(user_id.clone()))),
-            Actor::Anonymous => Ok(None),
+            Actor::Principal(_user_id) => Ok(()),
+            Actor::Anonymous => Ok(()),
             Actor::Role {
                 principal,
                 assumed_role,
@@ -1068,9 +1068,7 @@ impl OpenFGAAuthorizer {
                     .await?;
 
                 if assume_role_allowed {
-                    Ok(Some(UserOrRole::Role(RoleAssignee::from_role(
-                        *assumed_role,
-                    ))))
+                    Ok(())
                 } else {
                     Err(ErrorModel::forbidden(
                         format!(

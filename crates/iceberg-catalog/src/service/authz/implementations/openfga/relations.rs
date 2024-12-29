@@ -7,10 +7,10 @@ use super::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
     OpenFGAError, OpenFGAResult, RoleAssignee,
 };
-use crate::service::authn::UserId;
 use crate::service::authz::{
     CatalogNamespaceAction, CatalogRoleAction, CatalogTableAction, CatalogViewAction,
 };
+use crate::service::{authn::UserId, Actor};
 use crate::service::{
     authz::{
         implementations::FgaType, CatalogProjectAction, CatalogServerAction, CatalogWarehouseAction,
@@ -58,6 +58,20 @@ pub(super) enum UserOrRole {
     #[schema(title = "UserOrRoleRole")]
     /// Id of the role
     Role(RoleAssignee),
+}
+
+impl Actor {
+    #[must_use]
+    pub(super) fn to_user_or_role(&self) -> Option<UserOrRole> {
+        match self {
+            Actor::Principal(user) => Some(UserOrRole::User(user.clone())),
+            Actor::Role {
+                assumed_role,
+                principal: _,
+            } => Some(UserOrRole::Role(RoleAssignee::from_role(*assumed_role))),
+            Actor::Anonymous => None,
+        }
+    }
 }
 
 impl From<UserId> for UserOrRole {
