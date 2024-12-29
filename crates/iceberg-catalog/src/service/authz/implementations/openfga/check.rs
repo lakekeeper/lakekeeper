@@ -68,6 +68,7 @@ pub(super) enum NamespaceIdentOrUuid {
         identifier: NamespaceIdentUuid,
     },
     Name {
+        #[schema(value_type = Vec<String>)]
         namespace: NamespaceIdent,
         #[schema(value_type = uuid::Uuid)]
         warehouse_id: WarehouseIdent,

@@ -2561,7 +2561,9 @@ components:
             enum:
             - name
           namespace:
-            $ref: '#/components/schemas/NamespaceIdent'
+            type: array
+            items:
+              type: string
           warehouse_id:
             type: string
             format: uuid
