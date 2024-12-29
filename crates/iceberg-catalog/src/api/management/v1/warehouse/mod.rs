@@ -653,18 +653,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
     async fn undrop_tabulars(
         request_metadata: RequestMetadata,
-        warehouse_ident: WarehouseIdent,
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
-        undrop::require_undrop_permissions(
-            &request,
-            &context.v1_state.authz,
-            &request_metadata,
-            warehouse_ident,
-        )
-        .await?;
+        undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
+            .await?;
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
@@ -741,13 +735,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                         ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
                             TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
-                                warehouse_id,
                                 (*id).into(),
                                 &crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
-                                warehouse_id,
                                 (*id).into(),
                                 &crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),

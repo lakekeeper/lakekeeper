@@ -1,3 +1,7 @@
+use super::check::{
+    __path_check, check, CheckAction, CheckRequest, CheckResponse, NamespaceIdentOrUuid,
+    TabularIdentOrUuid,
+};
 use super::relations::{
     APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
     APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
@@ -29,6 +33,7 @@ use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
+
 use http::StatusCode;
 use openfga_rs::{
     CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, TupleKey,
@@ -276,13 +281,10 @@ struct SetManagedAccessRequest {
 
 /// Get my access to the default project
 #[utoipa::path(
-    get,
+    post,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
-    params(
-        GetAccessQuery,
-        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
-    ),
+    request_body = UpdateRoleAssignmentsRequest,
     responses(
             (status = 200, body = GetRoleAccessResponse),
     )
@@ -525,6 +527,7 @@ async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
     params(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
+    request_body = SetManagedAccessRequest,
     responses(
             (status = 200),
     )
@@ -1255,6 +1258,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         (name = "permissions", description = "Manage Permissions"),
     ),
     paths(
+        check,
         get_namespace_access_by_id,
         get_namespace_assignments_by_id,
         get_namespace_by_id,
@@ -1285,6 +1289,9 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         update_warehouse_assignments_by_id,
     ),
     components(schemas(
+        CheckAction,
+        CheckRequest,
+        CheckResponse,
         GetNamespaceAccessResponse,
         GetNamespaceAssignmentsResponse,
         GetNamespaceAuthPropertiesResponse,
@@ -1303,6 +1310,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         GetWarehouseAuthPropertiesResponse,
         NamespaceAction,
         NamespaceAssignment,
+        NamespaceIdentOrUuid,
         NamespaceRelation,
         ProjectAction,
         ProjectAssignment,
@@ -1317,6 +1325,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         TableAction,
         TableAssignment,
         TableRelation,
+        TabularIdentOrUuid,
         UpdateNamespaceAssignmentsRequest,
         UpdateProjectAssignmentsRequest,
         UpdateRoleAssignmentsRequest,
@@ -1412,6 +1421,7 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             "/permissions/view/:view_id/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
         )
+        .route("/permissions/check", post(check))
 }
 
 async fn get_relations<RA: Assignment>(

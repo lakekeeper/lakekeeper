@@ -41,7 +41,6 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
             namespace_id,
             &CatalogNamespaceAction::CanListViews,
         )

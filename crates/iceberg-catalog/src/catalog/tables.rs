@@ -1,5 +1,6 @@
 use super::commit_tables::apply_commit;
 use super::io::delete_file;
+use super::namespace::authorized_namespace_ident_to_id;
 use super::{
     io::write_metadata_file, maybe_get_secret, namespace::validate_namespace_ident,
     require_warehouse_id, CatalogServer,
@@ -78,26 +79,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                &CatalogWarehouseAction::CanUse,
-            )
-            .await?;
-        let mut t: <C as Catalog>::Transaction =
-            Transaction::begin_read(state.v1_state.catalog).await?;
-        let namespace_id = C::namespace_to_id(warehouse_id, &namespace, t.transaction()).await; // We can't fail before AuthZ.
-
-        authorizer
-            .require_namespace_action(
-                &request_metadata,
-                warehouse_id,
-                namespace_id,
-                &CatalogNamespaceAction::CanListTables,
-            )
-            .await?;
-
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let _namespace_id = authorized_namespace_ident_to_id::<C, _>(
+            authorizer.clone(),
+            &request_metadata,
+            &warehouse_id,
+            &namespace,
+            &CatalogNamespaceAction::CanListTables,
+            t.transaction(),
+        )
+        .await?;
         // ------------------- BUSINESS LOGIC -------------------
 
         let (identifiers, table_uuids, next_page_token) =
@@ -146,24 +137,17 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         }
 
         // ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                &CatalogWarehouseAction::CanUse,
-            )
-            .await?;
+        let authorizer = state.v1_state.authz.clone();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let namespace_id = C::namespace_to_id(warehouse_id, &namespace, t.transaction()).await; // We can't fail before AuthZ.
-        let namespace_id = authorizer
-            .require_namespace_action(
-                &request_metadata,
-                warehouse_id,
-                namespace_id,
-                &CatalogNamespaceAction::CanCreateTable,
-            )
-            .await?;
+        let namespace_id = authorized_namespace_ident_to_id::<C, _>(
+            authorizer.clone(),
+            &request_metadata,
+            &warehouse_id,
+            &namespace,
+            &CatalogNamespaceAction::CanCreateTable,
+            t.transaction(),
+        )
+        .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let id = Uuid::now_v7();
@@ -588,12 +572,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await; // We can't fail before AuthZ
 
         let table_id = authorizer
-            .require_table_action(
-                &request_metadata,
-                warehouse_id,
-                table_id,
-                &CatalogTableAction::CanDrop,
-            )
+            .require_table_action(&request_metadata, table_id, &CatalogTableAction::CanDrop)
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -688,39 +667,22 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                &CatalogWarehouseAction::CanUse,
-            )
-            .await?;
-
-        let include_staged = false;
-        let include_deleted = false;
-        let include_active = true;
-
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let table_id = C::table_to_id(
+        let list_flags = ListFlags {
+            include_staged: false,
+            include_deleted: false,
+            include_active: true,
+        };
+        let _table_id = authorized_table_ident_to_id::<C, _>(
+            authorizer,
+            &request_metadata,
             warehouse_id,
             &table,
-            ListFlags {
-                include_active,
-                include_staged,
-                include_deleted,
-            },
+            list_flags,
+            &CatalogTableAction::CanGetMetadata,
             t.transaction(),
         )
-        .await; // We can't fail before AuthZ
-        authorizer
-            .require_table_action(
-                &request_metadata,
-                warehouse_id,
-                table_id,
-                &CatalogTableAction::CanGetMetadata,
-            )
-            .await
-            .map_err(set_not_found_status_code)?;
+        .await?;
         t.commit().await?;
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -746,38 +708,23 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
-        authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                &CatalogWarehouseAction::CanUse,
-            )
-            .await?;
-
-        let include_staged = false;
-        let include_deleted = false;
-        let include_active = true;
-
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let source_table_id = C::table_to_id(
+        let list_flags = ListFlags {
+            include_staged: false,
+            include_deleted: false,
+            include_active: true,
+        };
+        let source_table_id = authorized_table_ident_to_id::<C, _>(
+            authorizer.clone(),
+            &request_metadata,
             warehouse_id,
             &source,
-            ListFlags {
-                include_active,
-                include_staged,
-                include_deleted,
-            },
+            list_flags,
+            &CatalogTableAction::CanRename,
             t.transaction(),
         )
-        .await; // We can't fail before AuthZ;
-        let source_table_id = authorizer
-            .require_table_action(
-                &request_metadata,
-                warehouse_id,
-                source_table_id,
-                &CatalogTableAction::CanRename,
-            )
-            .await?;
+        .await?;
+
         let namespace_id =
             C::namespace_to_id(warehouse_id, &source.namespace, t.transaction()).await; // We can't fail before AuthZ
 
@@ -785,7 +732,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         authorizer
             .require_namespace_action(
                 &request_metadata,
-                warehouse_id,
                 namespace_id,
                 &CatalogNamespaceAction::CanCreateTable,
             )
@@ -871,7 +817,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let table_id = authorizer
             .require_table_action(
                 request_metadata,
-                warehouse_id,
                 table_id,
                 &CatalogTableAction::CanGetMetadata,
             )
@@ -881,13 +826,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
-                warehouse_id,
                 table_id.ident,
                 &CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
-                warehouse_id,
                 table_id.ident,
                 &CatalogTableAction::CanWriteData,
             ),
@@ -974,7 +917,6 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .map(|table_id| {
             authorizer.require_table_action(
                 &request_metadata,
-                warehouse_id,
                 Ok(*table_id),
                 &CatalogTableAction::CanCommit,
             )
@@ -1190,6 +1132,25 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .await;
     }
     Ok(commits)
+}
+
+pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
+    authorizer: A,
+    metadata: &RequestMetadata,
+    warehouse_id: WarehouseIdent,
+    table_ident: &TableIdent,
+    list_flags: ListFlags,
+    action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
+    transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+) -> Result<TableIdentUuid> {
+    authorizer
+        .require_warehouse_action(metadata, warehouse_id, &CatalogWarehouseAction::CanUse)
+        .await?;
+    let table_id = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
+    authorizer
+        .require_table_action(metadata, table_id, action)
+        .await
+        .map_err(set_not_found_status_code)
 }
 
 pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {

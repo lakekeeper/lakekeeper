@@ -18,7 +18,6 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::storage::{S3Location, S3Profile, StorageCredential};
 use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State};
 use crate::service::{GetTableMetadataResponse, TableIdentUuid};
-use crate::WarehouseIdent;
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
 const WRITE_METHODS: &[&str] = &["PUT", "POST", "DELETE"];
@@ -103,7 +102,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer
                 .require_table_action(
                     &request_metadata,
-                    warehouse_id,
                     metadata,
                     &CatalogTableAction::CanGetMetadata,
                 )
@@ -126,7 +124,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer
                 .require_table_action(
                     &request_metadata,
-                    warehouse_id,
                     metadata,
                     &CatalogTableAction::CanGetMetadata,
                 )
@@ -135,14 +132,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        validate_table_method::<A>(
-            &request_method,
-            &request_metadata,
-            warehouse_id,
-            table_id,
-            authorizer,
-        )
-        .await?;
+        validate_table_method::<A>(&request_method, &request_metadata, table_id, authorizer)
+            .await?;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -352,7 +343,6 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn validate_table_method<A: Authorizer>(
     method: &http::Method,
     metadata: &RequestMetadata,
-    warehouse_id: WarehouseIdent,
     table_id: TableIdentUuid,
     authorizer: A,
 ) -> Result<()> {
@@ -364,7 +354,6 @@ async fn validate_table_method<A: Authorizer>(
         authorizer
             .require_table_action(
                 metadata,
-                warehouse_id,
                 Ok(Some(table_id)),
                 &CatalogTableAction::CanWriteData,
             )
@@ -373,7 +362,6 @@ async fn validate_table_method<A: Authorizer>(
         authorizer
             .require_table_action(
                 metadata,
-                warehouse_id,
                 Ok(Some(table_id)),
                 &CatalogTableAction::CanReadData,
             )
