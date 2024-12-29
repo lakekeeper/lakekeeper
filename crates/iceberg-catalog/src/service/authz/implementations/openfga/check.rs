@@ -122,11 +122,11 @@ pub(super) async fn check<C: Catalog, S: SecretStore>(
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<CheckRequest>,
 ) -> Result<(StatusCode, Json<CheckResponse>)> {
-    let allowed = _check(api_context, &metadata, request).await?;
+    let allowed = check_internal(api_context, &metadata, request).await?;
     Ok((StatusCode::OK, Json(CheckResponse { allowed })))
 }
 
-async fn _check<C: Catalog, S: SecretStore>(
+async fn check_internal<C: Catalog, S: SecretStore>(
     api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
     metadata: &RequestMetadata,
     request: CheckRequest,
@@ -135,16 +135,21 @@ async fn _check<C: Catalog, S: SecretStore>(
     let CheckRequest {
         // If for_principal is specified, the user needs to have the
         // CanReadAssignments relation
-        for_principal,
+        mut for_principal,
         action: action_request,
     } = request;
+    // Set for_principal to None if the user is checking their own access
+    let user_or_role = authorizer.check_actor(metadata.actor()).await?;
+    if let Some(user_or_role) = &user_or_role {
+        for_principal = for_principal.filter(|p| p != user_or_role);
+    }
 
     let (action, object) = match &action_request {
         CheckAction::Server { action } => {
             if for_principal.is_some() {
                 authorizer
                     .require_action(
-                        &metadata,
+                        metadata,
                         AllServerAction::CanReadAssignments,
                         &OPENFGA_SERVER,
                     )
@@ -160,7 +165,7 @@ async fn _check<C: Catalog, S: SecretStore>(
                 .to_openfga();
             authorizer
                 .require_action(
-                    &metadata,
+                    metadata,
                     for_principal
                         .as_ref()
                         .map_or(AllProjectRelations::CanGetMetadata, |_| {
@@ -177,7 +182,7 @@ async fn _check<C: Catalog, S: SecretStore>(
         } => {
             authorizer
                 .require_action(
-                    &metadata,
+                    metadata,
                     for_principal
                         .as_ref()
                         .map_or(AllWarehouseRelation::CanGetMetadata, |_| {
@@ -195,23 +200,17 @@ async fn _check<C: Catalog, S: SecretStore>(
             action.to_openfga().to_string(),
             check_namespace(
                 api_context.clone(),
-                &metadata,
+                metadata,
                 namespace,
                 for_principal.as_ref(),
             )
             .await?,
         ),
         CheckAction::Table { action, table } => (action.to_openfga().to_string(), {
-            check_table(
-                api_context.clone(),
-                &metadata,
-                table,
-                for_principal.as_ref(),
-            )
-            .await?
+            check_table(api_context.clone(), metadata, table, for_principal.as_ref()).await?
         }),
         CheckAction::View { action, view } => (action.to_openfga().to_string(), {
-            check_view(api_context, &metadata, view, for_principal.as_ref()).await?
+            check_view(api_context, metadata, view, for_principal.as_ref()).await?
         }),
     };
 
@@ -363,20 +362,254 @@ async fn check_view<C: Catalog, S: SecretStore>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use needs_env_var::needs_env_var;
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
+        use super::super::super::relations::*;
         use super::super::*;
+        use crate::api::iceberg::v1::namespace::Service;
+        use crate::api::iceberg::v1::Prefix;
+        use crate::api::management::v1::role::{CreateRoleRequest, Service as RoleService};
+        use crate::api::management::v1::warehouse::{
+            CreateWarehouseResponse, TabularDeleteProfile,
+        };
+        use crate::api::management::v1::ApiServer;
+        use crate::catalog::{CatalogServer, NAMESPACE_ID_PROPERTY};
+        use crate::implementations::postgres::{PostgresCatalog, SecretsState};
         use crate::service::authn::UserId;
         use crate::service::authz::implementations::openfga::migration::tests::authorizer_for_empty_store;
+        use crate::service::authz::implementations::openfga::RoleAssignee;
+        use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+        use iceberg_ext::catalog::rest::CreateNamespaceResponse;
         use openfga_rs::TupleKey;
+        use std::str::FromStr;
+        use strum::IntoEnumIterator;
 
-        #[tokio::test]
-        async fn test_check_server() {
-            // ToDo: COntinue
-            todo!()
+        async fn setup(
+            operator_id: UserId,
+            pool: sqlx::PgPool,
+        ) -> (
+            ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+            CreateWarehouseResponse,
+            CreateNamespaceResponse,
+        ) {
+            let prof = crate::catalog::test::test_io_profile();
+            let authorizer = authorizer_for_empty_store().await.1;
+            let (ctx, warehouse) = crate::catalog::test::setup(
+                pool.clone(),
+                prof,
+                None,
+                authorizer.clone(),
+                TabularDeleteProfile::Hard {},
+                Some(operator_id.clone()),
+            )
+            .await;
+
+            let namespace = CatalogServer::create_namespace(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                CreateNamespaceRequest {
+                    namespace: NamespaceIdent::from_vec(vec!["ns1".to_string()]).unwrap(),
+                    properties: None,
+                },
+                ctx.clone(),
+                RequestMetadata::random_human(operator_id.clone()),
+            )
+            .await
+            .unwrap();
+
+            (ctx, warehouse, namespace)
+        }
+
+        #[sqlx::test]
+        async fn test_check_assume_role(pool: sqlx::PgPool) {
+            let operator_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let (ctx, _warehouse, _namespace) = setup(operator_id.clone(), pool).await;
+            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_metadata = RequestMetadata::random_human(user_id.clone());
+            let operator_metadata = RequestMetadata::random_human(operator_id.clone());
+
+            let role_id = ApiServer::create_role(
+                CreateRoleRequest {
+                    name: "test_role".to_string(),
+                    description: None,
+                    project_id: None,
+                },
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+            let role = UserOrRole::Role(RoleAssignee::from_role(role_id));
+
+            // User cannot check access for role without beeing a member
+            let request = CheckRequest {
+                for_principal: Some(role.clone()),
+                action: CheckAction::Server {
+                    action: ServerAction::ProvisionUsers,
+                },
+            };
+            check_internal(ctx.clone(), &user_metadata, request.clone())
+                .await
+                .unwrap_err();
+            // Admin can check access for role
+            let request = CheckRequest {
+                for_principal: Some(role.clone()),
+                action: CheckAction::Server {
+                    action: ServerAction::ProvisionUsers,
+                },
+            };
+            let allowed = check_internal(ctx.clone(), &operator_metadata, request)
+                .await
+                .unwrap();
+            assert!(!allowed);
+        }
+
+        #[sqlx::test]
+        async fn test_check(pool: sqlx::PgPool) {
+            let operator_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let (ctx, warehouse, namespace) = setup(operator_id.clone(), pool).await;
+            let namespace_id = NamespaceIdentUuid::from_str(
+                namespace
+                    .properties
+                    .unwrap()
+                    .get(NAMESPACE_ID_PROPERTY)
+                    .unwrap(),
+            )
+            .unwrap();
+
+            let nobody_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let nobody_metadata = RequestMetadata::random_human(nobody_id.clone());
+            let user_1_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_1_metadata = RequestMetadata::random_human(user_1_id.clone());
+
+            ctx.v1_state
+                .authz
+                .write(
+                    Some(vec![TupleKey {
+                        condition: None,
+                        object: namespace_id.clone().to_openfga(),
+                        relation: AllNamespaceRelations::Select.to_string(),
+                        user: user_1_id.to_openfga(),
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let server_actions = ServerAction::iter().map(|a| CheckAction::Server { action: a });
+            let project_actions = ProjectAction::iter().map(|a| CheckAction::Project {
+                action: a,
+                project_id: None,
+            });
+            let warehouse_actions = WarehouseAction::iter().map(|a| CheckAction::Warehouse {
+                action: a,
+                warehouse_id: warehouse.warehouse_id,
+            });
+            let namespace_ids = &[
+                NamespaceIdentOrUuid::Uuid {
+                    identifier: namespace_id,
+                },
+                NamespaceIdentOrUuid::Name {
+                    namespace: namespace.namespace,
+                    warehouse_id: warehouse.warehouse_id,
+                },
+            ];
+            let namespace_actions = NamespaceAction::iter().flat_map(|a| {
+                namespace_ids.iter().map(move |n| CheckAction::Namespace {
+                    action: a,
+                    namespace: n.clone(),
+                })
+            });
+
+            for action in itertools::chain!(
+                server_actions,
+                project_actions,
+                warehouse_actions,
+                namespace_actions
+            ) {
+                let request = CheckRequest {
+                    for_principal: None,
+                    action: action.clone(),
+                };
+
+                // Nobody & anonymous can check own access on server level
+                if let CheckAction::Server { .. } = &action {
+                    let allowed = check_internal(ctx.clone(), &nobody_metadata, request.clone())
+                        .await
+                        .unwrap();
+                    assert!(!allowed);
+                    // Anonymous can check his own access
+                    let allowed =
+                        check_internal(ctx.clone(), &RequestMetadata::new_random(), request)
+                            .await
+                            .unwrap();
+                    assert!(!allowed);
+                } else {
+                    check_internal(ctx.clone(), &nobody_metadata, request.clone())
+                        .await
+                        .unwrap_err();
+                }
+
+                // User 1 can check own access
+                let request = CheckRequest {
+                    for_principal: None,
+                    action: action.clone(),
+                };
+                check_internal(ctx.clone(), &user_1_metadata, request.clone())
+                    .await
+                    .unwrap();
+                // User 1 can check own access with principal
+                let request = CheckRequest {
+                    for_principal: Some(UserOrRole::User(user_1_id.clone())),
+                    action: action.clone(),
+                };
+                check_internal(ctx.clone(), &user_1_metadata, request.clone())
+                    .await
+                    .unwrap();
+                // User 1 cannot check operator access
+                let request = CheckRequest {
+                    for_principal: Some(UserOrRole::User(operator_id.clone())),
+                    action: action.clone(),
+                };
+                check_internal(ctx.clone(), &user_1_metadata, request.clone())
+                    .await
+                    .unwrap_err();
+                // Anonymous cannot check operator access
+                let request = CheckRequest {
+                    for_principal: Some(UserOrRole::User(operator_id.clone())),
+                    action: action.clone(),
+                };
+                check_internal(ctx.clone(), &RequestMetadata::new_random(), request.clone())
+                    .await
+                    .unwrap_err();
+                // Operator can check own access
+                let request = CheckRequest {
+                    for_principal: Some(UserOrRole::User(operator_id.clone())),
+                    action: action.clone(),
+                };
+                let allowed = check_internal(
+                    ctx.clone(),
+                    &RequestMetadata::random_human(operator_id.clone()),
+                    request,
+                )
+                .await
+                .unwrap();
+                assert!(allowed);
+                // Operator can check access of other user
+                let request = CheckRequest {
+                    for_principal: Some(UserOrRole::User(nobody_id.clone())),
+                    action: action.clone(),
+                };
+                check_internal(
+                    ctx.clone(),
+                    &RequestMetadata::random_human(operator_id.clone()),
+                    request,
+                )
+                .await
+                .unwrap();
+            }
         }
     }
 }

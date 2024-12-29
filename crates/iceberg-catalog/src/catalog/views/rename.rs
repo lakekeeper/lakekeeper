@@ -93,7 +93,7 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             body,
             EventMetadata {
                 tabular_id: TabularIdentUuid::View(*source_id),
-                warehouse_id: *warehouse_id.as_uuid(),
+                warehouse_id,
                 name: request.source.name,
                 namespace: request.source.namespace.to_url_string(),
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),

@@ -20,7 +20,7 @@ pub mod v1 {
         authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
         SecretStore, State, TabularIdentUuid,
     };
-    use crate::ProjectIdent;
+    use crate::{ProjectIdent, WarehouseIdent};
     use axum::extract::{Path, Query, State as AxumState};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
@@ -954,7 +954,8 @@ pub mod v1 {
         /// Type of the tabular
         pub typ: TabularType,
         /// Warehouse ID where the tabular is stored
-        pub warehouse_id: uuid::Uuid,
+        #[schema(value_type = uuid::Uuid)]
+        pub warehouse_id: WarehouseIdent,
         /// Date when the tabular was created
         pub created_at: chrono::DateTime<chrono::Utc>,
         /// Date when the tabular was deleted

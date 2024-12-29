@@ -300,7 +300,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         emit_change_event(
             EventMetadata {
                 tabular_id: TabularIdentUuid::Table(*tabular_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: table.name.clone(),
                 namespace: table.namespace.to_url_string(),
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
@@ -635,7 +635,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         emit_change_event(
             EventMetadata {
                 tabular_id: TabularIdentUuid::Table(*table_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: table.name,
                 namespace: table.namespace.to_url_string(),
                 prefix: prefix
@@ -763,7 +763,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         emit_change_event(
             EventMetadata {
                 tabular_id: TabularIdentUuid::Table(*source_table_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: source.name,
                 namespace: source.namespace.to_url_string(),
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
@@ -1114,7 +1114,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         emit_change_event(
             EventMetadata {
                 tabular_id: TabularIdentUuid::Table(*table_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: table_ident.name,
                 namespace: table_ident.namespace.to_url_string(),
                 prefix: prefix
@@ -1702,7 +1702,7 @@ mod test {
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use crate::service::authz::AllowAllAuthorizer;
-    use crate::service::State;
+    use crate::service::{State, UserId};
 
     use http::StatusCode;
     use iceberg::spec::{
@@ -2504,6 +2504,7 @@ mod test {
             None,
             AllowAllAuthorizer,
             TabularDeleteProfile::Hard {},
+            None,
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -2635,6 +2636,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -2691,6 +2693,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         let ns = crate::catalog::test::create_ns(

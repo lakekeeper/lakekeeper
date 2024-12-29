@@ -31,6 +31,9 @@ pub(super) trait OpenFgaRelation:
     std::fmt::Display + Eq + PartialEq + Clone + Sized + Copy + std::hash::Hash
 {
 }
+
+/// Trait for a subset of relations (i.e. actions)
+/// that can be converted to the corresponding full type
 pub(super) trait ReducedRelation:
     Clone + Sized + Copy + IntoEnumIterator + Eq + PartialEq
 {

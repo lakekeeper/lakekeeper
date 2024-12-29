@@ -59,8 +59,8 @@ use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
 pub(crate) use models::{ModelVersion, OpenFgaType, RoleAssignee};
 use relations::{
-    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
-    WarehouseRelation,
+    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, UserOrRole,
+    ViewRelation, WarehouseRelation,
 };
 pub(crate) use service_ext::ClientHelper;
 use service_ext::MAX_TUPLES_PER_WRITE;
@@ -271,7 +271,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: project_id.to_string(),
+            object: project_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -290,7 +290,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: warehouse_id.to_string(),
+            object: warehouse_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -1051,9 +1051,10 @@ impl OpenFGAAuthorizer {
 
     /// Check if the requested actor combination is allowed - especially if the user
     /// is allowed to assume the specified role.
-    async fn check_actor(&self, actor: &Actor) -> Result<()> {
+    async fn check_actor(&self, actor: &Actor) -> Result<Option<UserOrRole>> {
         match actor {
-            Actor::Principal(_) | Actor::Anonymous => Ok(()),
+            Actor::Principal(user_id) => Ok(Some(UserOrRole::User(user_id.clone()))),
+            Actor::Anonymous => Ok(None),
             Actor::Role {
                 principal,
                 assumed_role,
@@ -1067,7 +1068,9 @@ impl OpenFGAAuthorizer {
                     .await?;
 
                 if assume_role_allowed {
-                    Ok(())
+                    Ok(Some(UserOrRole::Role(RoleAssignee::from_role(
+                        *assumed_role,
+                    ))))
                 } else {
                     Err(ErrorModel::forbidden(
                         format!(

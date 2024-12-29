@@ -220,7 +220,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let mut request = request;
         request.properties = Some(namespace_props.into());
 
-        let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        let mut r =
+            C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
         let authz_parent = if let Some(parent_id) = parent_id {
             NamespaceParent::Namespace(parent_id)
         } else {
@@ -230,6 +231,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(&request_metadata, namespace_id, authz_parent)
             .await?;
         t.commit().await?;
+        r.properties
+            .as_mut()
+            .map(|p| p.insert(NAMESPACE_ID_PROPERTY.to_string(), namespace_id.to_string()));
         Ok(r)
     }
 
@@ -602,7 +606,7 @@ mod tests {
     use crate::implementations::postgres::{PostgresCatalog, PostgresTransaction, SecretsState};
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::{ListNamespacesQuery, State, Transaction};
+    use crate::service::{ListNamespacesQuery, State, Transaction, UserId};
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
@@ -628,6 +632,7 @@ mod tests {
             None,
             authz,
             TabularDeleteProfile::Hard {},
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
 
@@ -651,14 +656,10 @@ mod tests {
                 if n >= *range_start && n < *range_end {
                     hiding_mock.hide(&format!(
                         "namespace:{}",
-                        *namespace_to_id(
-                            warehouse.warehouse_id.into(),
-                            &ns.namespace,
-                            trx.transaction(),
-                        )
-                        .await
-                        .unwrap()
-                        .unwrap()
+                        *namespace_to_id(warehouse.warehouse_id, &ns.namespace, trx.transaction(),)
+                            .await
+                            .unwrap()
+                            .unwrap()
                     ));
                 }
             }
@@ -689,6 +690,7 @@ mod tests {
             None,
             authz,
             TabularDeleteProfile::Hard {},
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         for n in 0..10 {

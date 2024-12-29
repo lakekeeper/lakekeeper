@@ -175,7 +175,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             body,
             EventMetadata {
                 tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: identifier.name,
                 namespace: identifier.namespace.to_url_string(),
                 prefix: parameters
