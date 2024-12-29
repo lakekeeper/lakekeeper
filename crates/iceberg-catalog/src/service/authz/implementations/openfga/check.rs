@@ -83,6 +83,7 @@ pub(super) enum TabularIdentOrUuid {
         identifier: uuid::Uuid,
     },
     Name {
+        #[schema(value_type = Vec<String>)]
         namespace: NamespaceIdent,
         /// Name of the table or view
         name: String,

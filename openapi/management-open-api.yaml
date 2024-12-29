@@ -3236,7 +3236,9 @@ components:
             type: string
             description: Name of the table or view
           namespace:
-            $ref: '#/components/schemas/NamespaceIdent'
+            type: array
+            items:
+              type: string
           warehouse_id:
             type: string
             format: uuid
