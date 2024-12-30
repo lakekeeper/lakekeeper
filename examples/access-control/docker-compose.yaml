@@ -191,5 +191,19 @@ services:
       timeout: 30s
       retries: 3
 
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.3.7
+    healthcheck:
+      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    ports:
+      - "9030:9030"
+      - "8030:8030"
+    networks:
+      - iceberg_net
+
 networks:
   iceberg_net:
