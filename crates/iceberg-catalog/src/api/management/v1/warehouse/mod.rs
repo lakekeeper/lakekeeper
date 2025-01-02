@@ -156,6 +156,7 @@ pub struct ListWarehousesRequest {
     /// with the specified status.
     /// If not provided, only active warehouses are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     pub warehouse_status: Option<Vec<WarehouseStatus>>,
     /// The project ID to list warehouses for.
     /// Setting a warehouse is required.

@@ -15,18 +15,19 @@ pub mod v1 {
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
     use crate::api::management::v1::warehouse::UndropTabularsRequest;
+    use crate::api::IcebergErrorResponse;
     use crate::service::authn::UserId;
     use crate::service::{
-        authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
-        SecretStore, State, TabularIdentUuid,
+        authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse, RoleId, SecretStore, State,
+        TabularIdentUuid,
     };
     use crate::{ProjectIdent, WarehouseIdent};
     use axum::extract::{Path, Query, State as AxumState};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
-    use bootstrap::{AuthZBackend, BootstrapRequest, ServerInfo, Service as _};
+    use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
-    use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+    use iceberg_ext::catalog::rest::ErrorModel;
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
@@ -37,16 +38,14 @@ pub mod v1 {
     };
     use serde::Serialize;
     use user::{
-        CreateUserRequest, SearchUser, SearchUserRequest, SearchUserResponse, Service as _,
-        UpdateUserRequest, User, UserLastUpdatedWith, UserType,
+        CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
+        User,
     };
     use warehouse::{
-        AdlsProfile, AzCredential, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
-        GcsProfile, GcsServiceKey, GetWarehouseResponse, ListDeletedTabularsQuery,
-        ListWarehousesRequest, ListWarehousesResponse, RenameWarehouseRequest, S3Credential,
-        S3Profile, Service as _, StorageCredential, StorageProfile, TabularDeleteProfile,
-        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
-        UpdateWarehouseStorageRequest, WarehouseStatus,
+        CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
+        ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
+        RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
     };
 
     pub(crate) fn default_page_size() -> i64 {
@@ -106,63 +105,6 @@ pub mod v1 {
             update_warehouse_delete_profile,
             whoami,
         ),
-        components(schemas(
-            AuthZBackend,
-            ErrorModel,
-            AzCredential,
-            AdlsProfile,
-            BootstrapRequest,
-            CreateProjectRequest,
-            CreateProjectResponse,
-            CreateRoleRequest,
-            CreateRoleRequest,
-            CreateRoleRequest,
-            CreateUserRequest,
-            CreateWarehouseRequest,
-            CreateWarehouseResponse,
-            DeletedTabularResponse,
-            DeleteKind,
-            GcsCredential,
-            GcsProfile,
-            GcsServiceKey,
-            GetProjectResponse,
-            GetWarehouseResponse,
-            IcebergErrorResponse,
-            ListDeletedTabularsResponse,
-            ListProjectsResponse,
-            ListRolesResponse,
-            ListUsersResponse,
-            ListWarehousesRequest,
-            ListWarehousesResponse,
-            ProjectIdent,
-            RenameProjectRequest,
-            RenameWarehouseRequest,
-            Role,
-            S3Credential,
-            S3Flavor,
-            S3Profile,
-            SearchRoleRequest,
-            SearchRoleResponse,
-            SearchUser,
-            SearchUserRequest,
-            SearchUserResponse,
-            ServerInfo,
-            StorageCredential,
-            StorageProfile,
-            TabularDeleteProfile,
-            TabularType,
-            TabularIdentUuid,
-            UndropTabularsRequest,
-            UpdateRoleRequest,
-            UpdateUserRequest,
-            UpdateWarehouseCredentialRequest,
-            UpdateWarehouseDeleteProfileRequest,
-            UpdateWarehouseStorageRequest,
-            User,
-            UserLastUpdatedWith,
-            UserType,
-            WarehouseStatus,
-        )),
         modifiers(&SecurityAddon)
     )]
     struct ManagementApiDoc;

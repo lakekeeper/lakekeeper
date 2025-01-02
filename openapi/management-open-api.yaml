@@ -183,9 +183,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       - name: namespace_id
         in: path
         description: Namespace ID
@@ -212,9 +210,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/NamespaceRelation'
       - name: namespace_id
@@ -290,9 +286,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       responses:
         '200':
           description: Server Relations
@@ -312,9 +306,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/ProjectRelation'
       responses:
@@ -352,9 +344,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       - name: project_id
         in: path
         description: Project ID
@@ -381,9 +371,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/ProjectRelation'
       - name: project_id
@@ -428,6 +416,14 @@ paths:
       - permissions
       summary: Get my access to the default project
       operationId: get_role_access_by_id
+      parameters:
+      - name: role_id
+        in: path
+        description: Role ID
+        required: true
+        schema:
+          type: string
+          format: uuid
       requestBody:
         content:
           application/json:
@@ -453,9 +449,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/RoleRelation'
       - name: role_id
@@ -508,9 +502,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       responses:
         '200':
           description: Server Access
@@ -530,9 +522,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/ServerRelation'
       responses:
@@ -570,9 +560,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       - name: table_id
         in: path
         description: Table ID
@@ -599,9 +587,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/TableRelation'
       - name: table_id
@@ -654,9 +640,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       - name: view_id
         in: path
         description: View ID
@@ -683,9 +667,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/ViewRelation'
       - name: view_id
@@ -759,9 +741,7 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/UserOrRole'
+          $ref: '#/components/schemas/UserOrRole'
       - name: warehouse_id
         in: path
         description: Warehouse ID
@@ -788,9 +768,7 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/WarehouseRelation'
       - name: warehouse_id
@@ -1354,9 +1332,7 @@ paths:
           If not provided, only active warehouses are returned.
         required: false
         schema:
-          type:
-          - array
-          - 'null'
+          type: array
           items:
             $ref: '#/components/schemas/WarehouseStatus'
       - name: projectId
@@ -2048,11 +2024,6 @@ components:
           type: string
           format: uuid
           description: ID of the created warehouse.
-    DeleteKind:
-      type: string
-      enum:
-      - default
-      - purge
     DeletedTabularResponse:
       type: object
       required:
@@ -2458,26 +2429,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/User'
-    ListWarehousesRequest:
-      type: object
-      properties:
-        projectId:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/ProjectIdent'
-            description: |-
-              The project ID to list warehouses for.
-              Setting a warehouse is required.
-        warehouseStatus:
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/WarehouseStatus'
-          description: |-
-            Optional filter to return only warehouses
-            with the specified status.
-            If not provided, only active warehouses are returned.
     ListWarehousesResponse:
       type: object
       required:

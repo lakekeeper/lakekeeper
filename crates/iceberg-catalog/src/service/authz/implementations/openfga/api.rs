@@ -1,7 +1,4 @@
-use super::check::{
-    __path_check, check, CheckAction, CheckRequest, CheckResponse, NamespaceIdentOrUuid,
-    TabularIdentOrUuid,
-};
+use super::check::{__path_check, check};
 use super::relations::{
     APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
     APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
@@ -52,6 +49,7 @@ struct GetAccessQuery {
     /// The user or role to show access for.
     /// If not specified, shows access for the current user.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     principal: Option<UserOrRole>,
 }
 
@@ -102,6 +100,7 @@ struct GetViewAccessResponse {
 struct GetRoleAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<RoleRelation>>,
 }
 
@@ -116,6 +115,7 @@ struct GetRoleAssignmentsResponse {
 struct GetServerAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<ServerRelation>>,
 }
 
@@ -130,6 +130,7 @@ struct GetServerAssignmentsResponse {
 pub(super) struct GetProjectAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<ProjectRelation>>,
 }
 
@@ -146,6 +147,7 @@ struct GetProjectAssignmentsResponse {
 pub(super) struct GetWarehouseAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<WarehouseRelation>>,
 }
 
@@ -160,6 +162,7 @@ struct GetWarehouseAssignmentsResponse {
 pub(super) struct GetNamespaceAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<NamespaceRelation>>,
 }
 
@@ -174,6 +177,7 @@ struct GetNamespaceAssignmentsResponse {
 pub(super) struct GetTableAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<TableRelation>>,
 }
 
@@ -188,6 +192,7 @@ struct GetTableAssignmentsResponse {
 pub(super) struct GetViewAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<ViewRelation>>,
 }
 
@@ -284,6 +289,9 @@ struct SetManagedAccessRequest {
     post,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
+    params(
+        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+    ),
     request_body = UpdateRoleAssignmentsRequest,
     responses(
             (status = 200, body = GetRoleAccessResponse),
@@ -1288,59 +1296,14 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         update_view_assignments_by_id,
         update_warehouse_assignments_by_id,
     ),
-    components(schemas(
-        CheckAction,
-        CheckRequest,
-        CheckResponse,
-        GetNamespaceAccessResponse,
-        GetNamespaceAssignmentsResponse,
-        GetNamespaceAuthPropertiesResponse,
-        GetProjectAccessResponse,
-        GetProjectAssignmentsResponse,
-        GetRoleAccessResponse,
-        GetRoleAssignmentsResponse,
-        GetServerAccessResponse,
-        GetServerAssignmentsResponse,
-        GetTableAccessResponse,
-        GetTableAssignmentsResponse,
-        GetViewAccessResponse,
-        GetViewAssignmentsResponse,
-        GetWarehouseAccessResponse,
-        GetWarehouseAssignmentsResponse,
-        GetWarehouseAuthPropertiesResponse,
-        NamespaceAction,
-        NamespaceAssignment,
-        NamespaceIdentOrUuid,
-        NamespaceRelation,
-        ProjectAction,
-        ProjectAssignment,
-        ProjectRelation,
-        RoleAction,
-        RoleAssignment,
-        RoleRelation,
-        ServerAction,
-        ServerAssignment,
-        ServerRelation,
-        SetManagedAccessRequest,
-        TableAction,
-        TableAssignment,
-        TableRelation,
-        TabularIdentOrUuid,
-        UpdateNamespaceAssignmentsRequest,
-        UpdateProjectAssignmentsRequest,
-        UpdateRoleAssignmentsRequest,
-        UpdateServerAssignmentsRequest,
-        UpdateTableAssignmentsRequest,
-        UpdateViewAssignmentsRequest,
-        UpdateWarehouseAssignmentsRequest,
-        UserOrRole,
-        ViewAction,
-        ViewAssignment,
-        ViewRelation,
-        WarehouseAction,
-        WarehouseAssignment,
-        WarehouseRelation,
-    ))
+    // auto-discovery seems to be broken for these
+    components(schemas(NamespaceRelation,
+                       ProjectRelation,
+                       RoleRelation,
+                       ServerRelation,
+                       TableRelation,
+                       ViewRelation,
+                       WarehouseRelation))
 )]
 pub(crate) struct ApiDoc;
 
