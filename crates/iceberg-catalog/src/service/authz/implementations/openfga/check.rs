@@ -76,7 +76,7 @@ async fn check_internal<C: Catalog, S: SecretStore>(
                 &authorizer,
                 for_principal.as_ref(),
                 action,
-                project_id,
+                project_id.as_ref(),
             )
             .await?
         }
@@ -157,11 +157,11 @@ async fn check_project(
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIProjectAction,
-    project_id: &Option<ProjectIdent>,
+    project_id: Option<&ProjectIdent>,
 ) -> Result<(String, String)> {
     let project_id = project_id
-        .or(metadata.auth_details.project_id())
-        .or(*DEFAULT_PROJECT_ID)
+        .or(metadata.auth_details.project_id().as_ref())
+        .or(DEFAULT_PROJECT_ID.as_ref())
         .ok_or(OpenFGAError::NoProjectId)?
         .to_openfga();
     authorizer
