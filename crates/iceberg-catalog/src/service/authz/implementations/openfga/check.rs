@@ -1,10 +1,10 @@
 use super::relations::{
-    APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction,
-    APIServerAction as ServerAction, APITableAction as TableAction, APIViewAction as ViewAction,
-    APIWarehouseAction as WarehouseAction, NamespaceRelation as AllNamespaceRelations,
-    ProjectRelation as AllProjectRelations, ReducedRelation, ServerRelation as AllServerAction,
-    TableRelation as AllTableRelations, UserOrRole, ViewRelation as AllViewRelations,
-    WarehouseRelation as AllWarehouseRelation,
+    APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction, APIProjectAction,
+    APIServerAction as ServerAction, APIServerAction, APITableAction as TableAction,
+    APIViewAction as ViewAction, APIWarehouseAction as WarehouseAction, APIWarehouseAction,
+    NamespaceRelation as AllNamespaceRelations, ProjectRelation as AllProjectRelations,
+    ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
+    UserOrRole, ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
 };
 use super::{OpenFGAAuthorizer, OpenFGAError, OPENFGA_SERVER};
 use crate::catalog::namespace::authorized_namespace_ident_to_id;
@@ -25,94 +25,6 @@ use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
 use openfga_rs::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case", tag = "type")]
-/// Represents an action on an object
-pub(super) enum CheckAction {
-    Server {
-        action: ServerAction,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Project {
-        action: ProjectAction,
-        #[schema(value_type = Option<uuid::Uuid>)]
-        id: Option<ProjectIdent>,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Warehouse {
-        action: WarehouseAction,
-        #[schema(value_type = uuid::Uuid)]
-        id: WarehouseIdent,
-    },
-    Namespace {
-        action: NamespaceAction,
-        #[serde(flatten)]
-        namespace: NamespaceIdentOrUuid,
-    },
-    Table {
-        action: TableAction,
-        #[serde(flatten)]
-        table: TabularIdentOrUuid,
-    },
-    View {
-        action: ViewAction,
-        #[serde(flatten)]
-        view: TabularIdentOrUuid,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case", tag = "identifier-type")]
-/// Identifier for a namespace, either a UUID or its name and warehouse ID
-pub(super) enum NamespaceIdentOrUuid {
-    Id {
-        #[schema(value_type = uuid::Uuid)]
-        id: NamespaceIdentUuid,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Name {
-        #[schema(value_type = Vec<String>)]
-        name: NamespaceIdent,
-        #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseIdent,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case", tag = "identifier-type")]
-/// Identifier for a table or view, either a UUID or its name and namespace
-pub(super) enum TabularIdentOrUuid {
-    Id {
-        id: uuid::Uuid,
-    },
-    #[serde(rename_all = "kebab-case")]
-    Name {
-        #[schema(value_type = Vec<String>)]
-        namespace: NamespaceIdent,
-        /// Name of the table or view
-        name: String,
-        #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseIdent,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case")]
-/// Check if a specific action is allowed on the given object
-pub(super) struct CheckRequest {
-    /// The user or role to check access for.
-    for_principal: Option<UserOrRole>,
-    /// The action to check.
-    action: CheckAction,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case")]
-pub(super) struct CheckResponse {
-    /// Whether the action is allowed.
-    allowed: bool,
-}
 
 /// Check if a specific action is allowed on the given object
 #[utoipa::path(
@@ -153,60 +65,33 @@ async fn check_internal<C: Catalog, S: SecretStore>(
 
     let (action, object) = match &action_request {
         CheckAction::Server { action } => {
-            if for_principal.is_some() {
-                authorizer
-                    .require_action(
-                        metadata,
-                        AllServerAction::CanReadAssignments,
-                        &OPENFGA_SERVER,
-                    )
-                    .await?;
-            } else {
-                authorizer.check_actor(metadata.actor()).await?;
-            }
-            (action.to_openfga().to_string(), OPENFGA_SERVER.to_string())
+            check_server(metadata, &authorizer, &mut for_principal, action).await?
         }
         CheckAction::Project {
             action,
             id: project_id,
         } => {
-            let project_id = project_id
-                .or(metadata.auth_details.project_id())
-                .or(*DEFAULT_PROJECT_ID)
-                .ok_or(OpenFGAError::NoProjectId)?
-                .to_openfga();
-            authorizer
-                .require_action(
-                    metadata,
-                    for_principal
-                        .as_ref()
-                        .map_or(AllProjectRelations::CanGetMetadata, |_| {
-                            AllProjectRelations::CanReadAssignments
-                        }),
-                    &project_id,
-                )
-                .await?;
-            (action.to_openfga().to_string(), project_id)
+            check_project(
+                metadata,
+                &authorizer,
+                for_principal.as_ref(),
+                action,
+                project_id,
+            )
+            .await?
         }
         CheckAction::Warehouse {
             action,
             id: warehouse_id,
         } => {
-            authorizer
-                .require_action(
-                    metadata,
-                    for_principal
-                        .as_ref()
-                        .map_or(AllWarehouseRelation::CanGetMetadata, |_| {
-                            AllWarehouseRelation::CanReadAssignments
-                        }),
-                    &warehouse_id.to_openfga(),
-                )
-                .await?;
-            (
-                action.to_openfga().to_string(),
-                warehouse_id.to_openfga().to_string(),
+            check_warehouse(
+                metadata,
+                &authorizer,
+                for_principal.as_ref(),
+                action,
+                *warehouse_id,
             )
+            .await?
         }
         CheckAction::Namespace { action, namespace } => (
             action.to_openfga().to_string(),
@@ -241,6 +126,76 @@ async fn check_internal<C: Catalog, S: SecretStore>(
         .await?;
 
     Ok(allowed)
+}
+
+async fn check_warehouse(
+    metadata: &RequestMetadata,
+    authorizer: &OpenFGAAuthorizer,
+    for_principal: Option<&UserOrRole>,
+    action: &APIWarehouseAction,
+    warehouse_id: WarehouseIdent,
+) -> Result<(String, String)> {
+    authorizer
+        .require_action(
+            metadata,
+            for_principal
+                .as_ref()
+                .map_or(AllWarehouseRelation::CanGetMetadata, |_| {
+                    AllWarehouseRelation::CanReadAssignments
+                }),
+            &warehouse_id.to_openfga(),
+        )
+        .await?;
+    Ok((
+        action.to_openfga().to_string(),
+        warehouse_id.to_openfga().to_string(),
+    ))
+}
+
+async fn check_project(
+    metadata: &RequestMetadata,
+    authorizer: &OpenFGAAuthorizer,
+    for_principal: Option<&UserOrRole>,
+    action: &APIProjectAction,
+    project_id: &Option<ProjectIdent>,
+) -> Result<(String, String)> {
+    let project_id = project_id
+        .or(metadata.auth_details.project_id())
+        .or(*DEFAULT_PROJECT_ID)
+        .ok_or(OpenFGAError::NoProjectId)?
+        .to_openfga();
+    authorizer
+        .require_action(
+            metadata,
+            for_principal
+                .as_ref()
+                .map_or(AllProjectRelations::CanGetMetadata, |_| {
+                    AllProjectRelations::CanReadAssignments
+                }),
+            &project_id,
+        )
+        .await?;
+    Ok((action.to_openfga().to_string(), project_id))
+}
+
+async fn check_server(
+    metadata: &RequestMetadata,
+    authorizer: &OpenFGAAuthorizer,
+    for_principal: &mut Option<UserOrRole>,
+    action: &APIServerAction,
+) -> Result<(String, String)> {
+    if for_principal.is_some() {
+        authorizer
+            .require_action(
+                metadata,
+                AllServerAction::CanReadAssignments,
+                &OPENFGA_SERVER,
+            )
+            .await?;
+    } else {
+        authorizer.check_actor(metadata.actor()).await?;
+    }
+    Ok((action.to_openfga().to_string(), OPENFGA_SERVER.to_string()))
 }
 
 async fn check_namespace<C: Catalog, S: SecretStore>(
@@ -367,6 +322,94 @@ async fn check_view<C: Catalog, S: SecretStore>(
         }
     }
     .to_openfga())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+/// Represents an action on an object
+pub(super) enum CheckAction {
+    Server {
+        action: ServerAction,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Project {
+        action: ProjectAction,
+        #[schema(value_type = Option<uuid::Uuid>)]
+        id: Option<ProjectIdent>,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Warehouse {
+        action: WarehouseAction,
+        #[schema(value_type = uuid::Uuid)]
+        id: WarehouseIdent,
+    },
+    Namespace {
+        action: NamespaceAction,
+        #[serde(flatten)]
+        namespace: NamespaceIdentOrUuid,
+    },
+    Table {
+        action: TableAction,
+        #[serde(flatten)]
+        table: TabularIdentOrUuid,
+    },
+    View {
+        action: ViewAction,
+        #[serde(flatten)]
+        view: TabularIdentOrUuid,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case", tag = "identifier-type")]
+/// Identifier for a namespace, either a UUID or its name and warehouse ID
+pub(super) enum NamespaceIdentOrUuid {
+    Id {
+        #[schema(value_type = uuid::Uuid)]
+        id: NamespaceIdentUuid,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Name {
+        #[schema(value_type = Vec<String>)]
+        name: NamespaceIdent,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseIdent,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case", tag = "identifier-type")]
+/// Identifier for a table or view, either a UUID or its name and namespace
+pub(super) enum TabularIdentOrUuid {
+    Id {
+        id: uuid::Uuid,
+    },
+    #[serde(rename_all = "kebab-case")]
+    Name {
+        #[schema(value_type = Vec<String>)]
+        namespace: NamespaceIdent,
+        /// Name of the table or view
+        name: String,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseIdent,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+/// Check if a specific action is allowed on the given object
+pub(super) struct CheckRequest {
+    /// The user or role to check access for.
+    for_principal: Option<UserOrRole>,
+    /// The action to check.
+    action: CheckAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub(super) struct CheckResponse {
+    /// Whether the action is allowed.
+    allowed: bool,
 }
 
 #[cfg(test)]
