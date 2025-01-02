@@ -42,6 +42,7 @@ services:
       iceberg_net:
     ports:
       - "8181:8181"
+      - "1234:9000"
 
   migrate:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
