@@ -3,6 +3,7 @@
 #![allow(clippy::ref_option)]
 
 use anyhow::{anyhow, Context};
+use core::result::Result::Ok;
 use http::HeaderValue;
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -215,13 +216,15 @@ fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, 
 where
     D: Deserializer<'de>,
 {
-    Ok(Option::deserialize(deserializer)?
-        .map(|buf: String| {
-            buf.split(',')
-                .map(|s| s.trim_end_matches(' ').to_string())
-                .collect::<Vec<_>>()
-        })
-        .filter(|vec| !vec.is_empty()))
+    let buf = Option::<serde_json::Value>::deserialize(deserializer)?;
+    buf.map(|buf| {
+        buf.as_str()
+            .map(str::to_string)
+            .or(buf.as_i64().map(|i| i.to_string()))
+            .map(|s| s.split(',').map(str::to_string).collect::<Vec<_>>())
+            .ok_or_else(|| serde::de::Error::custom("Expected a string"))
+    })
+    .transpose()
 }
 
 fn serialize_audience<S>(value: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
@@ -643,6 +646,26 @@ mod test {
                 config.allow_origin,
                 Some(vec![HeaderValue::from_str("*").unwrap()])
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_single_audience() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_AUDIENCE", "abc");
+            let config = get_config();
+            assert_eq!(config.openid_audience, Some(vec!["abc".to_string()]));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_audience_only_numbers() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_AUDIENCE", "123456");
+            let config = get_config();
+            assert_eq!(config.openid_audience, Some(vec!["123456".to_string()]));
             Ok(())
         });
     }
