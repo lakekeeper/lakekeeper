@@ -224,6 +224,7 @@ fn build_new_metadata(
     request: CommitViewRequest,
     before_update_metadata: ViewMetadata,
 ) -> Result<ViewMetadata> {
+    let previous_location = before_update_metadata.location.clone();
     let mut m = ViewMetadataBuilder::new(before_update_metadata);
 
     for upd in request.updates {
@@ -236,13 +237,16 @@ fn build_new_metadata(
                     .build()
                     .into());
             }
-            ViewUpdate::SetLocation { .. } => {
-                return Err(ErrorModel::builder()
-                    .code(StatusCode::BAD_REQUEST.into())
-                    .message("Setting location is not supported".to_string())
-                    .r#type("SetLocationNotSupported".to_string())
-                    .build()
-                    .into());
+            ViewUpdate::SetLocation { location } => {
+                if previous_location != location {
+                    return Err(ErrorModel::builder()
+                        .code(StatusCode::BAD_REQUEST.into())
+                        .message("Setting location for views is not supported".to_string())
+                        .r#type("SetLocationNotSupported".to_string())
+                        .build()
+                        .into());
+                }
+                m
             }
 
             ViewUpdate::UpgradeFormatVersion { format_version } => match format_version {

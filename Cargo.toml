@@ -117,7 +117,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
-utoipa = { version = "4.2.3", features = [
+utoipa = { version = "5.3.0", features = [
     "axum_extras",
     "chrono",
     "url",
@@ -125,7 +125,7 @@ utoipa = { version = "4.2.3", features = [
     "yaml",
 ] }
 serde_yml = "0.0.12"
-utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
+utoipa-swagger-ui = { version = "8.1.0", features = ["axum"] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"

@@ -37,24 +37,27 @@ pub(super) enum CheckAction {
     Project {
         action: ProjectAction,
         #[schema(value_type = Option<uuid::Uuid>)]
-        project_id: Option<ProjectIdent>,
+        id: Option<ProjectIdent>,
     },
     #[serde(rename_all = "kebab-case")]
     Warehouse {
         action: WarehouseAction,
         #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseIdent,
+        id: WarehouseIdent,
     },
     Namespace {
         action: NamespaceAction,
+        #[serde(flatten)]
         namespace: NamespaceIdentOrUuid,
     },
     Table {
         action: TableAction,
+        #[serde(flatten)]
         table: TabularIdentOrUuid,
     },
     View {
         action: ViewAction,
+        #[serde(flatten)]
         view: TabularIdentOrUuid,
     },
 }
@@ -63,13 +66,14 @@ pub(super) enum CheckAction {
 #[serde(rename_all = "kebab-case", tag = "identifier-type")]
 /// Identifier for a namespace, either a UUID or its name and warehouse ID
 pub(super) enum NamespaceIdentOrUuid {
-    Uuid {
+    Id {
         #[schema(value_type = uuid::Uuid)]
-        identifier: NamespaceIdentUuid,
+        id: NamespaceIdentUuid,
     },
+    #[serde(rename_all = "kebab-case")]
     Name {
         #[schema(value_type = Vec<String>)]
-        namespace: NamespaceIdent,
+        name: NamespaceIdent,
         #[schema(value_type = uuid::Uuid)]
         warehouse_id: WarehouseIdent,
     },
@@ -79,9 +83,10 @@ pub(super) enum NamespaceIdentOrUuid {
 #[serde(rename_all = "kebab-case", tag = "identifier-type")]
 /// Identifier for a table or view, either a UUID or its name and namespace
 pub(super) enum TabularIdentOrUuid {
-    Uuid {
-        identifier: uuid::Uuid,
+    Id {
+        id: uuid::Uuid,
     },
+    #[serde(rename_all = "kebab-case")]
     Name {
         #[schema(value_type = Vec<String>)]
         namespace: NamespaceIdent,
@@ -111,12 +116,12 @@ pub(super) struct CheckResponse {
 
 /// Check if a specific action is allowed on the given object
 #[utoipa::path(
-    get,
+    post,
     tag = "permissions",
     path = "/management/v1/permissions/check",
     request_body = CheckRequest,
     responses(
-            (status = 200, body = GetRoleAccessResponse),
+            (status = 200, body = CheckResponse),
     )
 )]
 pub(super) async fn check<C: Catalog, S: SecretStore>(
@@ -161,7 +166,10 @@ async fn check_internal<C: Catalog, S: SecretStore>(
             }
             (action.to_openfga().to_string(), OPENFGA_SERVER.to_string())
         }
-        CheckAction::Project { action, project_id } => {
+        CheckAction::Project {
+            action,
+            id: project_id,
+        } => {
             let project_id = project_id
                 .or(metadata.auth_details.project_id())
                 .or(*DEFAULT_PROJECT_ID)
@@ -182,7 +190,7 @@ async fn check_internal<C: Catalog, S: SecretStore>(
         }
         CheckAction::Warehouse {
             action,
-            warehouse_id,
+            id: warehouse_id,
         } => {
             authorizer
                 .require_action(
@@ -246,22 +254,19 @@ async fn check_namespace<C: Catalog, S: SecretStore>(
         AllNamespaceRelations::CanReadAssignments
     });
     Ok(match namespace {
-        NamespaceIdentOrUuid::Uuid { identifier } => {
+        NamespaceIdentOrUuid::Id { id: identifier } => {
             authorizer
                 .require_namespace_action(metadata, Ok(Some(*identifier)), action)
                 .await?;
             *identifier
         }
-        NamespaceIdentOrUuid::Name {
-            namespace,
-            warehouse_id,
-        } => {
+        NamespaceIdentOrUuid::Name { name, warehouse_id } => {
             let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
             let namespace_id = authorized_namespace_ident_to_id::<C, _>(
                 authorizer.clone(),
                 metadata,
                 warehouse_id,
-                namespace,
+                name,
                 action,
                 t.transaction(),
             )
@@ -284,7 +289,7 @@ async fn check_table<C: Catalog, S: SecretStore>(
         AllTableRelations::CanReadAssignments
     });
     Ok(match table {
-        TabularIdentOrUuid::Uuid { identifier } => {
+        TabularIdentOrUuid::Id { id: identifier } => {
             let table_id = TableIdentUuid::from(*identifier);
             authorizer
                 .require_table_action(metadata, Ok(Some(table_id)), action)
@@ -332,7 +337,7 @@ async fn check_view<C: Catalog, S: SecretStore>(
         AllViewRelations::CanReadAssignments
     });
     Ok(match view {
-        TabularIdentOrUuid::Uuid { identifier } => {
+        TabularIdentOrUuid::Id { id: identifier } => {
             let view_id = ViewIdentUuid::from(*identifier);
             authorizer
                 .require_view_action(metadata, Ok(Some(view_id)), action)
@@ -366,7 +371,29 @@ async fn check_view<C: Catalog, S: SecretStore>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use needs_env_var::needs_env_var;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_serde_check_action() {
+        let action = CheckAction::Namespace {
+            action: NamespaceAction::CreateTable,
+            namespace: NamespaceIdentOrUuid::Id {
+                id: NamespaceIdentUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "namespace",
+                "action": "create_table",
+                "identifier-type": "id",
+                "id": "00000000-0000-0000-0000-000000000000"
+            })
+        );
+    }
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
@@ -505,18 +532,16 @@ mod tests {
             let server_actions = ServerAction::iter().map(|a| CheckAction::Server { action: a });
             let project_actions = ProjectAction::iter().map(|a| CheckAction::Project {
                 action: a,
-                project_id: None,
+                id: None,
             });
             let warehouse_actions = WarehouseAction::iter().map(|a| CheckAction::Warehouse {
                 action: a,
-                warehouse_id: warehouse.warehouse_id,
+                id: warehouse.warehouse_id,
             });
             let namespace_ids = &[
-                NamespaceIdentOrUuid::Uuid {
-                    identifier: namespace_id,
-                },
+                NamespaceIdentOrUuid::Id { id: namespace_id },
                 NamespaceIdentOrUuid::Name {
-                    namespace: namespace.namespace,
+                    name: namespace.namespace,
                     warehouse_id: warehouse.warehouse_id,
                 },
             ];

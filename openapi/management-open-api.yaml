@@ -1,9 +1,10 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Lakekeeper Management API
   description: Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The Management API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).
   license:
     name: Apache-2.0
+    identifier: Apache-2.0
   version: 0.5.2
 servers:
 - url: '{scheme}://{host}/{basePath}'
@@ -23,8 +24,8 @@ paths:
     post:
       tags:
       - server
-      summary: Creates the user in the catalog if it does not exist.
-      description: |-
+      summary: |-
+        Creates the user in the catalog if it does not exist.
         If the user exists, it updates the users' metadata from the token.
         The token sent to this endpoint should have "profile" and "email" scopes.
       operationId: bootstrap
@@ -89,7 +90,6 @@ paths:
       summary: Rename the default project
       operationId: rename_default_project
       requestBody:
-        description: ''
         content:
           application/json:
             schema:
@@ -130,7 +130,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/permissions/check:
-    get:
+    post:
       tags:
       - permissions
       summary: Check if a specific action is allowed on the given object
@@ -147,7 +147,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetRoleAccessResponse'
+                $ref: '#/components/schemas/CheckResponse'
   /management/v1/permissions/namespace/{namespace_id}:
     get:
       tags:
@@ -183,9 +183,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       - name: namespace_id
         in: path
         description: Namespace ID
@@ -212,10 +212,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/NamespaceRelation'
-          nullable: true
       - name: namespace_id
         in: path
         description: Namespace ID
@@ -289,9 +290,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       responses:
         '200':
           description: Server Relations
@@ -311,10 +312,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/ProjectRelation'
-          nullable: true
       responses:
         '200':
           description: ''
@@ -350,9 +352,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       - name: project_id
         in: path
         description: Project ID
@@ -379,10 +381,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/ProjectRelation'
-          nullable: true
       - name: project_id
         in: path
         description: Project ID
@@ -450,10 +453,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/RoleRelation'
-          nullable: true
       - name: role_id
         in: path
         description: Role ID
@@ -504,9 +508,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       responses:
         '200':
           description: Server Access
@@ -526,10 +530,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/ServerRelation'
-          nullable: true
       responses:
         '200':
           description: ''
@@ -565,9 +570,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       - name: table_id
         in: path
         description: Table ID
@@ -594,10 +599,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/TableRelation'
-          nullable: true
       - name: table_id
         in: path
         description: Table ID
@@ -648,9 +654,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       - name: view_id
         in: path
         description: View ID
@@ -677,10 +683,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/ViewRelation'
-          nullable: true
       - name: view_id
         in: path
         description: View ID
@@ -752,9 +759,9 @@ paths:
           If not specified, shows access for the current user.
         required: false
         schema:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
       - name: warehouse_id
         in: path
         description: Warehouse ID
@@ -781,10 +788,11 @@ paths:
         description: Relations to be loaded. If not specified, all relations are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/WarehouseRelation'
-          nullable: true
       - name: warehouse_id
         in: path
         description: Warehouse ID
@@ -836,7 +844,6 @@ paths:
           type: string
           format: uuid
       requestBody:
-        description: ''
         content:
           application/json:
             schema:
@@ -852,7 +859,6 @@ paths:
       summary: Create a new project
       operationId: create_project
       requestBody:
-        description: ''
         content:
           application/json:
             schema:
@@ -951,7 +957,6 @@ paths:
           type: string
           format: uuid
       requestBody:
-        description: ''
         content:
           application/json:
             schema:
@@ -978,15 +983,17 @@ paths:
         description: Search for a specific role name
         required: false
         schema:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
       - name: pageToken
         in: query
         description: Next page token
         required: false
         schema:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
       - name: pageSize
         in: query
         description: |-
@@ -1184,15 +1191,17 @@ paths:
         description: Search for a specific username
         required: false
         schema:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
       - name: pageToken
         in: query
         description: Next page token
         required: false
         schema:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
       - name: pageSize
         in: query
         description: |-
@@ -1218,8 +1227,8 @@ paths:
     post:
       tags:
       - user
-      summary: Creates the user in the catalog if it does not exist.
-      description: |-
+      summary: |-
+        Creates the user in the catalog if it does not exist.
         If the user exists, it updates the users' metadata from the token.
         The token sent to this endpoint should have "profile" and "email" scopes.
       operationId: create_user
@@ -1277,8 +1286,9 @@ paths:
     put:
       tags:
       - user
-      summary: Update details of a user. Replaces the current details with the new details.
-      description: If a field is not provided, it is set to `None`.
+      summary: |-
+        Update details of a user. Replaces the current details with the new details.
+        If a field is not provided, it is set to `None`.
       operationId: update_user
       parameters:
       - name: id
@@ -1344,10 +1354,11 @@ paths:
           If not provided, only active warehouses are returned.
         required: false
         schema:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/WarehouseStatus'
-          nullable: true
       - name: projectId
         in: query
         description: |-
@@ -1355,9 +1366,10 @@ paths:
           Setting a warehouse is required.
         required: false
         schema:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uuid
-          nullable: true
       responses:
         '200':
           description: List of warehouses
@@ -1538,8 +1550,9 @@ paths:
         description: Next page token
         required: false
         schema:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
       - name: pageSize
         in: query
         description: |-
@@ -1581,7 +1594,6 @@ paths:
           type: string
           format: uuid
       requestBody:
-        description: ''
         content:
           application/json:
             schema:
@@ -1656,8 +1668,9 @@ paths:
     post:
       tags:
       - warehouse
-      summary: Update the storage credential of a warehouse. The storage profile is not modified.
-      description: This can be used to update credentials before expiration.
+      summary: |-
+        Update the storage credential of a warehouse. The storage profile is not modified.
+        This can be used to update credentials before expiration.
       operationId: update_storage_credential
       parameters:
       - name: warehouse_id
@@ -1712,28 +1725,32 @@ components:
           type: string
           description: Name of the azure storage account.
         authority-host:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uri
           description: 'The authority host to use for authentication. Default: `https://login.microsoftonline.com`.'
-          nullable: true
         filesystem:
           type: string
           description: Name of the adls filesystem, in blobstorage also known as container.
         host:
-          type: string
+          type:
+          - string
+          - 'null'
           description: 'The host to use for the storage account. Default: `dfs.core.windows.net`.'
-          nullable: true
         key-prefix:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Subpath in the filesystem to use.
             The same prefix can be used for multiple warehouses.
-          nullable: true
         sas-token-validity-seconds:
-          type: integer
+          type:
+          - integer
+          - 'null'
           format: int64
           description: 'The validity of the sas token in seconds. Default: 3600.'
-          nullable: true
           minimum: 0
     AuthZBackend:
       type: string
@@ -1760,8 +1777,6 @@ components:
             - client-credentials
           tenant-id:
             type: string
-      discriminator:
-        propertyName: credential-type
     BootstrapRequest:
       type: object
       required:
@@ -1776,22 +1791,27 @@ components:
             If set to true, the calling user is treated as an operator and obtain
             a corresponding role. If not specified, the user is treated as a human.
         user-email:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Email of the user performing bootstrap. Optional. If not provided
             the server will try to parse the email from the provided token.
-          nullable: true
         user-name:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Name of the user performing bootstrap. Optional. If not provided
             the server will try to parse the name from the provided token.
             The initial user will become the global admin.
-          nullable: true
         user-type:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserType'
-          nullable: true
+            description: |-
+              Type of the user performing bootstrap. Optional. If not provided
+              the server will try to parse the type from the provided token.
     CheckAction:
       oneOf:
       - type: object
@@ -1812,10 +1832,11 @@ components:
         properties:
           action:
             $ref: '#/components/schemas/ProjectAction'
-          project-id:
-            type: string
+          id:
+            type:
+            - string
+            - 'null'
             format: uuid
-            nullable: true
           type:
             type: string
             enum:
@@ -1823,63 +1844,67 @@ components:
       - type: object
         required:
         - action
-        - warehouse-id
+        - id
         - type
         properties:
           action:
             $ref: '#/components/schemas/WarehouseAction'
+          id:
+            type: string
+            format: uuid
           type:
             type: string
             enum:
             - warehouse
-          warehouse-id:
-            type: string
-            format: uuid
-      - type: object
-        required:
-        - action
-        - namespace
-        - type
-        properties:
-          action:
-            $ref: '#/components/schemas/NamespaceAction'
-          namespace:
-            $ref: '#/components/schemas/NamespaceIdentOrUuid'
-          type:
-            type: string
-            enum:
-            - namespace
-      - type: object
-        required:
-        - action
-        - table
-        - type
-        properties:
-          action:
-            $ref: '#/components/schemas/TableAction'
-          table:
-            $ref: '#/components/schemas/TabularIdentOrUuid'
-          type:
-            type: string
-            enum:
-            - table
-      - type: object
-        required:
-        - action
-        - view
-        - type
-        properties:
-          action:
-            $ref: '#/components/schemas/ViewAction'
-          type:
-            type: string
-            enum:
-            - view
-          view:
-            $ref: '#/components/schemas/TabularIdentOrUuid'
+      - allOf:
+        - $ref: '#/components/schemas/NamespaceIdentOrUuid'
+        - type: object
+          required:
+          - action
+          properties:
+            action:
+              $ref: '#/components/schemas/NamespaceAction'
+        - type: object
+          required:
+          - type
+          properties:
+            type:
+              type: string
+              enum:
+              - namespace
+      - allOf:
+        - $ref: '#/components/schemas/TabularIdentOrUuid'
+        - type: object
+          required:
+          - action
+          properties:
+            action:
+              $ref: '#/components/schemas/TableAction'
+        - type: object
+          required:
+          - type
+          properties:
+            type:
+              type: string
+              enum:
+              - table
+      - allOf:
+        - $ref: '#/components/schemas/TabularIdentOrUuid'
+        - type: object
+          required:
+          - action
+          properties:
+            action:
+              $ref: '#/components/schemas/ViewAction'
+        - type: object
+          required:
+          - type
+          properties:
+            type:
+              type: string
+              enum:
+              - view
       description: Represents an action on an object
-      discriminator:
-        propertyName: type
     CheckRequest:
       type: object
       description: Check if a specific action is allowed on the given object
@@ -1888,10 +1913,12 @@ components:
       properties:
         action:
           $ref: '#/components/schemas/CheckAction'
+          description: The action to check.
         for-principal:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
-          nullable: true
+            description: The user or role to check access for.
     CheckResponse:
       type: object
       required:
@@ -1906,12 +1933,13 @@ components:
       - project-name
       properties:
         project-id:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uuid
           description: |-
             Request a specific project ID - optional.
             If not provided, a new project ID will be generated (recommended).
-          nullable: true
         project-name:
           type: string
           description: Name of the project to create.
@@ -1930,9 +1958,10 @@ components:
       - name
       properties:
         description:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Description of the role
-          nullable: true
         name:
           type: string
           description: Name of the role to create
@@ -1946,34 +1975,38 @@ components:
       type: object
       properties:
         email:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Email of the user. If id is not specified, the email is extracted
             from the provided token.
-          nullable: true
         id:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Subject id of the user - allows user provisioning.
             The id must be identical to the subject in JWT tokens.
             To create users in self-service manner, do not set the id.
             The id is then extracted from the passed JWT token.
-          nullable: true
         name:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Name of the user. If id is not specified, the name is extracted
             from the provided token.
-          nullable: true
         update-if-exists:
           type: boolean
           description: |-
             Update the user if it already exists
             Default: false
         user-type:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/UserType'
-          nullable: true
+            description: Type of the user. Useful to override wrongly classified users
     CreateWarehouseRequest:
       type: object
       required:
@@ -1982,19 +2015,25 @@ components:
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
+          description: |-
+            Profile to determine behavior upon dropping of tabulars, defaults to soft-deletion with
+            7 days expiration.
         project-id:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uuid
           description: |-
             Project ID in which to create the warehouse.
             If no default project is set for this server, this field is required.
-          nullable: true
         storage-credential:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/StorageCredential'
-          nullable: true
+            description: Optional storage credential to use for the warehouse.
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
+          description: Storage profile to use for the warehouse.
         warehouse-name:
           type: string
           description: |-
@@ -2052,6 +2091,7 @@ components:
           description: List of namespace parts the tabular belongs to
         typ:
           $ref: '#/components/schemas/TabularType'
+          description: Type of the tabular
         warehouse_id:
           type: string
           format: uuid
@@ -2103,22 +2143,20 @@ components:
         Currently only supports Service Account Key
         Example of a key:
         ```json
-        {
-        "type": "service_account",
-        "project_id": "example-project-1234",
-        "private_key_id": "....",
-        "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
-        "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
-        "client_id": "123456789012345678901",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-        }
+            {
+              "type": "service_account",
+              "project_id": "example-project-1234",
+              "private_key_id": "....",
+              "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+              "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+              "client_id": "123456789012345678901",
+              "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+              "token_uri": "https://oauth2.googleapis.com/token",
+              "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+              "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+              "universe_domain": "googleapis.com"
+            }
         ```
-      discriminator:
-        propertyName: credential-type
     GcsProfile:
       type: object
       required:
@@ -2128,11 +2166,12 @@ components:
           type: string
           description: Name of the GCS bucket
         key-prefix:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Subpath in the bucket to use.
             The same prefix can be used for multiple warehouses.
-          nullable: true
     GcsServiceKey:
       type: object
       required:
@@ -2342,6 +2381,7 @@ components:
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
+          description: Delete profile used for the warehouse.
         id:
           type: string
           format: uuid
@@ -2355,8 +2395,10 @@ components:
           description: Project ID in which the warehouse is created.
         status:
           $ref: '#/components/schemas/WarehouseStatus'
+          description: Whether the warehouse is active.
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
+          description: Storage profile used for the warehouse.
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)
@@ -2371,9 +2413,10 @@ components:
       - tabulars
       properties:
         next_page_token:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Token to fetch the next page
-          nullable: true
         tabulars:
           type: array
           items:
@@ -2395,8 +2438,9 @@ components:
       - roles
       properties:
         next_page_token:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
         roles:
           type: array
           items:
@@ -2407,8 +2451,9 @@ components:
       - users
       properties:
         next_page_token:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
         users:
           type: array
           items:
@@ -2417,18 +2462,22 @@ components:
       type: object
       properties:
         projectId:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/ProjectIdent'
-          nullable: true
+            description: |-
+              The project ID to list warehouses for.
+              Setting a warehouse is required.
         warehouseStatus:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/WarehouseStatus'
           description: |-
             Optional filter to return only warehouses
             with the specified status.
             If not provided, only active warehouses are returned.
-          nullable: true
     ListWarehousesResponse:
       type: object
       required:
@@ -2534,42 +2583,38 @@ components:
               enum:
               - modify
         title: NamespaceAssignmentModify
-      discriminator:
-        propertyName: type
     NamespaceIdentOrUuid:
       oneOf:
       - type: object
         required:
-        - identifier
+        - id
         - identifier-type
         properties:
-          identifier:
+          id:
             type: string
             format: uuid
           identifier-type:
             type: string
             enum:
-            - uuid
+            - id
       - type: object
         required:
-        - namespace
-        - warehouse_id
+        - name
+        - warehouse-id
         - identifier-type
         properties:
           identifier-type:
             type: string
             enum:
             - name
-          namespace:
+          name:
             type: array
             items:
               type: string
-          warehouse_id:
+          warehouse-id:
             type: string
             format: uuid
       description: Identifier for a namespace, either a UUID or its name and warehouse ID
-      discriminator:
-        propertyName: identifier-type
     NamespaceRelation:
       type: string
       enum:
@@ -2689,8 +2734,6 @@ components:
               enum:
               - modify
         title: ProjectAssignmentModify
-      discriminator:
-        propertyName: type
     ProjectIdent:
       type: string
       format: uuid
@@ -2714,12 +2757,13 @@ components:
           type: string
           description: New name for the project.
         project-id:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uuid
           description: |-
             Optional project ID.
             Only required if the project ID cannot be inferred and no default project is set.
-          nullable: true
     RenameWarehouseRequest:
       type: object
       required:
@@ -2741,9 +2785,10 @@ components:
           format: date-time
           description: Timestamp when the role was created
         description:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Description of the role
-          nullable: true
         id:
           type: string
           format: uuid
@@ -2756,10 +2801,11 @@ components:
           format: uuid
           description: Project ID in which the role is created.
         updated-at:
-          type: string
+          type:
+          - string
+          - 'null'
           format: date-time
           description: Timestamp when the role was last updated
-          nullable: true
     RoleAction:
       type: string
       enum:
@@ -2794,8 +2840,6 @@ components:
               enum:
               - ownership
         title: RoleAssignmentOwnership
-      discriminator:
-        propertyName: type
     RoleRelation:
       type: string
       enum:
@@ -2818,8 +2862,6 @@ components:
             type: string
             enum:
             - access-key
-      discriminator:
-        propertyName: credential-type
     S3Flavor:
       type: string
       enum:
@@ -2833,53 +2875,65 @@ components:
       - sts-enabled
       properties:
         assume-role-arn:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Optional ARN to assume when accessing the bucket
-          nullable: true
         bucket:
           type: string
           description: Name of the S3 bucket
         endpoint:
-          type: string
+          type:
+          - string
+          - 'null'
           format: uri
           description: |-
             Optional endpoint to use for S3 requests, if not provided
             the region will be used to determine the endpoint.
             If both region and endpoint are provided, the endpoint will be used.
             Example: `http://s3-de.my-domain.com:9000`
-          nullable: true
         flavor:
           $ref: '#/components/schemas/S3Flavor'
+          description: |-
+            S3 flavor to use.
+            Defaults to AWS
         key-prefix:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Subpath in the bucket to use.
             The same prefix can be used for multiple warehouses.
-          nullable: true
         path-style-access:
-          type: boolean
+          type:
+          - boolean
+          - 'null'
           description: |-
             Path style access for S3 requests.
             If the underlying S3 supports both, we recommend to not set `path_style_access`.
-          nullable: true
         region:
           type: string
           description: Region to use for S3 requests.
         sts-enabled:
           type: boolean
         sts-role-arn:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Optional role ARN to assume for sts vended-credentials
-          nullable: true
     SearchRoleRequest:
       type: object
       required:
       - search
       properties:
         project-id:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/ProjectIdent'
-          nullable: true
+            description: |-
+              Project ID in which the role is created.
+              Only required if the project ID cannot be inferred from the
+              users token and no default project is set.
         search:
           type: string
           description: |-
@@ -2903,11 +2957,12 @@ components:
       - user-type
       properties:
         email:
-          type: string
+          type:
+          - string
+          - 'null'
           description: |-
             Email of the user. If id is not specified, the email is extracted
             from the provided token.
-          nullable: true
         id:
           type: string
           description: ID of the user
@@ -2916,6 +2971,7 @@ components:
           description: Name of the user
         user-type:
           $ref: '#/components/schemas/UserType'
+          description: Type of the user
     SearchUserRequest:
       type: object
       required:
@@ -2971,8 +3027,6 @@ components:
               enum:
               - operator
         title: ServerAssignmentOperator
-      discriminator:
-        propertyName: type
     ServerInfo:
       type: object
       required:
@@ -2984,6 +3038,7 @@ components:
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
+          description: '`AuthZ` backend in use.'
         bootstrapped:
           type: boolean
           description: Whether the catalog has been bootstrapped.
@@ -3014,6 +3069,20 @@ components:
       oneOf:
       - allOf:
         - $ref: '#/components/schemas/S3Credential'
+          description: |-
+            Credentials for S3 storage
+
+            Example payload in the code-snippet below:
+
+            ```
+            use iceberg_catalog::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "s3",
+                "credential-type": "access-key",
+                "aws-access-key-id": "minio-root-user",
+                "aws-secret-access-key": "minio-root-password"
+              }"#).unwrap();
+            ```
         - type: object
           required:
           - type
@@ -3023,8 +3092,37 @@ components:
               enum:
               - s3
         title: StorageCredentialS3
+        description: |-
+          Credentials for S3 storage
+
+          Example payload in the code-snippet below:
+
+          ```
+          use iceberg_catalog::service::storage::StorageCredential;
+          let cred: StorageCredential = serde_json::from_str(r#"{
+              "type": "s3",
+              "credential-type": "access-key",
+              "aws-access-key-id": "minio-root-user",
+              "aws-secret-access-key": "minio-root-password"
+            }"#).unwrap();
+          ```
       - allOf:
         - $ref: '#/components/schemas/AzCredential'
+          description: |-
+            Credentials for Az storage
+
+            Example payload:
+
+            ```
+            use iceberg_catalog::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "az",
+                "credential-type": "client-credentials",
+                "client-id": "...",
+                "client-secret": "...",
+                "tenant-id": "..."
+              }"#).unwrap();
+            ```
         - type: object
           required:
           - type
@@ -3034,8 +3132,48 @@ components:
               enum:
               - az
         title: StorageCredentialAz
+        description: |-
+          Credentials for Az storage
+
+          Example payload:
+
+          ```
+          use iceberg_catalog::service::storage::StorageCredential;
+          let cred: StorageCredential = serde_json::from_str(r#"{
+              "type": "az",
+              "credential-type": "client-credentials",
+              "client-id": "...",
+              "client-secret": "...",
+              "tenant-id": "..."
+            }"#).unwrap();
+          ```
       - allOf:
         - $ref: '#/components/schemas/GcsCredential'
+          description: |
+            Credentials for GCS storage
+
+            Example payload in the code-snippet below:
+
+            ```
+            use iceberg_catalog::service::storage::StorageCredential;
+            let cred: StorageCredential = serde_json::from_str(r#"{
+                "type": "gcs",
+                "credential-type": "service-account-key",
+                "key": {
+                  "type": "service_account",
+                  "project_id": "example-project-1234",
+                  "private_key_id": "....",
+                  "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+                  "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+                  "client_id": "123456789012345678901",
+                  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                  "token_uri": "https://oauth2.googleapis.com/token",
+                  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+                  "universe_domain": "googleapis.com"
+                }
+            }"#).unwrap();
+            ```
         - type: object
           required:
           - type
@@ -3045,13 +3183,37 @@ components:
               enum:
               - gcs
         title: StorageCredentialGcs
+        description: |
+          Credentials for GCS storage
+
+          Example payload in the code-snippet below:
+
+          ```
+          use iceberg_catalog::service::storage::StorageCredential;
+          let cred: StorageCredential = serde_json::from_str(r#"{
+              "type": "gcs",
+              "credential-type": "service-account-key",
+              "key": {
+                "type": "service_account",
+                "project_id": "example-project-1234",
+                "private_key_id": "....",
+                "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
+                "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
+                "client_id": "123456789012345678901",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
+                "universe_domain": "googleapis.com"
+              }
+          }"#).unwrap();
+          ```
       description: Storage secret for a warehouse.
-      discriminator:
-        propertyName: type
     StorageProfile:
       oneOf:
       - allOf:
         - $ref: '#/components/schemas/AdlsProfile'
+          description: Azure storage profile
         - type: object
           required:
           - type
@@ -3061,8 +3223,10 @@ components:
               enum:
               - adls
         title: StorageProfileAdls
+        description: Azure storage profile
       - allOf:
         - $ref: '#/components/schemas/S3Profile'
+          description: S3 storage profile
         - type: object
           required:
           - type
@@ -3072,6 +3236,7 @@ components:
               enum:
               - s3
         title: StorageProfileS3
+        description: S3 storage profile
       - allOf:
         - $ref: '#/components/schemas/GcsProfile'
         - type: object
@@ -3084,8 +3249,6 @@ components:
               - gcs
         title: StorageProfileGcs
       description: Storage profile for a warehouse.
-      discriminator:
-        propertyName: type
     TableAction:
       type: string
       enum:
@@ -3170,8 +3333,6 @@ components:
               enum:
               - modify
         title: TableAssignmentCreate
-      discriminator:
-        propertyName: type
     TableRelation:
       type: string
       enum:
@@ -3205,27 +3366,25 @@ components:
             type: string
             enum:
             - soft
-      discriminator:
-        propertyName: type
     TabularIdentOrUuid:
       oneOf:
       - type: object
         required:
-        - identifier
+        - id
         - identifier-type
         properties:
-          identifier:
+          id:
             type: string
             format: uuid
           identifier-type:
             type: string
             enum:
-            - uuid
+            - id
       - type: object
         required:
         - namespace
         - name
-        - warehouse_id
+        - warehouse-id
         - identifier-type
         properties:
           identifier-type:
@@ -3239,18 +3398,16 @@ components:
             type: array
             items:
               type: string
-          warehouse_id:
+          warehouse-id:
             type: string
             format: uuid
       description: Identifier for a table or view, either a UUID or its name and namespace
-      discriminator:
-        propertyName: identifier-type
     TabularIdentUuid:
       oneOf:
       - type: object
         required:
-        - type
         - id
+        - type
         properties:
           id:
             type: string
@@ -3261,8 +3418,8 @@ components:
             - table
       - type: object
         required:
-        - type
         - id
+        - type
         properties:
           id:
             type: string
@@ -3271,8 +3428,6 @@ components:
             type: string
             enum:
             - view
-      discriminator:
-        propertyName: type
     TabularType:
       type: string
       description: Type of tabular
@@ -3328,9 +3483,10 @@ components:
       - name
       properties:
         description:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Description of the role. If not set, the description will be removed.
-          nullable: true
         name:
           type: string
           description: Name of the role to create
@@ -3363,8 +3519,9 @@ components:
       - user_type
       properties:
         email:
-          type: string
-          nullable: true
+          type:
+          - string
+          - 'null'
         name:
           type: string
         user_type:
@@ -3395,9 +3552,12 @@ components:
       type: object
       properties:
         new-storage-credential:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/StorageCredential'
-          nullable: true
+            description: |-
+              New storage credential to use for the warehouse.
+              If not specified, the existing credential is removed.
     UpdateWarehouseDeleteProfileRequest:
       type: object
       required:
@@ -3411,11 +3571,20 @@ components:
       - storage-profile
       properties:
         storage-credential:
-          allOf:
+          oneOf:
+          - type: 'null'
           - $ref: '#/components/schemas/StorageCredential'
-          nullable: true
+            description: |-
+              Optional storage credential to use for the warehouse.
+              The existing credential is not re-used. If no credential is
+              provided, we assume that this storage does not require credentials.
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
+          description: |-
+            Storage profile to use for the warehouse.
+            The new profile must point to the same location as the existing profile
+            to avoid data loss. For S3 this means that you may not change the
+            bucket, key prefix, or region.
     User:
       type: object
       description: User of the catalog
@@ -3431,24 +3600,28 @@ components:
           format: date-time
           description: Timestamp when the user was created
         email:
-          type: string
+          type:
+          - string
+          - 'null'
           description: Email of the user
-          nullable: true
         id:
           type: string
           description: The user's ID
         last-updated-with:
           $ref: '#/components/schemas/UserLastUpdatedWith'
+          description: The endpoint that last updated the user
         name:
           type: string
           description: Name of the user
         updated-at:
-          type: string
+          type:
+          - string
+          - 'null'
           format: date-time
           description: Timestamp when the user was last updated
-          nullable: true
         user-type:
           $ref: '#/components/schemas/UserType'
+          description: Type of the user
     UserLastUpdatedWith:
       type: string
       description: How the user was last updated
@@ -3460,6 +3633,7 @@ components:
       oneOf:
       - type: object
         title: UserOrRoleUser
+        description: Id of the user
         required:
         - user
         properties:
@@ -3469,6 +3643,7 @@ components:
             description: Id of the user
       - type: object
         title: UserOrRoleRole
+        description: Id of the role
         required:
         - role
         properties:
@@ -3553,8 +3728,6 @@ components:
               enum:
               - modify
         title: ViewAssignmentModify
-      discriminator:
-        propertyName: type
     ViewRelation:
       type: string
       enum:
@@ -3665,8 +3838,6 @@ components:
               enum:
               - modify
         title: WarehouseAssignmentModify
-      discriminator:
-        propertyName: type
     WarehouseRelation:
       type: string
       enum:
