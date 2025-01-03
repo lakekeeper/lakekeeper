@@ -89,6 +89,19 @@ impl OpenFGAError {
         }
     }
 
+    pub(crate) fn ignore_duplicate_writes(self) -> Result<(), Self> {
+        match &self {
+            OpenFGAError::WriteFailed { source, .. }
+                if source
+                    .message()
+                    .starts_with("cannot write a tuple which already exists") =>
+            {
+                Ok(())
+            }
+            _ => Err(self),
+        }
+    }
+
     pub(crate) fn store_creation(status: tonic::Status) -> Self {
         Self::known_status(&status).unwrap_or(OpenFGAError::StoreCreationFailed(status))
     }

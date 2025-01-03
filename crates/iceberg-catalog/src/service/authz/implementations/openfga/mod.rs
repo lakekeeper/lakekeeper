@@ -714,6 +714,7 @@ impl OpenFGAAuthorizer {
                 source: e,
             })
             .map(|_| ())
+            .or_else(OpenFGAError::ignore_duplicate_writes)
     }
 
     /// A convenience wrapper around read that handles error conversion
