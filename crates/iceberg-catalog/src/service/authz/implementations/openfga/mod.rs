@@ -1505,6 +1505,60 @@ pub(crate) mod tests {
         }
 
         #[tokio::test]
+        async fn test_delete_non_existing_relation_gives_404() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let result = authorizer
+                .write(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                    }]),
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                ErrorModel::from(result).code,
+                StatusCode::NOT_FOUND.as_u16()
+            );
+        }
+
+        #[tokio::test]
+        async fn test_duplicate_writes_give_409() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let result = authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(ErrorModel::from(result).code, StatusCode::CONFLICT.as_u16());
+        }
+
+        #[tokio::test]
         async fn test_delete_user_relations_empty() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectIdent::from(uuid::Uuid::now_v7());

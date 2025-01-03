@@ -113,14 +113,14 @@ impl OpenFGAError {
 
     fn as_status(&self) -> Option<&tonic::Status> {
         match self {
-            OpenFGAError::Internal(status) => Some(status),
-            OpenFGAError::Unauthenticated(status) => Some(status),
-            OpenFGAError::ReadFailed { source, .. } => Some(source),
-            OpenFGAError::CheckFailed { source, .. } => Some(source),
-            OpenFGAError::StoreCreationFailed(status) => Some(status),
-            OpenFGAError::ListStoresFailed(status) => Some(status),
-            OpenFGAError::WriteAuthorizationModelFailed(status) => Some(status),
-            OpenFGAError::WriteFailed { source, .. } => Some(source),
+            OpenFGAError::CheckFailed { source, .. }
+            | OpenFGAError::ReadFailed { source, .. }
+            | OpenFGAError::WriteFailed { source, .. } => Some(source),
+            OpenFGAError::Unauthenticated(status)
+            | OpenFGAError::Internal(status)
+            | OpenFGAError::WriteAuthorizationModelFailed(status)
+            | OpenFGAError::ListStoresFailed(status)
+            | OpenFGAError::StoreCreationFailed(status) => Some(status),
             _ => None,
         }
     }
@@ -143,13 +143,11 @@ impl From<OpenFGAError> for ErrorModel {
             e @ OpenFGAError::WriteFailed { .. } => {
                 if status_msg
                     .as_deref()
-                    .map(|s| s.starts_with("cannot write a tuple which already exists"))
-                    .unwrap_or_default()
+                    .is_some_and(|s| s.starts_with("cannot write a tuple which already exists"))
                 {
                     ErrorModel::conflict(err_msg, "TupleAlreadyExistsError", Some(Box::new(e)))
                 } else if status_msg
-                    .map(|s| s.starts_with("cannot delete a tuple which does not exist"))
-                    .unwrap_or_default()
+                    .is_some_and(|s| s.starts_with("cannot delete a tuple which does not exist"))
                 {
                     ErrorModel::not_found(err_msg, "TupleNotFoundError", Some(Box::new(e)))
                 } else {
