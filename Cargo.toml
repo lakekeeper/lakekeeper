@@ -62,7 +62,7 @@ axum-extra = { version = "0.9.3" }
 axum-macros = { version = "0.4.2" }
 async-trait = "^0.1"
 env_logger = "^0.11"
-itertools = "0.13.0"
+itertools = "0.14.0"
 log = "^0.4"
 mockall = "0.13.0"
 needs_env_var = "1.1.0"
