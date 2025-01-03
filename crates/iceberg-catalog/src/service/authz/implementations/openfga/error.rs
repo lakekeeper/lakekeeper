@@ -89,19 +89,6 @@ impl OpenFGAError {
         }
     }
 
-    pub(crate) fn ignore_duplicate_writes(self) -> Result<(), Self> {
-        match &self {
-            OpenFGAError::WriteFailed { source, .. }
-                if source
-                    .message()
-                    .starts_with("cannot write a tuple which already exists") =>
-            {
-                Ok(())
-            }
-            _ => Err(self),
-        }
-    }
-
     pub(crate) fn store_creation(status: tonic::Status) -> Self {
         Self::known_status(&status).unwrap_or(OpenFGAError::StoreCreationFailed(status))
     }
@@ -123,18 +110,56 @@ impl OpenFGAError {
     pub(crate) fn unexpected_entity(r#type: Vec<FgaType>, value: String) -> Self {
         OpenFGAError::UnexpectedEntity { r#type, value }
     }
+
+    fn as_status(&self) -> Option<&tonic::Status> {
+        match self {
+            OpenFGAError::Internal(status) => Some(status),
+            OpenFGAError::Unauthenticated(status) => Some(status),
+            OpenFGAError::ReadFailed { source, .. } => Some(source),
+            OpenFGAError::CheckFailed { source, .. } => Some(source),
+            OpenFGAError::StoreCreationFailed(status) => Some(status),
+            OpenFGAError::ListStoresFailed(status) => Some(status),
+            OpenFGAError::WriteAuthorizationModelFailed(status) => Some(status),
+            OpenFGAError::WriteFailed { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 impl From<OpenFGAError> for ErrorModel {
     fn from(err: OpenFGAError) -> Self {
         let err_msg = err.to_string();
+        let status_msg = err.as_status().map(|s| s.message().to_string());
         match err {
-            OpenFGAError::NoProjectId => ErrorModel::bad_request(err_msg, "NoProjectId", None),
-            OpenFGAError::AuthenticationRequired => {
-                ErrorModel::unauthorized(err_msg, "AuthenticationRequired", None)
+            e @ OpenFGAError::NoProjectId => {
+                ErrorModel::bad_request(err_msg, "NoProjectId", Some(Box::new(e)))
             }
-            OpenFGAError::Unauthorized { .. } => {
-                ErrorModel::unauthorized(err_msg, "Unauthorized", None)
+            e @ OpenFGAError::AuthenticationRequired => {
+                ErrorModel::unauthorized(err_msg, "AuthenticationRequired", Some(Box::new(e)))
+            }
+            e @ OpenFGAError::Unauthorized { .. } => {
+                ErrorModel::unauthorized(err_msg, "Unauthorized", Some(Box::new(e)))
+            }
+            e @ OpenFGAError::WriteFailed { .. } => {
+                if status_msg
+                    .as_deref()
+                    .map(|s| s.starts_with("cannot write a tuple which already exists"))
+                    .unwrap_or_default()
+                {
+                    ErrorModel::conflict(err_msg, "TupleAlreadyExistsError", Some(Box::new(e)))
+                } else if status_msg
+                    .map(|s| s.starts_with("cannot delete a tuple which does not exist"))
+                    .unwrap_or_default()
+                {
+                    ErrorModel::not_found(err_msg, "TupleNotFoundError", Some(Box::new(e)))
+                } else {
+                    ErrorModel::new(
+                        err_msg,
+                        "AuthorizationError",
+                        StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                        Some(Box::new(e)),
+                    )
+                }
             }
             _ => ErrorModel::new(
                 err.to_string(),
