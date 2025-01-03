@@ -58,7 +58,7 @@ typed-builder = "^0.20.0"
 strum_macros = "^0.26"
 axum = { version = "^0.7" }
 axum-prometheus = "0.7.0"
-axum-extra = { version = "0.9.3" }
+axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.4.2" }
 async-trait = "^0.1"
 env_logger = "^0.11"
