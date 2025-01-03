@@ -1004,7 +1004,7 @@ pub mod v1 {
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(
-                    "/role/:id",
+                    "/role/{id}",
                     get(get_role).post(update_role).delete(delete_role),
                 )
                 .route("/search/role", post(search_role))
@@ -1012,7 +1012,7 @@ pub mod v1 {
                 .route("/whoami", get(whoami))
                 .route("/search/user", post(search_user))
                 .route(
-                    "/user/:user_id",
+                    "/user/{user_id}",
                     get(get_user).put(update_user).delete(delete_user),
                 )
                 .route("/user", get(list_user).post(create_user))
@@ -1025,10 +1025,10 @@ pub mod v1 {
                 )
                 .route("/project/rename", post(rename_default_project))
                 .route(
-                    "/project/:project_id",
+                    "/project/{project_id}",
                     get(get_project_by_id).delete(delete_project_by_id),
                 )
-                .route("/project/:project_id/rename", post(rename_project_by_id))
+                .route("/project/{project_id}/rename", post(rename_project_by_id))
                 // Create a new warehouse
                 .route("/warehouse", post(create_warehouse))
                 // List all projects
@@ -1039,42 +1039,42 @@ pub mod v1 {
                     get(list_warehouses),
                 )
                 .route(
-                    "/warehouse/:warehouse_id",
+                    "/warehouse/{warehouse_id}",
                     get(get_warehouse).delete(delete_warehouse),
                 )
                 // Rename warehouse
-                .route("/warehouse/:warehouse_id/rename", post(rename_warehouse))
+                .route("/warehouse/{warehouse_id}/rename", post(rename_warehouse))
                 // Deactivate warehouse
                 .route(
-                    "/warehouse/:warehouse_id/deactivate",
+                    "/warehouse/{warehouse_id}/deactivate",
                     post(deactivate_warehouse),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/activate",
+                    "/warehouse/{warehouse_id}/activate",
                     post(activate_warehouse),
                 )
                 // Update storage profile and credential.
                 // The old credential is not re-used. If credentials are not provided,
                 // we assume that this endpoint does not require a secret.
                 .route(
-                    "/warehouse/:warehouse_id/storage",
+                    "/warehouse/{warehouse_id}/storage",
                     post(update_storage_profile),
                 )
                 // Update only the storage credential - keep the storage profile as is
                 .route(
-                    "/warehouse/:warehouse_id/storage-credential",
+                    "/warehouse/{warehouse_id}/storage-credential",
                     post(update_storage_credential),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/deleted-tabulars",
+                    "/warehouse/{warehouse_id}/deleted-tabulars",
                     get(list_deleted_tabulars),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/deleted_tabulars/undrop",
+                    "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
                     post(undrop_tabulars),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/delete-profile",
+                    "/warehouse/{warehouse_id}/delete-profile",
                     post(update_warehouse_delete_profile),
                 )
                 .merge(authorizer.new_router())

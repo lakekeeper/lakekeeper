@@ -3,10 +3,11 @@ use crate::api::iceberg::types::Prefix;
 use crate::api::iceberg::v1::tables::TableParameters;
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
+use async_trait::async_trait;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::routing::post;
-use axum::{async_trait, Extension, Json, Router};
+use axum::{Extension, Json, Router};
 use http::StatusCode;
 use iceberg_ext::TableIdent;
 
@@ -28,7 +29,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
     Router::new()
         // /{prefix}/namespaces/{namespace}/tables/{table}/metrics
         .route(
-            "/:prefix/namespaces/:namespace/tables/:table/metrics",
+            "/{prefix}/namespaces/{namespace}/tables/{table}/metrics",
             post(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
