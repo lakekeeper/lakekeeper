@@ -37,8 +37,12 @@ Now open in your Browser:
 * Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/) (Note that more endpoints are available than in the Minimal example as permissions are enabled)
 * Lakekeeper UI (DON'T USE IT FOR BOOTSTRAPPING, There is a Notebook for it.): [http://localhost:8181](http://localhost:8181)
 
-Start by running the `01-Bootstrap.ipynb` Notebook. After that, you can login to the [UI](http://localhost:8181) as:
+Start by following the instructions in the `01-Bootstrap.ipynb` Notebook in Jupyter. After that, you can login to the [UI](http://localhost:8181) as:
 * Username: `peter`
+* Password: `iceberg`
+
+A second user is also available which initially has no permissions:
+* Username: `anna`
 * Password: `iceberg`
 
 You can also login to Keycloak using:

@@ -422,8 +422,9 @@ where
         {
             Ok(())
         } else {
+            let actor = metadata.actor();
             Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on project {project_id}"),
+                format!("Forbidden action {action} on project {project_id} for actor {actor:?}"),
                 "ProjectActionForbidden",
                 None,
             )

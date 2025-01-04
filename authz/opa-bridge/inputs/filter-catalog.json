@@ -1,0 +1,46 @@
+{
+    "action": {
+        "filterResources": [
+            {
+                "catalog": {
+                    "name": "tpcds"
+                }
+            },
+            {
+                "catalog": {
+                    "name": "system"
+                }
+            },
+            {
+                "catalog": {
+                    "name": "memory"
+                }
+            },
+            {
+                "catalog": {
+                    "name": "jmx"
+                }
+            },
+            {
+                "catalog": {
+                    "name": "datalake"
+                }
+            },
+            {
+                "catalog": {
+                    "name": "tpch"
+                }
+            }
+        ],
+        "operation": "FilterCatalogs"
+    },
+    "context": {
+        "identity": {
+            "groups": [],
+            "user": "chris"
+        },
+        "softwareStack": {
+            "trinoVersion": "436"
+        }
+    }
+}
