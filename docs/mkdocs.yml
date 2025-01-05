@@ -10,6 +10,7 @@ nav:
       - storage.md
       - authentication.md
       - authorization.md
+      - opa.md
       - production.md
   - Configuration: configuration.md
   - Contribute:

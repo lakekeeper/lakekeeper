@@ -1,8 +1,8 @@
 # Authorization
 
-Authorization can only be enabled if Authentication is set up. Please check the [Authentication Docs](./authentication.md) for more information.
+Authorization can only be enabled if Authentication is enabled. Please check the [Authentication Docs](./authentication.md) for more information.
 
-Lakekeeper's default permission model uses the CNCF project [OpenFGA](http://openfga.dev) to store and evaluate permissions. OpenFGA enables a powerful permission model with bi-directional inheritance, essential for managing modern lakehouses with hierarchical namespaces. Our model balances usability and control for administrators.
+Lakekeeper's default permission model uses the CNCF project [OpenFGA](http://openfga.dev) to store and evaluate permissions. OpenFGA enables a powerful permission model with bi-directional inheritance, essential for managing modern lakehouses with hierarchical namespaces. Our model balances usability and control for administrators. In addition to OpenFGA, Lakekeeper's OPA bridge provides an additional translation layer that allows query engines such as trino to access Lakekeeper's permissions via Open Policy Agent (OPA). Please find more information in the [OPA Bridge Guide](./opa.md).
 
 Please check the [Authorization Configuration](./configuration.md#authorization) for details on enabling Authorization with Lakekeeper.
 
