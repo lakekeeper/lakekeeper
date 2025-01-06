@@ -737,15 +737,24 @@
     "frontchannelLogout" : true,
     "protocol" : "openid-connect",
     "attributes" : {
-      "realm_client" : "false",
-      "oidc.ciba.grant.enabled" : "false",
+      "access.token.lifespan" : "3600",
       "client.secret.creation.time" : "1733666693",
-      "backchannel.logout.session.required" : "true",
+      "client.introspection.response.allow.jwt.claim.enabled" : "false",
       "post.logout.redirect.uris" : "+",
       "oauth2.device.authorization.grant.enabled" : "false",
-      "display.on.consent.screen" : "false",
       "use.jwks.url" : "false",
-      "backchannel.logout.revoke.offline.tokens" : "false"
+      "backchannel.logout.revoke.offline.tokens" : "false",
+      "use.refresh.tokens" : "true",
+      "realm_client" : "false",
+      "oidc.ciba.grant.enabled" : "false",
+      "client.use.lightweight.access.token.enabled" : "false",
+      "backchannel.logout.session.required" : "true",
+      "client_credentials.use_refresh_token" : "false",
+      "tls.client.certificate.bound.access.tokens" : "false",
+      "require.pushed.authorization.requests" : "false",
+      "acr.loa.map" : "{}",
+      "display.on.consent.screen" : "false",
+      "token.response.type.bearer.lower-case" : "false"
     },
     "authenticationFlowBindingOverrides" : { },
     "fullScopeAllowed" : true,
@@ -824,14 +833,23 @@
     "frontchannelLogout" : true,
     "protocol" : "openid-connect",
     "attributes" : {
-      "realm_client" : "false",
-      "oidc.ciba.grant.enabled" : "false",
+      "access.token.lifespan" : "3600",
       "client.secret.creation.time" : "1735289518",
-      "backchannel.logout.session.required" : "true",
+      "client.introspection.response.allow.jwt.claim.enabled" : "false",
       "post.logout.redirect.uris" : "+",
       "oauth2.device.authorization.grant.enabled" : "false",
+      "backchannel.logout.revoke.offline.tokens" : "false",
+      "use.refresh.tokens" : "true",
+      "realm_client" : "false",
+      "oidc.ciba.grant.enabled" : "false",
+      "client.use.lightweight.access.token.enabled" : "false",
+      "backchannel.logout.session.required" : "true",
+      "client_credentials.use_refresh_token" : "false",
+      "tls.client.certificate.bound.access.tokens" : "false",
+      "require.pushed.authorization.requests" : "false",
+      "acr.loa.map" : "{}",
       "display.on.consent.screen" : "false",
-      "backchannel.logout.revoke.offline.tokens" : "false"
+      "token.response.type.bearer.lower-case" : "false"
     },
     "authenticationFlowBindingOverrides" : { },
     "fullScopeAllowed" : true,
@@ -1521,7 +1539,7 @@
       "subType" : "anonymous",
       "subComponents" : { },
       "config" : {
-        "allowed-protocol-mapper-types" : [ "oidc-sha256-pairwise-sub-mapper", "oidc-full-name-mapper", "saml-user-attribute-mapper", "oidc-usermodel-property-mapper", "oidc-address-mapper", "saml-user-property-mapper", "oidc-usermodel-attribute-mapper", "saml-role-list-mapper" ]
+        "allowed-protocol-mapper-types" : [ "oidc-full-name-mapper", "oidc-usermodel-property-mapper", "saml-user-attribute-mapper", "oidc-usermodel-attribute-mapper", "oidc-sha256-pairwise-sub-mapper", "oidc-address-mapper", "saml-role-list-mapper", "saml-user-property-mapper" ]
       }
     }, {
       "id" : "510f6d34-4caf-400d-abd0-ecd448bd2b22",
@@ -1546,7 +1564,7 @@
       "subType" : "authenticated",
       "subComponents" : { },
       "config" : {
-        "allowed-protocol-mapper-types" : [ "oidc-full-name-mapper", "oidc-usermodel-property-mapper", "saml-role-list-mapper", "oidc-address-mapper", "oidc-sha256-pairwise-sub-mapper", "saml-user-property-mapper", "oidc-usermodel-attribute-mapper", "saml-user-attribute-mapper" ]
+        "allowed-protocol-mapper-types" : [ "oidc-usermodel-property-mapper", "oidc-usermodel-attribute-mapper", "saml-user-attribute-mapper", "oidc-full-name-mapper", "saml-role-list-mapper", "oidc-address-mapper", "saml-user-property-mapper", "oidc-sha256-pairwise-sub-mapper" ]
       }
     }, {
       "id" : "4ecbfa36-3286-420e-85b1-921f6c580b2c",
