@@ -34,4 +34,6 @@ authenticated_http_send(lakekeeper_id, method, path, body) := response if {
         },
         "body": body
     })
+    print(body)
+    print(response)
 }

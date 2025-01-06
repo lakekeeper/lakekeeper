@@ -14,12 +14,13 @@ require_warehouse_access(lakekeeper_id, warehouse_name, user, action) := true if
         lakekeeper_id,
         "POST", "/management/v1/permissions/check", 
         {
-            "action": {
-                "action": action,
-                "type": "warehouse",
-                "id": warehouse_id_for_name(lakekeeper_id, warehouse_name)
+            "operation": {
+                "warehouse": {
+                    "action": action,
+                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name)
+                }
             },
-            "for-principal": {
+            "identity": {
                 "user": user
             }
         }
@@ -33,14 +34,14 @@ require_namespace_access(lakekeeper_id, warehouse_name, namespace_name, user, ac
         lakekeeper_id,
         "POST", "/management/v1/permissions/check", 
         {
-            "action": {
-                "action": action,
-                "type": "namespace",
-                "identifier-type": "name",
-                "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-                "name": namespace_name
+            "operation": {
+                "namespace" : {
+                    "action": action,
+                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+                    "namespace": namespace_name
+                }
             },
-            "for-principal": {
+            "identity": {
                 "user": user
             }
         }
@@ -54,15 +55,15 @@ require_table_access(lakekeeper_id, warehouse_name, namespace_name, table_name, 
         lakekeeper_id,
         "POST", "/management/v1/permissions/check", 
         {
-            "action": {
-                "action": action,
-                "type": "table",
-                "identifier-type": "name",
-                "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-                "namespace": namespace_name,
-                "name": table_name
+            "operation": {
+                "table": {
+                    "action": action,
+                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+                    "namespace": namespace_name,
+                    "table": table_name
+                }
             },
-            "for-principal": {
+            "identity": {
                 "user": user
             }
         }
@@ -76,15 +77,15 @@ require_view_access(lakekeeper_id, warehouse_name, namespace_name, view_name, us
         lakekeeper_id,
         "POST", "/management/v1/permissions/check", 
         {
-            "action": {
-                "action": action,
-                "type": "view",
-                "identifier-type": "name",
-                "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
-                "namespace": namespace_name,
-                "name": view_name
+            "operation": {
+                "view": {
+                    "action": action,
+                    "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
+                    "namespace": namespace_name,
+                    "table": view_name
+                }
             },
-            "for-principal": {
+            "identity": {
                 "user": user
             }
         }

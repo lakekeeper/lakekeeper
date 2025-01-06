@@ -13,17 +13,3 @@ services:
   migrate:
     image: localhost/iceberg-catalog-local:latest
     pull_policy: never
-  db:
-    ports:
-      - "2345:5432"
-  minio:
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-  openfga-db:
-    ports:
-      - "2346:5432"
-  openfga:
-    ports:
-      - "35081:8081"
-
