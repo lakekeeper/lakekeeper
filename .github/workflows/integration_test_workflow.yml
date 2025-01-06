@@ -37,7 +37,7 @@ jobs:
             run: |
               cd tests &&
               if [[ ${{ inputs.test_name }} == *"openfga"* ]]; then
-                docker compose run -f docker-comose.yaml -f docker-compose-openfga-overlay.yaml --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
+                docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
               else
                 docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
               fi
