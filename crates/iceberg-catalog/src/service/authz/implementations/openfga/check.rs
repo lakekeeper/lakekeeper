@@ -652,9 +652,7 @@ mod tests {
                 warehouse_id: warehouse.warehouse_id,
             });
             let namespace_ids = &[
-                NamespaceIdentOrUuid::Id {
-                    namespace_id: namespace_id,
-                },
+                NamespaceIdentOrUuid::Id { namespace_id },
                 NamespaceIdentOrUuid::Name {
                     namespace: namespace.namespace,
                     warehouse_id: warehouse.warehouse_id,
