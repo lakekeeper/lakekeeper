@@ -7,13 +7,11 @@ services:
     volumes:
       - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/test/.well-known/openid-configuration HTTP/1.1\r\nhost: localhost:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
+      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
       interval: 2s
       timeout: 80s
       retries: 10
       start_period: 60s
-    ports:
-      - "31100:8080"
     command: [ "start-dev", "--metrics-enabled=true", "--health-enabled=true",  "--import-realm" ]
     networks:
       - iceberg_rest_tests
@@ -32,9 +30,9 @@ services:
       - LAKEKEEPER_TEST__S3_REGION=local
       - LAKEKEEPER_TEST__MANAGEMENT_URL=http://server:8181/management
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog
-      - LAKEKEEPER_TEST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
-      - LAKEKEEPER_TEST__OPENID_CLIENT_ID=iceberg-rest-test
-      - LAKEKEEPER_TEST__OPENID_CLIENT_SECRET=very-secret
+      - LAKEKEEPER_TEST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
+      - LAKEKEEPER_TEST__OPENID_CLIENT_ID=spark
+      - LAKEKEEPER_TEST__OPENID_CLIENT_SECRET=2OR3eRvYfSZzzZ16MlPd95jhLnOaLM52
       - LAKEKEEPER_TEST__TRINO_URI=http://trino:8080
       - LAKEKEEPER_TEST__STARROCKS_URI=starrocks://root@starrocks:9030
       - LAKEKEEPER_TEST__AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
@@ -87,8 +85,7 @@ services:
       - ICEBERG_REST__NATS_TOPIC=changes
       - ICEBERG_REST__NATS_USER=test
       - ICEBERG_REST__NATS_PASSWORD=test
-      - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/test/
-      - ICEBERG_REST__OPENID_AUDIENCE=broker
+      - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
       - RUST_LOG=trace,axum=trace,reqwest=trace
     command: [ "serve" ]
@@ -109,8 +106,6 @@ services:
         condition: service_started
       keycloak:
         condition: service_healthy
-    ports:
-      - 31101:8181
     networks:
       - iceberg_rest_tests
 
@@ -148,9 +143,6 @@ services:
       timeout: 10s
       retries: 2
       start_period: 10s
-    ports:
-      - "31103:9000"
-      - "31104:9001"
     networks:
       - iceberg_rest_tests
 
@@ -179,8 +171,6 @@ services:
       timeout: 10s
       retries: 2
       start_period: 10s
-    ports:
-      - "9999:8080"
     networks:
       - iceberg_rest_tests
     depends_on:
@@ -188,16 +178,13 @@ services:
         condition: service_healthy
 
   starrocks:
-    image: starrocks/allin1-ubuntu:3.3.2
+    image: starrocks/allin1-ubuntu:3.3.5
     healthcheck:
       test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 10s
-    ports:
-      - "39030:9030"
-      - "38030:8030"
     networks:
       - iceberg_rest_tests
 

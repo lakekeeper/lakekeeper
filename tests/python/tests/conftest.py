@@ -352,8 +352,12 @@ def access_token() -> str:
     ).json()["token_endpoint"]
     response = requests.post(
         token_endpoint,
-        data={"grant_type": "client_credentials"},
-        auth=(settings.openid_client_id, settings.openid_client_secret),
+        data={
+            "grant_type": "client_credentials",
+            "client_id": settings.openid_client_id,
+            "client_secret": settings.openid_client_secret,
+            "scope": "lakekeeper",
+        },
     )
     response.raise_for_status()
     return response.json()["access_token"]
@@ -455,6 +459,7 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.uri": warehouse.server.catalog_url,
         f"spark.sql.catalog.{catalog_name}.credential": f"{settings.openid_client_id}:{settings.openid_client_secret}",
         f"spark.sql.catalog.{catalog_name}.warehouse": f"{warehouse.project_id}/{warehouse.warehouse_name}",
+        f"spark.sql.catalog.{catalog_name}.scope": "lakekeeper",
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
     }
     if (
@@ -574,6 +579,7 @@ def starrocks(warehouse: Warehouse, storage_config):
                 "iceberg.catalog.warehouse" = "{warehouse.project_id}/{warehouse.warehouse_name}",
                 "iceberg.catalog.oauth2-server-uri" = "{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
                 "iceberg.catalog.credential" = "{settings.openid_client_id}:{settings.openid_client_secret}",
+                "iceberg.catalog.scope" = "lakekeeper",
                 "aws.s3.region" = "local",
                 "aws.s3.enable_path_style_access" = "true",
                 "aws.s3.endpoint" = "{settings.s3_endpoint}",
