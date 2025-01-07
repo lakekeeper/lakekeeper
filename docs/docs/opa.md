@@ -17,13 +17,13 @@ The plugin can be customized by either editing the `configuration.rego` file or 
 
 If configuration is done via environment variables, the following settings are available:
 
-| Variable                                 | Example                                                                         | Description |
-|------------------------------------------|---------------------------------------------------------------------------------|-----|
-| <nobr>`LAKEKEEPER_URL`</nobr>            | <nobr>`https://lakekeeper.example.com`<nobr>                                    | URL where lakekeeper is externally reachable. Default: `https://localhost:8181` |
-| <nobr>`LAKEKEEPER_TOKEN_ENDPOINT`</nobr> | <nobr>`http://keycloak:8080/realms/iceberg/protocol/openid-connect/token`<nobr> | Token endpoint of the IdP used to secure Lakekeeper. This endpoint is used to exchange OPAs client credentials for an access token. |
-| <nobr>`LAKEKEEPER_CLIENT_ID`</nobr>      | `trino`                                                                         | Client ID used by OPA to access Lakekeeper's permissions API. |
-| <nobr>`LAKEKEEPER_CLIENT_SECRET`</nobr>  | `abcd`                                                                          | Client Secret for the Client ID. |
-| <nobr>`LAKEKEEPER_SCOPE`</nobr>          | `lakekeeper`                                                                    | Scopes to request from the IdP. Defaults to `lakekeeper`. Please check the [Authentication Guide](./authentication.md) for setup. |
+| Variable                                 | Example                                                             | Description |
+|------------------------------------------|---------------------------------------------------------------------|-----|
+| <nobr>`LAKEKEEPER_URL`</nobr>            | <nobr>`https://lakekeeper.example.com`<nobr>                        | URL where lakekeeper is externally reachable. Default: `https://localhost:8181` |
+| <nobr>`LAKEKEEPER_TOKEN_ENDPOINT`</nobr> | `http://keycloak:8080/realms/iceberg/protocol/openid-connect/token` | Token endpoint of the IdP used to secure Lakekeeper. This endpoint is used to exchange OPAs client credentials for an access token. |
+| <nobr>`LAKEKEEPER_CLIENT_ID`</nobr>      | `trino`                                                             | Client ID used by OPA to access Lakekeeper's permissions API. |
+| <nobr>`LAKEKEEPER_CLIENT_SECRET`</nobr>  | `abcd`                                                              | Client Secret for the Client ID. |
+| <nobr>`LAKEKEEPER_SCOPE`</nobr>          | `lakekeeper`                                                        | Scopes to request from the IdP. Defaults to `lakekeeper`. Please check the [Authentication Guide](./authentication.md) for setup. |
 
 All above mentioned configuration options refer to a specific Lakekeeper instance. What is missing is a mapping of trino catalogs to Lakekeeper warehouses. By default we support 4 catalogs in trino, but more can easily be added in the `configuration.rego`.
 

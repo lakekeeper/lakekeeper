@@ -60,6 +60,7 @@ nav:
   - Docs:
       - nightly: "!include docs/docs/nightly/mkdocs.yml"
       - latest: "!include docs/docs/latest/mkdocs.yml"
+      - Release 0.6.0: "!include docs/docs/0.6.0/mkdocs.yml"
       - Release 0.5.2: "!include docs/docs/0.5.2/mkdocs.yml"
       - Release 0.5.0: "!include docs/docs/0.5.0/mkdocs.yml"
   - Community: support.md
@@ -101,6 +102,7 @@ plugins:
   - search
   - exclude-search:
       exclude:
+        - docs/0.6.0/*
         - docs/0.5.0/*
         - docs/0.5.2/*
         - docs/nightly/*
