@@ -2,6 +2,19 @@
 
 
 
+## [0.6.0](https://github.com/lakekeeper/lakekeeper/compare/v0.5.2...v0.6.0) (2025-01-07)
+
+
+### Features
+
+* Lakekeeper Open Policy Agent Bridge with trino support ([3735742](https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093))
+* Update Lakekeeper UI to 0.4.0 ([3735742](https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093))
+
+
+### Bug Fixes
+
+* Enable openfga integration tests ([3735742](https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093))
+
 ## [0.5.2](https://github.com/lakekeeper/lakekeeper/compare/v0.5.1...v0.5.2) (2024-12-17)
 
 

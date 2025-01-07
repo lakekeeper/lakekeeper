@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/lakekeeper/lakekeeper/compare/v0.5.2...v0.6.0) (2025-01-07)
+
+
+### Features
+
+* Check Endpoint for single permissions ([#706](https://github.com/lakekeeper/lakekeeper/issues/706)) ([6a149a6](https://github.com/lakekeeper/lakekeeper/commit/6a149a64a20728464e1a385a1a788ad9a49bfbe6))
+* Lakekeeper Open Policy Agent Bridge with trino support ([3735742](https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093))
+* **tests:** run integration tests with iceberg versions: 1.5.2, 1.6.1, 1.7.1 ([3f3b5ad](https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7))
+* Update Lakekeeper UI to 0.4.0 ([3735742](https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093))
+
+
+### Bug Fixes
+
+* credentials configs are never empty but are either null or an empty list ([3f3b5ad](https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7))
+* Default to purge drop for managed tables ([#712](https://github.com/lakekeeper/lakekeeper/issues/712)) ([676d995](https://github.com/lakekeeper/lakekeeper/commit/676d995c559a6ee6b08a6e030cd9eeac60931b93))
+* Enable openfga integration tests ([3735742](https://github.com/lakekeeper/lakekeeper/commit/3735742e5c8efb05894f02208afdc2b03e321093))
+* files of deleted tables not deleted for ADLS ([#715](https://github.com/lakekeeper/lakekeeper/issues/715)) ([d81677f](https://github.com/lakekeeper/lakekeeper/commit/d81677f32df5aadedd83f439afa845c454f6af9a))
+* return proper error codes for invalid writes and reads of permission tuples ([#727](https://github.com/lakekeeper/lakekeeper/issues/727)) ([96c2d5e](https://github.com/lakekeeper/lakekeeper/commit/96c2d5e0f9a5971610ced65138c5405c1a9702ad))
+* use correct list of supported endpoints ([3f3b5ad](https://github.com/lakekeeper/lakekeeper/commit/3f3b5ad671cae04725474dee9cfd3f2ce7e0cae7))
+
 ## [0.5.2](https://github.com/lakekeeper/lakekeeper/compare/v0.5.1...v0.5.2) (2024-12-17)
 
 
