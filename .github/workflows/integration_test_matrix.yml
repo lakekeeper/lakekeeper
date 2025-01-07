@@ -33,6 +33,7 @@ jobs:
           - pyiceberg
           - starrocks
           - trino
+          - trino_opa
           - spark_openfga-1.5.2
           - spark_openfga-1.6.1
           - spark_openfga-1.7.1
