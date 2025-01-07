@@ -41,7 +41,9 @@ jobs:
               elif [[ "${{ inputs.test_name }}" == *"kv2"* ]]; then
                 docker compose -f docker-compose.yaml -f docker-compose-vault-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
               elif [[ "${{ inputs.test_name }}" == *"opa"* ]]; then
-                docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml -f docker-compose-trino-opa-overlay.yaml --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
+                docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml -f docker-compose-trino-opa-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
+               elif [[ "${{ inputs.test_name }}" == *"starrocks"* ]]; then
+                docker compose -f docker-compose.yaml -f docker-compose-starrocks-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
               else
                 docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
               fi

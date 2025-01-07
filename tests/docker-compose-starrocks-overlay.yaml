@@ -1,0 +1,15 @@
+services:
+  server:
+    depends_on:
+      starrocks:
+        condition: service_healthy
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.3.8
+    healthcheck:
+      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      - iceberg_rest_tests

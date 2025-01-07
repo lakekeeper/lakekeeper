@@ -16,6 +16,8 @@ cd tests
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
 # With Authorization
 docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_openfga-1.7.1"
+# Starrocks only
+docker compose -f docker-compose.yaml -f docker-compose-starrocks-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh starrocks"
 # Trino only
 docker compose -f docker-compose.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh trino"
 # Trino with Open Policy Agent

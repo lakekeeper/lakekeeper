@@ -54,8 +54,6 @@ services:
         condition: service_healthy
       trino:
         condition: service_healthy
-      # starrocks:
-      #   condition: service_healthy
     volumes:
       - .:/opt/tests
     networks:
@@ -180,17 +178,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-
-  # starrocks:
-  #   image: starrocks/allin1-ubuntu:3.3.8
-  #   healthcheck:
-  #     test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
-  #     interval: 2s
-  #     timeout: 10s
-  #     retries: 2
-  #     start_period: 10s
-  #   networks:
-  #     - iceberg_rest_tests
 
 networks:
   iceberg_rest_tests:
