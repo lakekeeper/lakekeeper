@@ -1788,113 +1788,104 @@ components:
             description: |-
               Type of the user performing bootstrap. Optional. If not provided
               the server will try to parse the type from the provided token.
-    CheckAction:
+    CheckOperation:
       oneOf:
       - type: object
         required:
-        - action
-        - type
+        - server
         properties:
-          action:
-            $ref: '#/components/schemas/ServerAction'
-          type:
-            type: string
-            enum:
-            - server
+          server:
+            type: object
+            required:
+            - action
+            properties:
+              action:
+                $ref: '#/components/schemas/ServerAction'
       - type: object
         required:
-        - action
-        - type
+        - project
         properties:
-          action:
-            $ref: '#/components/schemas/ProjectAction'
-          id:
-            type:
-            - string
-            - 'null'
-            format: uuid
-          type:
-            type: string
-            enum:
-            - project
+          project:
+            type: object
+            required:
+            - action
+            properties:
+              action:
+                $ref: '#/components/schemas/ProjectAction'
+              project-id:
+                type:
+                - string
+                - 'null'
+                format: uuid
       - type: object
         required:
-        - action
-        - id
-        - type
+        - warehouse
         properties:
-          action:
-            $ref: '#/components/schemas/WarehouseAction'
-          id:
-            type: string
-            format: uuid
-          type:
-            type: string
-            enum:
-            - warehouse
-      - allOf:
-        - $ref: '#/components/schemas/NamespaceIdentOrUuid'
-        - type: object
-          required:
-          - action
-          properties:
-            action:
-              $ref: '#/components/schemas/NamespaceAction'
-        - type: object
-          required:
-          - type
-          properties:
-            type:
-              type: string
-              enum:
-              - namespace
-      - allOf:
-        - $ref: '#/components/schemas/TabularIdentOrUuid'
-        - type: object
-          required:
-          - action
-          properties:
-            action:
-              $ref: '#/components/schemas/TableAction'
-        - type: object
-          required:
-          - type
-          properties:
-            type:
-              type: string
-              enum:
-              - table
-      - allOf:
-        - $ref: '#/components/schemas/TabularIdentOrUuid'
-        - type: object
-          required:
-          - action
-          properties:
-            action:
-              $ref: '#/components/schemas/ViewAction'
-        - type: object
-          required:
-          - type
-          properties:
-            type:
-              type: string
-              enum:
-              - view
+          warehouse:
+            type: object
+            required:
+            - action
+            - warehouse-id
+            properties:
+              action:
+                $ref: '#/components/schemas/WarehouseAction'
+              warehouse-id:
+                type: string
+                format: uuid
+      - type: object
+        required:
+        - namespace
+        properties:
+          namespace:
+            allOf:
+            - $ref: '#/components/schemas/NamespaceIdentOrUuid'
+            - type: object
+              required:
+              - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/NamespaceAction'
+      - type: object
+        required:
+        - table
+        properties:
+          table:
+            allOf:
+            - $ref: '#/components/schemas/TabularIdentOrUuid'
+            - type: object
+              required:
+              - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/TableAction'
+      - type: object
+        required:
+        - view
+        properties:
+          view:
+            allOf:
+            - $ref: '#/components/schemas/TabularIdentOrUuid'
+            - type: object
+              required:
+              - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/ViewAction'
       description: Represents an action on an object
     CheckRequest:
       type: object
       description: Check if a specific action is allowed on the given object
       required:
-      - action
+      - operation
       properties:
-        action:
-          $ref: '#/components/schemas/CheckAction'
-          description: The action to check.
-        for-principal:
+        identity:
           oneOf:
           - type: 'null'
           - $ref: '#/components/schemas/UserOrRole'
             description: The user or role to check access for.
+        operation:
+          $ref: '#/components/schemas/CheckOperation'
+          description: The operation to check.
     CheckResponse:
       type: object
       required:
@@ -2538,27 +2529,17 @@ components:
       oneOf:
       - type: object
         required:
-        - id
-        - identifier-type
+        - namespace-id
         properties:
-          id:
+          namespace-id:
             type: string
             format: uuid
-          identifier-type:
-            type: string
-            enum:
-            - id
       - type: object
         required:
-        - name
+        - namespace
         - warehouse-id
-        - identifier-type
         properties:
-          identifier-type:
-            type: string
-            enum:
-            - name
-          name:
+          namespace:
             type: array
             items:
               type: string
@@ -3321,34 +3302,24 @@ components:
       oneOf:
       - type: object
         required:
-        - id
-        - identifier-type
+        - table-id
         properties:
-          id:
+          table-id:
             type: string
             format: uuid
-          identifier-type:
-            type: string
-            enum:
-            - id
       - type: object
         required:
         - namespace
-        - name
+        - table
         - warehouse-id
-        - identifier-type
         properties:
-          identifier-type:
-            type: string
-            enum:
-            - name
-          name:
-            type: string
-            description: Name of the table or view
           namespace:
             type: array
             items:
               type: string
+          table:
+            type: string
+            description: Name of the table or view
           warehouse-id:
             type: string
             format: uuid

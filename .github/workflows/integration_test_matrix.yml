@@ -33,9 +33,11 @@ jobs:
           - pyiceberg
           - starrocks
           - trino
+          - trino_opa
           - spark_openfga-1.5.2
           - spark_openfga-1.6.1
           - spark_openfga-1.7.1
+          - spark_kv2-1.7.1
           - spark_adls-1.5.2
           - spark_adls-1.6.1
           # - spark_adls-1.7.1 adls is currently broken with 1.7.1 due to https://lists.apache.org/thread/xc0ddyjkwdl8rhp072fcydl4rondogx6

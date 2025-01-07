@@ -54,8 +54,8 @@ async fn check_internal<C: Catalog, S: SecretStore>(
     let CheckRequest {
         // If for_principal is specified, the user needs to have the
         // CanReadAssignments relation
-        mut for_principal,
-        action: action_request,
+        identity: mut for_principal,
+        operation: action_request,
     } = request;
     // Set for_principal to None if the user is checking their own access
     let user_or_role = metadata.actor().to_user_or_role();
@@ -64,13 +64,10 @@ async fn check_internal<C: Catalog, S: SecretStore>(
     }
 
     let (action, object) = match &action_request {
-        CheckAction::Server { action } => {
+        CheckOperation::Server { action } => {
             check_server(metadata, &authorizer, &mut for_principal, action).await?
         }
-        CheckAction::Project {
-            action,
-            id: project_id,
-        } => {
+        CheckOperation::Project { action, project_id } => {
             check_project(
                 metadata,
                 &authorizer,
@@ -80,9 +77,9 @@ async fn check_internal<C: Catalog, S: SecretStore>(
             )
             .await?
         }
-        CheckAction::Warehouse {
+        CheckOperation::Warehouse {
             action,
-            id: warehouse_id,
+            warehouse_id,
         } => {
             check_warehouse(
                 metadata,
@@ -93,7 +90,7 @@ async fn check_internal<C: Catalog, S: SecretStore>(
             )
             .await?
         }
-        CheckAction::Namespace { action, namespace } => (
+        CheckOperation::Namespace { action, namespace } => (
             action.to_openfga().to_string(),
             check_namespace(
                 api_context.clone(),
@@ -103,10 +100,10 @@ async fn check_internal<C: Catalog, S: SecretStore>(
             )
             .await?,
         ),
-        CheckAction::Table { action, table } => (action.to_openfga().to_string(), {
+        CheckOperation::Table { action, table } => (action.to_openfga().to_string(), {
             check_table(api_context.clone(), metadata, table, for_principal.as_ref()).await?
         }),
-        CheckAction::View { action, view } => (action.to_openfga().to_string(), {
+        CheckOperation::View { action, view } => (action.to_openfga().to_string(), {
             check_view(api_context, metadata, view, for_principal.as_ref()).await?
         }),
     };
@@ -209,13 +206,18 @@ async fn check_namespace<C: Catalog, S: SecretStore>(
         AllNamespaceRelations::CanReadAssignments
     });
     Ok(match namespace {
-        NamespaceIdentOrUuid::Id { id: identifier } => {
+        NamespaceIdentOrUuid::Id {
+            namespace_id: identifier,
+        } => {
             authorizer
                 .require_namespace_action(metadata, Ok(Some(*identifier)), action)
                 .await?;
             *identifier
         }
-        NamespaceIdentOrUuid::Name { name, warehouse_id } => {
+        NamespaceIdentOrUuid::Name {
+            namespace: name,
+            warehouse_id,
+        } => {
             let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
             let namespace_id = authorized_namespace_ident_to_id::<C, _>(
                 authorizer.clone(),
@@ -244,8 +246,8 @@ async fn check_table<C: Catalog, S: SecretStore>(
         AllTableRelations::CanReadAssignments
     });
     Ok(match table {
-        TabularIdentOrUuid::Id { id: identifier } => {
-            let table_id = TableIdentUuid::from(*identifier);
+        TabularIdentOrUuid::Id { table_id } => {
+            let table_id = TableIdentUuid::from(*table_id);
             authorizer
                 .require_table_action(metadata, Ok(Some(table_id)), action)
                 .await?;
@@ -253,7 +255,7 @@ async fn check_table<C: Catalog, S: SecretStore>(
         }
         TabularIdentOrUuid::Name {
             namespace,
-            name,
+            table,
             warehouse_id,
         } => {
             let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
@@ -263,7 +265,7 @@ async fn check_table<C: Catalog, S: SecretStore>(
                 *warehouse_id,
                 &TableIdent {
                     namespace: namespace.clone(),
-                    name: name.clone(),
+                    name: table.clone(),
                 },
                 ListFlags {
                     include_active: true,
@@ -292,8 +294,8 @@ async fn check_view<C: Catalog, S: SecretStore>(
         AllViewRelations::CanReadAssignments
     });
     Ok(match view {
-        TabularIdentOrUuid::Id { id: identifier } => {
-            let view_id = ViewIdentUuid::from(*identifier);
+        TabularIdentOrUuid::Id { table_id } => {
+            let view_id = ViewIdentUuid::from(*table_id);
             authorizer
                 .require_view_action(metadata, Ok(Some(view_id)), action)
                 .await?;
@@ -301,7 +303,7 @@ async fn check_view<C: Catalog, S: SecretStore>(
         }
         TabularIdentOrUuid::Name {
             namespace,
-            name,
+            table,
             warehouse_id,
         } => {
             let mut t = C::Transaction::begin_read(api_context.v1_state.catalog).await?;
@@ -311,7 +313,7 @@ async fn check_view<C: Catalog, S: SecretStore>(
                 *warehouse_id,
                 &TableIdent {
                     namespace: namespace.clone(),
-                    name: name.clone(),
+                    name: table.clone(),
                 },
                 action,
                 t.transaction(),
@@ -325,9 +327,9 @@ async fn check_view<C: Catalog, S: SecretStore>(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case", tag = "type")]
+#[serde(rename_all = "kebab-case")]
 /// Represents an action on an object
-pub(super) enum CheckAction {
+pub(super) enum CheckOperation {
     Server {
         action: ServerAction,
     },
@@ -335,13 +337,13 @@ pub(super) enum CheckAction {
     Project {
         action: ProjectAction,
         #[schema(value_type = Option<uuid::Uuid>)]
-        id: Option<ProjectIdent>,
+        project_id: Option<ProjectIdent>,
     },
     #[serde(rename_all = "kebab-case")]
     Warehouse {
         action: WarehouseAction,
         #[schema(value_type = uuid::Uuid)]
-        id: WarehouseIdent,
+        warehouse_id: WarehouseIdent,
     },
     Namespace {
         action: NamespaceAction,
@@ -361,35 +363,39 @@ pub(super) enum CheckAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case", tag = "identifier-type")]
+#[serde(rename_all = "kebab-case", untagged)]
 /// Identifier for a namespace, either a UUID or its name and warehouse ID
 pub(super) enum NamespaceIdentOrUuid {
+    #[serde(rename_all = "kebab-case")]
     Id {
         #[schema(value_type = uuid::Uuid)]
-        id: NamespaceIdentUuid,
+        namespace_id: NamespaceIdentUuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
         #[schema(value_type = Vec<String>)]
-        name: NamespaceIdent,
+        namespace: NamespaceIdent,
         #[schema(value_type = uuid::Uuid)]
         warehouse_id: WarehouseIdent,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case", tag = "identifier-type")]
+#[serde(rename_all = "kebab-case", untagged)]
 /// Identifier for a table or view, either a UUID or its name and namespace
 pub(super) enum TabularIdentOrUuid {
+    #[serde(rename_all = "kebab-case")]
     Id {
-        id: uuid::Uuid,
+        #[serde(alias = "view_id")]
+        table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
         #[schema(value_type = Vec<String>)]
         namespace: NamespaceIdent,
         /// Name of the table or view
-        name: String,
+        #[serde(alias = "view")]
+        table: String,
         #[schema(value_type = uuid::Uuid)]
         warehouse_id: WarehouseIdent,
     },
@@ -400,9 +406,9 @@ pub(super) enum TabularIdentOrUuid {
 /// Check if a specific action is allowed on the given object
 pub(super) struct CheckRequest {
     /// The user or role to check access for.
-    for_principal: Option<UserOrRole>,
-    /// The action to check.
-    action: CheckAction,
+    identity: Option<UserOrRole>,
+    /// The operation to check.
+    operation: CheckOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -414,27 +420,90 @@ pub(super) struct CheckResponse {
 
 #[cfg(test)]
 mod tests {
+    use crate::service::UserId;
+
     use super::*;
     use needs_env_var::needs_env_var;
     use std::str::FromStr;
 
     #[test]
-    fn test_serde_check_action() {
-        let action = CheckAction::Namespace {
+    fn test_serde_check_action_table_id() {
+        let action = CheckOperation::Namespace {
             action: NamespaceAction::CreateTable,
             namespace: NamespaceIdentOrUuid::Id {
-                id: NamespaceIdentUuid::from_str("00000000-0000-0000-0000-000000000000").unwrap(),
+                namespace_id: NamespaceIdentUuid::from_str("00000000-0000-0000-0000-000000000000")
+                    .unwrap(),
             },
         };
         let json = serde_json::to_value(&action).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
-                "type": "namespace",
-                "action": "create_table",
-                "identifier-type": "id",
-                "id": "00000000-0000-0000-0000-000000000000"
+                "namespace": {
+                    "action": "create_table",
+                    "namespace-id": "00000000-0000-0000-0000-000000000000"
+                }
             })
+        );
+    }
+
+    #[test]
+    fn test_serde_check_action_table_name() {
+        let action = CheckOperation::Table {
+            action: TableAction::GetMetadata,
+            table: TabularIdentOrUuid::Name {
+                namespace: NamespaceIdent::from_vec(vec!["trino_namespace".to_string()]).unwrap(),
+                table: "trino_table".to_string(),
+                warehouse_id: WarehouseIdent::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                    .unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "table": {
+                    "action": "get_metadata",
+                    "namespace": ["trino_namespace"],
+                    "table": "trino_table",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_serde_check_request_namespace() {
+        let operation = CheckOperation::Namespace {
+            action: NamespaceAction::GetMetadata,
+            namespace: NamespaceIdentOrUuid::Name {
+                namespace: NamespaceIdent::from_vec(vec!["trino_namespace".to_string()]).unwrap(),
+                warehouse_id: WarehouseIdent::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                    .unwrap(),
+            },
+        };
+        let check = CheckRequest {
+            identity: Some(UserOrRole::User(
+                UserId::oidc("cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8").unwrap(),
+            )),
+            operation,
+        };
+        let json = serde_json::to_value(&check).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                    "identity": {
+                        "user": "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"
+                    },
+                    "operation": {
+                        "namespace": {
+                            "action": "get_metadata",
+                            "namespace": ["trino_namespace"],
+                            "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
+                        }
+                    }
+                }
+            )
         );
     }
 
@@ -519,8 +588,8 @@ mod tests {
 
             // User cannot check access for role without beeing a member
             let request = CheckRequest {
-                for_principal: Some(role.clone()),
-                action: CheckAction::Server {
+                identity: Some(role.clone()),
+                operation: CheckOperation::Server {
                     action: ServerAction::ProvisionUsers,
                 },
             };
@@ -529,8 +598,8 @@ mod tests {
                 .unwrap_err();
             // Admin can check access for role
             let request = CheckRequest {
-                for_principal: Some(role.clone()),
-                action: CheckAction::Server {
+                identity: Some(role.clone()),
+                operation: CheckOperation::Server {
                     action: ServerAction::ProvisionUsers,
                 },
             };
@@ -572,42 +641,45 @@ mod tests {
                 .await
                 .unwrap();
 
-            let server_actions = ServerAction::iter().map(|a| CheckAction::Server { action: a });
-            let project_actions = ProjectAction::iter().map(|a| CheckAction::Project {
+            let server_operations =
+                ServerAction::iter().map(|a| CheckOperation::Server { action: a });
+            let project_operations = ProjectAction::iter().map(|a| CheckOperation::Project {
                 action: a,
-                id: None,
+                project_id: None,
             });
-            let warehouse_actions = WarehouseAction::iter().map(|a| CheckAction::Warehouse {
+            let warehouse_operations = WarehouseAction::iter().map(|a| CheckOperation::Warehouse {
                 action: a,
-                id: warehouse.warehouse_id,
+                warehouse_id: warehouse.warehouse_id,
             });
             let namespace_ids = &[
-                NamespaceIdentOrUuid::Id { id: namespace_id },
+                NamespaceIdentOrUuid::Id { namespace_id },
                 NamespaceIdentOrUuid::Name {
-                    name: namespace.namespace,
+                    namespace: namespace.namespace,
                     warehouse_id: warehouse.warehouse_id,
                 },
             ];
-            let namespace_actions = NamespaceAction::iter().flat_map(|a| {
-                namespace_ids.iter().map(move |n| CheckAction::Namespace {
-                    action: a,
-                    namespace: n.clone(),
-                })
+            let namespace_operations = NamespaceAction::iter().flat_map(|a| {
+                namespace_ids
+                    .iter()
+                    .map(move |n| CheckOperation::Namespace {
+                        action: a,
+                        namespace: n.clone(),
+                    })
             });
 
             for action in itertools::chain!(
-                server_actions,
-                project_actions,
-                warehouse_actions,
-                namespace_actions
+                server_operations,
+                project_operations,
+                warehouse_operations,
+                namespace_operations
             ) {
                 let request = CheckRequest {
-                    for_principal: None,
-                    action: action.clone(),
+                    identity: None,
+                    operation: action.clone(),
                 };
 
                 // Nobody & anonymous can check own access on server level
-                if let CheckAction::Server { .. } = &action {
+                if let CheckOperation::Server { .. } = &action {
                     let allowed = check_internal(ctx.clone(), &nobody_metadata, request.clone())
                         .await
                         .unwrap();
@@ -626,40 +698,40 @@ mod tests {
 
                 // User 1 can check own access
                 let request = CheckRequest {
-                    for_principal: None,
-                    action: action.clone(),
+                    identity: None,
+                    operation: action.clone(),
                 };
                 check_internal(ctx.clone(), &user_1_metadata, request.clone())
                     .await
                     .unwrap();
                 // User 1 can check own access with principal
                 let request = CheckRequest {
-                    for_principal: Some(UserOrRole::User(user_1_id.clone())),
-                    action: action.clone(),
+                    identity: Some(UserOrRole::User(user_1_id.clone())),
+                    operation: action.clone(),
                 };
                 check_internal(ctx.clone(), &user_1_metadata, request.clone())
                     .await
                     .unwrap();
                 // User 1 cannot check operator access
                 let request = CheckRequest {
-                    for_principal: Some(UserOrRole::User(operator_id.clone())),
-                    action: action.clone(),
+                    identity: Some(UserOrRole::User(operator_id.clone())),
+                    operation: action.clone(),
                 };
                 check_internal(ctx.clone(), &user_1_metadata, request.clone())
                     .await
                     .unwrap_err();
                 // Anonymous cannot check operator access
                 let request = CheckRequest {
-                    for_principal: Some(UserOrRole::User(operator_id.clone())),
-                    action: action.clone(),
+                    identity: Some(UserOrRole::User(operator_id.clone())),
+                    operation: action.clone(),
                 };
                 check_internal(ctx.clone(), &RequestMetadata::new_random(), request.clone())
                     .await
                     .unwrap_err();
                 // Operator can check own access
                 let request = CheckRequest {
-                    for_principal: Some(UserOrRole::User(operator_id.clone())),
-                    action: action.clone(),
+                    identity: Some(UserOrRole::User(operator_id.clone())),
+                    operation: action.clone(),
                 };
                 let allowed = check_internal(
                     ctx.clone(),
@@ -671,8 +743,8 @@ mod tests {
                 assert!(allowed);
                 // Operator can check access of other user
                 let request = CheckRequest {
-                    for_principal: Some(UserOrRole::User(nobody_id.clone())),
-                    action: action.clone(),
+                    identity: Some(UserOrRole::User(nobody_id.clone())),
+                    operation: action.clone(),
                 };
                 check_internal(
                     ctx.clone(),

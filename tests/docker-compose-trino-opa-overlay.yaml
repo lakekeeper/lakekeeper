@@ -1,0 +1,62 @@
+services:
+  spark:
+    environment:
+      - LAKEKEEPER_TEST__LAKEKEEPER_WAREHOUSE=trino_opa
+      - LAKEKEEPER_TEST__TRINO_URI=https://trino-proxy:443
+    depends_on:
+      trino-opa:
+        condition: service_healthy
+      trino-proxy:
+        condition: service_started
+
+  opa:
+    image: openpolicyagent/opa:1.0.0
+    command: ["run", "--server", "--log-format", "text", "--log-level", "debug", "--addr", ":8181", "/policies"]
+    volumes:
+      - ../authz/opa-bridge/policies:/policies
+    networks:
+      - iceberg_rest_tests
+    environment:
+      - LAKEKEEPER_URL=http://server:8181
+      - LAKEKEEPER_TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
+      - LAKEKEEPER_CLIENT_ID=spark
+      - LAKEKEEPER_CLIENT_SECRET=2OR3eRvYfSZzzZ16MlPd95jhLnOaLM52
+      - LAKEKEEPER_SCOPE=lakekeeper
+      - TRINO_LAKEKEEPER_CATALOG_NAME=catalog_trino_opa
+      - LAKEKEEPER_LAKEKEEPER_WAREHOUSE=trino_opa
+    depends_on:
+      server:
+        condition: service_healthy
+
+  trino-opa:
+    image: trinodb/trino:467
+    environment:
+      - OIDC_ISSUER=http://keycloak:8080/realms/iceberg
+    healthcheck:
+      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      - iceberg_rest_tests
+    depends_on:
+      opa:
+        condition: service_started
+    volumes:
+      - ../examples/trino-opa/trino/access-control.properties:/etc/trino/access-control.properties
+      - ../examples/trino-opa/trino/config.properties:/etc/trino/config.properties
+      - ../examples/trino-opa/trino/log.properties:/etc/trino/log.properties
+
+  # Emulates a reverse proxy that secures the connection to the server.
+  # This is required as trino requires HTTPS in OAUTH2 settings (rightfully so!)
+  trino-proxy:
+    image: nginx
+    volumes:
+      - ../examples/trino-opa/nginx.conf:/etc/nginx/nginx.conf
+      - ../examples/trino-opa/certs:/etc/nginx/certs
+    depends_on:
+      trino-opa:
+        condition: service_healthy
+    networks:
+      - iceberg_rest_tests

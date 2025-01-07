@@ -49,14 +49,20 @@ class Settings(BaseSettings):
     openid_provider_uri: Optional[str] = None
     openid_client_id: Optional[Secret] = None
     openid_client_secret: Optional[Secret] = None
+    openid_scope: Optional[str] = "lakekeeper"
     trino_uri: Optional[str] = None
+    trino_auth_enabled: Optional[str] = None
+    lakekeeper_warehouse: Optional[str] = None
     spark_iceberg_version: str = "1.5.2"
     starrocks_uri: Optional[str] = None
+    use_default_project: Optional[str] = None
+
+    @property
+    def token_endpoint(self) -> str:
+        return f"{self.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token"
 
 
 settings = Settings()
-
-print(settings)
 
 STORAGE_CONFIGS = []
 
@@ -288,12 +294,14 @@ class Server:
             json=create_payload,
             headers={"Authorization": f"Bearer {self.access_token}"},
         )
+        response.raise_for_status()
         if not response.ok:
             raise ValueError(
                 f"Failed to create warehouse ({response.status_code}): {response.text}"
             )
 
         warehouse_id = response.json()["warehouse-id"]
+        print(f"Created warehouse {name} with ID {warehouse_id}")
         return uuid.UUID(warehouse_id)
 
     @property
@@ -352,8 +360,34 @@ def access_token() -> str:
     ).json()["token_endpoint"]
     response = requests.post(
         token_endpoint,
-        data={"grant_type": "client_credentials"},
-        auth=(settings.openid_client_id, settings.openid_client_secret),
+        data={
+            "grant_type": "client_credentials",
+            "client_id": settings.openid_client_id,
+            "client_secret": settings.openid_client_secret,
+            "scope": settings.openid_scope,
+        },
+    )
+    response.raise_for_status()
+    return response.json()["access_token"]
+
+
+@pytest.fixture(scope="session")
+def trino_token() -> str:
+    if settings.openid_provider_uri is None:
+        pytest.skip("OAUTH_PROVIDER_URI is not set")
+
+    token_endpoint = requests.get(
+        str(settings.openid_provider_uri).strip("/")
+        + "/.well-known/openid-configuration"
+    ).json()["token_endpoint"]
+    response = requests.post(
+        token_endpoint,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": settings.openid_client_id,
+            "client_secret": settings.openid_client_secret,
+            "scope": "trino",
+        },
     )
     response.raise_for_status()
     return response.json()["access_token"]
@@ -390,19 +424,27 @@ def server(access_token) -> Server:
 
 @pytest.fixture(scope="session")
 def project(server: Server) -> uuid.UUID:
-    test_id = uuid.uuid4()
-    project_name = f"project-{test_id}"
-    project_id = server.create_project(project_name)
+    if settings.use_default_project is None:
+        test_id = uuid.uuid4()
+        project_name = f"project-{test_id}"
+        project_id = server.create_project(project_name)
+    else:
+        project_id = uuid.UUID("{00000000-0000-0000-0000-000000000000}")
     return project_id
 
 
 @pytest.fixture(scope="session")
 def warehouse(server: Server, storage_config, project) -> Warehouse:
-    test_id = uuid.uuid4()
-    warehouse_name = f"warehouse-{test_id}"
+    if settings.lakekeeper_warehouse is None:
+        test_id = uuid.uuid4()
+        warehouse_name = f"warehouse-{test_id}"
+    else:
+        warehouse_name = settings.lakekeeper_warehouse
+
     warehouse_id = server.create_warehouse(
         warehouse_name, project_id=project, storage_config=storage_config
     )
+
     return Warehouse(
         access_token=server.access_token,
         server=server,
@@ -455,7 +497,8 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.uri": warehouse.server.catalog_url,
         f"spark.sql.catalog.{catalog_name}.credential": f"{settings.openid_client_id}:{settings.openid_client_secret}",
         f"spark.sql.catalog.{catalog_name}.warehouse": f"{warehouse.project_id}/{warehouse.warehouse_name}",
-        f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
+        f"spark.sql.catalog.{catalog_name}.scope": settings.openid_scope,
+        f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.token_endpoint}",
     }
     if (
         storage_config["storage-profile"]["type"] == "s3"
@@ -481,13 +524,22 @@ def spark(warehouse: Warehouse, storage_config):
 
 
 @pytest.fixture(scope="session")
-def trino(warehouse: Warehouse, storage_config):
+def trino(warehouse: Warehouse, storage_config, trino_token):
     if settings.trino_uri is None:
         pytest.skip("LAKEKEEPER_TEST__TRINO_URI is not set")
 
     from trino.dbapi import connect
+    from trino.auth import JWTAuthentication
 
-    conn = connect(host=settings.trino_uri, user="trino")
+    if settings.trino_auth_enabled == "true":
+        conn = connect(
+            host=settings.trino_uri,
+            auth=JWTAuthentication(trino_token),
+            http_scheme="https",
+            verify=False,  # Self-signed certificate
+        )
+    else:
+        conn = connect(host=settings.trino_uri, user="trino")
 
     cur = conn.cursor()
     if storage_config["storage-profile"]["type"] == "s3":
@@ -516,18 +568,31 @@ def trino(warehouse: Warehouse, storage_config):
             "iceberg.rest-catalog.uri" = '{warehouse.server.catalog_url}',
             "iceberg.rest-catalog.warehouse" = '{warehouse.project_id}/{warehouse.warehouse_name}',
             "iceberg.rest-catalog.security" = 'OAUTH2',
-            "iceberg.rest-catalog.oauth2.token" = '{warehouse.access_token}',
+            "iceberg.rest-catalog.oauth2.credential" = '{settings.openid_client_id}:{settings.openid_client_secret}',
+            "iceberg.rest-catalog.oauth2.scope" = '{settings.openid_scope}',
+            "iceberg.rest-catalog.oauth2.server-uri" = '{settings.token_endpoint}',
+            "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
             "iceberg.rest-catalog.vended-credentials-enabled" = 'true'
             {extra_config}
         )
     """
     )
 
-    conn = connect(
-        host=settings.trino_uri,
-        user="trino",
-        catalog=warehouse.normalized_catalog_name,
-    )
+    # Connect to specific catalog to avoid prefixes
+    if settings.trino_auth_enabled == "true":
+        conn = connect(
+            host=settings.trino_uri,
+            auth=JWTAuthentication(trino_token),
+            http_scheme="https",
+            verify=False,  # Self-signed certificate
+            catalog=warehouse.normalized_catalog_name,
+        )
+    else:
+        conn = connect(
+            host=settings.trino_uri,
+            user="trino",
+            catalog=warehouse.normalized_catalog_name,
+        )
 
     yield conn
 
@@ -572,8 +637,9 @@ def starrocks(warehouse: Warehouse, storage_config):
                 "iceberg.catalog.type" = "rest",
                 "iceberg.catalog.uri" = "{warehouse.server.catalog_url}",
                 "iceberg.catalog.warehouse" = "{warehouse.project_id}/{warehouse.warehouse_name}",
-                "iceberg.catalog.oauth2-server-uri" = "{settings.openid_provider_uri.rstrip('/')}/protocol/openid-connect/token",
+                "iceberg.catalog.oauth2-server-uri" = "{settings.token_endpoint}",
                 "iceberg.catalog.credential" = "{settings.openid_client_id}:{settings.openid_client_secret}",
+                "iceberg.catalog.scope" = "lakekeeper",
                 "aws.s3.region" = "local",
                 "aws.s3.enable_path_style_access" = "true",
                 "aws.s3.endpoint" = "{settings.s3_endpoint}",

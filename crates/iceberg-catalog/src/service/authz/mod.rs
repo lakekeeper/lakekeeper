@@ -401,8 +401,9 @@ where
         if self.is_allowed_server_action(metadata, action).await? {
             Ok(())
         } else {
+            let actor = metadata.actor();
             Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on server"),
+                format!("Forbidden action {action} on server for {actor}"),
                 "ServerActionForbidden",
                 None,
             )
@@ -422,8 +423,9 @@ where
         {
             Ok(())
         } else {
+            let actor = metadata.actor();
             Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on project {project_id}"),
+                format!("Forbidden action {action} on project {project_id} for {actor}"),
                 "ProjectActionForbidden",
                 None,
             )
@@ -443,8 +445,9 @@ where
         {
             Ok(())
         } else {
+            let actor = metadata.actor();
             Err(ErrorModel::forbidden(
-                format!("Forbidden action {action} on warehouse {warehouse_id}"),
+                format!("Forbidden action {action} on warehouse {warehouse_id} for {actor}"),
                 "WarehouseActionForbidden",
                 None,
             )
@@ -463,7 +466,8 @@ where
     ) -> Result<NamespaceIdentUuid> {
         // It is important to throw the same error if the namespace does not exist (None) or if the action is not allowed,
         // to avoid leaking information about the existence of the namespace.
-        let msg = format!("Namespace action {action} forbidden");
+        let actor = metadata.actor();
+        let msg = format!("Namespace action {action} forbidden for {actor}");
         let typ = "NamespaceActionForbidden";
 
         match namespace_id {
@@ -492,7 +496,8 @@ where
         table_id: Result<Option<T>>,
         action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
-        let msg = format!("Table action {action} forbidden");
+        let actor = metadata.actor();
+        let msg = format!("Table action {action} forbidden for {actor}");
         let typ = "TableActionForbidden";
 
         match table_id {
@@ -521,7 +526,8 @@ where
         view_id: Result<Option<ViewIdentUuid>>,
         action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<ViewIdentUuid> {
-        let msg = format!("View action {action} forbidden");
+        let actor = metadata.actor();
+        let msg = format!("View action {action} forbidden for {actor}");
         let typ = "ViewActionForbidden";
 
         match view_id {
