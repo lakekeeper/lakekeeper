@@ -8,8 +8,6 @@ import data.trino
 
 default allow = false
 
-# ToDo: SetSchemaAuthorization, Test  "information_schema"
-
 allow if {
 	trino.allow_default_access
 }
