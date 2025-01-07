@@ -11,7 +11,7 @@ Now open in your Browser:
 * Jupyter: [http://localhost:8888](http://localhost:8888)
 * Keycloak UI: [http://localhost:30080](http://localhost:30080)
 * Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/) (Note that more endpoints are available than in the Minimal example as permissions are enabled)
-* Lakekeeper UI (DON'T USE IT FOR BOOTSTRAPPING, There is a Notebook for it.): [http://localhost:8181](http://localhost:8181)
+* Lakekeeper UI (**Don't use this for bootstrapping**. Use the designated Notebook instead. Bootstrapping sets the initial admin user, which needs to be our technical user for the examples to work correctly.): [http://localhost:8181](http://localhost:8181)
 
 Start by following the instructions in the `01-Bootstrap.ipynb` Notebook in Jupyter. After that, you can login to the [UI](http://localhost:8181) as:
 * Username: `peter`

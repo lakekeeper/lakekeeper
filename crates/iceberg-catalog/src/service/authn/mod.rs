@@ -124,10 +124,12 @@ impl AuthDetails {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, strum_macros::Display)]
 pub enum Actor {
     Anonymous,
+    #[strum(to_string = "Principal({0})")]
     Principal(UserId),
+    #[strum(to_string = "AssumedRole({assumed_role}) by Principal({principal})")]
     Role {
         principal: UserId,
         assumed_role: RoleId,
