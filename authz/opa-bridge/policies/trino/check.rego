@@ -23,6 +23,12 @@ is_nested_schema(schema_name) := is_nested if {
     is_nested := count(namespace_name) > 1
 }
 
+parent_schema(schema_name) = parent_schema if {
+    namespace_name := trino.namespace_for_schema(schema_name)
+    parent_namespace := array.slice(namespace_name, 0, count(namespace_name) - 1)
+    parent_schema := concat(".", parent_namespace)
+}
+
 require_catalog_access(catalog_name, action) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
     lakekeeper.require_warehouse_access(

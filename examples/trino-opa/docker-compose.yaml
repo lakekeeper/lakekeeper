@@ -91,10 +91,10 @@ services:
     networks:
       iceberg_net:
 
-  trino:
+  trino-opa:
     image: trinodb/trino:467
     environment:
-      - CATALOG_MANAGEMENT=dynamic
+      - OIDC_ISSUER=http://localhost:30080/realms/iceberg
     healthcheck:
       test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
       interval: 2s

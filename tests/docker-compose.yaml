@@ -12,6 +12,8 @@ services:
       timeout: 80s
       retries: 10
       start_period: 60s
+    ports:
+      - "30080:8080"
     command: [ "start-dev", "--metrics-enabled=true", "--health-enabled=true",  "--import-realm" ]
     networks:
       - iceberg_rest_tests
@@ -52,8 +54,8 @@ services:
         condition: service_healthy
       trino:
         condition: service_healthy
-      starrocks:
-        condition: service_healthy
+      # starrocks:
+      #   condition: service_healthy
     volumes:
       - .:/opt/tests
     networks:
@@ -87,7 +89,7 @@ services:
       - ICEBERG_REST__NATS_PASSWORD=test
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
-      - RUST_LOG=trace,axum=trace,reqwest=trace
+      - RUST_LOG=info,axum=info,reqwest=info
     command: [ "serve" ]
     healthcheck:
       test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
@@ -95,6 +97,8 @@ services:
       timeout: 10s
       retries: 2
       start_period: 10s
+    ports:
+      - "8181:8181"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -161,7 +165,7 @@ services:
       - iceberg_rest_tests
 
   trino:
-    image: trinodb/trino:latest
+    image: trinodb/trino:467
     environment:
       - CATALOG_MANAGEMENT=dynamic
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog
@@ -177,16 +181,16 @@ services:
       db:
         condition: service_healthy
 
-  starrocks:
-    image: starrocks/allin1-ubuntu:3.3.5
-    healthcheck:
-      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
-      interval: 2s
-      timeout: 10s
-      retries: 2
-      start_period: 10s
-    networks:
-      - iceberg_rest_tests
+  # starrocks:
+  #   image: starrocks/allin1-ubuntu:3.3.8
+  #   healthcheck:
+  #     test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+  #     interval: 2s
+  #     timeout: 10s
+  #     retries: 2
+  #     start_period: 10s
+  #   networks:
+  #     - iceberg_rest_tests
 
 networks:
   iceberg_rest_tests:

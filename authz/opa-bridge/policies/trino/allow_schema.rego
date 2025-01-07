@@ -44,7 +44,7 @@ allow_schema_create if {
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
     is_nested_schema(schema) == true
-    trino.require_schema_access(catalog, schema, "create_namespace")
+    trino.require_schema_access(catalog, parent_schema(schema), "create_namespace")
 }
 
 allow_schema_drop if {
