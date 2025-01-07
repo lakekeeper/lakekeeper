@@ -226,8 +226,8 @@ async fn serve_inner<A: Authorizer>(
             get(|| async { axum::response::Redirect::permanent("/ui/") }),
         )
         .route("/ui/", get(ui::index_handler))
-        .route("/ui/assets/*file", get(ui::static_handler))
-        .route("/ui/*file", get(ui::index_handler));
+        .route("/ui/assets/{*file}", get(ui::static_handler))
+        .route("/ui/{*file}", get(ui::index_handler));
 
     let publisher_handle = tokio::task::spawn(async move {
         match x.publish().await {

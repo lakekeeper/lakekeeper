@@ -10,6 +10,9 @@ services:
     environment:
       - LAKEKEEPER__ALLOW_ORIGIN="*"
       - RUST_LOG=info,axum=trace,iceberg-catalog=trace,iceberg-catalog-bin=trace,iceberg-ext=trace
+    ports:
+      # metrics
+      - "1234:9000"
   migrate:
     image: localhost/iceberg-catalog-local:latest
     pull_policy: never
