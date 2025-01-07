@@ -7,7 +7,7 @@ cd examples/access-control
 docker compose up
 ```
 
-Now open in your Browser:
+Now open your Browser:
 * Jupyter: [http://localhost:8888](http://localhost:8888)
 * Keycloak UI: [http://localhost:30080](http://localhost:30080)
 * Swagger UI: [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/) (Note that more endpoints are available than in the Minimal example as permissions are enabled)

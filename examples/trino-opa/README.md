@@ -14,10 +14,10 @@ cd examples/trino-opa
 docker compose up
 ```
 
-Now open in your Browser and open Jupyter at [http://localhost:8888](http://localhost:8888). First run the `01-Bootstrap.ipynb` and `02-Create-Warehouse.ipynb` Notebooks. Finally follow the instructions in `03-Multi-User-Trino.ipynb` (**DON'T JUST RUN ALL!**).
+Now open your Browser and open Jupyter at [http://localhost:8888](http://localhost:8888). First run the `01-Bootstrap.ipynb` and `02-Create-Warehouse.ipynb` Notebooks. Finally follow the instructions in `03-Multi-User-Trino.ipynb` (**DON'T JUST RUN ALL!**).
 
 The following additional sites are available
-Now open in your Browser:
+Now open your Browser:
 * Trino UI: [https://localhost/ui/](https://localhost/ui/)
 * Jupyter: [http://localhost:8888](http://localhost:8888)
 * Keycloak UI: [http://localhost:30080](http://localhost:30080)

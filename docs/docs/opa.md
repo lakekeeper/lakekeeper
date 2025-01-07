@@ -6,7 +6,7 @@ Let's imagine we have a trusted multi-user query engine such as trino, in additi
 1. **Catalog enforces permissions**: The engine contacts the Catalog on behalf of the user. To achieve this, the engine must be able to impersonate the user for the catalog application. In OAuth2 settings, this can be accomplished through downscoping tokens or other forms of Token Exchange.
 2. **Compute enforces permissions**: After contacting the catalog with a god-like "I can do everything!" user (e.g. `project_admin`), the query engine then contacts the permission system, retrieves, and enforces those permissions. Note that this requires the engine to run in a trusted environment, as whoever has root access to the engine also has access to the god-like credential.
 
-The Lakekeeper OPA Bridge enables solution 2 to, by exposing all permissions in Lakekeeper via OPA. The Bridge itself is a collection of OPA files in the `authz/opa-bridge` folder of the Lakekeeper GitHub repository.
+The Lakekeeper OPA Bridge enables solution 2, by exposing all permissions in Lakekeeper via OPA. The Bridge itself is a collection of OPA files in the `authz/opa-bridge` folder of the Lakekeeper GitHub repository.
 
 The bridge also comes with a translation layer for trino to translate trino to Lakekeeper permissions and thus serve trinos OPA queries. Currently trino is the only iceberg query engine we are aware of that is flexible enough to honor external permissions via OPA. Please [let us know](https://github.com/lakekeeper/lakekeeper/issues/new/choose) if you are aware of other engines, so that we can add support.
 
