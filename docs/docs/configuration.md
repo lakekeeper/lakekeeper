@@ -75,6 +75,11 @@ Lakekeeper can publish change events to Nats (Kafka is coming soon). The followi
 | `LAKEKEEPER__NATS_PASSWORD`                | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
 | <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing nats credentials |
 | `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | Nats token to use for authentication |
+### Logging Cloudevents
+
+Cloudevents can also be logged, if you do not have Nats up and running. This feature can be enabled by setting
+
+`LAKEKEEPER__LOG_CLOUDEVENTS=true`
 
 ### Authentication
 
