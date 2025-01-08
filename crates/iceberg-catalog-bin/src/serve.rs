@@ -9,7 +9,7 @@ use iceberg_catalog::service::authz::Authorizer;
 use iceberg_catalog::service::contract_verification::ContractVerifiers;
 use iceberg_catalog::service::event_publisher::{
     CloudEventBackend, CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
-    NatsBackend,
+    NatsBackend, TracingPublisher,
 };
 use iceberg_catalog::service::health::ServiceHealthProvider;
 use iceberg_catalog::service::{Catalog, StartupValidationData};
@@ -157,8 +157,17 @@ async fn serve_inner<A: Authorizer>(
         cloud_event_sinks
             .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
     } else {
-        tracing::info!("Running without publisher.");
+        tracing::info!("Running without NATS publisher.");
     };
+
+    if let Some(true) = &CONFIG.log_cloudevents {
+        let tracing_publisher = TracingPublisher;
+        cloud_event_sinks
+            .push(Arc::new(tracing_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+        tracing::info!("Logging Cloudevents.");
+    } else {
+        tracing::info!("Running without logging Cloudevents.");
+    }
 
     let x: CloudEventsPublisherBackgroundTask = CloudEventsPublisherBackgroundTask {
         source: rx,

@@ -136,6 +136,9 @@ pub struct DynAppConfig {
     #[redact]
     pub nats_token: Option<String>,
 
+    // ------------- TRACING CLOUDEVENTS ----------
+    pub log_cloudevents: Option<bool>,
+
     // ------------- AUTHENTICATION -------------
     pub openid_provider_uri: Option<Url>,
     /// Expected audience for the provided token.
@@ -366,6 +369,7 @@ impl Default for DynAppConfig {
             nats_user: None,
             nats_password: None,
             nats_token: None,
+            log_cloudevents: None,
             openid_provider_uri: None,
             openid_audience: None,
             openid_additional_issuers: None,
