@@ -4,12 +4,14 @@ use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedT
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
+use crate::service::event_publisher::EventMetadata;
 pub use crate::service::storage::{
     AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
 use futures::FutureExt;
 use itertools::Itertools;
+use uuid::Uuid;
 
 use crate::api::iceberg::v1::{PageToken, PaginationQuery};
 use crate::service::{NamespaceIdentUuid, TableIdentUuid};
@@ -652,6 +654,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn undrop_tabulars(
+        warehouse_id: WarehouseIdent,
         request_metadata: RequestMetadata,
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
@@ -676,7 +679,37 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
         transaction.commit().await?;
 
-        // TODO: emit event
+        let num_tabulars = tabs.len();
+        let list_flags = ListFlags {
+            include_active: true,
+            include_staged: true,
+            include_deleted: true,
+        };
+        for (i, t) in tabs.iter().enumerate() {
+            if let Ok(Some(table_metadata)) =
+                C::get_table_metadata_by_id(warehouse_id, *t, list_flags, catalog.clone()).await
+            {
+                let _ = context
+                    .v1_state
+                    .publisher
+                    .publish(
+                        Uuid::now_v7(),
+                        "undropTabulars",
+                        serde_json::Value::Null,
+                        EventMetadata {
+                            tabular_id: TabularIdentUuid::from(*t),
+                            warehouse_id,
+                            name: table_metadata.table.name,
+                            namespace: table_metadata.table.namespace.to_url_string(),
+                            prefix: warehouse_id.0.into(),
+                            num_events: num_tabulars,
+                            sequence_number: i,
+                            trace_id: request_metadata.request_id,
+                        },
+                    )
+                    .await;
+            }
+        }
 
         Ok(())
     }
