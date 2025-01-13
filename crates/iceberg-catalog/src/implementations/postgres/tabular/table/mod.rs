@@ -880,7 +880,7 @@ pub(crate) async fn rename_table(
     Ok(())
 }
 
-pub(crate) async fn drop_table<'a>(
+pub(crate) async fn drop_table(
     table_id: TableIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {

@@ -156,7 +156,7 @@ pub(crate) async fn create_view(
     Ok(())
 }
 
-pub(crate) async fn drop_view<'a>(
+pub(crate) async fn drop_view(
     view_id: ViewIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {

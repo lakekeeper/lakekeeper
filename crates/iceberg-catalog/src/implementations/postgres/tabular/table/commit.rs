@@ -14,7 +14,7 @@ use iceberg_ext::configs::Location;
 use itertools::Itertools;
 use sqlx::{Postgres, Transaction};
 
-pub(crate) async fn commit_table_transaction<'a>(
+pub(crate) async fn commit_table_transaction(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses
     _: WarehouseIdent,
     commits: impl IntoIterator<Item = TableCommit> + Send,
