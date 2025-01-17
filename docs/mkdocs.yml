@@ -12,6 +12,7 @@ nav:
       - authorization.md
       - opa.md
       - production.md
+      - gotchas.md
   - Configuration: configuration.md
   - Contribute:
       - developer-guide.md
