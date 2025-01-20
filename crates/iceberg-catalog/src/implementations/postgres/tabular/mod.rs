@@ -248,7 +248,7 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) location: &'a Location,
 }
 
-pub(crate) async fn create_tabular<'a>(
+pub(crate) async fn create_tabular(
     CreateTabular {
         id,
         name,
@@ -256,7 +256,7 @@ pub(crate) async fn create_tabular<'a>(
         typ,
         metadata_location,
         location,
-    }: CreateTabular<'a>,
+    }: CreateTabular<'_>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Uuid> {
     let query_strings = location
@@ -663,7 +663,7 @@ pub(crate) async fn mark_tabular_as_deleted(
     Ok(())
 }
 
-pub(crate) async fn drop_tabular<'a>(
+pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {

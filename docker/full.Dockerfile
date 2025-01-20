@@ -1,4 +1,4 @@
-FROM rust:1.83-slim-bookworm AS chef
+FROM rust:1.84-slim-bookworm AS chef
 
 ARG NO_CHEF=false
 ENV NO_CHEF=${NO_CHEF}

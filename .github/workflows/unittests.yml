@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.84
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -36,8 +37,9 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
+          toolchain:  ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Cargo format
         run: just check-format
@@ -56,8 +58,9 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
+          toolchain:  ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
           TEST_OPENFGA: 1
           TEST_AZURE: 1
           TEST_AWS: 1
@@ -68,7 +71,7 @@ jobs:
       - name: Cargo clippy
         run: just check-clippy
         env:
-          RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
           TEST_OPENFGA: 1
           TEST_AZURE: 1
           TEST_AWS: 1
@@ -85,8 +88,9 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
+          toolchain:  ${{ env.RUST_TOOLCHAIN }}
         env:
-          RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
       - name: Regenerate management openapi
         run: just update-management-openapi
       - name: Fail on diff
@@ -147,7 +151,7 @@ jobs:
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
         env:
-          RUST_CACHE_KEY_OS: rust-cache-ubuntu-24.04
+          RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
         run: cargo install --force cargo-nextest 
