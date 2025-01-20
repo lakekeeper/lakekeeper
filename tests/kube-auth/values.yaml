@@ -18,8 +18,9 @@ helmWait: true
 
 catalog:
   image:
-    repository: localhost/iceberg-catalog-local
-    tag: amd64
+    # -- The image repository to pull from
+    repository: quay.io/lakekeeper/catalog
+    tag: v0.6.0
     pullPolicy: IfNotPresent
     # -- 65532 = nonroot of google container distroless
     uid: 65532
@@ -27,7 +28,7 @@ catalog:
     gid: 65534
 
   # -- Number of replicas to deploy. Replicas are stateless.
-  replicas: 1
+  replicas: &catalog_replicas 1
 
   # -- (<html><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core">resource requirements</a></html>)
   # resources for the catalog container of the catalog pod
@@ -97,16 +98,15 @@ catalog:
 
   # -- Configuration options for the catalog.
   # Please check the documentation for the available options.
+  # https://docs.lakekeeper.io/docs/nightly/configuration/
   # Configuration items are mounted as environment variables.
   # ICEBERG_REST__BASE_URI is required if ingress is disabled - otherwise
   # the catalog will only work inside the cluster.
-  # Specify the external URL of the catalog as ICEBERG_REST__BASE_URI
   config:
-    LAKEKEEPER__LISTEN_PORT: 8080
+    ICEBERG_REST__BASE_URI: "http://localhost:7777"
   # ---- EXAMPLE ----
   # config:
-  #   ICEBERG_REST__OPENID_PROVIDER_URI: "https://my-oidc-provider.com"
-  #   ICEBERG_REST__BASE_URI: "https://data.example.com"
+
 
   # -- if we add the annotation: "cluster-autoscaler.kubernetes.io/safe-to-evict" = "true"
   safeToEvict: true
@@ -345,10 +345,15 @@ secretBackend:
     passwordSecretKey: "password"
 
 postgresql:
-  # -- if the `stable/postgresql` chart is used.
+  # -- if the `bitnami/postgresql` chart is used.
   # [WARNING] embedded Postgres is NOT recommended for production. Use an external database instead.
   # set to `false` if using `externalDatabase.*`
   enabled: true
+
+  nameOverride: "lakekeeper-pg"
+
+  serviceBindings:
+    enabled: true
 
   auth:
     # -- the postgres user to create
@@ -426,13 +431,105 @@ externalDatabase:
   # in the `catalog.extraEnv` list
 
 auth:
+  # -- Configuration for the authentication of the catalog.
+  # If `auth.oauth2.providerUri` is not set and `auth.kubernetes.enabled` is false,
+  # authentication is disabled.
   oauth2:
     # -- If set, access to rest endpoints is secured via an external OIDC-capable IdP.
     # The IdP must expose `{provider_url}/.well-known/openid-configuration`
     # and the openid-configuration needs to have the jwks_uri and issuer defined.
     # For keycloak set: https://keycloak.local/realms/test
     # For Entra-ID set: https://login.microsoftonline.com/{your-tenant-id}/v2.0
-    provider_uri: ""
-    # -- The client id of the OIDC App of the catalog.
-    # The aud (audience) claim of the JWT token must match this id.
-    client_id: ""
+    providerUri: ""
+    # -- The expected Audience of the OIDC App of lakekeeper.
+    # The aud (audience) claim of the JWT token must match this value. Typically this is
+    # the Client ID.
+    audience: ""
+    # -- Additional allow OIDC issuers.
+    # The issuer defined in the issuer field of the ``.well-known/openid-configuration``
+    # is always trusted. `additionalIssuers` has no effect if `providerUri` is not set.
+    additionalIssuers: []
+
+    ui:
+      # -- Client ID used for the Authorization Code Flow of the UI.
+      # Required if Authentication is enabled.
+      clientID: ""
+      # -- Space separated scopes to request
+      scopes: ""
+      # -- Resource to request
+      resource: ""
+
+  k8s:
+    # -- If true, kubernetes service accounts can authenticate to Lakekeeper.
+    # This option is compatible with `auth.oauth2` - multiple IdPs (OIDC and Kubernetes)
+    # can be enabled simultaneously.
+    enabled: true
+    # -- If true and `auth.k8s.enabled` is true, a ClusterRoleBinding is created
+    # that allows lakekeeper to introspect tokens.
+    createClusterRoleBinding: true
+
+authz:
+  # -- type of the authorization backend.
+  # Available values: "openfga", "allowall"
+  # Authorization must not change after bootstrapping!
+  # If type "openfga" is chose, consider setting `internalOpenFGA` to true
+  # to deploy an OpenFGA instance as a subchart.
+  backend: "allowall"
+
+  # The following values are only required if an external
+  # openfga instance is used as the authorization backend.
+  # An external instance is used if `authz.backend` is set to "openfga"
+  # and `internalOpenFGA` is set to false.
+  openfga:
+    # -- OpenFGA Endpoint (gRPC)
+    # Set automatically if `internalOpenFGA` is true.
+    endpoint: ""
+    # -- Name of the Store to use in OpenFGA
+    # Defaults to "lakekeeper"
+    store: ""
+    # -- API Key used to authenticate with OpenFGA.
+    # This is used for pre-shared key authentication.
+    # If `clientId` is set, the `apiKey` is ignored.
+    apiKey: ""
+    # -- Client ID used to authenticate with OpenFGA.
+    # This is used for OIDC authentication.
+    clientId: ""
+    # -- Client Secret used to authenticate with OpenFGA.
+    # This is used for OIDC authentication.
+    clientSecret: ""
+    # -- OIDC token endpoint used to authenticate with OpenFGA.
+    # Used when exchanging client credentials for an access token for OpenFGA.
+    # Required if Client ID is set.
+    tokenEndpoint: ""
+
+# -- if an OpenFGA instance is deployed as a subchart.
+# When setting `internalOpenFGA` to true, the `openfga` subchart is deployed.
+internalOpenFGA: false
+
+# The subchart is only deployed if `internalOpenFGA` is set to true.
+# All following values belong to the `openfga` subchart.
+# Please check the [OpenFGA Chart](https://github.com/openfga/helm-charts/tree/main/charts/openfga)
+# for more information.
+# By default the openfga API is not secured. We recommend to secure the API or use
+# network policies to restrict access.
+openfga:
+  # By default, we use the same number of replicas as the catalog
+  replicaCount: *catalog_replicas
+
+  migrate:
+    annotations:
+      helm.sh/hook: "post-install, post-upgrade, post-rollback"
+
+  datastore:
+    engine: postgres
+    migrationType: job
+    uriSecret: lakekeeper-openfga-pg-svcbind-postgres
+
+  postgresql:
+    # If not set, postgresql of openfga collides with names of
+    # lakekeeper postgres. If changed, also change the `uriSecret` in `datastore`.
+    fullnameOverride: lakekeeper-openfga-pg
+    enabled: true
+
+    serviceBindings:
+      enabled: true
