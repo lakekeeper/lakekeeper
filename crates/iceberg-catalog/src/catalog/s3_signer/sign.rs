@@ -22,7 +22,7 @@ use crate::service::{GetTableMetadataResponse, TableIdentUuid};
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
 const WRITE_METHODS: &[&str] = &["PUT", "POST", "DELETE"];
 // Keep only the following headers:
-const HEADERS_TO_SIGN: [&str; 9] = [
+const HEADERS_TO_SIGN: [&str; 10] = [
     "amz-sdk-invocation-id",
     "amz-sdk-request",
     "x-amz-te",
@@ -32,6 +32,7 @@ const HEADERS_TO_SIGN: [&str; 9] = [
     "host",
     "content-md5",
     "range",
+    "IfMatch",
 ];
 
 #[async_trait::async_trait]
@@ -227,7 +228,11 @@ fn sign(
 
     let signable_request_headers = request_headers
         .iter()
-        .filter(|(k, _)| HEADERS_TO_SIGN.contains(&k.to_lowercase().as_str()))
+        .filter(|(k, _)| {
+            let keep = HEADERS_TO_SIGN.contains(&k.to_lowercase().as_str());
+            tracing::trace!("Checking header: {k}, will be kept: {keep}",);
+            keep
+        })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect::<HashMap<_, _>>();
     let mut headers_vec: Vec<(String, String)> = Vec::new();
