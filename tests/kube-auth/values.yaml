@@ -20,9 +20,7 @@ catalog:
   image:
     # -- The image repository to pull from
     repository: quay.io/lakekeeper/catalog
-    # -- The image tag to pull
-    tag: v0.5.2
-    # -- The image pull policy
+    tag: v0.6.0
     pullPolicy: IfNotPresent
     # -- 65532 = nonroot of google container distroless
     uid: 65532
@@ -476,7 +474,7 @@ authz:
   # Authorization must not change after bootstrapping!
   # If type "openfga" is chose, consider setting `internalOpenFGA` to true
   # to deploy an OpenFGA instance as a subchart.
-  backend: "allowAll"
+  backend: "allowall"
 
   # The following values are only required if an external
   # openfga instance is used as the authorization backend.
