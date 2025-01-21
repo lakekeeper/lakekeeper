@@ -30,7 +30,7 @@ pub enum CompressionCodec {
 impl CompressionCodec {
     pub async fn compress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
         match self {
-            CompressionCodec::None => Ok(payload.to_vec()),
+            CompressionCodec::None => Ok(payload),
             CompressionCodec::Gzip => {
                 match tokio::task::spawn_blocking(move || {
                     let mut compressed_metadata =
@@ -54,7 +54,7 @@ impl CompressionCodec {
 
     pub async fn decompress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
         match self {
-            CompressionCodec::None => Ok(payload.to_vec()),
+            CompressionCodec::None => Ok(payload),
             CompressionCodec::Gzip => {
                 match tokio::task::spawn_blocking(move || {
                     let mut decompressed_metadata = Vec::new();

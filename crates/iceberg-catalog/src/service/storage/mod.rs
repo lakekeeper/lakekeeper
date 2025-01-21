@@ -477,19 +477,21 @@ impl StorageProfile {
         }
     }
 
+    /// Require that the location is allowed for the storage profile.
+    ///
+    /// # Errors
+    /// Fails if the provided location is not a sublocation of the base location.
     pub fn require_allowed_location(&self, other: &Location) -> Result<(), ErrorModel> {
         if !self.is_allowed_location(other) {
             let base_location = self
                 .base_location()
                 .ok()
-                .map(|l| l.to_string())
-                .unwrap_or("".to_string());
+                .map_or(String::new(), |l| l.to_string());
             return Err(ErrorModel::bad_request(
                 format!("Provided location {other} is not a valid sublocation of the storage profile {base_location}."),
                 "InvalidLocation",
                 None,
-            )
-            .into());
+            ));
         }
         Ok(())
     }
