@@ -28,33 +28,48 @@ pub enum CompressionCodec {
 }
 
 impl CompressionCodec {
-    pub fn compress(self, payload: &[u8]) -> Result<Vec<u8>, IoError> {
+    pub async fn compress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
         match self {
             CompressionCodec::None => Ok(payload.to_vec()),
             CompressionCodec::Gzip => {
-                let mut compressed_metadata = GzEncoder::new(Vec::new(), Compression::default());
-                compressed_metadata
-                    .write_all(payload)
-                    .map_err(IoError::FileCompression)?;
+                match tokio::task::spawn_blocking(move || {
+                    let mut compressed_metadata =
+                        GzEncoder::new(Vec::new(), Compression::default());
+                    compressed_metadata
+                        .write_all(&payload)
+                        .map_err(|e| IoError::FileCompression(Box::new(e)))?;
 
-                compressed_metadata
-                    .finish()
-                    .map_err(IoError::FileCompression)
+                    compressed_metadata
+                        .finish()
+                        .map_err(|e| IoError::FileCompression(Box::new(e)))
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => Err(IoError::FileCompression(Box::new(e))),
+                }
             }
         }
     }
 
-    pub fn decompress(self, payload: &[u8]) -> Result<Vec<u8>, IoError> {
+    pub async fn decompress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
         match self {
             CompressionCodec::None => Ok(payload.to_vec()),
             CompressionCodec::Gzip => {
-                let mut decompressed_metadata = Vec::new();
-                let mut decoder = flate2::read::GzDecoder::new(payload);
-                decoder
-                    .read_to_end(&mut decompressed_metadata)
-                    .map_err(IoError::FileDecompression)?;
+                match tokio::task::spawn_blocking(move || {
+                    let mut decompressed_metadata = Vec::new();
+                    let mut decoder = flate2::read::GzDecoder::new(payload.as_slice());
+                    decoder
+                        .read_to_end(&mut decompressed_metadata)
+                        .map_err(|e| IoError::FileCompression(Box::new(e)))?;
 
-                Ok(decompressed_metadata)
+                    Ok(decompressed_metadata)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => Err(IoError::FileDecompression(Box::new(e))),
+                }
             }
         }
     }

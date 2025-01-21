@@ -17,6 +17,7 @@ use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, Up
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::io::FileIO;
+use iceberg_ext::catalog::rest::ErrorModel;
 use iceberg_ext::configs::table::TableProperties;
 use iceberg_ext::configs::Location;
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
@@ -458,6 +459,9 @@ impl StorageProfile {
     }
 
     #[must_use]
+    /// Check whether the location is allowed for the storage profile.
+    ///
+    /// Allowed locations are sublocations of the base location.
     pub fn is_allowed_location(&self, other: &Location) -> bool {
         let base_location = self.base_location().ok();
 
@@ -471,6 +475,23 @@ impl StorageProfile {
         } else {
             false
         }
+    }
+
+    pub fn require_allowed_location(&self, other: &Location) -> Result<(), ErrorModel> {
+        if !self.is_allowed_location(other) {
+            let base_location = self
+                .base_location()
+                .ok()
+                .map(|l| l.to_string())
+                .unwrap_or("".to_string());
+            return Err(ErrorModel::bad_request(
+                format!("Provided location {other} is not a valid sublocation of the storage profile {base_location}."),
+                "InvalidLocation",
+                None,
+            )
+            .into());
+        }
+        Ok(())
     }
 }
 

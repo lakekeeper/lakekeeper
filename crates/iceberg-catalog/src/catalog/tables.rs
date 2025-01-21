@@ -348,17 +348,20 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
-        require_active_warehouse(warehouse.status)?;
         let storage_profile = &warehouse.storage_profile;
 
-        require_allowed_location(&metadata_location, storage_profile)?;
+        require_active_warehouse(warehouse.status)?;
+        storage_profile.require_allowed_location(&metadata_location)?;
+
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
         let file_io = storage_profile.file_io(storage_secret.as_ref())?;
         let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
+
         validate_table_properties(table_metadata.properties().keys())?;
-        require_allowed_location(&table_location, storage_profile)?;
+        storage_profile.require_allowed_location(&table_location)?;
+
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let tabular_id = TableIdentUuid::from(table_metadata.uuid());
 
@@ -1513,21 +1516,6 @@ pub(super) fn parse_location(location: &str, code: StatusCode) -> Result<Locatio
         .map_err(Into::into)
 }
 
-pub(super) fn require_allowed_location(
-    location: &Location,
-    storage_profile: &StorageProfile,
-) -> Result<()> {
-    if !storage_profile.is_allowed_location(location) {
-        return Err(ErrorModel::bad_request(
-            format!("Specified table location is not allowed: {location}"),
-            "InvalidTableLocation",
-            None,
-        )
-        .into());
-    }
-    Ok(())
-}
-
 pub(super) fn determine_tabular_location(
     namespace: &GetNamespaceResponse,
     request_table_location: Option<String>,
@@ -1539,7 +1527,7 @@ pub(super) fn determine_tabular_location(
         .transpose()?;
 
     let mut location = if let Some(location) = request_table_location {
-        require_allowed_location(&location, storage_profile)?;
+        storage_profile.require_allowed_location(&location)?;
         location
     } else {
         let namespace_props = NamespaceProperties::from_props_unchecked(

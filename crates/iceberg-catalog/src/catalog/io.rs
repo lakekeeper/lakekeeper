@@ -30,7 +30,7 @@ pub(crate) async fn write_metadata_file(
 
     let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
 
-    let metadata_bytes = compression_codec.compress(&buf[..])?;
+    let metadata_bytes = compression_codec.compress(buf).await?;
 
     retry_fn(|| async {
         metadata_file
@@ -82,7 +82,7 @@ pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u
 
     if file.as_str().ends_with(".gz.metadata.json") {
         let codec = CompressionCodec::Gzip;
-        let content = codec.decompress(&content)?;
+        let content = codec.decompress(content).await?;
         Ok(content)
     } else {
         Ok(content)
@@ -162,9 +162,9 @@ pub enum IoError {
     #[error("Failed to write table metadata to compressed buffer.")]
     Write(#[source] iceberg::Error),
     #[error("Failed to finish compressing file.")]
-    FileCompression(#[source] std::io::Error),
+    FileCompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to finish decompressing file.")]
-    FileDecompression(#[source] std::io::Error),
+    FileDecompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to write file. Please check the storage credentials.")]
     FileWrite(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to read file. Please check the storage credentials.")]

@@ -498,16 +498,10 @@ fn set_namespace_location_property(
     // For customer specified location, we need to check if we can write to the location.
     // If no location is specified, we use our default location.
     let location = if let Some(location) = location {
-        if warehouse.storage_profile.is_allowed_location(&location) {
-            location
-        } else {
-            return Err(ErrorModel::bad_request(
-                "Namespace location is not a valid sublocation of the storage profile",
-                "NamespaceLocationForbidden",
-                None,
-            )
-            .into());
-        }
+        warehouse
+            .storage_profile
+            .require_allowed_location(&location)?;
+        location
     } else {
         warehouse
             .storage_profile
