@@ -4,7 +4,7 @@ use flate2::{write::GzEncoder, Compression};
 use iceberg::spec::view_properties::METADATA_COMPRESSION;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read as _, Write};
 
 #[derive(thiserror::Error, Debug)]
 #[error("Unsupported compression codec: {0}")]
@@ -40,6 +40,21 @@ impl CompressionCodec {
                 compressed_metadata
                     .finish()
                     .map_err(IoError::FileCompression)
+            }
+        }
+    }
+
+    pub fn decompress(self, payload: &[u8]) -> Result<Vec<u8>, IoError> {
+        match self {
+            CompressionCodec::None => Ok(payload.to_vec()),
+            CompressionCodec::Gzip => {
+                let mut decompressed_metadata = Vec::new();
+                let mut decoder = flate2::read::GzDecoder::new(payload);
+                decoder
+                    .read_to_end(&mut decompressed_metadata)
+                    .map_err(IoError::FileDecompression)?;
+
+                Ok(decompressed_metadata)
             }
         }
     }

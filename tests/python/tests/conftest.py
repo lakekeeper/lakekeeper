@@ -348,6 +348,10 @@ class Namespace:
     def spark_name(self) -> str:
         return "`" + ".".join(self.name) + "`"
 
+    @property
+    def url_name(self) -> str:
+        return "%1F".join(self.name)
+
 
 @pytest.fixture(scope="session")
 def access_token() -> str:
