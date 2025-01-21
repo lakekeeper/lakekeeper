@@ -94,7 +94,14 @@ pub(crate) async fn read_metadata_file(
     file: &Location,
 ) -> Result<TableMetadata, IoError> {
     let content = read_file(file_io, file).await?;
-    serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
+    match tokio::task::spawn_blocking(move || {
+        serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => Err(IoError::FileDecompression(Box::new(e))),
+    }
 }
 
 pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
