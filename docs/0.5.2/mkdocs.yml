@@ -1,0 +1,17 @@
+site_name: docs/0.5.2
+
+plugins:
+  - search
+
+nav:
+  - Concepts: concepts.md
+  - User Guide:
+      - bootstrap.md
+      - storage.md
+      - authentication.md
+      - authorization.md
+      - production.md
+  - Configuration: configuration.md
+  - Contribute:
+      - developer-guide.md
+      - customize.md
