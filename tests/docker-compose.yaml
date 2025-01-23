@@ -149,7 +149,7 @@ services:
       - iceberg_rest_tests
 
   nats:
-    image: bitnami/nats:latest
+    image: bitnami/nats:2.10.23
     command: [ "nats-server",  "-m=8222", "--user=test", "--pass=test" ]
     ports:
       - "31105:4222"
