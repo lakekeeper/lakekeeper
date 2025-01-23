@@ -293,7 +293,7 @@ pub(crate) async fn create_tabular(
                JOIN warehouse w ON w.warehouse_id = n.warehouse_id
                WHERE (location = ANY($1) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
-                      (length($3) < length(location) AND ((TRIM(TRAILING '/' FROM 'location') || '/') LIKE $3 || '/%'))
+                      (length($3) < length(location) AND ((TRIM(TRAILING '/' FROM location) || '/') LIKE $3 || '/%'))
                ) AND tabular_id != $2
            ) as "exists!""#,
         &query_strings,
