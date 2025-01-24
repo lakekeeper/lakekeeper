@@ -590,17 +590,17 @@ pub(crate) async fn load_tables(
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(schema) as schemas
-                   FROM table_schema
+                   FROM table_schema WHERE table_id = ANY($2)
                    GROUP BY table_id) ts ON ts.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(partition_spec) as partition_spec,
                           ARRAY_AGG(partition_spec_id) as partition_spec_id
-                   FROM table_partition_spec
+                   FROM table_partition_spec WHERE table_id = ANY($2)
                    GROUP BY table_id) tps ON tps.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                             ARRAY_AGG(key) as keys,
                             ARRAY_AGG(value) as values
-                     FROM table_properties
+                     FROM table_properties WHERE table_id = ANY($2)
                      GROUP BY table_id) tp ON tp.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -610,34 +610,34 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(summary) as summaries,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(timestamp_ms) as timestamp
-                   FROM table_snapshot
+                   FROM table_snapshot WHERE table_id = ANY($2)
                    GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
-                     FROM table_snapshot_log
+                     FROM table_snapshot_log WHERE table_id = ANY($2)
                      GROUP BY table_id) tsl ON tsl.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps,
                           ARRAY_AGG(metadata_file ORDER BY sequence_number) as metadata_files
-                   FROM table_metadata_log
+                   FROM table_metadata_log WHERE table_id = ANY($2)
                    GROUP BY table_id) tml ON tml.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(sort_order_id) as sort_order_ids,
                           ARRAY_AGG(sort_order) as sort_orders
-                     FROM table_sort_order
-                        GROUP BY table_id) tso ON tso.table_id = t.table_id
+                     FROM table_sort_order WHERE table_id = ANY($2)
+                     GROUP BY table_id) tso ON tso.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(table_ref_name) as table_ref_names,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(retention) as retentions
-                   FROM table_refs
+                   FROM table_refs WHERE table_id = ANY($2)
                    GROUP BY table_id) tr ON tr.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(statistics_path) as statistics_paths,
                           ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s
-                    FROM partition_statistics
+                    FROM partition_statistics WHERE table_id = ANY($2)
                     GROUP BY table_id) pstat ON pstat.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -646,7 +646,7 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(file_footer_size_in_bytes) as file_footer_size_in_bytes_s,
                           ARRAY_AGG(key_metadata) as key_metadatas,
                           ARRAY_AGG(blob_metadata) as blob_metadatas
-                    FROM table_statistics
+                    FROM table_statistics WHERE table_id = ANY($2)
                     GROUP BY table_id) tstat ON tstat.table_id = t.table_id
         WHERE w.warehouse_id = $1
             AND w.status = 'active'
