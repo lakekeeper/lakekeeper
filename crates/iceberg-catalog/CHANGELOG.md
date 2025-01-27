@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.1](https://github.com/lakekeeper/lakekeeper/compare/v0.6.0...v0.6.1) (2025-01-27)
+
+
+### Features
+
+* expose cloud-events tracing publisher on cli ([#747](https://github.com/lakekeeper/lakekeeper/issues/747)) ([798e85d](https://github.com/lakekeeper/lakekeeper/commit/798e85d39c034b2351443d7b1f9983160b820ed7))
+* Register table endpoint ([#775](https://github.com/lakekeeper/lakekeeper/issues/775)) ([4b88f73](https://github.com/lakekeeper/lakekeeper/commit/4b88f730f3d54e7d905f66a0b32ca93f88e67f69))
+
+
+### Bug Fixes
+
+* clippy & pin rust version ([#758](https://github.com/lakekeeper/lakekeeper/issues/758)) ([0899d4c](https://github.com/lakekeeper/lakekeeper/commit/0899d4cf91a1a056337ee00bcba0827b2e0a9792))
+* Table locations with same prefix ([#780](https://github.com/lakekeeper/lakekeeper/issues/780)) ([39eb3d2](https://github.com/lakekeeper/lakekeeper/commit/39eb3d2a169ff41c9b644a435fa53dadd449925a))
+* **test:** use 0.3.0 for kube-auth test & fix pyiceberg aws tests ([#767](https://github.com/lakekeeper/lakekeeper/issues/767)) ([e6b7b9c](https://github.com/lakekeeper/lakekeeper/commit/e6b7b9ca23d3054c5b95aa09f2bb590ad188d2e2))
+
+
+### Performance Improvements
+
+* optimize load_table by refine SQL ([#784](https://github.com/lakekeeper/lakekeeper/issues/784)) ([2b87915](https://github.com/lakekeeper/lakekeeper/commit/2b87915b7436ed8ec752046a687140fb18fbdf3e))
+
+
+### Miscellaneous Chores
+
+* release 0.6.1 ([a17f5c4](https://github.com/lakekeeper/lakekeeper/commit/a17f5c4919bbe5797099dcbf45cf8a6becf0b3c1))
+
 ## [0.6.0](https://github.com/lakekeeper/lakekeeper/compare/v0.5.2...v0.6.0) (2025-01-07)
 
 
