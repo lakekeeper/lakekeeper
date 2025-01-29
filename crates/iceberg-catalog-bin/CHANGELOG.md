@@ -2,6 +2,13 @@
 
 
 
+## [0.6.2](https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2) (2025-01-29)
+
+
+### Bug Fixes
+
+* Add S3 path style access to UI ([#787](https://github.com/lakekeeper/lakekeeper/issues/787)) ([f393881](https://github.com/lakekeeper/lakekeeper/commit/f393881acf60b8bd3910c17eca6f7325aedbf8a7))
+
 ## [0.6.1](https://github.com/lakekeeper/lakekeeper/compare/v0.6.0...v0.6.1) (2025-01-27)
 
 
