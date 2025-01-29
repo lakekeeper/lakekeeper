@@ -122,6 +122,21 @@ pub struct Principal {
 }
 
 impl Principal {
+    #[must_use]
+    #[cfg(test)]
+    pub fn random_human(user_id: UserId) -> Self {
+        Self {
+            actor: Actor::Principal(user_id.clone()),
+            name: Some(format!("name-{user_id}")),
+            display_name: Some(format!("display-name-{user_id}")),
+            user_id,
+            application_id: None,
+            issuer: "test-issuer".to_string(),
+            email: None,
+            idtyp: None,
+        }
+    }
+
     /// Best effort to determine the name of this principal from the claims.
     ///
     /// # Errors

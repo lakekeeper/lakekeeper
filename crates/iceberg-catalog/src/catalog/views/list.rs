@@ -41,7 +41,6 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
             namespace_id,
             &CatalogNamespaceAction::CanListViews,
         )
@@ -87,7 +86,7 @@ mod test {
     use crate::api::ApiContext;
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::State;
+    use crate::service::{State, UserId};
     use itertools::Itertools;
     use sqlx::PgPool;
 
@@ -109,6 +108,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -169,6 +169,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         let ns = crate::catalog::test::create_ns(

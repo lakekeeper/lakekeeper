@@ -18,22 +18,9 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::storage::{S3Location, S3Profile, StorageCredential};
 use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State};
 use crate::service::{GetTableMetadataResponse, TableIdentUuid};
-use crate::WarehouseIdent;
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
 const WRITE_METHODS: &[&str] = &["PUT", "POST", "DELETE"];
-// Keep only the following headers:
-const HEADERS_TO_SIGN: [&str; 9] = [
-    "amz-sdk-invocation-id",
-    "amz-sdk-request",
-    "x-amz-te",
-    "content-length",
-    "content-type",
-    "expect",
-    "host",
-    "content-md5",
-    "range",
-];
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
@@ -103,7 +90,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer
                 .require_table_action(
                     &request_metadata,
-                    warehouse_id,
                     metadata,
                     &CatalogTableAction::CanGetMetadata,
                 )
@@ -126,7 +112,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer
                 .require_table_action(
                     &request_metadata,
-                    warehouse_id,
                     metadata,
                     &CatalogTableAction::CanGetMetadata,
                 )
@@ -135,14 +120,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        validate_table_method::<A>(
-            &request_method,
-            &request_metadata,
-            warehouse_id,
-            table_id,
-            authorizer,
-        )
-        .await?;
+        validate_table_method::<A>(&request_method, &request_metadata, table_id, authorizer)
+            .await?;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -192,7 +171,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_region,
             &request_url,
             &request_method,
-            &request_headers,
+            request_headers,
         )
         .map_err(extend_err)
     }
@@ -204,7 +183,7 @@ fn sign(
     request_region: &str,
     request_url: &url::Url,
     request_method: &http::Method,
-    request_headers: &HashMap<String, Vec<String>>,
+    request_headers: HashMap<String, Vec<String>>,
 ) -> Result<S3SignResponse> {
     let body = request_body.map(std::string::String::into_bytes);
     let signable_body = if let Some(body) = &body {
@@ -234,14 +213,9 @@ fn sign(
         })?
         .into();
 
-    let signable_request_headers = request_headers
-        .iter()
-        .filter(|(k, _)| HEADERS_TO_SIGN.contains(&k.to_lowercase().as_str()))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect::<HashMap<_, _>>();
     let mut headers_vec: Vec<(String, String)> = Vec::new();
 
-    for (key, values) in signable_request_headers.clone() {
+    for (key, values) in request_headers.clone() {
         for value in values {
             headers_vec.push((key.clone(), value));
         }
@@ -278,7 +252,8 @@ fn sign(
     for (key, value) in signing_instructions.params() {
         output_uri.query_pairs_mut().append_pair(key, value);
     }
-    let mut output_headers = signable_request_headers.clone();
+
+    let mut output_headers = request_headers;
     for (key, value) in signing_instructions.headers() {
         output_headers.insert(key.to_string(), vec![value.to_string()]);
     }
@@ -352,7 +327,6 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn validate_table_method<A: Authorizer>(
     method: &http::Method,
     metadata: &RequestMetadata,
-    warehouse_id: WarehouseIdent,
     table_id: TableIdentUuid,
     authorizer: A,
 ) -> Result<()> {
@@ -364,7 +338,6 @@ async fn validate_table_method<A: Authorizer>(
         authorizer
             .require_table_action(
                 metadata,
-                warehouse_id,
                 Ok(Some(table_id)),
                 &CatalogTableAction::CanWriteData,
             )
@@ -373,7 +346,6 @@ async fn validate_table_method<A: Authorizer>(
         authorizer
             .require_table_action(
                 metadata,
-                warehouse_id,
                 Ok(Some(table_id)),
                 &CatalogTableAction::CanReadData,
             )

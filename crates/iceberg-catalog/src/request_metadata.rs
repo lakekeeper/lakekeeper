@@ -25,6 +25,17 @@ impl RequestMetadata {
         }
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub fn random_human(user_id: crate::service::UserId) -> Self {
+        use crate::service::authn::Principal;
+
+        Self {
+            request_id: Uuid::now_v7(),
+            auth_details: AuthDetails::Principal(Principal::random_human(user_id)),
+        }
+    }
+
     #[must_use]
     pub fn actor(&self) -> &Actor {
         self.auth_details.actor()

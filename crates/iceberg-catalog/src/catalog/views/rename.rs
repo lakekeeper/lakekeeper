@@ -43,12 +43,7 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
     let source_id = C::view_to_id(warehouse_id, &request.source, t.transaction()).await; // We can't fail before AuthZ;
     let source_id = authorizer
-        .require_view_action(
-            &request_metadata,
-            warehouse_id,
-            source_id,
-            &CatalogViewAction::CanRename,
-        )
+        .require_view_action(&request_metadata, source_id, &CatalogViewAction::CanRename)
         .await
         .map_err(|mut e| {
             e.error.code = StatusCode::NOT_FOUND.into();
@@ -60,7 +55,6 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
             namespace_id,
             &CatalogNamespaceAction::CanCreateTable,
         )
@@ -99,7 +93,7 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             body,
             EventMetadata {
                 tabular_id: TabularIdentUuid::View(*source_id),
-                warehouse_id: *warehouse_id.as_uuid(),
+                warehouse_id,
                 name: request.source.name,
                 namespace: request.source.namespace.to_url_string(),
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),

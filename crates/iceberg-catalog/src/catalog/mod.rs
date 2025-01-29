@@ -238,7 +238,7 @@ where
 pub(crate) mod test {
     use crate::api::iceberg::types::Prefix;
     use crate::api::iceberg::v1::namespace::Service;
-    use crate::api::management::v1::project::{CreateProjectRequest, Service as _};
+    use crate::api::management::v1::bootstrap::{BootstrapRequest, Service as _};
     use crate::api::management::v1::warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, Service as _, TabularDeleteProfile,
     };
@@ -256,7 +256,7 @@ pub(crate) mod test {
         S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
     };
     use crate::service::task_queue::TaskQueues;
-    use crate::service::{AuthDetails, State};
+    use crate::service::{AuthDetails, State, UserId};
     use crate::CONFIG;
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
@@ -326,32 +326,41 @@ pub(crate) mod test {
         storage_credential: Option<StorageCredential>,
         authorizer: T,
         delete_profile: TabularDeleteProfile,
+        user_id: Option<UserId>,
     ) -> (
         ApiContext<State<T, PostgresCatalog, SecretsState>>,
         CreateWarehouseResponse,
     ) {
         let api_context = get_api_context(pool, authorizer);
         let _state = api_context.v1_state.catalog.clone();
-        let proj = ApiServer::create_project(
-            CreateProjectRequest {
-                project_name: format!("test-project-{}", Uuid::now_v7()),
-                project_id: Some(Uuid::now_v7()),
-            },
+        let metadata = if let Some(user_id) = user_id {
+            RequestMetadata::random_human(user_id)
+        } else {
+            random_request_metadata()
+        };
+        ApiServer::bootstrap(
             api_context.clone(),
-            random_request_metadata(),
+            metadata.clone(),
+            BootstrapRequest {
+                accept_terms_of_use: true,
+                is_operator: true,
+                user_name: None,
+                user_email: None,
+                user_type: None,
+            },
         )
         .await
         .unwrap();
         let warehouse = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: format!("test-warehouse-{}", Uuid::now_v7()),
-                project_id: Some(proj.project_id),
+                project_id: None,
                 storage_profile,
                 storage_credential,
                 delete_profile,
             },
             api_context.clone(),
-            random_request_metadata(),
+            metadata,
         )
         .await
         .unwrap();

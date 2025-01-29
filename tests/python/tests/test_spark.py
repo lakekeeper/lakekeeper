@@ -927,3 +927,55 @@ def test_hierarchical_namespaces(
     with pytest.raises(Exception) as e:
         spark.sql(f"CREATE NAMESPACE {'.'.join(nested_namespace)}.nest5")
     assert "exceeds maximum depth" in str(e.value)
+
+
+def test_register_table(
+    spark,
+    namespace,
+    warehouse: conftest.Warehouse,
+    io_fsspec: fsspec.AbstractFileSystem,
+):
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT) USING iceberg"
+    )
+    spark.sql(f"INSERT INTO {namespace.spark_name}.my_table VALUES (1)")
+    table = warehouse.pyiceberg_catalog.load_table((*namespace.name, "my_table"))
+    assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 1
+
+    # ToDo: Cannot re-register a table
+
+    # Remove table from catalog
+    delete_uri = (
+        warehouse.server.catalog_url.strip("/")
+        + "/"
+        + "/".join(
+            [
+                "v1",
+                str(warehouse.warehouse_id),
+                "namespaces",
+                namespace.url_name,
+                "tables",
+                f"my_table?purgeRequested=false",
+            ]
+        )
+    )
+    requests.delete(
+        delete_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
+    ).raise_for_status()
+    time.sleep(3)
+
+    # Can't query table anymore
+    assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
+
+    spark.sql(
+        f"""
+    CALL {warehouse.normalized_catalog_name}.system.register_table (
+        table => '{namespace.spark_name}.my_registered_table',
+        metadata_file => '{table.metadata_location}'
+    )"""
+    )
+
+    pdf = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.my_registered_table"
+    ).toPandas()
+    assert pdf["my_ints"].tolist() == [1]

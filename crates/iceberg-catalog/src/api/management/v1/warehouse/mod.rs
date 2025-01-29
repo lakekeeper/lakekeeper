@@ -65,7 +65,8 @@ pub struct CreateWarehouseRequest {
     pub warehouse_name: String,
     /// Project ID in which to create the warehouse.
     /// If no default project is set for this server, this field is required.
-    pub project_id: Option<uuid::Uuid>,
+    #[schema(value_type=Option<uuid::Uuid>)]
+    pub project_id: Option<ProjectIdent>,
     /// Storage profile to use for the warehouse.
     pub storage_profile: StorageProfile,
     /// Optional storage credential to use for the warehouse.
@@ -129,7 +130,8 @@ impl Default for TabularDeleteProfile {
 #[serde(rename_all = "kebab-case")]
 pub struct CreateWarehouseResponse {
     /// ID of the created warehouse.
-    pub warehouse_id: uuid::Uuid,
+    #[schema(value_type=uuid::Uuid)]
+    pub warehouse_id: WarehouseIdent,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
@@ -154,6 +156,7 @@ pub struct ListWarehousesRequest {
     /// with the specified status.
     /// If not provided, only active warehouses are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     pub warehouse_status: Option<Vec<WarehouseStatus>>,
     /// The project ID to list warehouses for.
     /// Setting a warehouse is required.
@@ -244,7 +247,6 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             delete_profile,
         } = request;
         let project_id = project_id
-            .map(ProjectIdent::from)
             .or(*DEFAULT_PROJECT_ID)
             .ok_or(ErrorModel::bad_request(
                 "project_id must be specified",
@@ -297,9 +299,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
-        Ok(CreateWarehouseResponse {
-            warehouse_id: *warehouse_id,
-        })
+        Ok(CreateWarehouseResponse { warehouse_id })
     }
 
     async fn list_warehouses(
@@ -653,18 +653,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
     async fn undrop_tabulars(
         request_metadata: RequestMetadata,
-        warehouse_ident: WarehouseIdent,
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
-        undrop::require_undrop_permissions(
-            &request,
-            &context.v1_state.authz,
-            &request_metadata,
-            warehouse_ident,
-        )
-        .await?;
+        undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
+            .await?;
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
@@ -741,13 +735,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                         ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
                             TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
-                                warehouse_id,
                                 (*id).into(),
                                 &crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
-                                warehouse_id,
                                 (*id).into(),
                                 &crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
@@ -792,7 +784,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     name: i.name,
                     namespace: i.namespace.inner(),
                     typ: k.into(),
-                    warehouse_id: *warehouse_id,
+                    warehouse_id,
                     created_at: deleted.created_at,
                     deleted_at: deleted.deleted_at,
                     expiration_date: deleted.expiration_date,
@@ -882,7 +874,11 @@ mod test {
         assert_eq!(request.warehouse_name, "test_warehouse");
         assert_eq!(
             request.project_id,
-            Some(uuid::Uuid::parse_str("f47ac10b-58cc-4372-a567-0e02b2c3d479").unwrap())
+            Some(
+                uuid::Uuid::parse_str("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+                    .unwrap()
+                    .into()
+            )
         );
         let s3_profile = request.storage_profile.try_into_s3().unwrap();
         assert_eq!(s3_profile.bucket, "test");
@@ -906,7 +902,7 @@ mod test {
     use crate::api::ApiContext;
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::State;
+    use crate::service::{State, UserId};
     use crate::WarehouseIdent;
     use itertools::Itertools;
 
@@ -931,6 +927,7 @@ mod test {
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -985,7 +982,7 @@ mod test {
             }
         }
 
-        (ctx, warehouse.warehouse_id.into())
+        (ctx, warehouse.warehouse_id)
     }
 
     impl_pagination_tests!(
@@ -1012,6 +1009,7 @@ mod test {
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
+            Some(UserId::OIDC("test-user-id".to_string())),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -1061,7 +1059,7 @@ mod test {
 
         // list 1 more than existing tables
         let all = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 11,
@@ -1076,7 +1074,7 @@ mod test {
 
         // list exactly amount of existing tables
         let all = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 10,
@@ -1091,7 +1089,7 @@ mod test {
 
         // next page is empty
         let next = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 10,
@@ -1106,7 +1104,7 @@ mod test {
         assert!(next.next_page_token.is_none());
 
         let first_six = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 6,
@@ -1131,7 +1129,7 @@ mod test {
         }
 
         let next_four = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 6,
@@ -1164,7 +1162,7 @@ mod test {
         }
 
         let page = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 5,
@@ -1190,7 +1188,7 @@ mod test {
         }
 
         let next_page = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id.into(),
+            warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
                 page_size: 6,

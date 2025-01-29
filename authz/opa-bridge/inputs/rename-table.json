@@ -1,0 +1,30 @@
+{
+    "input": {
+        "context": {
+            "identity": {
+                "user": "cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8",
+                "groups": []
+            },
+            "softwareStack": {
+                "trinoVersion": "467"
+            }
+        },
+        "action": {
+            "operation": "RenameTable",
+            "resource": {
+                "table": {
+                    "catalogName": "lakekeeper",
+                    "schemaName": "trino_namespace",
+                    "tableName": "my_table"
+                }
+            },
+            "targetResource": {
+                "table": {
+                    "catalogName": "lakekeeper",
+                    "schemaName": "trino_namespace",
+                    "tableName": "my_table_renamed"
+                }
+            }
+        }
+    }
+}

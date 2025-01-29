@@ -91,7 +91,7 @@ pub(super) async fn get_config_for_warehouse(
     Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id)))
 }
 
-pub(crate) async fn create_warehouse<'a>(
+pub(crate) async fn create_warehouse(
     warehouse_name: String,
     project_id: ProjectIdent,
     storage_profile: StorageProfile,
@@ -141,7 +141,7 @@ pub(crate) async fn create_warehouse<'a>(
     Ok(warehouse_id.into())
 }
 
-pub(crate) async fn rename_project<'a>(
+pub(crate) async fn rename_project(
     project_id: ProjectIdent,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -165,7 +165,7 @@ pub(crate) async fn rename_project<'a>(
     Ok(())
 }
 
-pub(crate) async fn create_project<'a>(
+pub(crate) async fn create_project(
     project_id: ProjectIdent,
     project_name: String,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -195,7 +195,7 @@ pub(crate) async fn create_project<'a>(
     Ok(())
 }
 
-pub(crate) async fn get_project<'a>(
+pub(crate) async fn get_project(
     project_id: ProjectIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Option<GetProjectResponse>> {
@@ -229,7 +229,7 @@ pub(crate) async fn get_project<'a>(
     }
 }
 
-pub(crate) async fn delete_project<'a>(
+pub(crate) async fn delete_project(
     project_id: ProjectIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -334,7 +334,7 @@ pub(crate) async fn list_warehouses<
         .collect::<Result<Vec<_>>>()
 }
 
-pub(crate) async fn get_warehouse<'a>(
+pub(crate) async fn get_warehouse(
     warehouse_id: WarehouseIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Option<GetWarehouseResponse>> {
@@ -414,7 +414,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
         .collect())
 }
 
-pub(crate) async fn delete_warehouse<'a>(
+pub(crate) async fn delete_warehouse(
     warehouse_id: WarehouseIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -447,7 +447,7 @@ pub(crate) async fn delete_warehouse<'a>(
     Ok(())
 }
 
-pub(crate) async fn rename_warehouse<'a>(
+pub(crate) async fn rename_warehouse(
     warehouse_id: WarehouseIdent,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -472,7 +472,7 @@ pub(crate) async fn rename_warehouse<'a>(
     Ok(())
 }
 
-pub(crate) async fn set_warehouse_status<'a>(
+pub(crate) async fn set_warehouse_status(
     warehouse_id: WarehouseIdent,
     status: WarehouseStatus,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -496,7 +496,7 @@ pub(crate) async fn set_warehouse_status<'a>(
     Ok(())
 }
 
-pub(crate) async fn update_storage_profile<'a>(
+pub(crate) async fn update_storage_profile(
     warehouse_id: WarehouseIdent,
     storage_profile: StorageProfile,
     storage_secret_id: Option<SecretIdent>,

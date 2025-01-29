@@ -61,12 +61,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let view_id = C::view_to_id(warehouse_id, &identifier, t.transaction()).await; // We can't fail before AuthZ;
 
     let view_id = authorizer
-        .require_view_action(
-            &request_metadata,
-            warehouse_id,
-            view_id,
-            &CatalogViewAction::CanCommit,
-        )
+        .require_view_action(&request_metadata, view_id, &CatalogViewAction::CanCommit)
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
@@ -180,7 +175,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             body,
             EventMetadata {
                 tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: identifier.name,
                 namespace: identifier.namespace.to_url_string(),
                 prefix: parameters
@@ -229,6 +224,7 @@ fn build_new_metadata(
     request: CommitViewRequest,
     before_update_metadata: ViewMetadata,
 ) -> Result<ViewMetadata> {
+    let previous_location = before_update_metadata.location.clone();
     let mut m = ViewMetadataBuilder::new(before_update_metadata);
 
     for upd in request.updates {
@@ -241,13 +237,16 @@ fn build_new_metadata(
                     .build()
                     .into());
             }
-            ViewUpdate::SetLocation { .. } => {
-                return Err(ErrorModel::builder()
-                    .code(StatusCode::BAD_REQUEST.into())
-                    .message("Setting location is not supported".to_string())
-                    .r#type("SetLocationNotSupported".to_string())
-                    .build()
-                    .into());
+            ViewUpdate::SetLocation { location } => {
+                if previous_location != location {
+                    return Err(ErrorModel::builder()
+                        .code(StatusCode::BAD_REQUEST.into())
+                        .message("Setting location for views is not supported".to_string())
+                        .r#type("SetLocationNotSupported".to_string())
+                        .build()
+                        .into());
+                }
+                m
             }
 
             ViewUpdate::UpgradeFormatVersion { format_version } => match format_version {

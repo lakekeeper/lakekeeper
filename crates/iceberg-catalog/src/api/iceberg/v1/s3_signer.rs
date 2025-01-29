@@ -1,8 +1,9 @@
 use super::{ApiContext, Prefix, Result};
 use crate::request_metadata::RequestMetadata;
+use async_trait::async_trait;
 use axum::extract::State;
 use axum::routing::post;
-use axum::{async_trait, extract::Path, Extension, Json, Router};
+use axum::{extract::Path, Extension, Json, Router};
 use iceberg_ext::catalog::rest::{S3SignRequest, S3SignResponse};
 
 #[async_trait]
@@ -43,7 +44,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
             ),
         )
         .route(
-            "/:prefix/v1/aws/s3/sign",
+            "/{prefix}/v1/aws/s3/sign",
             post(
                 |Path(prefix): Path<Prefix>,
                  State(api_context): State<ApiContext<S>>,

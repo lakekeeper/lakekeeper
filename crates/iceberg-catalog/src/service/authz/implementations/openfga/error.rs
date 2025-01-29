@@ -110,18 +110,54 @@ impl OpenFGAError {
     pub(crate) fn unexpected_entity(r#type: Vec<FgaType>, value: String) -> Self {
         OpenFGAError::UnexpectedEntity { r#type, value }
     }
+
+    fn as_status(&self) -> Option<&tonic::Status> {
+        match self {
+            OpenFGAError::CheckFailed { source, .. }
+            | OpenFGAError::ReadFailed { source, .. }
+            | OpenFGAError::WriteFailed { source, .. } => Some(source),
+            OpenFGAError::Unauthenticated(status)
+            | OpenFGAError::Internal(status)
+            | OpenFGAError::WriteAuthorizationModelFailed(status)
+            | OpenFGAError::ListStoresFailed(status)
+            | OpenFGAError::StoreCreationFailed(status) => Some(status),
+            _ => None,
+        }
+    }
 }
 
 impl From<OpenFGAError> for ErrorModel {
     fn from(err: OpenFGAError) -> Self {
         let err_msg = err.to_string();
+        let status_msg = err.as_status().map(|s| s.message().to_string());
         match err {
-            OpenFGAError::NoProjectId => ErrorModel::bad_request(err_msg, "NoProjectId", None),
-            OpenFGAError::AuthenticationRequired => {
-                ErrorModel::unauthorized(err_msg, "AuthenticationRequired", None)
+            e @ OpenFGAError::NoProjectId => {
+                ErrorModel::bad_request(err_msg, "NoProjectId", Some(Box::new(e)))
             }
-            OpenFGAError::Unauthorized { .. } => {
-                ErrorModel::unauthorized(err_msg, "Unauthorized", None)
+            e @ OpenFGAError::AuthenticationRequired => {
+                ErrorModel::unauthorized(err_msg, "AuthenticationRequired", Some(Box::new(e)))
+            }
+            e @ OpenFGAError::Unauthorized { .. } => {
+                ErrorModel::unauthorized(err_msg, "Unauthorized", Some(Box::new(e)))
+            }
+            e @ OpenFGAError::WriteFailed { .. } => {
+                if status_msg
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("cannot write a tuple which already exists"))
+                {
+                    ErrorModel::conflict(err_msg, "TupleAlreadyExistsError", Some(Box::new(e)))
+                } else if status_msg
+                    .is_some_and(|s| s.starts_with("cannot delete a tuple which does not exist"))
+                {
+                    ErrorModel::not_found(err_msg, "TupleNotFoundError", Some(Box::new(e)))
+                } else {
+                    ErrorModel::new(
+                        err_msg,
+                        "AuthorizationError",
+                        StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                        Some(Box::new(e)),
+                    )
+                }
             }
             _ => ErrorModel::new(
                 err.to_string(),

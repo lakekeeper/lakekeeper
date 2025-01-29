@@ -1,3 +1,4 @@
+use super::check::{__path_check, check};
 use super::relations::{
     APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
     APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
@@ -29,6 +30,7 @@ use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
+
 use http::StatusCode;
 use openfga_rs::{
     CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, TupleKey,
@@ -47,6 +49,7 @@ struct GetAccessQuery {
     /// The user or role to show access for.
     /// If not specified, shows access for the current user.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     principal: Option<UserOrRole>,
 }
 
@@ -97,6 +100,7 @@ struct GetViewAccessResponse {
 struct GetRoleAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<RoleRelation>>,
 }
 
@@ -111,6 +115,7 @@ struct GetRoleAssignmentsResponse {
 struct GetServerAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<ServerRelation>>,
 }
 
@@ -125,6 +130,7 @@ struct GetServerAssignmentsResponse {
 pub(super) struct GetProjectAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<ProjectRelation>>,
 }
 
@@ -141,6 +147,7 @@ struct GetProjectAssignmentsResponse {
 pub(super) struct GetWarehouseAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<WarehouseRelation>>,
 }
 
@@ -155,6 +162,7 @@ struct GetWarehouseAssignmentsResponse {
 pub(super) struct GetNamespaceAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<NamespaceRelation>>,
 }
 
@@ -169,6 +177,7 @@ struct GetNamespaceAssignmentsResponse {
 pub(super) struct GetTableAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<TableRelation>>,
 }
 
@@ -183,6 +192,7 @@ struct GetTableAssignmentsResponse {
 pub(super) struct GetViewAssignmentsQuery {
     /// Relations to be loaded. If not specified, all relations are returned.
     #[serde(default)]
+    #[param(nullable = false, required = false)]
     relations: Option<Vec<ViewRelation>>,
 }
 
@@ -276,13 +286,13 @@ struct SetManagedAccessRequest {
 
 /// Get my access to the default project
 #[utoipa::path(
-    get,
+    post,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
     params(
-        GetAccessQuery,
         ("role_id" = uuid::Uuid, Path, description = "Role ID"),
     ),
+    request_body = UpdateRoleAssignmentsRequest,
     responses(
             (status = 200, body = GetRoleAccessResponse),
     )
@@ -525,6 +535,7 @@ async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
     params(
         ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
     ),
+    request_body = SetManagedAccessRequest,
     responses(
             (status = 200),
     )
@@ -1255,6 +1266,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         (name = "permissions", description = "Manage Permissions"),
     ),
     paths(
+        check,
         get_namespace_access_by_id,
         get_namespace_assignments_by_id,
         get_namespace_by_id,
@@ -1284,54 +1296,14 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
         update_view_assignments_by_id,
         update_warehouse_assignments_by_id,
     ),
-    components(schemas(
-        GetNamespaceAccessResponse,
-        GetNamespaceAssignmentsResponse,
-        GetNamespaceAuthPropertiesResponse,
-        GetProjectAccessResponse,
-        GetProjectAssignmentsResponse,
-        GetRoleAccessResponse,
-        GetRoleAssignmentsResponse,
-        GetServerAccessResponse,
-        GetServerAssignmentsResponse,
-        GetTableAccessResponse,
-        GetTableAssignmentsResponse,
-        GetViewAccessResponse,
-        GetViewAssignmentsResponse,
-        GetWarehouseAccessResponse,
-        GetWarehouseAssignmentsResponse,
-        GetWarehouseAuthPropertiesResponse,
-        NamespaceAction,
-        NamespaceAssignment,
-        NamespaceRelation,
-        ProjectAction,
-        ProjectAssignment,
-        ProjectRelation,
-        RoleAction,
-        RoleAssignment,
-        RoleRelation,
-        ServerAction,
-        ServerAssignment,
-        ServerRelation,
-        SetManagedAccessRequest,
-        TableAction,
-        TableAssignment,
-        TableRelation,
-        UpdateNamespaceAssignmentsRequest,
-        UpdateProjectAssignmentsRequest,
-        UpdateRoleAssignmentsRequest,
-        UpdateServerAssignmentsRequest,
-        UpdateTableAssignmentsRequest,
-        UpdateViewAssignmentsRequest,
-        UpdateWarehouseAssignmentsRequest,
-        UserOrRole,
-        ViewAction,
-        ViewAssignment,
-        ViewRelation,
-        WarehouseAction,
-        WarehouseAssignment,
-        WarehouseRelation,
-    ))
+    // auto-discovery seems to be broken for these
+    components(schemas(NamespaceRelation,
+                       ProjectRelation,
+                       RoleRelation,
+                       ServerRelation,
+                       TableRelation,
+                       ViewRelation,
+                       WarehouseRelation))
 )]
 pub(crate) struct ApiDoc;
 
@@ -1339,49 +1311,49 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
 ) -> Router<ApiContext<State<OpenFGAAuthorizer, C, S>>> {
     Router::new()
         .route(
-            "/permissions/role/:role_id/access",
+            "/permissions/role/{role_id}/access",
             get(get_role_access_by_id),
         )
         .route("/permissions/server/access", get(get_server_access))
         .route("/permissions/project/access", get(get_project_access))
         .route(
-            "/permissions/warehouse/:warehouse_id/access",
+            "/permissions/warehouse/{warehouse_id}/access",
             get(get_warehouse_access_by_id),
         )
         .route(
-            "/permissions/warehouse/:warehouse_id",
+            "/permissions/warehouse/{warehouse_id}",
             get(get_warehouse_by_id),
         )
         .route(
-            "/permissions/warehouse/:warehouse_id/managed-access",
+            "/permissions/warehouse/{warehouse_id}/managed-access",
             post(set_warehouse_managed_access),
         )
         .route(
-            "/permissions/project/:project_id/access",
+            "/permissions/project/{project_id}/access",
             get(get_project_access_by_id),
         )
         .route(
-            "/permissions/namespace/:namespace_id/access",
+            "/permissions/namespace/{namespace_id}/access",
             get(get_namespace_access_by_id),
         )
         .route(
-            "/permissions/namespace/:namespace_id",
+            "/permissions/namespace/{namespace_id}",
             get(get_namespace_by_id),
         )
         .route(
-            "/permissions/namespace/:namespace_id/managed-access",
+            "/permissions/namespace/{namespace_id}/managed-access",
             post(set_namespace_managed_access),
         )
         .route(
-            "/permissions/table/:table_id/access",
+            "/permissions/table/{table_id}/access",
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/view/:table_id/access",
+            "/permissions/view/{table_id}/access",
             get(get_view_access_by_id),
         )
         .route(
-            "/permissions/role/:role_id/assignments",
+            "/permissions/role/{role_id}/assignments",
             get(get_role_assignments_by_id).post(update_role_assignments_by_id),
         )
         .route(
@@ -1393,25 +1365,26 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_project_assignments).post(update_project_assignments),
         )
         .route(
-            "/permissions/project/:project_id/assignments",
+            "/permissions/project/{project_id}/assignments",
             get(get_project_assignments_by_id).post(update_project_assignments_by_id),
         )
         .route(
-            "/permissions/warehouse/:warehouse_id/assignments",
+            "/permissions/warehouse/{warehouse_id}/assignments",
             get(get_warehouse_assignments_by_id).post(update_warehouse_assignments_by_id),
         )
         .route(
-            "/permissions/namespace/:namespace_id/assignments",
+            "/permissions/namespace/{namespace_id}/assignments",
             get(get_namespace_assignments_by_id).post(update_namespace_assignments_by_id),
         )
         .route(
-            "/permissions/table/:table_id/assignments",
+            "/permissions/table/{table_id}/assignments",
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/view/:view_id/assignments",
+            "/permissions/view/{view_id}/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
         )
+        .route("/permissions/check", post(check))
 }
 
 async fn get_relations<RA: Assignment>(

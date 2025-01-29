@@ -6,11 +6,11 @@ use crate::api::{
     RenameTableRequest, Result,
 };
 use crate::request_metadata::RequestMetadata;
+use async_trait::async_trait;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{
-    async_trait,
     extract::{Path, Query},
     routing::get,
     Extension, Json, Router,
@@ -88,7 +88,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
     Router::new()
         // /{prefix}/namespaces/{namespace}/views
         .route(
-            "/:prefix/namespaces/:namespace/views",
+            "/{prefix}/namespaces/{namespace}/views",
             get(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
                  Query(query): Query<ListTablesQuery>,
@@ -131,7 +131,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
         )
         // /{prefix}/namespaces/{namespace}/views/{view}
         .route(
-            "/:prefix/namespaces/:namespace/views/:view",
+            "/{prefix}/namespaces/{namespace}/views/{view}",
             get(
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
@@ -224,7 +224,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
         )
         // /{prefix}/views/rename
         .route(
-            "/:prefix/views/rename",
+            "/{prefix}/views/rename",
             post(
                 |Path(prefix): Path<Prefix>,
                  State(api_context): State<ApiContext<S>>,

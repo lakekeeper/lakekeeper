@@ -248,7 +248,7 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) location: &'a Location,
 }
 
-pub(crate) async fn create_tabular<'a>(
+pub(crate) async fn create_tabular(
     CreateTabular {
         id,
         name,
@@ -256,7 +256,7 @@ pub(crate) async fn create_tabular<'a>(
         typ,
         metadata_location,
         location,
-    }: CreateTabular<'a>,
+    }: CreateTabular<'_>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Uuid> {
     let query_strings = location
@@ -293,7 +293,7 @@ pub(crate) async fn create_tabular<'a>(
                JOIN warehouse w ON w.warehouse_id = n.warehouse_id
                WHERE (location = ANY($1) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
-                      (length($3) < length(location) AND (location LIKE $3 || '%'))
+                      (length($3) < length(location) AND ((TRIM(TRAILING '/' FROM location) || '/') LIKE $3 || '/%'))
                ) AND tabular_id != $2
            ) as "exists!""#,
         &query_strings,
@@ -663,7 +663,7 @@ pub(crate) async fn mark_tabular_as_deleted(
     Ok(())
 }
 
-pub(crate) async fn drop_tabular<'a>(
+pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {

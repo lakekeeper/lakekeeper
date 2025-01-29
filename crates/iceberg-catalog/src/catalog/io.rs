@@ -5,6 +5,7 @@ use crate::service::storage::path_utils;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use iceberg::io::FileIO;
+use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use iceberg_ext::configs::Location;
 use serde::Serialize;
@@ -21,7 +22,7 @@ pub(crate) async fn write_metadata_file(
     } else {
         metadata_location.to_string()
     };
-    tracing::debug!("Going to write metadata file to {}", metadata_location);
+    tracing::debug!("Writing metadata file to {}", metadata_location);
 
     let metadata_file = file_io
         .new_output(metadata_location)
@@ -29,7 +30,7 @@ pub(crate) async fn write_metadata_file(
 
     let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
 
-    let metadata_bytes = compression_codec.compress(&buf[..])?;
+    let metadata_bytes = compression_codec.compress(buf).await?;
 
     retry_fn(|| async {
         metadata_file
@@ -66,18 +67,41 @@ pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u
         file.to_string()
     };
 
-    retry_fn(|| async {
+    let content: Vec<_> = retry_fn(|| async {
         // InputFile isn't clone hence it's here
         file_io
             .clone()
             .new_input(file.clone())
-            .map_err(IoError::FileCreation)?
+            .map_err(IoError::FileInput)?
             .read()
             .await
             .map_err(|e| IoError::FileRead(Box::new(e)))
             .map(Into::into)
     })
+    .await?;
+
+    if file.as_str().ends_with(".gz.metadata.json") {
+        let codec = CompressionCodec::Gzip;
+        let content = codec.decompress(content).await?;
+        Ok(content)
+    } else {
+        Ok(content)
+    }
+}
+
+pub(crate) async fn read_metadata_file(
+    file_io: &FileIO,
+    file: &Location,
+) -> Result<TableMetadata, IoError> {
+    let content = read_file(file_io, file).await?;
+    match tokio::task::spawn_blocking(move || {
+        serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
+    })
     .await
+    {
+        Ok(result) => result,
+        Err(e) => Err(IoError::FileDecompression(Box::new(e))),
+    }
 }
 
 pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
@@ -115,10 +139,7 @@ pub(crate) async fn list_location<'a>(
             .list_paginated(location.clone().as_str(), true, size)
             .await
             .map_err(|e| {
-                tracing::warn!(
-                    ?e,
-                    "Failed to list files in location, gonna retry three times.."
-                );
+                tracing::warn!(?e, "Failed to list files in location. Retry three times...");
                 IoError::List(e)
             })
     })
@@ -137,14 +158,20 @@ pub(crate) async fn list_location<'a>(
 pub enum IoError {
     #[error("Failed to create file. Please check the storage credentials.")]
     FileCreation(#[source] iceberg::Error),
+    #[error("Failed to read file. Please check the storage credentials.")]
+    FileInput(#[source] iceberg::Error),
     #[error("Failed to create file writer. Please check the storage credentials.")]
     FileWriterCreation(#[source] iceberg::Error),
     #[error("Failed to serialize data.")]
     Serialization(#[source] serde_json::Error),
+    #[error("Failed to deserialize table metadata.")]
+    TableMetadataDeserialization(#[source] serde_json::Error),
     #[error("Failed to write table metadata to compressed buffer.")]
     Write(#[source] iceberg::Error),
     #[error("Failed to finish compressing file.")]
-    FileCompression(#[source] std::io::Error),
+    FileCompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
+    #[error("Failed to finish decompressing file.")]
+    FileDecompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to write file. Please check the storage credentials.")]
     FileWrite(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to read file. Please check the storage credentials.")]
@@ -173,17 +200,24 @@ impl From<IoError> for IcebergErrorResponse {
 
         match boxed.as_ref() {
             IoError::FileRead(_)
+            | IoError::FileInput(_)
             | IoError::FileDelete(_)
             | IoError::FileRemoveAll(_)
             | IoError::FileClose(_)
             | IoError::FileWrite(_)
             | IoError::FileWriterCreation(_)
             | IoError::FileCreation(_)
+            | IoError::FileDecompression(_)
             | IoError::List(_) => ErrorModel::failed_dependency(message, typ, Some(boxed)).into(),
-
             IoError::FileCompression(_) | IoError::Write(_) | IoError::Serialization(_) => {
                 ErrorModel::internal(message, typ, Some(boxed)).into()
+            }
+            IoError::TableMetadataDeserialization(e) => {
+                ErrorModel::bad_request(format!("{message} {e}"), typ, Some(boxed)).into()
             }
         }
     }
 }
+
+#[cfg(test)]
+mod tests {}

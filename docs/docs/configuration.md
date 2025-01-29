@@ -75,6 +75,11 @@ Lakekeeper can publish change events to Nats (Kafka is coming soon). The followi
 | `LAKEKEEPER__NATS_PASSWORD`                | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
 | <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing nats credentials |
 | `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | Nats token to use for authentication |
+### Logging Cloudevents
+
+Cloudevents can also be logged, if you do not have Nats up and running. This feature can be enabled by setting
+
+`LAKEKEEPER__LOG_CLOUDEVENTS=true`
 
 ### Authentication
 
@@ -124,9 +129,10 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | <nobr>`LAKEKEEPER__UI__OPENID_PROVIDER_URI`</nobr> | `https://keycloak.local/realms/{your-realm}` | OpenID provider URI used for login in the UI. Defaults to `LAKEKEEPER__OPENID_PROVIDER_URI`. Set this only if the IdP is reachable under a different URI from the users browser and lakekeeper. |
 | `LAKEKEEPER__UI__OPENID_CLIENT_ID`                 | `lakekeeper-ui`                              | Client ID to use for the Authorization Code Flow of the UI. Required if Authentication is enabled. Defaults to `lakekeeper` |
 | `LAKEKEEPER__UI__OPENID_REDIRECT_PATH`             | `/callback`                                  | Path where the UI receives the callback including the tokens from the users browser. Defaults to: `/callback` |
-| <nobr>`LAKEKEEPER__UI__OPENID_SCOPE`</nobr>        | `openid email`                               | Scopes to request from the IdP. Defaults to `openid profile email` |
+| <nobr>`LAKEKEEPER__UI__OPENID_SCOPE`</nobr>        | `openid email`                               | Scopes to request from the IdP. Defaults to `openid profile email`. |
 | <nobr>`LAKEKEEPER__UI__OPENID_RESOURCE`</nobr>     | `lakekeeper-api`                             | Resources to request from the IdP. If not specified, the `resource` field is omitted (default). |
 | `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
+| `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 
 
 ### SSL Dependencies

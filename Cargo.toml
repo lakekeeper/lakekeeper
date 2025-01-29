@@ -33,7 +33,7 @@ aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-sts = "1.36.0"
 aws-smithy-http = "0.60.11"
 base64 = "0.22.1"
-cloudevents-sdk = { version = "0.7.0" }
+cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
 google-cloud-auth = { version = "0.17.0", features = [
     "rustls-tls",
@@ -56,11 +56,11 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "cdd17
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "08cb6a4" }
 typed-builder = "^0.20.0"
 strum_macros = "^0.26"
-axum = { version = "^0.7" }
-axum-prometheus = "0.7.0"
-axum-extra = { version = "0.9.3" }
-axum-macros = { version = "0.4.2" }
-async-trait = "^0.1"
+async-trait = "0.1.83"
+axum = { version = "0.8.1" }
+axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
+axum-extra = { version = "0.11.0" }
+axum-macros = { version = "0.5.0" }
 env_logger = "^0.11"
 itertools = "0.13.0"
 log = "^0.4"
@@ -81,11 +81,11 @@ http-body-util = "^0.1"
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
-kube = { version = "0.97", default-features = false, features = [
+kube = { version = "0.98", default-features = false, features = [
     "rustls-tls",
     "client",
 ] }
-k8s-openapi = { version = "0.23.0", features = ["v1_26"] }
+k8s-openapi = { version = "0.24.0", features = ["v1_28"] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 percent-encoding = "2.3.1"
 strum = { version = "^0.26", features = ["derive"] }
@@ -117,7 +117,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
-utoipa = { version = "4.2.3", features = [
+utoipa = { version = "5.3.1", features = [
     "axum_extras",
     "chrono",
     "url",
@@ -125,7 +125,7 @@ utoipa = { version = "4.2.3", features = [
     "yaml",
 ] }
 serde_yml = "0.0.12"
-utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
+utoipa-swagger-ui = { version = "9.0.0", features = ["axum"] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"

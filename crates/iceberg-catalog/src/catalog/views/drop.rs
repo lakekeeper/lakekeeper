@@ -40,12 +40,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // Can't fail before authz
 
     let view_id: ViewIdentUuid = authorizer
-        .require_view_action(
-            &request_metadata,
-            warehouse_id,
-            view_id,
-            &CatalogViewAction::CanDrop,
-        )
+        .require_view_action(&request_metadata, view_id, &CatalogViewAction::CanDrop)
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
@@ -114,7 +109,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             serde_json::Value::Null,
             EventMetadata {
                 tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id: *warehouse_id,
+                warehouse_id,
                 name: view.name.clone(),
                 namespace: view.namespace.to_url_string(),
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),

@@ -15,18 +15,19 @@ pub mod v1 {
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
     use crate::api::management::v1::warehouse::UndropTabularsRequest;
+    use crate::api::IcebergErrorResponse;
     use crate::service::authn::UserId;
     use crate::service::{
-        authz::Authorizer, storage::S3Flavor, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
-        SecretStore, State, TabularIdentUuid,
+        authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse, RoleId, SecretStore, State,
+        TabularIdentUuid,
     };
-    use crate::ProjectIdent;
+    use crate::{ProjectIdent, WarehouseIdent};
     use axum::extract::{Path, Query, State as AxumState};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
-    use bootstrap::{AuthZBackend, BootstrapRequest, ServerInfo, Service as _};
+    use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
-    use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+    use iceberg_ext::catalog::rest::ErrorModel;
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
@@ -37,16 +38,14 @@ pub mod v1 {
     };
     use serde::Serialize;
     use user::{
-        CreateUserRequest, SearchUser, SearchUserRequest, SearchUserResponse, Service as _,
-        UpdateUserRequest, User, UserLastUpdatedWith, UserType,
+        CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
+        User,
     };
     use warehouse::{
-        AdlsProfile, AzCredential, CreateWarehouseRequest, CreateWarehouseResponse, GcsCredential,
-        GcsProfile, GcsServiceKey, GetWarehouseResponse, ListDeletedTabularsQuery,
-        ListWarehousesRequest, ListWarehousesResponse, RenameWarehouseRequest, S3Credential,
-        S3Profile, Service as _, StorageCredential, StorageProfile, TabularDeleteProfile,
-        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
-        UpdateWarehouseStorageRequest, WarehouseStatus,
+        CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
+        ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
+        RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
     };
 
     pub(crate) fn default_page_size() -> i64 {
@@ -106,63 +105,6 @@ pub mod v1 {
             update_warehouse_delete_profile,
             whoami,
         ),
-        components(schemas(
-            AuthZBackend,
-            ErrorModel,
-            AzCredential,
-            AdlsProfile,
-            BootstrapRequest,
-            CreateProjectRequest,
-            CreateProjectResponse,
-            CreateRoleRequest,
-            CreateRoleRequest,
-            CreateRoleRequest,
-            CreateUserRequest,
-            CreateWarehouseRequest,
-            CreateWarehouseResponse,
-            DeletedTabularResponse,
-            DeleteKind,
-            GcsCredential,
-            GcsProfile,
-            GcsServiceKey,
-            GetProjectResponse,
-            GetWarehouseResponse,
-            IcebergErrorResponse,
-            ListDeletedTabularsResponse,
-            ListProjectsResponse,
-            ListRolesResponse,
-            ListUsersResponse,
-            ListWarehousesRequest,
-            ListWarehousesResponse,
-            ProjectIdent,
-            RenameProjectRequest,
-            RenameWarehouseRequest,
-            Role,
-            S3Credential,
-            S3Flavor,
-            S3Profile,
-            SearchRoleRequest,
-            SearchRoleResponse,
-            SearchUser,
-            SearchUserRequest,
-            SearchUserResponse,
-            ServerInfo,
-            StorageCredential,
-            StorageProfile,
-            TabularDeleteProfile,
-            TabularType,
-            TabularIdentUuid,
-            UndropTabularsRequest,
-            UpdateRoleRequest,
-            UpdateUserRequest,
-            UpdateWarehouseCredentialRequest,
-            UpdateWarehouseDeleteProfileRequest,
-            UpdateWarehouseStorageRequest,
-            User,
-            UserLastUpdatedWith,
-            UserType,
-            WarehouseStatus,
-        )),
         modifiers(&SecurityAddon)
     )]
     struct ManagementApiDoc;
@@ -926,13 +868,12 @@ pub mod v1 {
         )
     )]
     async fn undrop_tabulars<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-        Path(warehouse_id): Path<uuid::Uuid>,
+        Path(_warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UndropTabularsRequest>,
     ) -> Result<StatusCode> {
-        ApiServer::<C, A, S>::undrop_tabulars(metadata, warehouse_id.into(), request, api_context)
-            .await?;
+        ApiServer::<C, A, S>::undrop_tabulars(metadata, request, api_context).await?;
         Ok(StatusCode::NO_CONTENT)
     }
 
@@ -955,7 +896,8 @@ pub mod v1 {
         /// Type of the tabular
         pub typ: TabularType,
         /// Warehouse ID where the tabular is stored
-        pub warehouse_id: uuid::Uuid,
+        #[schema(value_type = uuid::Uuid)]
+        pub warehouse_id: WarehouseIdent,
         /// Date when the tabular was created
         pub created_at: chrono::DateTime<chrono::Utc>,
         /// Date when the tabular was deleted
@@ -1004,7 +946,7 @@ pub mod v1 {
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(
-                    "/role/:id",
+                    "/role/{id}",
                     get(get_role).post(update_role).delete(delete_role),
                 )
                 .route("/search/role", post(search_role))
@@ -1012,7 +954,7 @@ pub mod v1 {
                 .route("/whoami", get(whoami))
                 .route("/search/user", post(search_user))
                 .route(
-                    "/user/:user_id",
+                    "/user/{user_id}",
                     get(get_user).put(update_user).delete(delete_user),
                 )
                 .route("/user", get(list_user).post(create_user))
@@ -1025,10 +967,10 @@ pub mod v1 {
                 )
                 .route("/project/rename", post(rename_default_project))
                 .route(
-                    "/project/:project_id",
+                    "/project/{project_id}",
                     get(get_project_by_id).delete(delete_project_by_id),
                 )
-                .route("/project/:project_id/rename", post(rename_project_by_id))
+                .route("/project/{project_id}/rename", post(rename_project_by_id))
                 // Create a new warehouse
                 .route("/warehouse", post(create_warehouse))
                 // List all projects
@@ -1039,42 +981,42 @@ pub mod v1 {
                     get(list_warehouses),
                 )
                 .route(
-                    "/warehouse/:warehouse_id",
+                    "/warehouse/{warehouse_id}",
                     get(get_warehouse).delete(delete_warehouse),
                 )
                 // Rename warehouse
-                .route("/warehouse/:warehouse_id/rename", post(rename_warehouse))
+                .route("/warehouse/{warehouse_id}/rename", post(rename_warehouse))
                 // Deactivate warehouse
                 .route(
-                    "/warehouse/:warehouse_id/deactivate",
+                    "/warehouse/{warehouse_id}/deactivate",
                     post(deactivate_warehouse),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/activate",
+                    "/warehouse/{warehouse_id}/activate",
                     post(activate_warehouse),
                 )
                 // Update storage profile and credential.
                 // The old credential is not re-used. If credentials are not provided,
                 // we assume that this endpoint does not require a secret.
                 .route(
-                    "/warehouse/:warehouse_id/storage",
+                    "/warehouse/{warehouse_id}/storage",
                     post(update_storage_profile),
                 )
                 // Update only the storage credential - keep the storage profile as is
                 .route(
-                    "/warehouse/:warehouse_id/storage-credential",
+                    "/warehouse/{warehouse_id}/storage-credential",
                     post(update_storage_credential),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/deleted-tabulars",
+                    "/warehouse/{warehouse_id}/deleted-tabulars",
                     get(list_deleted_tabulars),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/deleted_tabulars/undrop",
+                    "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
                     post(undrop_tabulars),
                 )
                 .route(
-                    "/warehouse/:warehouse_id/delete-profile",
+                    "/warehouse/{warehouse_id}/delete-profile",
                     post(update_warehouse_delete_profile),
                 )
                 .merge(authorizer.new_router())

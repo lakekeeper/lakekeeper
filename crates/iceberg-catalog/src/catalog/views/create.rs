@@ -62,7 +62,6 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let namespace_id = authorizer
         .require_namespace_action(
             &request_metadata,
-            warehouse_id,
             namespace_id,
             &CatalogNamespaceAction::CanCreateView,
         )
@@ -171,7 +170,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             body,
             EventMetadata {
                 tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id: *warehouse_id.as_uuid(),
+                warehouse_id,
                 name: view.name,
                 namespace: view.namespace.to_url_string(),
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),

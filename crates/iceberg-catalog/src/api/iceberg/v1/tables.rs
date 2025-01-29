@@ -8,10 +8,11 @@ use crate::api::{
 };
 use crate::request_metadata::RequestMetadata;
 
+use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{async_trait, Extension, Json, Router};
+use axum::{Extension, Json, Router};
 use http::{HeaderMap, StatusCode};
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadCredentialsResponse;
@@ -131,7 +132,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
     Router::new()
         // /{prefix}/namespaces/{namespace}/tables
         .route(
-            "/:prefix/namespaces/:namespace/tables",
+            "/{prefix}/namespaces/{namespace}/tables",
             // Create a table in the given namespace
             get(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
@@ -171,7 +172,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // /{prefix}/namespaces/{namespace}/register
         .route(
-            "/:prefix/namespaces/:namespace/register",
+            "/{prefix}/namespaces/{namespace}/register",
             // Register a table in the given namespace using given metadata file location
             post(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
@@ -192,7 +193,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // /{prefix}/namespaces/{namespace}/tables/{table}
         .route(
-            "/:prefix/namespaces/:namespace/tables/:table",
+            "/{prefix}/namespaces/{namespace}/tables/{namespace}",
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
@@ -278,7 +279,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // {prefix}/namespaces/{namespace}/tables/{table}/credentials
         .route(
-            "/:prefix/namespaces/:namespace/tables/:table/credentials",
+            "/{prefix}/namespaces/{namespace}/tables/{namespace}/credentials",
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
@@ -302,7 +303,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // /{prefix}/tables/rename
         .route(
-            "/:prefix/tables/rename",
+            "/{prefix}/tables/rename",
             // Rename a table in the given namespace
             post(
                 |Path(prefix): Path<Prefix>,
@@ -319,7 +320,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // /{prefix}/transactions/commit
         .route(
-            "/:prefix/transactions/commit",
+            "/{prefix}/transactions/commit",
             // Commit updates to multiple tables in an atomic operation
             post(
                 |Path(prefix): Path<Prefix>,

@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::{collections::HashSet, fmt};
 
 pub(super) mod api;
+mod check;
 mod client;
 mod entities;
 mod error;
@@ -270,7 +271,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: format!("project:{project_id}"),
+            object: project_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -289,7 +290,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: format!("warehouse:{warehouse_id}"),
+            object: warehouse_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -301,16 +302,15 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_namespace_action(
         &self,
         metadata: &RequestMetadata,
-        _warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
-        action: &CatalogNamespaceAction,
+        action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
     ) -> Result<bool> {
         let actor = metadata.actor();
         let check_actor_fut = self.check_actor(actor);
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: format!("namespace:{namespace_id}"),
+            object: namespace_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -322,16 +322,15 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_table_action(
         &self,
         metadata: &RequestMetadata,
-        _warehouse_id: WarehouseIdent,
         table_id: TableIdentUuid,
-        action: &CatalogTableAction,
+        action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<bool> {
         let actor = metadata.actor();
         let check_actor_fut = self.check_actor(actor);
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: format!("table:{table_id}"),
+            object: table_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -343,16 +342,15 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_view_action(
         &self,
         metadata: &RequestMetadata,
-        _warehouse_id: WarehouseIdent,
         view_id: ViewIdentUuid,
-        action: &CatalogViewAction,
+        action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<bool> {
         let actor = metadata.actor();
         let check_actor_fut = self.check_actor(actor);
         let check_fut = self.check(CheckRequestTupleKey {
             user: actor.to_openfga(),
             relation: action.to_string(),
-            object: format!("view:{view_id}"),
+            object: view_id.to_openfga(),
         });
 
         let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
@@ -1055,7 +1053,8 @@ impl OpenFGAAuthorizer {
     /// is allowed to assume the specified role.
     async fn check_actor(&self, actor: &Actor) -> Result<()> {
         match actor {
-            Actor::Principal(_) | Actor::Anonymous => Ok(()),
+            Actor::Principal(_user_id) => Ok(()),
+            Actor::Anonymous => Ok(()),
             Actor::Role {
                 principal,
                 assumed_role,
@@ -1503,6 +1502,60 @@ pub(crate) mod tests {
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
                 .unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_delete_non_existing_relation_gives_404() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let result = authorizer
+                .write(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                    }]),
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                ErrorModel::from(result).code,
+                StatusCode::NOT_FOUND.as_u16()
+            );
+        }
+
+        #[tokio::test]
+        async fn test_duplicate_writes_give_409() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let result = authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: project_id.to_openfga(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:my_warehouse".to_string(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(ErrorModel::from(result).code, StatusCode::CONFLICT.as_u16());
         }
 
         #[tokio::test]

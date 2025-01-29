@@ -54,14 +54,16 @@ pub struct CreateProjectRequest {
     pub project_name: String,
     /// Request a specific project ID - optional.
     /// If not provided, a new project ID will be generated (recommended).
-    pub project_id: Option<uuid::Uuid>,
+    #[schema(value_type = Option::<uuid::Uuid>)]
+    pub project_id: Option<ProjectIdent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateProjectResponse {
     /// ID of the created project.
-    pub project_id: uuid::Uuid,
+    #[schema(value_type = uuid::Uuid)]
+    pub project_id: ProjectIdent,
 }
 
 impl axum::response::IntoResponse for CreateProjectResponse {
@@ -98,16 +100,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         } = request;
         validate_project_name(&project_name)?;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let project_id: ProjectIdent = project_id.unwrap_or(uuid::Uuid::now_v7()).into();
+        let project_id = project_id.unwrap_or(ProjectIdent::from(uuid::Uuid::now_v7()));
         C::create_project(project_id, project_name, t.transaction()).await?;
         authorizer
             .create_project(&request_metadata, project_id)
             .await?;
         t.commit().await?;
 
-        Ok(CreateProjectResponse {
-            project_id: *project_id,
-        })
+        Ok(CreateProjectResponse { project_id })
     }
 
     async fn rename_project(

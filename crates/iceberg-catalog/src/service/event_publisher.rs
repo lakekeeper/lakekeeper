@@ -5,6 +5,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use super::WarehouseIdent;
+
 #[derive(Debug, Clone)]
 pub struct CloudEventsPublisher {
     tx: tokio::sync::mpsc::Sender<Message>,
@@ -57,7 +59,7 @@ impl CloudEventsPublisher {
 #[derive(Debug, Clone)]
 pub struct EventMetadata {
     pub tabular_id: TabularIdentUuid,
-    pub warehouse_id: Uuid,
+    pub warehouse_id: WarehouseIdent,
     pub name: String,
     pub namespace: String,
     pub prefix: String,

@@ -3,10 +3,11 @@ use std::ops::Deref;
 use crate::api::iceberg::types::{PageToken, Prefix};
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
+use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{async_trait, Extension, Json, Router};
+use axum::{Extension, Json, Router};
 use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::{
@@ -139,7 +140,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
     Router::new()
         // List Namespaces
         .route(
-            "/:prefix/namespaces",
+            "/{prefix}/namespaces",
             // List Namespaces
             get(
                 |Path(prefix): Path<Prefix>,
@@ -161,7 +162,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
         )
         // Load the metadata properties for a namespace
         .route(
-            "/:prefix/namespaces/:namespace",
+            "/{prefix}/namespaces/{namespace}",
             // Load the metadata properties for a namespace
             get(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
@@ -216,7 +217,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
         )
         // UpdateNamespacePropertiesResponse
         .route(
-            "/:prefix/namespaces/:namespace/properties",
+            "/{prefix}/namespaces/{namespace}/properties",
             // Set or remove properties on a namespace
             post(
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
@@ -328,7 +329,7 @@ mod tests {
     use super::super::*;
     use super::*;
     use crate::request_metadata::RequestMetadata;
-    use axum::async_trait;
+    use async_trait::async_trait;
     use http_body_util::BodyExt;
     use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
