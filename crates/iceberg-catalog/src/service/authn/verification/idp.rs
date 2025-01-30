@@ -142,8 +142,7 @@ impl IdpVerifier {
                 if !claims.scopes().contains(&required_scope.as_str()) {
                     return Err(ErrorModel::builder()
                         .message(format!(
-                            "Token does not contain required scope: {}",
-                            required_scope
+                            "Token does not contain required scope: {required_scope}"
                         ))
                         .code(StatusCode::UNAUTHORIZED.into())
                         .r#type("UnauthorizedError")
