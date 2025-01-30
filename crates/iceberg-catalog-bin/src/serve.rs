@@ -208,6 +208,7 @@ async fn serve_inner<A: Authorizer>(
                     uri,
                     CONFIG.openid_audience.clone(),
                     CONFIG.openid_additional_issuers.clone(),
+                    CONFIG.openid_scope.clone(),
                 )
                 .await?,
             )

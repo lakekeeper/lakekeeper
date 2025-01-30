@@ -77,7 +77,7 @@ pub(crate) async fn auth_middleware_fn(
 
     for verifier in verifiers.into_vec() {
         let Ok(details) = verifier.decode(authorization.token()).await.map_err(|e| {
-            tracing::error!(
+            tracing::debug!(
                 ?e,
                 "Failed to decode token with verifier: '{}' due to: '{e}'",
                 verifier.typ(),

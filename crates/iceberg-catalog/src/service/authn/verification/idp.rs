@@ -35,6 +35,24 @@ pub struct IdpVerifier {
     /// Expected audience for the token.
     /// If None, the audience will not be validated
     audience: Option<Vec<String>>,
+    /// This scope must be present in the scopes of the token.
+    scope: Option<String>,
+}
+
+trait Scope {
+    fn scope(&self) -> Option<&str>;
+
+    fn scopes(&self) -> Vec<&str> {
+        self.scope()
+            .map(|s| s.split(' ').collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Scope for Claims {
+    fn scope(&self) -> Option<&str> {
+        self.scope.as_deref()
+    }
 }
 
 impl IdpVerifier {
@@ -50,6 +68,7 @@ impl IdpVerifier {
         mut url: Url,
         audience: Option<Vec<String>>,
         additional_issuers: Option<Vec<String>>,
+        scope: Option<String>,
     ) -> anyhow::Result<Self> {
         if !url.path().ends_with('/') {
             url.set_path(&format!("{}/", url.path()));
@@ -75,11 +94,12 @@ impl IdpVerifier {
             issuers,
             main_issuer,
             audience,
+            scope,
         })
     }
 
     // this function is mostly lifted out of jwks_client_rs which is incompatible with azure jwks.
-    async fn decode<O: DeserializeOwned>(&self, token: &str) -> api::Result<O, ErrorModel> {
+    async fn decode<O: DeserializeOwned + Scope>(&self, token: &str) -> api::Result<O, ErrorModel> {
         let header: Header = jsonwebtoken::decode_header(token).map_err(|e| {
             ErrorModel::builder()
                 .message("Failed to decode auth token header.")
@@ -106,7 +126,7 @@ impl IdpVerifier {
             let validation = self.setup_validation(&header, &key)?;
             let decoding_key = Self::setup_decoding_key(key)?;
 
-            return Ok(jsonwebtoken::decode(token, &decoding_key, &validation)
+            let claims: O = jsonwebtoken::decode(token, &decoding_key, &validation)
                 .map_err(|e| {
                     tracing::debug!("Failed to decode token: {}", e);
                     ErrorModel::builder()
@@ -116,7 +136,22 @@ impl IdpVerifier {
                         .source(Some(Box::new(e)))
                         .build()
                 })?
-                .claims);
+                .claims;
+
+            if let Some(required_scope) = &self.scope {
+                if !claims.scopes().contains(&required_scope.as_str()) {
+                    return Err(ErrorModel::builder()
+                        .message(format!(
+                            "Token does not contain required scope: {}",
+                            required_scope
+                        ))
+                        .code(StatusCode::UNAUTHORIZED.into())
+                        .r#type("UnauthorizedError")
+                        .build());
+                }
+            }
+
+            return Ok(claims);
         }
 
         Err(ErrorModel::builder()
