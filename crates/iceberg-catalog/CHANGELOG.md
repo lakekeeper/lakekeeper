@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.2](https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2) (2025-01-30)
+
+
+### Features
+
+* Scope validation ([#790](https://github.com/lakekeeper/lakekeeper/issues/790)) ([65e664f](https://github.com/lakekeeper/lakekeeper/commit/65e664fb804fc6657dcfab655344d9bfd0224b5a))
+
+
+### Miscellaneous Chores
+
+* release 0.6.2 ([0c7e181](https://github.com/lakekeeper/lakekeeper/commit/0c7e1814eef9c039f6d05dbb3256c70caed1c36f))
+
 ## [0.6.1](https://github.com/lakekeeper/lakekeeper/compare/v0.6.0...v0.6.1) (2025-01-27)
 
 
