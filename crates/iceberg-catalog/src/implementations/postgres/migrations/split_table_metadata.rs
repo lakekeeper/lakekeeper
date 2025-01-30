@@ -67,6 +67,7 @@ async fn split_table_metadata(
                     Some(TabularType::Table),
                     PaginationQuery::new(token.into(), Some(100)),
                     true,
+                    None,
                 )
                 .await?;
 
@@ -356,6 +357,7 @@ mod test {
             None,
             PaginationQuery::empty(),
             true,
+            None,
         )
         .await
         .unwrap();
@@ -375,6 +377,7 @@ mod test {
             None,
             PaginationQuery::empty(),
             false,
+            None,
         )
         .await
         .unwrap();

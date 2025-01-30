@@ -177,6 +177,13 @@ where
         catalog_state: Self::State,
     ) -> std::result::Result<StartupValidationData, ErrorModel>;
 
+    async fn fetch_deleted_tabulars_task_id(
+        warehouse_ident: WarehouseIdent,
+        tabular_ids: &[TabularIdentUuid],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        pagination_query: PaginationQuery,
+    ) -> Result<Vec<TaskId>>;
+
     /// Bootstrap the catalog.
     /// Use this hook to store the current `CONFIG.server_id`.
     /// Must not update anything if the catalog is already bootstrapped.

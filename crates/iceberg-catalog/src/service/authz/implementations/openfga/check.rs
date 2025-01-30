@@ -537,15 +537,16 @@ mod tests {
             CreateWarehouseResponse,
             CreateNamespaceResponse,
         ) {
-            let prof = crate::catalog::test::test_io_profile();
+            let prof = crate::tests::test_io_profile();
             let authorizer = authorizer_for_empty_store().await.1;
-            let (ctx, warehouse) = crate::catalog::test::setup(
+            let (ctx, warehouse) = crate::tests::setup(
                 pool.clone(),
                 prof,
                 None,
                 authorizer.clone(),
                 TabularDeleteProfile::Hard {},
                 Some(operator_id.clone()),
+                None,
             )
             .await;
 

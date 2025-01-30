@@ -230,6 +230,14 @@ pub struct UndropTabularsRequest {
     pub targets: Vec<TabularIdentUuid>,
 }
 
+#[derive(Deserialize, Debug, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct RescheduleSoftDeletionRequest {
+    /// Tabulars to reschedule
+    pub targets: Vec<TabularIdentUuid>,
+    pub reschedule_to: chrono::DateTime<chrono::Utc>,
+}
+
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
 #[async_trait::async_trait]
@@ -657,8 +665,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
-        undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
-            .await?;
+        undrop::require_undrop_permissions(
+            request.targets.iter().copied(),
+            &context.v1_state.authz,
+            &request_metadata,
+        )
+        .await?;
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
@@ -675,6 +687,57 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .cancel_tabular_expiration(TaskFilter::TaskIds(tasks_to_cancel))
             .await?;
         transaction.commit().await?;
+
+        // TODO: emit event
+
+        Ok(())
+    }
+
+    async fn reschedule_soft_deletions(
+        request_metadata: RequestMetadata,
+        warehouse_ident: WarehouseIdent,
+        RescheduleSoftDeletionRequest {
+            targets,
+            reschedule_to,
+        }: RescheduleSoftDeletionRequest,
+        context: ApiContext<State<A, C, S>>,
+    ) -> Result<()> {
+        // ------------------- AuthZ -------------------
+        undrop::require_undrop_permissions(
+            targets.iter().copied(),
+            &context.v1_state.authz,
+            &request_metadata,
+        )
+        .await?;
+        if targets.len() > 1000 {
+            return Err(ErrorModel::bad_request(
+                "Too many soft-deletions to reschedule, maximum is 1000.",
+                "TooManyTabulars",
+                None,
+            )
+            .into());
+        }
+
+        let catalog = context.v1_state.catalog;
+        let mut trx = C::Transaction::begin_read(catalog.clone()).await?;
+        let task_ids = C::fetch_deleted_tabulars_task_id(
+            warehouse_ident,
+            &targets,
+            trx.transaction(),
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(1000),
+            },
+        )
+        .await?;
+        trx.commit().await?;
+
+        // ------------------- Business Logic -------------------
+        context
+            .v1_state
+            .queues
+            .reschedule_tabular_expiration(TaskFilter::TaskIds(task_ids), reschedule_to)
+            .await?;
 
         // TODO: emit event
 
@@ -888,7 +951,7 @@ mod test {
 
     use crate::api::iceberg::types::Prefix;
     use crate::api::iceberg::v1::{DataAccess, DropParams, NamespaceParameters, ViewParameters};
-    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
+    use crate::catalog::test::impl_pagination_tests;
     use crate::catalog::CatalogServer;
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use iceberg::TableIdent;
@@ -903,6 +966,7 @@ mod test {
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use crate::service::{State, UserId};
+    use crate::tests::random_request_metadata;
     use crate::WarehouseIdent;
     use itertools::Itertools;
 
@@ -914,12 +978,12 @@ mod test {
         ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
         WarehouseIdent,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let hiding_mock = ObjectHidingMock::new();
         let authz = hiding_mock.to_authorizer();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
@@ -928,9 +992,10 @@ mod test {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
             Some(UserId::OIDC("test-user-id".to_string())),
+            None,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -996,12 +1061,12 @@ mod test {
 
     #[sqlx::test]
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let hiding_mock = ObjectHidingMock::new();
         let authz = hiding_mock.to_authorizer();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
@@ -1010,9 +1075,10 @@ mod test {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
             Some(UserId::OIDC("test-user-id".to_string())),
+            None,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),

@@ -5,7 +5,7 @@ info:
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  version: 0.5.2
+  version: 0.6.0
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -1557,6 +1557,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/deleted-tabulars/reschedule:
+    post:
+      tags:
+      - warehouse
+      operationId: reschedule_soft_deletions
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RescheduleSoftDeletionRequest'
+        required: true
+      responses:
+        '204':
+          description: Tabular dropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
     post:
       tags:
@@ -2704,6 +2731,20 @@ components:
         new-name:
           type: string
           description: New name for the warehouse.
+    RescheduleSoftDeletionRequest:
+      type: object
+      required:
+      - targets
+      - reschedule-to
+      properties:
+        reschedule-to:
+          type: string
+          format: date-time
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TabularIdentUuid'
+          description: Tabulars to reschedule
     Role:
       type: object
       required:

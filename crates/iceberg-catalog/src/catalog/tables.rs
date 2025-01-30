@@ -1776,7 +1776,7 @@ pub(crate) fn create_table_request_into_table_metadata(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::tables::TablesService as _;
     use crate::api::iceberg::v1::{
@@ -1784,12 +1784,12 @@ mod test {
     };
     use crate::api::management::v1::warehouse::TabularDeleteProfile;
     use crate::api::ApiContext;
-    use crate::catalog::test::random_request_metadata;
     use crate::catalog::CatalogServer;
     use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use crate::service::authz::AllowAllAuthorizer;
     use crate::service::{State, UserId};
+    use crate::tests::random_request_metadata;
 
     use http::StatusCode;
     use iceberg::spec::{
@@ -1857,7 +1857,7 @@ mod test {
         assert!(count.is_none());
     }
 
-    fn create_request(table_name: Option<String>) -> CreateTableRequest {
+    pub(crate) fn create_request(table_name: Option<String>) -> CreateTableRequest {
         CreateTableRequest {
             name: table_name.unwrap_or("my_table".to_string()),
             location: None,
@@ -2583,18 +2583,19 @@ mod test {
         NamespaceParameters,
         String,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
         let base_loc = prof.base_location().unwrap().to_string();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             AllowAllAuthorizer,
             TabularDeleteProfile::Hard {},
             None,
+            None,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -2805,21 +2806,22 @@ mod test {
         ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
         let base_location = prof.base_location().unwrap();
         let hiding_mock = ObjectHidingMock::new();
         let authz = hiding_mock.to_authorizer();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz,
             TabularDeleteProfile::Hard {},
             Some(UserId::OIDC("test-user-id".to_string())),
+            None,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),
@@ -2862,21 +2864,22 @@ mod test {
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let hiding_mock = ObjectHidingMock::new();
         let authz = hiding_mock.to_authorizer();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz,
             TabularDeleteProfile::Hard {},
             Some(UserId::OIDC("test-user-id".to_string())),
+            None,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
+        let ns = crate::tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             "ns1".to_string(),

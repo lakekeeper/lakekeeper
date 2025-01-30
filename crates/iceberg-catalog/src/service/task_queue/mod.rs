@@ -52,6 +52,17 @@ impl TaskQueues {
     }
 
     #[tracing::instrument(skip(self))]
+    pub(crate) async fn reschedule_tabular_expiration(
+        &self,
+        filter: TaskFilter,
+        execute_at: chrono::DateTime<Utc>,
+    ) -> crate::api::Result<()> {
+        self.tabular_expiration
+            .reschedule_pending_tasks(filter, execute_at)
+            .await
+    }
+
+    #[tracing::instrument(skip(self))]
     pub(crate) async fn queue_tabular_purge(
         &self,
         task: TabularPurgeInput,
@@ -141,6 +152,11 @@ pub trait TaskQueue: Debug {
     async fn record_success(&self, id: Uuid) -> crate::api::Result<()>;
     async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()>;
     async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()>;
+    async fn reschedule_pending_tasks(
+        &self,
+        filter: TaskFilter,
+        execute_at: chrono::DateTime<Utc>,
+    ) -> crate::api::Result<()>;
 
     async fn retrying_record_success(&self, task: &Task) {
         self.retrying_record_success_or_failure(task, Status::Success)
@@ -260,165 +276,4 @@ const fn valid_max_age(num: i64) -> chrono::Duration {
     let dur = chrono::Duration::seconds(num);
     assert!(dur.num_microseconds().is_some());
     dur
-}
-
-#[cfg(test)]
-mod test {
-    use crate::api::iceberg::v1::PaginationQuery;
-    use crate::api::management::v1::TabularType;
-    use crate::implementations::postgres::tabular::table::tests::initialize_table;
-    use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::implementations::postgres::PostgresTransaction;
-    use crate::implementations::postgres::{CatalogState, PostgresCatalog};
-    use crate::service::authz::AllowAllAuthorizer;
-    use crate::service::storage::TestProfile;
-    use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-    use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
-    use crate::service::{Catalog, ListFlags, Transaction};
-    use sqlx::PgPool;
-    use std::sync::Arc;
-
-    #[cfg(feature = "sqlx-postgres")]
-    #[sqlx::test]
-    async fn test_queue_expiration_queue_task(pool: PgPool) {
-        let config = TaskQueueConfig {
-            max_retries: 5,
-            max_age: chrono::Duration::seconds(3600),
-            poll_interval: std::time::Duration::from_millis(100),
-        };
-
-        let rw =
-            crate::implementations::postgres::ReadWrite::from_pools(pool.clone(), pool.clone());
-        let expiration_queue = Arc::new(
-            crate::implementations::postgres::task_queues::TabularExpirationQueue::from_config(
-                rw.clone(),
-                config.clone(),
-            )
-            .unwrap(),
-        );
-        let purge_queue = Arc::new(
-            crate::implementations::postgres::task_queues::TabularPurgeQueue::from_config(
-                rw.clone(),
-                config,
-            )
-            .unwrap(),
-        );
-
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let queues =
-            crate::service::task_queue::TaskQueues::new(expiration_queue.clone(), purge_queue);
-        let secrets =
-            crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
-        let cloned = queues.clone();
-        let cat = catalog_state.clone();
-        let sec = secrets.clone();
-        let auth = AllowAllAuthorizer;
-        let _queues_task = tokio::task::spawn(async move {
-            cloned
-                .spawn_queues::<PostgresCatalog, _, _>(cat, sec, auth)
-                .await
-        });
-
-        let warehouse = initialize_warehouse(
-            catalog_state.clone(),
-            Some(TestProfile::default().into()),
-            None,
-            None,
-            true,
-        )
-        .await;
-
-        let tab = initialize_table(
-            warehouse,
-            catalog_state.clone(),
-            false,
-            None,
-            Some("tab".to_string()),
-        )
-        .await;
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-        let (_, _) = <PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: true,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .unwrap();
-        trx.commit().await.unwrap();
-        let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
-            .await
-            .unwrap();
-        <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
-            tab.table_id.into(),
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-        trx.commit().await.unwrap();
-
-        expiration_queue
-            .enqueue(TabularExpirationInput {
-                tabular_id: tab.table_id.0,
-                warehouse_ident: warehouse,
-                tabular_type: TabularType::Table,
-                purge: true,
-                expire_at: chrono::Utc::now() + chrono::Duration::seconds(1),
-            })
-            .await
-            .unwrap();
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        let (_, del) = <PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .unwrap();
-        del.unwrap();
-        trx.commit().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        assert!(<PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .is_none());
-        trx.commit().await.unwrap();
-    }
 }

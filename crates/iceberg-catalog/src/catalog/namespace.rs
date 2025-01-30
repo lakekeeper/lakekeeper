@@ -594,13 +594,13 @@ mod tests {
     use crate::api::management::v1::warehouse::TabularDeleteProfile;
     use crate::api::ApiContext;
     use crate::catalog::test::impl_pagination_tests;
-    use crate::catalog::test::random_request_metadata;
     use crate::catalog::CatalogServer;
     use crate::implementations::postgres::namespace::namespace_to_id;
     use crate::implementations::postgres::{PostgresCatalog, PostgresTransaction, SecretsState};
     use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use crate::service::{ListNamespacesQuery, State, Transaction, UserId};
+    use crate::tests::random_request_metadata;
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
@@ -615,18 +615,19 @@ mod tests {
         ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
         Option<Prefix>,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let hiding_mock = ObjectHidingMock::new();
         let authz = hiding_mock.to_authorizer();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz,
             TabularDeleteProfile::Hard {},
             Some(UserId::OIDC("test-user-id".to_string())),
+            None,
         )
         .await;
 
@@ -673,18 +674,19 @@ mod tests {
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let hiding_mock = ObjectHidingMock::new();
         let authz = hiding_mock.to_authorizer();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz,
             TabularDeleteProfile::Hard {},
             Some(UserId::OIDC("test-user-id".to_string())),
+            None,
         )
         .await;
         for n in 0..10 {

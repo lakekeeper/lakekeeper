@@ -610,7 +610,48 @@ impl Catalog for super::PostgresCatalog {
             None,
             pagination_query,
             false,
+            None,
         )
         .await
+    }
+
+    async fn fetch_deleted_tabulars_task_id(
+        warehouse_ident: WarehouseIdent,
+        tabular_ids: &[TabularIdentUuid],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        pagination_query: PaginationQuery,
+    ) -> Result<Vec<TaskId>> {
+        let tabular_ids = tabular_ids.iter().map(|i| **i).collect_vec();
+        Ok(list_tabulars(
+            warehouse_ident,
+            None,
+            None,
+            ListFlags {
+                include_active: false,
+                include_staged: false,
+                include_deleted: true,
+            },
+            &mut **transaction,
+            None,
+            pagination_query,
+            false,
+            Some(tabular_ids.as_slice()),
+        )
+        .await
+        .map(|x| {
+            x.into_hashmap()
+                .values()
+                .map(|(ident, deletion_details)| {
+                    deletion_details.ok_or_else(|| {
+                        tracing::error!("Found tabular {ident:?} without deletion details after listing deleted tabulars.");
+                        ErrorModel::internal(
+                            "An error occurred when listing deleted tabulars.",
+                            "InternalDatabaseError",
+                            None,
+                        ).into()
+                    }).map(|dt| dt.expiration_task_id.into())
+                })
+                .collect::<Result<Vec<_>>>()
+        })??)
     }
 }
