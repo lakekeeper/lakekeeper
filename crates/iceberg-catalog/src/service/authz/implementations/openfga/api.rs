@@ -26,7 +26,7 @@ use crate::service::{
     Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
     ViewIdentUuid,
 };
-use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
+use crate::{ProjectIdent, WarehouseIdent};
 use axum::extract::{Path, Query, State as AxumState};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -370,8 +370,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
-        .project_id()
-        .or(*DEFAULT_PROJECT_ID)
+        .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     let relations = get_allowed_actions(
         authorizer,
@@ -796,8 +795,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
-        .project_id()
-        .or(*DEFAULT_PROJECT_ID)
+        .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     authorizer
         .require_action(
@@ -1033,8 +1031,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
         .auth_details
-        .project_id()
-        .or(*DEFAULT_PROJECT_ID)
+        .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     checked_write(
         authorizer,

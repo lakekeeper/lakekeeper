@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.task_id as \"task_id!\",\n       t.project_id as \"project_id!\",\n       t.queue_name as \"queue_name!\",\n       t.parent_task_id,\n       t.created_at as \"created_at!\",\n       t.updated_at,\n       t.schedule,\n       t.status as \"status!: TaskStatus\",\n       CASE\n           WHEN te.task_id IS NOT NULL THEN jsonb_build_object('tabular_expirations', row_to_json(te.*))\n           WHEN tp.task_id IS NOT NULL THEN jsonb_build_object('tabular_purges', row_to_json(tp.*))\n           WHEN s.task_id IS NOT NULL THEN jsonb_build_object('statistics_task', row_to_json(s.*))\n        END as details\nFROM task t\nLEFT JOIN tabular_expirations te ON t.task_id = te.task_id\nLEFT JOIN tabular_purges tp ON t.task_id = tp.task_id\nLEFT JOIN statistics_task s ON t.task_id = s.task_id\nWHERE (t.project_id = $1 OR $1 IS NULL)\n      AND ((t.created_at > $2 OR $2 IS NULL) OR (t.created_at = $2 AND t.task_id > $3))\nLIMIT $4;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "queue_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "schedule",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "status!: TaskStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_status2",
+            "kind": {
+              "Enum": [
+                "active",
+                "inactive",
+                "cancelled",
+                "done"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "details",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "608c4a76670d1dd729e21d50e7e60337841a042aa1416f997c7c6e54fea8208e"
+}

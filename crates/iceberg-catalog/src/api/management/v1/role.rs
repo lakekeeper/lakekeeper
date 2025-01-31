@@ -154,7 +154,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanCreateRole,
+                CatalogProjectAction::CanCreateRole,
             )
             .await?;
 
@@ -191,7 +191,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanListRoles,
+                CatalogProjectAction::CanListRoles,
             )
             .await?;
 
@@ -258,7 +258,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanSearchRoles,
+                CatalogProjectAction::CanSearchRoles,
             )
             .await?;
 
@@ -345,7 +345,7 @@ pub(super) fn require_project_id(
     request_metadata: &RequestMetadata,
 ) -> Result<ProjectIdent> {
     specified_project_id
-        .or(request_metadata.auth_details.project_id())
+        .or(request_metadata.auth_details.preferred_project_id())
         .or(*DEFAULT_PROJECT_ID)
         .ok_or_else(|| {
             ErrorModel::bad_request(

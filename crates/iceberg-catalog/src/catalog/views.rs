@@ -131,26 +131,20 @@ fn parse_view_location(location: &str) -> Result<Location> {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::api::ApiContext;
-    use std::sync::Arc;
 
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::implementations::postgres::{
-        CatalogState, PostgresCatalog, ReadWrite, SecretsState,
-    };
+    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
     use crate::service::authz::AllowAllAuthorizer;
-    use crate::service::contract_verification::ContractVerifiers;
-    use crate::service::event_publisher::CloudEventsPublisher;
     use crate::service::storage::{StorageProfile, TestProfile};
     use crate::service::State;
-    use crate::{WarehouseIdent, CONFIG};
+    use crate::WarehouseIdent;
 
     use iceberg::NamespaceIdent;
 
     use crate::catalog::views::validate_view_properties;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
-    use crate::service::task_queue::TaskQueues;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -162,7 +156,7 @@ mod test {
         NamespaceIdent,
         WarehouseIdent,
     ) {
-        let api_context = get_api_context(pool);
+        let api_context = get_api_context(pool, AllowAllAuthorizer);
         let state = api_context.v1_state.catalog.clone();
         let warehouse_id = initialize_warehouse(
             state.clone(),
@@ -186,29 +180,7 @@ mod test {
         (api_context, namespace, warehouse_id)
     }
 
-    pub(crate) fn get_api_context(
-        pool: PgPool,
-    ) -> ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>> {
-        let (tx, _) = tokio::sync::mpsc::channel(1000);
-
-        ApiContext {
-            v1_state: State {
-                authz: AllowAllAuthorizer,
-                catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
-                secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
-                publisher: CloudEventsPublisher::new(tx.clone()),
-                contract_verifiers: ContractVerifiers::new(vec![]),
-                queues: TaskQueues::new(
-                    Arc::new(
-                        crate::implementations::postgres::task_queues::TabularExpirationQueue::from_config(ReadWrite::from_pools(pool.clone(), pool.clone()), CONFIG.queue_config.clone()).unwrap(),
-                    ),
-                    Arc::new(
-                        crate::implementations::postgres::task_queues::TabularPurgeQueue::from_config(ReadWrite::from_pools(pool.clone(), pool), CONFIG.queue_config.clone()).unwrap()
-                    )
-                )
-            },
-        }
-    }
+    pub(crate) use crate::catalog::test::get_api_context;
 
     #[test]
     fn test_mixed_case_properties() {

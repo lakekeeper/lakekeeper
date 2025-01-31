@@ -54,6 +54,7 @@ pub enum CatalogProjectAction {
     CanCreateRole,
     CanListRoles,
     CanSearchRoles,
+    CanListTasks,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
@@ -207,7 +208,7 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: ProjectIdent,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -415,7 +416,7 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: ProjectIdent,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<()> {
         if self
             .is_allowed_project_action(metadata, project_id, action)

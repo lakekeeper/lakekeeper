@@ -1,8 +1,8 @@
 use crate::api::management::v1::{DeleteKind, TabularType};
 use crate::api::Result;
-use crate::service::task_queue::{Task, TaskQueue};
+use crate::service::task_queue::{TaskInstance, TaskQueue};
 use crate::service::{Catalog, TableIdentUuid, Transaction, ViewIdentUuid};
-use crate::WarehouseIdent;
+use crate::{ProjectIdent, WarehouseIdent};
 use std::sync::Arc;
 
 use crate::service::task_queue::tabular_purge_queue::{TabularPurgeInput, TabularPurgeQueue};
@@ -134,6 +134,7 @@ where
             .enqueue(TabularPurgeInput {
                 tabular_id: expiration.tabular_id,
                 warehouse_ident: expiration.warehouse_ident,
+                project_ident: expiration.task.project_ident,
                 tabular_type: expiration.tabular_type,
                 parent_id: Some(expiration.task.task_id),
                 tabular_location,
@@ -157,12 +158,13 @@ pub struct TabularExpirationTask {
     pub tabular_id: Uuid,
     pub warehouse_ident: WarehouseIdent,
     pub tabular_type: TabularType,
-    pub task: Task,
+    pub task: TaskInstance,
 }
 
 #[derive(Debug, Clone)]
 pub struct TabularExpirationInput {
     pub tabular_id: Uuid,
+    pub project_ident: ProjectIdent,
     pub warehouse_ident: WarehouseIdent,
     pub tabular_type: TabularType,
     pub purge: bool,

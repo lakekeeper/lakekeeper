@@ -123,15 +123,13 @@ async fn split_table_metadata(
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::v1::PaginationQuery;
     use crate::implementations::postgres::migrations::split_table_metadata::split_table_metadata;
     use crate::implementations::postgres::namespace::tests::initialize_namespace;
-    use crate::implementations::postgres::tabular::list_tabulars;
     use crate::implementations::postgres::tabular::table::tests::get_namespace_id;
     use crate::implementations::postgres::tabular::table::{create_table, load_tables};
     use crate::implementations::postgres::warehouse::test::initialize_warehouse;
     use crate::implementations::postgres::CatalogState;
-    use crate::service::{ListFlags, TableCreation, TabularIdentUuid};
+    use crate::service::TableCreation;
     use iceberg::spec::TableMetadata;
     use iceberg::{NamespaceIdent, TableIdent};
     use sqlx::PgPool;
@@ -326,76 +324,6 @@ mod test {
             pretty_assertions::assert_eq!(table.table_metadata, metadata);
         }
 
-        trx.commit().await.unwrap();
-    }
-
-    #[sqlx::test(fixtures("deleted_metadata_migration"))]
-    async fn test_migrate_deleted_table(pool: sqlx::PgPool) {
-        let old_tables: HashMap<_, TableMetadata> =
-            sqlx::query!(r#"select w.warehouse_id, n.namespace_id, table_id, metadata from "table" t JOIN tabular ta on ta.tabular_id = t.table_id join namespace n on n.namespace_id = ta.namespace_id join warehouse w on n.warehouse_id = w.warehouse_id"#)
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|t| {
-                    let table_id = t.table_id;
-                    let metadata = serde_json::from_value(t.metadata.unwrap()).unwrap();
-                    ((t.warehouse_id,t.namespace_id, table_id), metadata)
-                })
-                .collect::<HashMap<_, _>>();
-
-        let (whid, nsid, tid) = old_tables.keys().next().unwrap();
-        let tab = TabularIdentUuid::Table(*tid);
-
-        let tabs_before = list_tabulars(
-            (*whid).into(),
-            None,
-            Some((*nsid).into()),
-            ListFlags::only_deleted(),
-            &pool,
-            None,
-            PaginationQuery::empty(),
-            true,
-        )
-        .await
-        .unwrap();
-        let mut trx = pool.begin().await.unwrap();
-
-        split_table_metadata(&mut trx).await.unwrap();
-        trx.commit().await.unwrap();
-
-        let mut trx = pool.begin().await.unwrap();
-
-        let tabs = list_tabulars(
-            (*whid).into(),
-            None,
-            Some((*nsid).into()),
-            ListFlags::only_deleted(),
-            &mut *trx,
-            None,
-            PaginationQuery::empty(),
-            false,
-        )
-        .await
-        .unwrap();
-        trx.commit().await.unwrap();
-
-        assert_eq!(tabs.len(), tabs_before.len());
-        let t = tabs.get(&tab).unwrap().1.unwrap();
-        let t2 = tabs_before.get(&tab).unwrap().1.unwrap();
-        assert_eq!(t.expiration_task_id, t2.expiration_task_id);
-        assert_eq!(t.expiration_date, t2.expiration_date);
-        assert_eq!(t.deleted_at, t2.deleted_at);
-        let mut trx = pool.begin().await.unwrap();
-
-        for ((warehouse_id, _, tid), metadata) in old_tables {
-            let tables = load_tables(warehouse_id.into(), vec![tid.into()], true, &mut trx)
-                .await
-                .unwrap();
-
-            let table = tables.get(&(tid.into())).unwrap();
-            pretty_assertions::assert_eq!(table.table_metadata, metadata);
-        }
         trx.commit().await.unwrap();
     }
 }

@@ -699,6 +699,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                             tabular_id: *table_id,
                             tabular_location: location,
                             warehouse_ident: warehouse_id,
+                            project_ident: warehouse.project_id,
                             tabular_type: TabularType::Table,
                             parent_id: None,
                         })
@@ -719,6 +720,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .queue_tabular_expiration(TabularExpirationInput {
                         tabular_id: table_id.into(),
                         warehouse_ident: warehouse_id,
+                        project_ident: warehouse.project_id,
                         tabular_type: TabularType::Table,
                         purge,
                         expire_at: chrono::Utc::now() + expiration_seconds,
@@ -1776,7 +1778,7 @@ pub(crate) fn create_table_request_into_table_metadata(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::api::iceberg::types::{PageToken, Prefix};
     use crate::api::iceberg::v1::tables::TablesService as _;
     use crate::api::iceberg::v1::{
@@ -1857,7 +1859,7 @@ mod test {
         assert!(count.is_none());
     }
 
-    fn create_request(table_name: Option<String>) -> CreateTableRequest {
+    pub(crate) fn create_request(table_name: Option<String>) -> CreateTableRequest {
         CreateTableRequest {
             name: table_name.unwrap_or("my_table".to_string()),
             location: None,

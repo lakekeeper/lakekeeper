@@ -89,7 +89,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _project_id: ProjectIdent,
-        _action: &CatalogProjectAction,
+        _action: CatalogProjectAction,
     ) -> Result<bool> {
         Ok(true)
     }

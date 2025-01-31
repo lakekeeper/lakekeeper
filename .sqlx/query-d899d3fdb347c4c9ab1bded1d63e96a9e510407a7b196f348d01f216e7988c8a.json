@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH update_tables AS (\n            SELECT count(*) AS value FROM \"table\" t\n                INNER JOIN tabular ti ON t.table_id = ti.tabular_id\n                INNER JOIN namespace n ON ti.namespace_id = n.namespace_id\n                INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n            WHERE w.warehouse_id = $1 AND w.status = 'active'\n        ),\n        update_views AS (\n            SELECT count(*) AS value FROM \"view\" v\n                INNER JOIN tabular vi ON v.view_id = vi.tabular_id\n                INNER JOIN namespace n ON vi.namespace_id = n.namespace_id\n                INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n            WHERE w.warehouse_id = $1 AND w.status = 'active'\n        )\n        INSERT INTO warehouse_statistics (warehouse_id, number_of_views, number_of_tables) VALUES ($1, (SELECT value FROM update_views), (SELECT value FROM update_tables))\n        RETURNING (SELECT value as \"number_of_views!\" FROM update_views), (SELECT value as \"number_of_tables!\" FROM update_tables), created_at as \"taken_at\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number_of_views!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "number_of_tables!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "taken_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "d899d3fdb347c4c9ab1bded1d63e96a9e510407a7b196f348d01f216e7988c8a"
+}

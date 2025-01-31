@@ -8,7 +8,7 @@ use crate::implementations::postgres::DeletionKind;
 use crate::service::task_queue::tabular_expiration_queue::{
     TabularExpirationInput, TabularExpirationTask,
 };
-use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
+use crate::service::task_queue::{Schedule, TaskFilter, TaskId, TaskQueue, TaskQueueConfig};
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -34,12 +34,13 @@ impl TaskQueue for TabularExpirationQueue {
         &self,
         TabularExpirationInput {
             tabular_id,
+            project_ident,
             warehouse_ident,
             tabular_type,
             purge,
             expire_at,
         }: TabularExpirationInput,
-    ) -> crate::api::Result<()> {
+    ) -> crate::api::Result<Option<TaskId>> {
         let mut transaction = self
             .pg_queue
             .read_write
@@ -60,8 +61,8 @@ impl TaskQueue for TabularExpirationQueue {
             self.queue_name(),
             None,
             idempotency_key,
-            warehouse_ident,
-            Some(expire_at),
+            project_ident,
+            Some(Schedule::RunAt { date: expire_at }),
         )
         .await?
         else {
@@ -70,7 +71,7 @@ impl TaskQueue for TabularExpirationQueue {
                 tracing::error!(?e, "failed to commit");
                 e.into_error_model("failed to commit transaction enqueuing task")
             })?;
-            return Ok(());
+            return Ok(None);
         };
 
         let it = sqlx::query!(
@@ -108,7 +109,7 @@ impl TaskQueue for TabularExpirationQueue {
             e.into_error_model("failed to commit transaction inserting tabular expiration task")
         })?;
 
-        Ok(())
+        Ok(Some(task_id.into()))
     }
 
     #[tracing::instrument(skip(self))]
@@ -131,7 +132,7 @@ impl TaskQueue for TabularExpirationQueue {
             FROM tabular_expirations
             WHERE task_id = $1
             "#,
-            task.task_id
+            *task.task_id
         )
             .fetch_one(&self.pg_queue.read_write.read_pool)
             .await
@@ -173,18 +174,22 @@ impl TaskQueue for TabularExpirationQueue {
 #[cfg(test)]
 mod test {
     use super::super::test::setup;
+    use crate::implementations::postgres::task_queues::test::create_test_project;
     use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
     use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
-    use crate::WarehouseIdent;
+    use crate::{WarehouseIdent, DEFAULT_PROJECT_ID};
     use sqlx::PgPool;
 
     #[sqlx::test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {
+        create_test_project(pool.clone()).await;
+
         let config = TaskQueueConfig::default();
         let pg_queue = setup(pool, config);
         let queue = super::TabularExpirationQueue { pg_queue };
         let input = TabularExpirationInput {
             tabular_id: uuid::Uuid::new_v4(),
+            project_ident: DEFAULT_PROJECT_ID.unwrap(),
             warehouse_ident: uuid::Uuid::new_v4().into(),
             tabular_type: crate::api::management::v1::TabularType::Table,
             purge: false,
@@ -216,21 +221,24 @@ mod test {
 
     #[sqlx::test]
     async fn test_cancel_pending_tasks(pool: PgPool) {
+        create_test_project(pool.clone()).await;
+
         let config = TaskQueueConfig::default();
         let pg_queue = setup(pool, config);
         let queue = super::TabularExpirationQueue { pg_queue };
         let warehouse_ident: WarehouseIdent = uuid::Uuid::now_v7().into();
         let input = TabularExpirationInput {
             tabular_id: uuid::Uuid::new_v4(),
+            project_ident: DEFAULT_PROJECT_ID.unwrap(),
             warehouse_ident,
             tabular_type: crate::api::management::v1::TabularType::Table,
             purge: false,
             expire_at: chrono::Utc::now(),
         };
-        queue.enqueue(input.clone()).await.unwrap();
+        let task_id = queue.enqueue(input.clone()).await.unwrap().unwrap();
 
         queue
-            .cancel_pending_tasks(TaskFilter::WarehouseId(warehouse_ident))
+            .cancel_pending_tasks(TaskFilter::TaskIds(vec![task_id]))
             .await
             .unwrap();
 

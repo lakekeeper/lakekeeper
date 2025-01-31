@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                         WITH updated_task AS (\n                             UPDATE task t\n                             SET status = 'cancelled'\n                             WHERE status = 'active' AND task_id = ANY($1)\n                         ),\n                         updated_task_instance AS (\n                             UPDATE task_instance ti\n                             SET status = 'cancelled'\n                             FROM task t\n                             WHERE ti.status = 'pending' AND ti.task_id = ANY($1) AND t.task_id = ti.task_id\n                             RETURNING ti.task_instance_id\n                         )\n                         SELECT task_instance_id FROM updated_task_instance",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_instance_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0fcea0c21f3be297a3ba961fec81ae2838ab1630945fa39962766776d7cab81c"
+}

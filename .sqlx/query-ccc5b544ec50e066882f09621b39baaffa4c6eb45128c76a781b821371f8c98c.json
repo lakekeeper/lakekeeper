@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH updated_tasks AS (UPDATE task\n                    SET next_tick = $5,\n                    status = CASE WHEN $6 THEN 'active'::task_status2 ELSE 'done'::task_status2 END\n                    WHERE task_id = $1)\n                INSERT INTO task_instance (task_id, task_instance_id, status, suspend_until, idempotency_key)\n                    VALUES\n                    ($1, $2, 'pending', $3, $4)\n                ON CONFLICT ON CONSTRAINT task_instance_unique_idempotency_key\n                DO UPDATE SET\n                    status = EXCLUDED.status,\n                    suspend_until = EXCLUDED.suspend_until\n                WHERE task_instance.status = 'cancelled'\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ccc5b544ec50e066882f09621b39baaffa4c6eb45128c76a781b821371f8c98c"
+}

@@ -6,6 +6,7 @@ pub(crate) mod namespace;
 mod pagination;
 pub(crate) mod role;
 pub(crate) mod secrets;
+mod stats;
 pub mod tabular;
 pub mod task_queues;
 pub(crate) mod user;

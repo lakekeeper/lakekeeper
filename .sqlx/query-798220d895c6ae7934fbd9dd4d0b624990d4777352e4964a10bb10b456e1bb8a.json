@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE task_instance\n        SET status = 'done'\n        WHERE task_instance_id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "798220d895c6ae7934fbd9dd4d0b624990d4777352e4964a10bb10b456e1bb8a"
+}

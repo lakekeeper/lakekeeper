@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ti.task_id,\n                  ti.task_instance_id,\n                  attempt,\n                  ti.status as \"status: TaskInstanceStatus\",\n                  ti.last_error_details,\n                  ti.picked_up_at,\n                  ti.suspend_until,\n                  ti.completed_at,\n                  ti.created_at,\n                  ti.updated_at,\n                  ti.last_heartbeat_at,\n                  t.project_id,\n                  t.queue_name,\n                  t.parent_task_id\n        FROM task_instance ti\n        JOIN task t ON ti.task_id = t.task_id\n        WHERE (t.task_id = $1 or $1 IS NULL) AND ((t.created_at > $2 OR $2 IS NULL) OR (t.created_at = $2 AND t.task_id > $3))\n        LIMIT $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "task_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempt",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "status: TaskInstanceStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "running",
+                "done",
+                "failed",
+                "cancelled"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "last_error_details",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "picked_up_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "suspend_until",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "last_heartbeat_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "queue_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "dfca7cae82cfd38932235c5e210c04b2c016f8f4f444e1be0803ec00ce43dd00"
+}

@@ -123,7 +123,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanRename,
+                CatalogProjectAction::CanRename,
             )
             .await?;
 
@@ -148,7 +148,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanGetMetadata,
+                CatalogProjectAction::CanGetMetadata,
             )
             .await?;
 
@@ -182,7 +182,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanDelete,
+                CatalogProjectAction::CanDelete,
             )
             .await?;
 

@@ -34,6 +34,7 @@ aws-sdk-sts = "1.36.0"
 aws-smithy-http = "0.60.11"
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
+cron = { version = "0.14.0", features = ["serde"] }
 fxhash = "0.2.1"
 google-cloud-auth = { version = "0.17.0", features = [
     "rustls-tls",

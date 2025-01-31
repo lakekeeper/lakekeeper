@@ -342,6 +342,20 @@ pub struct TableParameters {
     pub table: TableIdent,
 }
 
+impl TableParameters {
+    #[cfg(test)]
+    pub(crate) fn new(prefix: Option<Prefix>, namespace: &str, table: &str) -> Self {
+        use iceberg::NamespaceIdent;
+        Self {
+            prefix,
+            table: TableIdent {
+                namespace: NamespaceIdent::new(namespace.to_string()),
+                name: table.to_string(),
+            },
+        }
+    }
+}
+
 pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
 
 #[derive(Debug, Clone)]

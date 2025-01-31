@@ -264,7 +264,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         project_id: ProjectIdent,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<bool> {
         let actor = metadata.actor();
         let check_actor_fut = self.check_actor(actor);

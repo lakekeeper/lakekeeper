@@ -6,10 +6,12 @@ use std::sync::LazyLock;
 
 const V1_MODEL: &str = include_str!("../../../../../../../authz/openfga/v1/schema.json");
 const V2_MODEL: &str = include_str!("../../../../../../../authz/openfga/v2/schema.json");
+const V3_MODEL: &str = include_str!("../../../../../../../authz/openfga/v3/schema.json");
 
 static MODEL: LazyLock<CollaborationModels> = LazyLock::new(|| CollaborationModels {
     v1: serde_json::from_str(V1_MODEL).expect("Failed to parse OpenFGA model V1 as JSON"),
     v2: serde_json::from_str(V2_MODEL).expect("Failed to parse OpenFGA model V2 as JSON"),
+    v3: serde_json::from_str(V3_MODEL).expect("Failed to parse OpenFGA model V3 as JSON"),
 });
 
 const ACTIVE_MODEL: ModelVersion = ModelVersion::V2;
@@ -83,6 +85,7 @@ impl OpenFgaType for FgaType {
 pub(crate) struct CollaborationModels {
     v1: AuthorizationModel,
     v2: AuthorizationModel,
+    v3: AuthorizationModel,
 }
 
 impl CollaborationModels {
@@ -91,6 +94,7 @@ impl CollaborationModels {
         match version {
             ModelVersion::V1 => &self.v1,
             ModelVersion::V2 => &self.v2,
+            ModelVersion::V3 => &self.v3,
         }
     }
 }
@@ -110,6 +114,7 @@ impl CollaborationModels {
 pub(crate) enum ModelVersion {
     V1 = 1,
     V2 = 2,
+    V3 = 3,
 }
 
 impl ModelVersion {
@@ -847,6 +852,14 @@ mod test {
                         serde_json::from_str::<serde_json::Value>(V2_MODEL).unwrap()
                     );
                 }
+                ModelVersion::V3 => {
+                    let ser_model: ser_de::AuthorizationModel =
+                        serde_json::from_str(V3_MODEL).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(ser_model).unwrap(),
+                        serde_json::from_str::<serde_json::Value>(V3_MODEL).unwrap()
+                    );
+                }
             }
         }
     }
@@ -875,6 +888,12 @@ mod test {
                     assert_eq!(
                         value,
                         serde_json::from_str::<serde_json::Value>(V2_MODEL).unwrap()
+                    );
+                }
+                ModelVersion::V3 => {
+                    assert_eq!(
+                        value,
+                        serde_json::from_str::<serde_json::Value>(V3_MODEL).unwrap()
                     );
                 }
             }

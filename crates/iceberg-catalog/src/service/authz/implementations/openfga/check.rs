@@ -17,8 +17,8 @@ use crate::service::{
     Catalog, NamespaceIdentUuid, Result, SecretStore, State, TableIdentUuid, ViewIdentUuid,
 };
 use crate::service::{ListFlags, Transaction};
+use crate::WarehouseIdent;
 use crate::{api::ApiContext, ProjectIdent};
-use crate::{WarehouseIdent, DEFAULT_PROJECT_ID};
 use axum::extract::State as AxumState;
 use axum::{Extension, Json};
 use http::StatusCode;
@@ -157,8 +157,7 @@ async fn check_project(
     project_id: Option<&ProjectIdent>,
 ) -> Result<(String, String)> {
     let project_id = project_id
-        .or(metadata.auth_details.project_id().as_ref())
-        .or(DEFAULT_PROJECT_ID.as_ref())
+        .or(metadata.auth_details.preferred_project_id().as_ref())
         .ok_or(OpenFGAError::NoProjectId)?
         .to_openfga();
     authorizer

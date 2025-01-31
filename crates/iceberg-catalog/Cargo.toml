@@ -41,6 +41,7 @@ azure_storage_blobs = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
+cron = { workspace = true }
 derive_more = { workspace = true }
 figment = { workspace = true }
 flate2 = { workspace = true }
