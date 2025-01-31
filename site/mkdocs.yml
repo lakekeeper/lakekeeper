@@ -6,6 +6,7 @@ edit_uri: blob/main/docs/
 
 theme:
   name: material
+  custom_dir: overrides
   logo: assets/bear.svg
   palette:
     # Palette toggle for automatic mode
@@ -42,7 +43,6 @@ theme:
   features:
     - navigation.tabs
     - navigation.tabs.sticky
-    - navigation.path
     - navigation.top
     - navigation.tracking
     - navigation.footer
@@ -53,6 +53,8 @@ theme:
     - content.tabs.link
     - content.code.copy
     - content.code.annotate
+    # insiders feature
+    #- navigation.path
 
 nav:
   - Home: index.md
@@ -64,7 +66,6 @@ nav:
       - Release 0.5.2: "!include docs/docs/0.5.2/mkdocs.yml"
       - Release 0.5.0: "!include docs/docs/0.5.0/mkdocs.yml"
   - Community: support.md
-  - API: api.md
   - About:
       - Release Notes: about/release-notes.md
       - License: about/license.md
@@ -89,6 +90,7 @@ markdown_extensions:
   - pymdownx.tabbed:
       alternate_style: true
   - admonition
+  - pymdownx.blocks.html
   - pymdownx.details
   - attr_list
   - pymdownx.emoji:
@@ -107,8 +109,9 @@ plugins:
         - docs/0.5.2/*
         - docs/nightly/*
   - autorefs
-  - neoteroi.mkdocsoad:
-      use_pymdownx: true
+  - render_swagger:
+      javascript: /assets/js/swagger-ui-bundle.js
+      css: /assets/css/swagger-ui.css
 
 watch:
   - docs
@@ -121,4 +124,4 @@ extra:
       link: https://github.com/lakekeeper/lakekeeper
 
 extra_css:
-  - css/extra.css
+  - /assets/css/extra.css
