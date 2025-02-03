@@ -65,5 +65,10 @@ services:
       timeout: 10s
       retries: 2
       start_period: 10s
+    volumes:
+      - volume-openfga:/bitnami/postgresql
     networks:
       iceberg_net:
+
+volumes:
+  volume-openfga:
