@@ -67,7 +67,7 @@ log = "^0.4"
 mockall = "0.13.0"
 needs_env_var = "1.1.0"
 http = "^1.1"
-derive_more = { version = "^1.0.0", features = ["from"] }
+derive_more = { version = "^2.0.0", features = ["from"] }
 flate2 = "^1.0"
 lazy_static = "^1.4"
 maplit = "1.0.2"
