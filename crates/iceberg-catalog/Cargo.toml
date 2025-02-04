@@ -102,3 +102,4 @@ serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+maplit ={ workspace = true }
