@@ -22,7 +22,6 @@ chrono = { workspace = true }
 heck = { workspace = true }
 http = { workspace = true }
 iceberg = { workspace = true }
-log = { workspace = true }
 paste = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
