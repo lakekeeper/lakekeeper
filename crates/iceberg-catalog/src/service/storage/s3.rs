@@ -113,6 +113,12 @@ impl S3Profile {
                 "S3 Assume role ARN".to_string(),
             ));
         }
+
+        builder = builder.with_prop(
+            iceberg::io::S3_PATH_STYLE_ACCESS,
+            self.path_style_access.unwrap_or_default(),
+        );
+
         if let Some(credential) = credential {
             if let Some(session_token) = &credential.session_token() {
                 builder = builder.with_prop(iceberg::io::S3_SESSION_TOKEN, session_token);
