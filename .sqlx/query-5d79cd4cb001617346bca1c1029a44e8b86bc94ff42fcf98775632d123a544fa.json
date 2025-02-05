@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE task SET suspend_until = $3\n                    WHERE status = 'pending'\n                    AND warehouse_id = $1\n                    AND queue_name = $2\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d79cd4cb001617346bca1c1029a44e8b86bc94ff42fcf98775632d123a544fa"
+}

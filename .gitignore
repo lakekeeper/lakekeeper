@@ -1,5 +1,6 @@
 iceberg-rest-openapi-axum
 iceberg-rest-openapi
+metastore
 
 local
 .DS_Store

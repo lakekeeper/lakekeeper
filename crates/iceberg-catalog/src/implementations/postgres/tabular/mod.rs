@@ -331,6 +331,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     // FIXME: remove with 0.6
     // TODO: make an enum
     only_unmigrated: bool,
+    tabular_ids: Option<&[Uuid]>,
 ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
@@ -382,6 +383,7 @@ where
             AND (t.metadata_location IS NOT NULL OR $6)
             AND (t.table_migrated != $7)
             AND ((t.created_at > $8 OR $8 IS NULL) OR (t.created_at = $8 AND t.tabular_id > $9))
+            AND ($12::uuid[] IS NULL OR t.tabular_id = ANY($12::uuid[]))
             ORDER BY t.created_at, t.tabular_id ASC
             LIMIT $10
         "#,
@@ -396,6 +398,7 @@ where
         token_id,
         page_size,
         namespace_id.map(|n| *n),
+        tabular_ids,
     )
     .fetch_all(catalog_state)
     .await

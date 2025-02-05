@@ -215,6 +215,7 @@ where
         Some(TabularType::Table),
         pagination_query,
         false,
+        None,
     )
     .await?;
 

@@ -14,7 +14,9 @@ pub mod v1 {
     use std::marker::PhantomData;
 
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
-    use crate::api::management::v1::warehouse::UndropTabularsRequest;
+    use crate::api::management::v1::warehouse::{
+        RescheduleSoftDeletionRequest, UndropTabularsRequest,
+    };
     use crate::api::IcebergErrorResponse;
     use crate::service::authn::UserId;
     use crate::service::{
@@ -95,6 +97,7 @@ pub mod v1 {
             rename_default_project,
             rename_project_by_id,
             rename_warehouse,
+            reschedule_soft_deletions,
             search_role,
             search_user,
             undrop_tabulars,
@@ -861,6 +864,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
+        // FIXME: deleted_tabulars should be kebab-case, this would be a breaking change
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop",
         responses(
             (status = 204, description = "Tabular undropped successfully"),
@@ -874,6 +878,31 @@ pub mod v1 {
         Json(request): Json<UndropTabularsRequest>,
     ) -> Result<StatusCode> {
         ApiServer::<C, A, S>::undrop_tabulars(metadata, request, api_context).await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/reschedule",
+        responses(
+            (status = 204, description = "Tabular dropped successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn reschedule_soft_deletions<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<RescheduleSoftDeletionRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::reschedule_soft_deletions(
+            metadata,
+            warehouse_id.into(),
+            request,
+            api_context,
+        )
+        .await?;
         Ok(StatusCode::NO_CONTENT)
     }
 
@@ -1012,8 +1041,13 @@ pub mod v1 {
                     get(list_deleted_tabulars),
                 )
                 .route(
+                    // FIXME: deleted_tabulars should be kebab-case, this would be a breaking change
                     "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
                     post(undrop_tabulars),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/deleted-tabulars/reschedule",
+                    post(reschedule_soft_deletions),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/delete-profile",
