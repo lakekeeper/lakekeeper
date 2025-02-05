@@ -23,10 +23,11 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__UI__LAKEKEEPER_URL=http://localhost:8181
-      - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
-    command: [ "serve" ]
+      - LAKEKEEPER__LOG_CLOUDEVENTS=true
+      - RUST_LOG=info
+    command: ["serve"]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/iceberg-catalog", "healthcheck"]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -52,7 +53,7 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=info
     restart: "no"
-    command: [ "migrate" ]
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -116,7 +117,7 @@ services:
       - POSTGRESQL_PASSWORD=postgres
       - POSTGRESQL_DATABASE=postgres
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -134,7 +135,7 @@ services:
       - MINIO_SCHEME=http
       - MINIO_DEFAULT_BUCKETS=examples
     healthcheck:
-      test: [ "CMD", "mc", "ls", "local", "|", "grep", "examples" ]
+      test: ["CMD", "mc", "ls", "local", "|", "grep", "examples"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -144,13 +145,13 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-  
+
   trino:
     image: trinodb/trino:467
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -163,7 +164,7 @@ services:
   starrocks:
     image: starrocks/allin1-ubuntu:3.3.7
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://starrocks:8030/api/health" ]
+      test: ["CMD", "curl", "-I", "http://starrocks:8030/api/health"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -176,3 +177,4 @@ services:
 
 networks:
   iceberg_net:
+

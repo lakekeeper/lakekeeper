@@ -671,44 +671,40 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .into_iter()
             .map(|i| TableIdentUuid::from(*i))
             .collect::<Vec<_>>();
-        let tasks_to_cancel = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
+        let undrop_tabular_responses = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
         context
             .v1_state
             .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(tasks_to_cancel))
+            .cancel_tabular_expiration(TaskFilter::TaskIds(
+                undrop_tabular_responses
+                    .iter()
+                    .map(|r| r.task_id.clone())
+                    .collect(),
+            ))
             .await?;
         transaction.commit().await?;
 
         let num_tabulars = tabs.len();
-        let list_flags = ListFlags {
-            include_active: true,
-            include_staged: true,
-            include_deleted: true,
-        };
-        for (i, t) in tabs.iter().enumerate() {
-            if let Ok(Some(table_metadata)) =
-                C::get_table_metadata_by_id(warehouse_id, *t, list_flags, catalog.clone()).await
-            {
-                let _ = context
-                    .v1_state
-                    .publisher
-                    .publish(
-                        Uuid::now_v7(),
-                        "undropTabulars",
-                        serde_json::Value::Null,
-                        EventMetadata {
-                            tabular_id: TabularIdentUuid::from(*t),
-                            warehouse_id,
-                            name: table_metadata.table.name,
-                            namespace: table_metadata.table.namespace.to_url_string(),
-                            prefix: warehouse_id.0.into(),
-                            num_events: num_tabulars,
-                            sequence_number: i,
-                            trace_id: request_metadata.request_id,
-                        },
-                    )
-                    .await;
-            }
+        for (i, utr) in undrop_tabular_responses.iter().enumerate() {
+            let _ = context
+                .v1_state
+                .publisher
+                .publish(
+                    Uuid::now_v7(),
+                    "undropTabulars",
+                    serde_json::Value::Null,
+                    EventMetadata {
+                        tabular_id: TabularIdentUuid::from(utr.table_ident),
+                        warehouse_id,
+                        name: utr.name.clone(),
+                        namespace: utr.namespace.to_url_string(),
+                        prefix: warehouse_id.0.into(),
+                        num_events: num_tabulars,
+                        sequence_number: i,
+                        trace_id: request_metadata.request_id,
+                    },
+                )
+                .await;
         }
 
         Ok(())

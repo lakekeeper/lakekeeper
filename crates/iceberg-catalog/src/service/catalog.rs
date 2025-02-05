@@ -151,6 +151,14 @@ pub enum CreateOrUpdateUserResponse {
     Updated(User),
 }
 
+#[derive(Debug, Clone)]
+pub struct UndropTabularResponse {
+    pub table_ident: TableIdentUuid,
+    pub task_id: TaskId,
+    pub name: String,
+    pub namespace: NamespaceIdent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupValidationData {
     /// Catalog is not bootstrapped
@@ -377,7 +385,7 @@ where
     async fn undrop_tabulars(
         table_id: &[TableIdentUuid],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<TaskId>>;
+    ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
         table_id: TabularIdentUuid,

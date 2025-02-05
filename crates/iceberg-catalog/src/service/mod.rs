@@ -16,8 +16,8 @@ pub use catalog::{
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
     ListNamespacesResponse, LoadTableResponse, NamespaceIdent, Result, StartupValidationData,
-    TableCommit, TableCreation, TableIdent, Transaction, UpdateNamespacePropertiesRequest,
-    UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
+    TableCommit, TableCreation, TableIdent, Transaction, UndropTabularResponse,
+    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
 };
 use std::ops::Deref;
 pub(crate) use tabular_idents::TabularIdentBorrowed;

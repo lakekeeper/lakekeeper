@@ -17,5 +17,10 @@
     "credential-type": "access-key",
     "aws-access-key-id": "minio-root-user",
     "aws-secret-access-key": "minio-root-password"
+  },
+  "delete-profile": {
+    "type": "soft",
+    "expiration-seconds": 2592000
   }
 }
+

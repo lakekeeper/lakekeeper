@@ -17,9 +17,6 @@ use super::{
     },
     CatalogState, PostgresTransaction,
 };
-use crate::api::management::v1::user::{
-    ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType,
-};
 use crate::implementations::postgres::role::search_role;
 use crate::implementations::postgres::tabular::table::create_table;
 use crate::implementations::postgres::tabular::table::{
@@ -32,7 +29,6 @@ use crate::implementations::postgres::user::{
     create_or_update_user, delete_user, list_users, search_user,
 };
 use crate::service::authn::UserId;
-use crate::service::task_queue::TaskId;
 use crate::service::{
     storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
@@ -49,6 +45,12 @@ use crate::{
 use crate::{
     api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse},
     service::ViewIdentUuid,
+};
+use crate::{
+    api::management::v1::user::{
+        ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType,
+    },
+    service::UndropTabularResponse,
 };
 use crate::{api::management::v1::warehouse::TabularDeleteProfile, service::TabularIdentUuid};
 use crate::{
@@ -364,7 +366,7 @@ impl Catalog for super::PostgresCatalog {
     async fn undrop_tabulars(
         tabular_ids: &[TableIdentUuid],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<TaskId>> {
+    ) -> Result<Vec<UndropTabularResponse>> {
         clear_tabular_deleted_at(&tabular_ids.iter().map(|i| **i).collect_vec(), transaction).await
     }
 
