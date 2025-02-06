@@ -3,7 +3,7 @@ pub(crate) mod view;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
-    service::{ErrorModel, NamespaceIdentUuid, Result, TableIdent},
+    service::{ErrorModel, NamespaceIdentUuid, Result, TableIdent, TableIdentUuid},
     WarehouseIdent,
 };
 use http::StatusCode;
@@ -14,6 +14,7 @@ use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
 use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::service::task_queue::TaskId;
 use crate::service::DeletionDetails;
+use crate::service::UndropTabularResponse;
 use crate::service::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
 use chrono::Utc;
 use iceberg_ext::configs::Location;
@@ -578,7 +579,7 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 pub(crate) async fn clear_tabular_deleted_at(
     tabular_ids: &[Uuid],
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Vec<TaskId>> {
+) -> Result<Vec<UndropTabularResponse>> {
     let deleted = sqlx::query!(
         r#"
         UPDATE tabular t
@@ -602,33 +603,47 @@ pub(crate) async fn clear_tabular_deleted_at(
         .into());
     }
 
-    let task_id = sqlx::query!(
+    let undrop_tabular_informations = sqlx::query!(
         r#"
-        SELECT task_id FROM tabular_expirations
-        WHERE tabular_id = any($1)
+        SELECT
+            te.tabular_id,
+            te.task_id,
+            ti.name,
+            n.namespace_name
+        FROM tabular_expirations te
+        INNER JOIN tabular ti ON te.tabular_id = ti.tabular_id
+        INNER JOIN namespace n on n.namespace_id = ti.namespace_id
+        WHERE te.tabular_id = any($1)
         "#,
         tabular_ids
     )
     .fetch_all(&mut **transaction)
     .await
     .map_err(|e| {
-        tracing::warn!("Error fetching task IDs for tabulars: {}", e);
-        e.into_error_model("Error fetching task IDs for tabulars")
+        tracing::warn!("Error fetching information to undrop tabulars: {}", e);
+        e.into_error_model("Error fetching information to undrop tabulars.")
     })?;
 
-    if task_id.len() != tabular_ids.len() {
+    if undrop_tabular_informations.len() != tabular_ids.len() {
         return Err(ErrorModel::internal(
-            "Mismatch between task IDs in tabular_expirations and to-be-deleted tabulars.",
+            "Mismatch between found information to undrop tabulars and to-be-deleted tabulars.",
             "InternalDatabaseError",
             None,
         )
         .into());
     }
-
-    Ok(task_id
+    let undrop_tabular_informations = undrop_tabular_informations
         .into_iter()
-        .map(|task_id| TaskId::from(task_id.task_id))
-        .collect::<Vec<TaskId>>())
+        .map(|undrop_tabular_information| UndropTabularResponse {
+            table_ident: TableIdentUuid::from(undrop_tabular_information.tabular_id),
+            task_id: TaskId::from(undrop_tabular_information.task_id),
+            name: undrop_tabular_information.name,
+            namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
+                .unwrap_or(NamespaceIdent::new("unknown".into())),
+        })
+        .collect::<Vec<UndropTabularResponse>>();
+
+    Ok(undrop_tabular_informations)
 }
 
 pub(crate) async fn mark_tabular_as_deleted(

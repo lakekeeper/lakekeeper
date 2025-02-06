@@ -4,12 +4,14 @@ use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedT
 use crate::api::{ApiContext, Result};
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
+use crate::service::event_publisher::EventMetadata;
 pub use crate::service::storage::{
     AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
 use futures::FutureExt;
 use itertools::Itertools;
+use uuid::Uuid;
 
 use crate::api::iceberg::v1::{PageToken, PaginationQuery};
 use crate::service::{NamespaceIdentUuid, TableIdentUuid};
@@ -652,6 +654,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn undrop_tabulars(
+        warehouse_id: WarehouseIdent,
         request_metadata: RequestMetadata,
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
@@ -668,15 +671,41 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .into_iter()
             .map(|i| TableIdentUuid::from(*i))
             .collect::<Vec<_>>();
-        let tasks_to_cancel = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
+        let undrop_tabular_responses = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
         context
             .v1_state
             .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(tasks_to_cancel))
+            .cancel_tabular_expiration(TaskFilter::TaskIds(
+                undrop_tabular_responses
+                    .iter()
+                    .map(|r| r.task_id.clone())
+                    .collect(),
+            ))
             .await?;
         transaction.commit().await?;
 
-        // TODO: emit event
+        let num_tabulars = tabs.len();
+        for (i, utr) in undrop_tabular_responses.iter().enumerate() {
+            let _ = context
+                .v1_state
+                .publisher
+                .publish(
+                    Uuid::now_v7(),
+                    "undropTabulars",
+                    serde_json::Value::Null,
+                    EventMetadata {
+                        tabular_id: TabularIdentUuid::from(utr.table_ident),
+                        warehouse_id,
+                        name: utr.name.clone(),
+                        namespace: utr.namespace.to_url_string(),
+                        prefix: warehouse_id.0.into(),
+                        num_events: num_tabulars,
+                        sequence_number: i,
+                        trace_id: request_metadata.request_id,
+                    },
+                )
+                .await;
+        }
 
         Ok(())
     }

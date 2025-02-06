@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            te.tabular_id,\n            te.task_id,\n            ti.name,\n            n.namespace_name\n        FROM tabular_expirations te\n        INNER JOIN tabular ti ON te.tabular_id = ti.tabular_id\n        INNER JOIN namespace n on n.namespace_id = ti.namespace_id\n        WHERE te.tabular_id = any($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "90afdf1f98d44e342f4c5bfb54618ff108567d589730cf3ca86d1d9b0fb570ad"
+}
