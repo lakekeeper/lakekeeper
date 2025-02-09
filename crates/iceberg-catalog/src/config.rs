@@ -625,6 +625,18 @@ mod test {
             assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
             Ok(())
         });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DisaBled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
     }
 
     #[test]
