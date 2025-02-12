@@ -365,9 +365,15 @@ impl Catalog for super::PostgresCatalog {
 
     async fn undrop_tabulars(
         tabular_ids: &[TableIdentUuid],
+        warehouse_id: WarehouseIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>> {
-        clear_tabular_deleted_at(&tabular_ids.iter().map(|i| **i).collect_vec(), transaction).await
+        clear_tabular_deleted_at(
+            &tabular_ids.iter().map(|i| **i).collect_vec(),
+            warehouse_id,
+            transaction,
+        )
+        .await
     }
 
     async fn mark_tabular_as_deleted(

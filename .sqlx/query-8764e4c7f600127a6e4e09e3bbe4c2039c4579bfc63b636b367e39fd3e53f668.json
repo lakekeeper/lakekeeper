@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH validation AS (\n                SELECT NOT EXISTS (\n                    SELECT 1 FROM unnest($1::uuid[]) AS id\n                    WHERE id NOT IN (SELECT tabular_id FROM tabular)\n                ) AS all_found\n            )\n            UPDATE tabular\n            SET deleted_at = NULL\n            FROM tabular t JOIN namespace n ON t.namespace_id = n.namespace_id\n            JOIN tabular_expirations te ON t.tabular_id = te.tabular_id\n            WHERE tabular.namespace_id = n.namespace_id\n                AND n.warehouse_id = $2\n                AND tabular.tabular_id = ANY($1::uuid[])\n            RETURNING\n                tabular.name,\n                tabular.tabular_id,\n                te.task_id,\n                n.namespace_name,\n                (SELECT all_found FROM validation);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "all_found",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "8764e4c7f600127a6e4e09e3bbe4c2039c4579bfc63b636b367e39fd3e53f668"
+}

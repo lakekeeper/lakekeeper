@@ -660,6 +660,16 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
+        context
+            .v1_state
+            .authz
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
+
         undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
             .await?;
 
@@ -671,7 +681,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .into_iter()
             .map(|i| TableIdentUuid::from(*i))
             .collect::<Vec<_>>();
-        let undrop_tabular_responses = C::undrop_tabulars(&tabs, transaction.transaction()).await?;
+        let undrop_tabular_responses =
+            C::undrop_tabulars(&tabs, warehouse_id, transaction.transaction()).await?;
         context
             .v1_state
             .queues

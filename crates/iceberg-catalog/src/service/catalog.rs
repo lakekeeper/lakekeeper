@@ -384,6 +384,7 @@ where
     /// Returns the task id of the expiration task associated with the soft-deletion.
     async fn undrop_tabulars(
         table_id: &[TableIdentUuid],
+        warehouse_id: WarehouseIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>>;
 
