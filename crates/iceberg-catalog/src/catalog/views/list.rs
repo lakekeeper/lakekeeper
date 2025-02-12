@@ -1,17 +1,19 @@
-use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQuery};
-use crate::api::ApiContext;
-use crate::api::Result;
-use crate::catalog::namespace::validate_namespace_ident;
-use crate::catalog::require_warehouse_id;
-use crate::catalog::tabular::list_entities;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{
-    Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,
-};
-use crate::service::{Catalog, SecretStore, State, Transaction};
 use futures::FutureExt;
 use iceberg_ext::catalog::rest::ListTablesResponse;
 use itertools::Itertools;
+
+use crate::{
+    api::{
+        iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQuery},
+        ApiContext, Result,
+    },
+    catalog::{namespace::validate_namespace_ident, require_warehouse_id, tabular::list_entities},
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
+        Catalog, SecretStore, State, Transaction,
+    },
+};
 
 pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
@@ -75,20 +77,28 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::types::{PageToken, Prefix};
-    use crate::api::iceberg::v1::{DataAccess, ListTablesQuery, NamespaceParameters};
-    use crate::api::management::v1::warehouse::TabularDeleteProfile;
-    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
-    use crate::catalog::CatalogServer;
-    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
-
-    use crate::api::iceberg::v1::views::Service;
-    use crate::api::ApiContext;
-    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::{State, UserId};
     use itertools::Itertools;
     use sqlx::PgPool;
+
+    use crate::{
+        api::{
+            iceberg::{
+                types::{PageToken, Prefix},
+                v1::{views::Service, DataAccess, ListTablesQuery, NamespaceParameters},
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+            ApiContext,
+        },
+        catalog::{
+            test::{impl_pagination_tests, random_request_metadata},
+            CatalogServer,
+        },
+        implementations::postgres::{PostgresCatalog, SecretsState},
+        service::{
+            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
+            State, UserId,
+        },
+    };
 
     async fn pagination_test_setup(
         pool: PgPool,

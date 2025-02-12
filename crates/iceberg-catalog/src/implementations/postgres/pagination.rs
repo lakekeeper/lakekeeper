@@ -1,7 +1,8 @@
+use std::fmt::Display;
+
 use base64::Engine;
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
-use std::fmt::Display;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PaginateToken<T> {
@@ -88,9 +89,8 @@ fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) ->
 
 #[cfg(test)]
 mod test {
-    use crate::service::ProjectIdent;
-
     use super::*;
+    use crate::service::ProjectIdent;
 
     #[test]
     fn test_paginate_token() {

@@ -1,3 +1,12 @@
+use std::collections::{HashMap, HashSet};
+
+use iceberg::spec::ViewMetadata;
+use iceberg_ext::{
+    catalog::rest::{CatalogConfig, ErrorModel},
+    configs::Location,
+};
+use itertools::Itertools;
+
 use super::{
     bootstrap::{bootstrap, get_validation_data},
     namespace::{
@@ -17,51 +26,36 @@ use super::{
     },
     CatalogState, PostgresTransaction,
 };
-use crate::api::management::v1::user::{
-    ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType,
-};
-use crate::implementations::postgres::role::search_role;
-use crate::implementations::postgres::tabular::table::create_table;
-use crate::implementations::postgres::tabular::table::{
-    commit_table_transaction, load_storage_profile,
-};
-use crate::implementations::postgres::tabular::{
-    clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
-};
-use crate::implementations::postgres::user::{
-    create_or_update_user, delete_user, list_users, search_user,
-};
-use crate::service::authn::UserId;
-use crate::service::task_queue::TaskId;
-use crate::service::{
-    storage::StorageProfile, Catalog, CreateNamespaceRequest, CreateNamespaceResponse,
-    CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails, GetNamespaceResponse,
-    GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse, ListFlags,
-    ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid, ProjectIdent,
-    Result, RoleId, StartupValidationData, TableCreation, TableIdent, TableIdentUuid, Transaction,
-    WarehouseIdent, WarehouseStatus,
-};
-use crate::SecretIdent;
 use crate::{
-    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
-    service::TableCommit,
-};
-use crate::{
-    api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse},
-    service::ViewIdentUuid,
-};
-use crate::{api::management::v1::warehouse::TabularDeleteProfile, service::TabularIdentUuid};
-use crate::{
-    implementations::postgres::tabular::view::{
-        create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id,
+    api::{
+        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        management::v1::{
+            role::{ListRolesResponse, Role, SearchRoleResponse},
+            user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
+            warehouse::TabularDeleteProfile,
+        },
     },
-    service::TabularIdentOwned,
+    implementations::postgres::{
+        role::search_role,
+        tabular::{
+            clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
+            table::{commit_table_transaction, create_table, load_storage_profile},
+            view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
+        },
+        user::{create_or_update_user, delete_user, list_users, search_user},
+    },
+    service::{
+        authn::UserId, storage::StorageProfile, task_queue::TaskId, Catalog,
+        CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
+        CreateTableResponse, DeletionDetails, GetNamespaceResponse, GetProjectResponse,
+        GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
+        LoadTableResponse, NamespaceIdent, NamespaceIdentUuid, ProjectIdent, Result, RoleId,
+        StartupValidationData, TableCommit, TableCreation, TableIdent, TableIdentUuid,
+        TabularIdentOwned, TabularIdentUuid, Transaction, ViewIdentUuid, WarehouseIdent,
+        WarehouseStatus,
+    },
+    SecretIdent,
 };
-use iceberg::spec::ViewMetadata;
-use iceberg_ext::catalog::rest::ErrorModel;
-use iceberg_ext::{catalog::rest::CatalogConfig, configs::Location};
-use itertools::Itertools;
-use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]
 impl Catalog for super::PostgresCatalog {

@@ -1,18 +1,18 @@
-use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
-use crate::service::{Catalog, SecretStore};
+use std::{fmt::Debug, ops::Deref, str::FromStr, time::Duration};
+
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
-use std::fmt::Debug;
-use std::ops::Deref;
-use std::str::FromStr;
-use std::time::Duration;
 use uuid::Uuid;
 
-use super::authz::Authorizer;
-use super::WarehouseIdent;
+use super::{authz::Authorizer, WarehouseIdent};
+use crate::service::{
+    task_queue::{
+        tabular_expiration_queue::TabularExpirationInput, tabular_purge_queue::TabularPurgeInput,
+    },
+    Catalog, SecretStore,
+};
 
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
@@ -264,19 +264,25 @@ const fn valid_max_age(num: i64) -> chrono::Duration {
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::v1::PaginationQuery;
-    use crate::api::management::v1::TabularType;
-    use crate::implementations::postgres::tabular::table::tests::initialize_table;
-    use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::implementations::postgres::PostgresTransaction;
-    use crate::implementations::postgres::{CatalogState, PostgresCatalog};
-    use crate::service::authz::AllowAllAuthorizer;
-    use crate::service::storage::TestProfile;
-    use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-    use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
-    use crate::service::{Catalog, ListFlags, Transaction};
-    use sqlx::PgPool;
     use std::sync::Arc;
+
+    use sqlx::PgPool;
+
+    use crate::{
+        api::{iceberg::v1::PaginationQuery, management::v1::TabularType},
+        implementations::postgres::{
+            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
+            CatalogState, PostgresCatalog, PostgresTransaction,
+        },
+        service::{
+            authz::AllowAllAuthorizer,
+            storage::TestProfile,
+            task_queue::{
+                tabular_expiration_queue::TabularExpirationInput, TaskQueue, TaskQueueConfig,
+            },
+            Catalog, ListFlags, Transaction,
+        },
+    };
 
     #[cfg(feature = "sqlx-postgres")]
     #[sqlx::test]

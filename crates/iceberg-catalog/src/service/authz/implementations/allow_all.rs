@@ -1,20 +1,22 @@
-use crate::api::iceberg::v1::Result;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authn::UserId;
-use crate::service::authz::{
-    Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-    CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-    CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
-};
-use crate::service::health::{Health, HealthExt};
-use crate::service::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
-    ViewIdentUuid, WarehouseIdent,
-};
 use async_trait::async_trait;
 use axum::Router;
 use utoipa::OpenApi;
+
+use crate::{
+    api::{iceberg::v1::Result, ApiContext},
+    request_metadata::RequestMetadata,
+    service::{
+        authn::UserId,
+        authz::{
+            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+            CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
+            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+        },
+        health::{Health, HealthExt},
+        Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
+        ViewIdentUuid, WarehouseIdent,
+    },
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct AllowAllAuthorizer;

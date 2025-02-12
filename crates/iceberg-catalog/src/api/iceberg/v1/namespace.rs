@@ -1,13 +1,12 @@
 use std::ops::Deref;
 
-use crate::api::iceberg::types::{PageToken, Prefix};
-use crate::api::{ApiContext, Result};
-use crate::request_metadata::RequestMetadata;
 use async_trait::async_trait;
-use axum::extract::{Path, Query, State};
-use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::{
+    extract::{Path, Query, State},
+    response::IntoResponse,
+    routing::{get, post},
+    Extension, Json, Router,
+};
 use http::StatusCode;
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::{
@@ -15,6 +14,14 @@ use iceberg_ext::catalog::rest::{
     UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::{
+    api::{
+        iceberg::types::{PageToken, Prefix},
+        ApiContext, Result,
+    },
+    request_metadata::RequestMetadata,
+};
 
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>
@@ -326,12 +333,12 @@ pub struct NamespaceParameters {
 
 #[cfg(test)]
 mod tests {
-    use super::super::*;
-    use super::*;
-    use crate::request_metadata::RequestMetadata;
     use async_trait::async_trait;
     use http_body_util::BodyExt;
     use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+
+    use super::{super::*, *};
+    use crate::request_metadata::RequestMetadata;
 
     #[tokio::test]
     async fn test_namespace_params() {
@@ -439,8 +446,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_namespace_deserialization() {
-        use super::*;
         use tower::ServiceExt;
+
+        use super::*;
 
         #[derive(Debug, Clone)]
         struct TestService;

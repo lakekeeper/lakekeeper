@@ -1,19 +1,20 @@
-use crate::api;
-use crate::service::authn::verification::Verifier;
-use crate::service::authn::Claims;
-use crate::service::AuthDetails;
+use std::{fmt::Debug, str::FromStr, sync::Arc};
+
 use anyhow::Context;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation};
-use jwks_client_rs::source::WebSource;
-use jwks_client_rs::{JsonWebKey, JwksClient};
-use serde::de::DeserializeOwned;
-use serde::Deserialize;
-use std::fmt::Debug;
-use std::str::FromStr;
-use std::sync::Arc;
+use jwks_client_rs::{source::WebSource, JsonWebKey, JwksClient};
+use serde::{de::DeserializeOwned, Deserialize};
 use url::Url;
+
+use crate::{
+    api,
+    service::{
+        authn::{verification::Verifier, Claims},
+        AuthDetails,
+    },
+};
 
 #[async_trait::async_trait]
 impl Verifier for IdpVerifier {

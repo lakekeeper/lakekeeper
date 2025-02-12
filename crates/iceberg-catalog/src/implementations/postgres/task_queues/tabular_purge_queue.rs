@@ -1,16 +1,19 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::api::management::v1::TabularType;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::tabular::TabularType as DbTabularType;
-use crate::implementations::postgres::task_queues::{
-    pick_task, queue_task, record_failure, record_success,
-};
-use crate::service::task_queue::tabular_purge_queue::{TabularPurgeInput, TabularPurgeTask};
-use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
-
 use super::{cancel_pending_tasks, TaskFilter};
+use crate::{
+    api::management::v1::TabularType,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::TabularType as DbTabularType,
+        task_queues::{pick_task, queue_task, record_failure, record_success},
+    },
+    service::task_queue::{
+        tabular_purge_queue::{TabularPurgeInput, TabularPurgeTask},
+        TaskQueue, TaskQueueConfig,
+    },
+};
 
 super::impl_pg_task_queue!(TabularPurgeQueue);
 
@@ -166,10 +169,12 @@ impl TaskQueue for TabularPurgeQueue {
 
 #[cfg(test)]
 mod test {
-    use super::super::test::setup;
-    use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
-    use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
     use sqlx::PgPool;
+
+    use super::super::test::setup;
+    use crate::service::task_queue::{
+        tabular_purge_queue::TabularPurgeInput, TaskQueue, TaskQueueConfig,
+    };
 
     #[sqlx::test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {

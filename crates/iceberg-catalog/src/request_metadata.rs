@@ -1,9 +1,10 @@
-use crate::service::authn::{Actor, AuthDetails};
-use axum::middleware::Next;
-use axum::response::Response;
-use http::HeaderMap;
 use std::str::FromStr;
+
+use axum::{middleware::Next, response::Response};
+use http::HeaderMap;
 use uuid::Uuid;
+
+use crate::service::authn::{Actor, AuthDetails};
 
 /// A struct to hold metadata about a request.
 ///

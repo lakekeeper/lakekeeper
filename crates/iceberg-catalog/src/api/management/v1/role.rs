@@ -1,16 +1,21 @@
-use super::default_page_size;
-use crate::api::iceberg::types::PageToken;
-use crate::api::iceberg::v1::PaginationQuery;
-use crate::api::management::v1::ApiServer;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogProjectAction, CatalogRoleAction};
-use crate::service::{Catalog, Result, RoleId, SecretStore, State, Transaction};
-use crate::{ProjectIdent, DEFAULT_PROJECT_ID};
-use axum::response::IntoResponse;
-use axum::Json;
+use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
+
+use super::default_page_size;
+use crate::{
+    api::{
+        iceberg::{types::PageToken, v1::PaginationQuery},
+        management::v1::ApiServer,
+        ApiContext,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogProjectAction, CatalogRoleAction},
+        Catalog, Result, RoleId, SecretStore, State, Transaction,
+    },
+    ProjectIdent, DEFAULT_PROJECT_ID,
+};
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]

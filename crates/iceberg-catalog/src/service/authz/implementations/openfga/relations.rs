@@ -7,15 +7,13 @@ use super::{
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
     OpenFGAError, OpenFGAResult, RoleAssignee,
 };
-use crate::service::authz::{
-    CatalogNamespaceAction, CatalogRoleAction, CatalogTableAction, CatalogViewAction,
-};
-use crate::service::{authn::UserId, Actor};
 use crate::service::{
+    authn::UserId,
     authz::{
-        implementations::FgaType, CatalogProjectAction, CatalogServerAction, CatalogWarehouseAction,
+        implementations::FgaType, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+        CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
     },
-    RoleId,
+    Actor, RoleId,
 };
 
 pub(super) trait Assignment: Sized {

@@ -1,7 +1,9 @@
+use iceberg_catalog::{
+    implementations::postgres::{get_reader_pool, migrations::MigrationState},
+    CONFIG,
+};
+
 use crate::healthcheck::db_health_check;
-use iceberg_catalog::implementations::postgres::get_reader_pool;
-use iceberg_catalog::implementations::postgres::migrations::MigrationState;
-use iceberg_catalog::CONFIG;
 
 pub(crate) async fn wait_for_db(
     check_migrations: bool,

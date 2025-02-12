@@ -9,9 +9,8 @@
 pub mod catalog;
 mod config;
 pub mod service;
-pub use service::{ProjectIdent, SecretIdent, WarehouseIdent};
-
 pub use config::{AuthZBackend, OpenFGAAuth, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
+pub use service::{ProjectIdent, SecretIdent, WarehouseIdent};
 
 pub mod implementations;
 
@@ -27,8 +26,8 @@ pub(crate) mod tracing;
 
 #[cfg(test)]
 pub mod test {
-    use std::future::Future;
-    use std::sync::LazyLock;
+    use std::{future::Future, sync::LazyLock};
+
     use tokio::runtime::Runtime;
 
     #[allow(dead_code)]

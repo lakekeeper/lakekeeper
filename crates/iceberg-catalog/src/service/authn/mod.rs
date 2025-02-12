@@ -1,9 +1,11 @@
-use super::{ProjectIdent, RoleId, WarehouseIdent};
-use crate::api::Result;
+use std::fmt::Debug;
+
 use iceberg_ext::catalog::rest::ErrorModel;
 use k8s_openapi::api::authentication::v1::TokenReviewStatus;
 use serde::Deserialize;
-use std::fmt::Debug;
+
+use super::{ProjectIdent, RoleId, WarehouseIdent};
+use crate::api::Result;
 
 mod identities;
 mod verification;
@@ -190,8 +192,7 @@ struct Claims {
 mod test {
     use core::assert_eq;
 
-    use crate::api::management::v1::user::UserType;
-    use crate::service::authn::Claims;
+    use crate::{api::management::v1::user::UserType, service::authn::Claims};
 
     #[test]
     fn test_machine_discovery_entra() {

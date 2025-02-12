@@ -1,23 +1,28 @@
 #![allow(clippy::module_name_repetitions)]
 
-use crate::{WarehouseIdent, CONFIG};
+use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
-use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
-use crate::service::storage::error::{
-    CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
-};
-use crate::service::storage::{StoragePermissions, TableConfig};
 use aws_config::{BehaviorVersion, SdkConfig};
+use iceberg_ext::configs::{
+    self,
+    table::{client, custom, s3, TableProperties},
+    ConfigProperty, Location,
+};
+use serde::{Deserialize, Serialize};
+use veil::Redact;
 
 use super::StorageType;
-use crate::api::iceberg::supported_endpoints;
-use iceberg_ext::configs::table::{client, custom, s3, TableProperties};
-use iceberg_ext::configs::{self, ConfigProperty, Location};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::LazyLock;
-use veil::Redact;
+use crate::{
+    api::{
+        iceberg::{supported_endpoints, v1::DataAccess},
+        CatalogConfig,
+    },
+    service::storage::{
+        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
+        StoragePermissions, TableConfig,
+    },
+    WarehouseIdent, CONFIG,
+};
 
 static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
@@ -764,13 +769,14 @@ impl From<S3Location> for Location {
 
 #[cfg(test)]
 mod test {
+    use needs_env_var::needs_env_var;
+
     use super::*;
     use crate::service::{
         storage::{StorageLocations as _, StorageProfile},
         tabular_idents::TabularIdentUuid,
         NamespaceIdentUuid,
     };
-    use needs_env_var::needs_env_var;
 
     #[test]
     fn test_is_valid_bucket_name() {
@@ -924,9 +930,8 @@ mod test {
 
     #[needs_env_var(TEST_AWS = 1)]
     mod aws {
-        use crate::service::storage::{StorageCredential, StorageProfile};
-
         use super::super::*;
+        use crate::service::storage::{StorageCredential, StorageProfile};
 
         #[test]
         fn test_can_validate() {

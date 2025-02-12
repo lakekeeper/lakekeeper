@@ -1,12 +1,12 @@
-use crate::service::authz::implementations::FgaType;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use openfga_rs::tonic::metadata::errors::InvalidMetadataValue;
-use openfga_rs::tonic::{self, Code};
 use openfga_rs::{
-    authentication::CredentialRefreshError, CheckRequest, ReadRequest, ReadRequestTupleKey,
-    WriteRequest,
+    authentication::CredentialRefreshError,
+    tonic::{self, metadata::errors::InvalidMetadataValue, Code},
+    CheckRequest, ReadRequest, ReadRequestTupleKey, WriteRequest,
 };
+
+use crate::service::authz::implementations::FgaType;
 
 pub type OpenFGAResult<T> = Result<T, OpenFGAError>;
 

@@ -1,12 +1,14 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 
 use clap::{Parser, Subcommand};
-use iceberg_catalog::api::management::v1::api_doc as v1_api_doc;
-use iceberg_catalog::service::authz::implementations::openfga::UnauthenticatedOpenFGAAuthorizer;
-use iceberg_catalog::service::authz::AllowAllAuthorizer;
-use iceberg_catalog::{AuthZBackend, CONFIG};
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::EnvFilter;
+use iceberg_catalog::{
+    api::management::v1::api_doc as v1_api_doc,
+    service::authz::{
+        implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer,
+    },
+    AuthZBackend, CONFIG,
+};
+use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 mod healthcheck;
 mod serve;

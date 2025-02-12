@@ -1,17 +1,21 @@
-use super::default_page_size;
-use crate::api::iceberg::v1::{PageToken, PaginationQuery};
-use crate::api::management::v1::ApiServer;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authn::UserId;
-use crate::service::authz::{Authorizer, CatalogServerAction, CatalogUserAction};
-use crate::service::{
-    AuthDetails, Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction,
-};
-use axum::response::IntoResponse;
-use axum::Json;
+use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
+
+use super::default_page_size;
+use crate::{
+    api::{
+        iceberg::v1::{PageToken, PaginationQuery},
+        management::v1::ApiServer,
+        ApiContext,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authn::UserId,
+        authz::{Authorizer, CatalogServerAction, CatalogUserAction},
+        AuthDetails, Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction,
+    },
+};
 
 /// How the user was last updated
 #[derive(Debug, Serialize, utoipa::ToSchema, Clone)]

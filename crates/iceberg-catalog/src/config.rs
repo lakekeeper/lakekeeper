@@ -2,22 +2,24 @@
 
 #![allow(clippy::ref_option)]
 
-use anyhow::{anyhow, Context};
 use core::result::Result::Ok;
-use http::HeaderValue;
-use std::collections::HashSet;
-use std::convert::Infallible;
-use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::LazyLock;
-use url::Url;
+use std::{
+    collections::HashSet,
+    convert::Infallible,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    str::FromStr,
+    sync::LazyLock,
+};
 
-use crate::service::task_queue::TaskQueueConfig;
-use crate::{ProjectIdent, WarehouseIdent};
+use anyhow::{anyhow, Context};
+use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
+use url::Url;
 use veil::Redact;
+
+use crate::{service::task_queue::TaskQueueConfig, ProjectIdent, WarehouseIdent};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";

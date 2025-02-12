@@ -1,19 +1,21 @@
-use crate::api::iceberg::types::Prefix;
-use crate::api::ApiContext;
-use crate::catalog::require_warehouse_id;
-use crate::catalog::tables::{maybe_body_to_json, validate_table_or_view_ident};
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{
-    Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction,
-};
-use crate::service::contract_verification::ContractVerification;
-use crate::service::event_publisher::EventMetadata;
-use crate::service::Result;
-use crate::service::TabularIdentUuid;
-use crate::service::{Catalog, SecretStore, State, Transaction};
 use http::StatusCode;
 use iceberg_ext::catalog::rest::RenameTableRequest;
 use uuid::Uuid;
+
+use crate::{
+    api::{iceberg::types::Prefix, ApiContext},
+    catalog::{
+        require_warehouse_id,
+        tables::{maybe_body_to_json, validate_table_or_view_ident},
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
+        contract_verification::ContractVerification,
+        event_publisher::EventMetadata,
+        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction,
+    },
+};
 
 pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
@@ -109,15 +111,16 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::api::iceberg::v1::ViewParameters;
-    use crate::catalog::views::create::test::create_view;
-    use crate::catalog::views::load::test::load_view;
-    use crate::catalog::views::test::setup;
-    use crate::implementations::postgres::namespace::tests::initialize_namespace;
     use iceberg::{NamespaceIdent, TableIdent};
     use iceberg_ext::catalog::rest::CreateViewRequest;
     use sqlx::PgPool;
+
+    use super::*;
+    use crate::{
+        api::iceberg::v1::ViewParameters,
+        catalog::views::{create::test::create_view, load::test::load_view, test::setup},
+        implementations::postgres::namespace::tests::initialize_namespace,
+    };
 
     #[sqlx::test]
     async fn test_rename_view_without_namespace(pool: PgPool) {

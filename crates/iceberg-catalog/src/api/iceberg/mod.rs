@@ -1,11 +1,12 @@
 pub mod types;
 
 pub mod v1 {
-    use crate::api::ThreadSafe;
+    use std::{collections::HashMap, fmt::Debug};
+
     use axum::Router;
     use itertools::Itertools;
-    use std::collections::HashMap;
-    use std::fmt::Debug;
+
+    use crate::api::ThreadSafe;
 
     pub mod config;
     pub mod metrics;
@@ -17,21 +18,23 @@ pub mod v1 {
 
     pub use iceberg_ext::catalog::{NamespaceIdent, TableIdent};
 
-    pub use self::namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery};
-    pub use self::tables::{DataAccess, ListTablesQuery, TableParameters};
-    pub use self::views::ViewParameters;
-    pub use crate::api::iceberg::types::*;
-
-    pub use crate::api::{
-        ApiContext, CatalogConfig, CommitTableRequest, CommitTableResponse,
-        CommitTransactionRequest, CommitViewRequest, CreateNamespaceRequest,
-        CreateNamespaceResponse, CreateTableRequest, CreateViewRequest, ErrorModel,
-        GetNamespaceResponse, IcebergErrorResponse, ListNamespacesResponse, ListTablesResponse,
-        LoadTableResult, LoadViewResult, OAuthTokenRequest, OAuthTokenResponse,
-        RegisterTableRequest, RenameTableRequest, Result, UpdateNamespacePropertiesRequest,
-        UpdateNamespacePropertiesResponse,
+    pub use self::{
+        namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery},
+        tables::{DataAccess, ListTablesQuery, TableParameters},
+        views::ViewParameters,
     };
-    pub use crate::request_metadata::RequestMetadata;
+    pub use crate::{
+        api::{
+            iceberg::types::*, ApiContext, CatalogConfig, CommitTableRequest, CommitTableResponse,
+            CommitTransactionRequest, CommitViewRequest, CreateNamespaceRequest,
+            CreateNamespaceResponse, CreateTableRequest, CreateViewRequest, ErrorModel,
+            GetNamespaceResponse, IcebergErrorResponse, ListNamespacesResponse, ListTablesResponse,
+            LoadTableResult, LoadViewResult, OAuthTokenRequest, OAuthTokenResponse,
+            RegisterTableRequest, RenameTableRequest, Result, UpdateNamespacePropertiesRequest,
+            UpdateNamespacePropertiesResponse,
+        },
+        request_metadata::RequestMetadata,
+    };
 
     // according to crates/iceberg-ext/src/catalog/rest/namespace.rs:115 we should
     // return everything - in order to block malicious requests, we still cap to 1000
@@ -231,8 +234,9 @@ pub(crate) fn supported_endpoints() -> Vec<String> {
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::v1::PaginatedMapping;
     use uuid::Uuid;
+
+    use crate::api::iceberg::v1::PaginatedMapping;
 
     #[test]
     fn iteration_with_page_token_is_in_insertion_order() {

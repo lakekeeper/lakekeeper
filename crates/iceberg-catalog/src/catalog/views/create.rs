@@ -1,25 +1,33 @@
-use crate::api::iceberg::types::Prefix;
-use crate::api::iceberg::v1::{DataAccess, NamespaceParameters};
-use crate::api::ApiContext;
-use crate::catalog::compression_codec::CompressionCodec;
-use crate::catalog::io::write_metadata_file;
-use crate::catalog::tables::{
-    determine_tabular_location, maybe_body_to_json, require_active_warehouse,
-    validate_table_or_view_ident,
-};
-use crate::catalog::views::validate_view_properties;
-use crate::catalog::{maybe_get_secret, require_warehouse_id};
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction};
-use crate::service::event_publisher::EventMetadata;
-use crate::service::storage::{StorageLocations as _, StoragePermissions};
-use crate::service::TabularIdentUuid;
-use crate::service::{Catalog, SecretStore, State, Transaction};
-use crate::service::{Result, ViewIdentUuid};
-use iceberg::spec::ViewMetadataBuilder;
-use iceberg::{TableIdent, ViewCreation};
+use iceberg::{spec::ViewMetadataBuilder, TableIdent, ViewCreation};
 use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
 use uuid::Uuid;
+
+use crate::{
+    api::{
+        iceberg::{
+            types::Prefix,
+            v1::{DataAccess, NamespaceParameters},
+        },
+        ApiContext,
+    },
+    catalog::{
+        compression_codec::CompressionCodec,
+        io::write_metadata_file,
+        maybe_get_secret, require_warehouse_id,
+        tables::{
+            determine_tabular_location, maybe_body_to_json, require_active_warehouse,
+            validate_table_or_view_ident,
+        },
+        views::validate_view_properties,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
+        event_publisher::EventMetadata,
+        storage::{StorageLocations as _, StoragePermissions},
+        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
+    },
+};
 
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
@@ -192,14 +200,17 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
 #[cfg(test)]
 pub(crate) mod test {
-    use super::*;
-
-    use crate::implementations::postgres::namespace::tests::initialize_namespace;
-    use crate::implementations::postgres::secrets::SecretsState;
-    use crate::service::authz::AllowAllAuthorizer;
     use iceberg::NamespaceIdent;
     use serde_json::json;
     use sqlx::PgPool;
+
+    use super::*;
+    use crate::{
+        implementations::postgres::{
+            namespace::tests::initialize_namespace, secrets::SecretsState,
+        },
+        service::authz::AllowAllAuthorizer,
+    };
 
     pub(crate) async fn create_view(
         api_context: ApiContext<

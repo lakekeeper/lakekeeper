@@ -1,8 +1,7 @@
-use crate::api;
-use crate::api::management::v1::user::UserType;
-use crate::service::Actor;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use serde::{Deserialize, Serialize};
+
+use crate::{api, api::management::v1::user::UserType, service::Actor};
 
 /// Unique identifier of a user in the system.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, utoipa::ToSchema)]

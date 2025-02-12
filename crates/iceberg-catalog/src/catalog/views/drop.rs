@@ -1,20 +1,27 @@
-use crate::api::iceberg::types::{DropParams, Prefix};
-use crate::api::iceberg::v1::ViewParameters;
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
-use crate::api::management::v1::TabularType;
-use crate::api::ApiContext;
-use crate::catalog::require_warehouse_id;
-use crate::catalog::tables::validate_table_or_view_ident;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction};
-use crate::service::contract_verification::ContractVerification;
-use crate::service::event_publisher::EventMetadata;
-use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
-use crate::service::TabularIdentUuid;
-use crate::service::{Catalog, SecretStore, State, Transaction};
-use crate::service::{Result, ViewIdentUuid};
 use uuid::Uuid;
+
+use crate::{
+    api::{
+        iceberg::{
+            types::{DropParams, Prefix},
+            v1::ViewParameters,
+        },
+        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        ApiContext,
+    },
+    catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        contract_verification::ContractVerification,
+        event_publisher::EventMetadata,
+        task_queue::{
+            tabular_expiration_queue::TabularExpirationInput,
+            tabular_purge_queue::TabularPurgeInput,
+        },
+        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
+    },
+};
 
 pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
@@ -125,17 +132,21 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::types::{DropParams, Prefix};
-    use crate::api::iceberg::v1::ViewParameters;
-    use crate::catalog::views::create::test::create_view;
-    use crate::catalog::views::drop::drop_view;
-    use crate::catalog::views::load::test::load_view;
-    use crate::catalog::views::test::setup;
-    use crate::request_metadata::RequestMetadata;
     use http::StatusCode;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CreateViewRequest;
     use sqlx::PgPool;
+
+    use crate::{
+        api::iceberg::{
+            types::{DropParams, Prefix},
+            v1::ViewParameters,
+        },
+        catalog::views::{
+            create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
+        },
+        request_metadata::RequestMetadata,
+    };
 
     #[sqlx::test]
     async fn test_load_view(pool: PgPool) {

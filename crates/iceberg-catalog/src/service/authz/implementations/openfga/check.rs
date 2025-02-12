@@ -1,30 +1,34 @@
-use super::relations::{
-    APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction, APIProjectAction,
-    APIServerAction as ServerAction, APIServerAction, APITableAction as TableAction,
-    APIViewAction as ViewAction, APIWarehouseAction as WarehouseAction, APIWarehouseAction,
-    NamespaceRelation as AllNamespaceRelations, ProjectRelation as AllProjectRelations,
-    ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
-    UserOrRole, ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
-};
-use super::{OpenFGAAuthorizer, OpenFGAError, OPENFGA_SERVER};
-use crate::catalog::namespace::authorized_namespace_ident_to_id;
-use crate::catalog::tables::authorized_table_ident_to_id;
-use crate::catalog::views::authorized_view_ident_to_id;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::implementations::openfga::entities::OpenFgaEntity;
-use crate::service::authz::Authorizer;
-use crate::service::{
-    Catalog, NamespaceIdentUuid, Result, SecretStore, State, TableIdentUuid, ViewIdentUuid,
-};
-use crate::service::{ListFlags, Transaction};
-use crate::{api::ApiContext, ProjectIdent};
-use crate::{WarehouseIdent, DEFAULT_PROJECT_ID};
-use axum::extract::State as AxumState;
-use axum::{Extension, Json};
+use axum::{extract::State as AxumState, Extension, Json};
 use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
 use openfga_rs::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
+
+use super::{
+    relations::{
+        APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction, APIProjectAction,
+        APIServerAction as ServerAction, APIServerAction, APITableAction as TableAction,
+        APIViewAction as ViewAction, APIWarehouseAction as WarehouseAction, APIWarehouseAction,
+        NamespaceRelation as AllNamespaceRelations, ProjectRelation as AllProjectRelations,
+        ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
+        UserOrRole, ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
+    },
+    OpenFGAAuthorizer, OpenFGAError, OPENFGA_SERVER,
+};
+use crate::{
+    api::ApiContext,
+    catalog::{
+        namespace::authorized_namespace_ident_to_id, tables::authorized_table_ident_to_id,
+        views::authorized_view_ident_to_id,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{implementations::openfga::entities::OpenFgaEntity, Authorizer},
+        Catalog, ListFlags, NamespaceIdentUuid, Result, SecretStore, State, TableIdentUuid,
+        Transaction, ViewIdentUuid,
+    },
+    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+};
 
 /// Check if a specific action is allowed on the given object
 #[utoipa::path(
@@ -420,11 +424,12 @@ pub(super) struct CheckResponse {
 
 #[cfg(test)]
 mod tests {
-    use crate::service::UserId;
+    use std::str::FromStr;
+
+    use needs_env_var::needs_env_var;
 
     use super::*;
-    use needs_env_var::needs_env_var;
-    use std::str::FromStr;
+    use crate::service::UserId;
 
     #[test]
     fn test_serde_check_action_table_id() {
@@ -509,25 +514,31 @@ mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
-        use super::super::super::relations::*;
-        use super::super::*;
-        use crate::api::iceberg::v1::namespace::Service;
-        use crate::api::iceberg::v1::Prefix;
-        use crate::api::management::v1::role::{CreateRoleRequest, Service as RoleService};
-        use crate::api::management::v1::warehouse::{
-            CreateWarehouseResponse, TabularDeleteProfile,
-        };
-        use crate::api::management::v1::ApiServer;
-        use crate::catalog::{CatalogServer, NAMESPACE_ID_PROPERTY};
-        use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-        use crate::service::authn::UserId;
-        use crate::service::authz::implementations::openfga::migration::tests::authorizer_for_empty_store;
-        use crate::service::authz::implementations::openfga::RoleAssignee;
-        use iceberg_ext::catalog::rest::CreateNamespaceRequest;
-        use iceberg_ext::catalog::rest::CreateNamespaceResponse;
-        use openfga_rs::TupleKey;
         use std::str::FromStr;
+
+        use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
+        use openfga_rs::TupleKey;
         use strum::IntoEnumIterator;
+
+        use super::super::{super::relations::*, *};
+        use crate::{
+            api::{
+                iceberg::v1::{namespace::Service, Prefix},
+                management::v1::{
+                    role::{CreateRoleRequest, Service as RoleService},
+                    warehouse::{CreateWarehouseResponse, TabularDeleteProfile},
+                    ApiServer,
+                },
+            },
+            catalog::{CatalogServer, NAMESPACE_ID_PROPERTY},
+            implementations::postgres::{PostgresCatalog, SecretsState},
+            service::{
+                authn::UserId,
+                authz::implementations::openfga::{
+                    migration::tests::authorizer_for_empty_store, RoleAssignee,
+                },
+            },
+        };
 
         async fn setup(
             operator_id: UserId,

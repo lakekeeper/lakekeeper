@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
+
+use openfga_rs::{Condition, TypeDefinition};
 
 use crate::service::{authz::implementations::FgaType, RoleId};
-use openfga_rs::{Condition, TypeDefinition};
-use std::sync::LazyLock;
 
 const V1_MODEL: &str = include_str!("../../../../../../../authz/openfga/v1/schema.json");
 const V2_MODEL: &str = include_str!("../../../../../../../authz/openfga/v2/schema.json");
@@ -187,9 +187,10 @@ impl From<openfga_rs::AuthorizationModel> for AuthorizationModel {
 }
 
 mod ser_de {
-    use super::HashMap;
     use openfga_rs::relation_reference::RelationOrWildcard;
     use serde::{Deserialize, Serialize};
+
+    use super::HashMap;
 
     #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
     #[serde(deny_unknown_fields)]
@@ -819,8 +820,9 @@ mod ser_de {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use strum::IntoEnumIterator;
+
+    use super::*;
 
     #[test]
     fn test_load_model() {

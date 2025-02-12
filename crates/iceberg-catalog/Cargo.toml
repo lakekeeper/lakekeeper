@@ -95,6 +95,7 @@ veil = { workspace = true }
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
+maplit ={ workspace = true }
 mockall = { workspace = true }
 needs_env_var = { workspace = true }
 pretty_assertions = { workspace = true }
@@ -102,4 +103,3 @@ serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
-maplit ={ workspace = true }

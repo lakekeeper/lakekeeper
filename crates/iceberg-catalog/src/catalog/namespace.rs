@@ -1,26 +1,31 @@
-use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
-use crate::api::iceberg::v1::namespace::GetNamespacePropertiesQuery;
-use crate::api::iceberg::v1::{
-    ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
-    ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters, Prefix, Result,
-    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
-};
-use crate::api::set_not_found_status_code;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent};
-use crate::service::{
-    authz::Authorizer, secrets::SecretStore, Catalog, GetWarehouseResponse, NamespaceIdentUuid,
-    State, Transaction,
-};
-use crate::{catalog, WarehouseIdent, CONFIG};
+use std::{collections::HashMap, ops::Deref};
+
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::configs::namespace::NamespaceProperties;
-use iceberg_ext::configs::{ConfigProperty as _, Location};
+use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _, Location};
 use itertools::Itertools;
-use std::collections::HashMap;
-use std::ops::Deref;
+
+use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
+use crate::{
+    api::{
+        iceberg::v1::{
+            namespace::GetNamespacePropertiesQuery, ApiContext, CreateNamespaceRequest,
+            CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
+            ListNamespacesResponse, NamespaceParameters, Prefix, Result,
+            UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
+        },
+        set_not_found_status_code,
+    },
+    catalog,
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
+        secrets::SecretStore,
+        Catalog, GetWarehouseResponse, NamespaceIdentUuid, State, Transaction,
+    },
+    WarehouseIdent, CONFIG,
+};
 
 pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
 // If this is increased, we need to modify namespace creation and deletion
@@ -589,23 +594,33 @@ fn namespace_location_may_not_change(
 #[cfg(test)]
 mod tests {
 
-    use crate::api::iceberg::types::{PageToken, Prefix};
-    use crate::api::iceberg::v1::namespace::Service;
-    use crate::api::management::v1::warehouse::TabularDeleteProfile;
-    use crate::api::ApiContext;
-    use crate::catalog::test::impl_pagination_tests;
-    use crate::catalog::test::random_request_metadata;
-    use crate::catalog::CatalogServer;
-    use crate::implementations::postgres::namespace::namespace_to_id;
-    use crate::implementations::postgres::{PostgresCatalog, PostgresTransaction, SecretsState};
-    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
-    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::{ListNamespacesQuery, State, Transaction, UserId};
+    use std::{collections::HashSet, hash::RandomState};
+
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
-    use std::collections::HashSet;
-    use std::hash::RandomState;
+
+    use crate::{
+        api::{
+            iceberg::{
+                types::{PageToken, Prefix},
+                v1::namespace::Service,
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+            ApiContext,
+        },
+        catalog::{
+            test::{impl_pagination_tests, random_request_metadata},
+            CatalogServer,
+        },
+        implementations::postgres::{
+            namespace::namespace_to_id, PostgresCatalog, PostgresTransaction, SecretsState,
+        },
+        service::{
+            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
+            ListNamespacesQuery, State, Transaction, UserId,
+        },
+    };
 
     async fn ns_paginate_test_setup(
         pool: PgPool,

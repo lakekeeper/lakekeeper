@@ -1,32 +1,39 @@
 mod undrop;
 
-use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse};
-use crate::api::{ApiContext, Result};
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
-pub use crate::service::storage::{
-    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
-    StorageCredential, StorageProfile,
-};
 use futures::FutureExt;
-use itertools::Itertools;
-
-use crate::api::iceberg::v1::{PageToken, PaginationQuery};
-use crate::service::{NamespaceIdentUuid, TableIdentUuid};
-
-use super::default_page_size;
-use crate::api::management::v1::role::require_project_id;
-use crate::catalog::UnfilteredPage;
-use crate::service::task_queue::TaskFilter;
-pub use crate::service::WarehouseStatus;
-use crate::service::{
-    authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
-    Transaction,
-};
-use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
+use itertools::Itertools;
 use serde::Deserialize;
 use utoipa::ToSchema;
+
+use super::default_page_size;
+pub use crate::service::{
+    storage::{
+        AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
+        S3Profile, StorageCredential, StorageProfile,
+    },
+    WarehouseStatus,
+};
+use crate::{
+    api::{
+        iceberg::v1::{PageToken, PaginationQuery},
+        management::v1::{
+            role::require_project_id, ApiServer, DeletedTabularResponse,
+            ListDeletedTabularsResponse,
+        },
+        ApiContext, Result,
+    },
+    catalog::UnfilteredPage,
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
+        secrets::SecretStore,
+        task_queue::TaskFilter,
+        Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
+        Transaction,
+    },
+    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+};
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
@@ -886,25 +893,33 @@ mod test {
         assert_eq!(s3_profile.path_style_access, Some(true));
     }
 
-    use crate::api::iceberg::types::Prefix;
-    use crate::api::iceberg::v1::{DataAccess, DropParams, NamespaceParameters, ViewParameters};
-    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
-    use crate::catalog::CatalogServer;
-    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use iceberg::TableIdent;
+    use itertools::Itertools;
     use sqlx::PgPool;
 
-    use crate::api::iceberg::v1::views::Service;
-    use crate::api::management::v1::warehouse::{
-        ListDeletedTabularsQuery, Service as _, TabularDeleteProfile,
+    use crate::{
+        api::{
+            iceberg::{
+                types::Prefix,
+                v1::{views::Service, DataAccess, DropParams, NamespaceParameters, ViewParameters},
+            },
+            management::v1::{
+                warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
+                ApiServer,
+            },
+            ApiContext,
+        },
+        catalog::{
+            test::{impl_pagination_tests, random_request_metadata},
+            CatalogServer,
+        },
+        implementations::postgres::{PostgresCatalog, SecretsState},
+        service::{
+            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
+            State, UserId,
+        },
+        WarehouseIdent,
     };
-    use crate::api::management::v1::ApiServer;
-    use crate::api::ApiContext;
-    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::{State, UserId};
-    use crate::WarehouseIdent;
-    use itertools::Itertools;
 
     async fn setup_pagination_test(
         pool: sqlx::PgPool,

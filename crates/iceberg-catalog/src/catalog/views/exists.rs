@@ -1,14 +1,15 @@
 use iceberg::TableIdent;
 
-use crate::api::iceberg::v1::ViewParameters;
-use crate::api::{set_not_found_status_code, ApiContext};
-use crate::catalog::require_warehouse_id;
-use crate::catalog::tables::validate_table_or_view_ident;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction};
-use crate::service::{Catalog, SecretStore, State, Transaction};
-use crate::service::{Result, ViewIdentUuid};
-use crate::WarehouseIdent;
+use crate::{
+    api::{iceberg::v1::ViewParameters, set_not_found_status_code, ApiContext},
+    catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        Catalog, Result, SecretStore, State, Transaction, ViewIdentUuid,
+    },
+    WarehouseIdent,
+};
 
 pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
@@ -58,14 +59,15 @@ pub(crate) async fn authorized_view_ident_to_id<C: Catalog, A: Authorizer>(
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::api::iceberg::types::Prefix;
-    use crate::api::iceberg::v1::ViewParameters;
-    use crate::catalog::views::create::test::create_view;
-    use crate::catalog::views::test::setup;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CreateViewRequest;
     use sqlx::PgPool;
+
+    use super::*;
+    use crate::{
+        api::iceberg::{types::Prefix, v1::ViewParameters},
+        catalog::views::{create::test::create_view, test::setup},
+    };
 
     #[sqlx::test]
     async fn test_view_exists(pool: PgPool) {

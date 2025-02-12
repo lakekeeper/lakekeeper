@@ -1,45 +1,52 @@
-use super::check::{__path_check, check};
-use super::relations::{
-    APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
-    APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
-    APIRoleAction as RoleAction, APIRoleRelation as RoleRelation, APIServerAction as ServerAction,
-    APIServerRelation as ServerRelation, APITableAction as TableAction,
-    APITableRelation as TableRelation, APIViewAction as ViewAction,
-    APIViewRelation as ViewRelation, APIWarehouseAction as WarehouseAction,
-    APIWarehouseRelation as WarehouseRelation, Assignment, GrantableRelation, NamespaceAssignment,
-    NamespaceRelation as AllNamespaceRelations, ProjectAssignment,
-    ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
-    RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
-    TableAssignment, TableRelation as AllTableRelations, UserOrRole, ViewAssignment,
-    ViewRelation as AllViewRelations, WarehouseAssignment,
-    WarehouseRelation as AllWarehouseRelation,
-};
-use super::OPENFGA_SERVER;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::implementations::openfga::entities::OpenFgaEntity;
-use crate::service::authz::implementations::openfga::service_ext::MAX_TUPLES_PER_WRITE;
-use crate::service::authz::implementations::openfga::{
-    OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
-};
-use crate::service::{
-    Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
-    ViewIdentUuid,
-};
-use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
-use axum::extract::{Path, Query, State as AxumState};
-use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use std::collections::HashSet;
 
+use axum::{
+    extract::{Path, Query, State as AxumState},
+    routing::{get, post},
+    Extension, Json, Router,
+};
 use http::StatusCode;
 use openfga_rs::{
     CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, TupleKey,
     TupleKeyWithoutCondition,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use strum::IntoEnumIterator;
 use utoipa::OpenApi;
+
+use super::{
+    check::{__path_check, check},
+    relations::{
+        APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
+        APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
+        APIRoleAction as RoleAction, APIRoleRelation as RoleRelation,
+        APIServerAction as ServerAction, APIServerRelation as ServerRelation,
+        APITableAction as TableAction, APITableRelation as TableRelation,
+        APIViewAction as ViewAction, APIViewRelation as ViewRelation,
+        APIWarehouseAction as WarehouseAction, APIWarehouseRelation as WarehouseRelation,
+        Assignment, GrantableRelation, NamespaceAssignment,
+        NamespaceRelation as AllNamespaceRelations, ProjectAssignment,
+        ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
+        RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
+        TableAssignment, TableRelation as AllTableRelations, UserOrRole, ViewAssignment,
+        ViewRelation as AllViewRelations, WarehouseAssignment,
+        WarehouseRelation as AllWarehouseRelation,
+    },
+    OPENFGA_SERVER,
+};
+use crate::{
+    api::ApiContext,
+    request_metadata::RequestMetadata,
+    service::{
+        authz::implementations::openfga::{
+            entities::OpenFgaEntity, service_ext::MAX_TUPLES_PER_WRITE, OpenFGAAuthorizer,
+            OpenFGAError, OpenFGAResult,
+        },
+        Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
+        ViewIdentUuid,
+    },
+    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+};
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
 
@@ -1607,8 +1614,9 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use needs_env_var::needs_env_var;
+
+    use super::*;
 
     #[test]
     fn test_namespace_manage_access_is_equal_to_warehouse_manage_access() {
@@ -1621,10 +1629,13 @@ mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
-        use super::super::*;
-        use crate::service::authn::UserId;
-        use crate::service::authz::implementations::openfga::migration::tests::authorizer_for_empty_store;
         use openfga_rs::TupleKey;
+
+        use super::super::*;
+        use crate::service::{
+            authn::UserId,
+            authz::implementations::openfga::migration::tests::authorizer_for_empty_store,
+        };
 
         #[tokio::test]
         async fn test_cannot_assign_role_to_itself() {

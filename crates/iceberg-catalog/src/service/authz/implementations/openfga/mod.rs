@@ -1,3 +1,24 @@
+use std::{
+    collections::HashSet,
+    fmt,
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
+
+use async_stream::{__private::AsyncStream, stream};
+use async_trait::async_trait;
+use axum::Router;
+use futures::{pin_mut, StreamExt};
+use openfga_rs::{
+    open_fga_service_client::OpenFgaServiceClient,
+    tonic::{
+        Response, Status, {self},
+    },
+    CheckRequest, CheckRequestTupleKey, CheckResponse, ConsistencyPreference, ListObjectsRequest,
+    ListObjectsResponse, ReadRequest, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
+    TupleKeyWithoutCondition, WriteRequest, WriteRequestDeletes, WriteRequestWrites, WriteResponse,
+};
+
 use crate::{
     request_metadata::RequestMetadata,
     service::{
@@ -11,22 +32,6 @@ use crate::{
     },
     ProjectIdent, WarehouseIdent, CONFIG,
 };
-use async_stream::__private::AsyncStream;
-use async_stream::stream;
-use async_trait::async_trait;
-use axum::Router;
-use futures::{pin_mut, StreamExt};
-use openfga_rs::open_fga_service_client::OpenFgaServiceClient;
-use openfga_rs::tonic::{Response, Status};
-use openfga_rs::{
-    tonic::{self},
-    CheckRequest, CheckRequestTupleKey, CheckResponse, ConsistencyPreference, ListObjectsRequest,
-    ListObjectsResponse, ReadRequest, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
-    TupleKeyWithoutCondition, WriteRequest, WriteRequestDeletes, WriteRequestWrites, WriteResponse,
-};
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
-use std::{collections::HashSet, fmt};
 
 pub(super) mod api;
 mod check;
@@ -40,14 +45,6 @@ mod relations;
 
 mod service_ext;
 
-use crate::api::ApiContext;
-use crate::service::authn::UserId;
-use crate::service::authz::implementations::openfga::client::ClientConnection;
-use crate::service::authz::implementations::openfga::relations::OpenFgaRelation;
-use crate::service::authz::implementations::FgaType;
-use crate::service::authz::{CatalogRoleAction, CatalogUserAction, NamespaceParent};
-use crate::service::health::Health;
-use crate::service::{AuthDetails, Catalog, RoleId, SecretStore, State, ViewIdentUuid};
 pub(crate) use client::new_client_from_config;
 pub use client::{
     new_authorizer_from_config, BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer,
@@ -66,6 +63,22 @@ pub(crate) use service_ext::ClientHelper;
 use service_ext::MAX_TUPLES_PER_WRITE;
 use tokio::sync::RwLock;
 use utoipa::OpenApi;
+
+use crate::{
+    api::ApiContext,
+    service::{
+        authn::UserId,
+        authz::{
+            implementations::{
+                openfga::{client::ClientConnection, relations::OpenFgaRelation},
+                FgaType,
+            },
+            CatalogRoleAction, CatalogUserAction, NamespaceParent,
+        },
+        health::Health,
+        AuthDetails, Catalog, RoleId, SecretStore, State, ViewIdentUuid,
+    },
+};
 
 lazy_static::lazy_static! {
     static ref AUTH_CONFIG: crate::config::OpenFGAConfig = {
@@ -1154,11 +1167,15 @@ impl Client for OpenFgaServiceClient<ClientConnection> {
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use crate::service::authz::implementations::openfga::{MockClient, OpenFGAAuthorizer};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, RwLock},
+    };
+
     use needs_env_var::needs_env_var;
     use openfga_rs::{CheckResponse, ReadResponse, WriteResponse};
-    use std::collections::HashSet;
-    use std::sync::{Arc, RwLock};
+
+    use crate::service::authz::implementations::openfga::{MockClient, OpenFGAAuthorizer};
 
     /// A mock for the `OpenFGA` client that allows to hide objects.
     /// This is useful to test the behavior of the authorizer when objects are hidden.
@@ -1225,10 +1242,10 @@ pub(crate) mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
-        use super::super::*;
-        use crate::service::authz::implementations::openfga::client::new_authorizer;
-        use crate::service::RoleId;
         use http::StatusCode;
+
+        use super::super::*;
+        use crate::service::{authz::implementations::openfga::client::new_authorizer, RoleId};
 
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 

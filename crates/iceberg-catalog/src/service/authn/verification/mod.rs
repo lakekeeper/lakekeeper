@@ -1,16 +1,18 @@
-use crate::api;
-use crate::request_metadata::RequestMetadata;
-use crate::service::AuthDetails;
-use axum::extract::{Request, State};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use axum::Extension;
-use axum_extra::headers::authorization::Bearer;
-use axum_extra::headers::Authorization;
-use axum_extra::TypedHeader;
+use std::{fmt::Debug, sync::Arc};
+
+use axum::{
+    extract::{Request, State},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Extension,
+};
+use axum_extra::{
+    headers::{authorization::Bearer, Authorization},
+    TypedHeader,
+};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use std::fmt::Debug;
-use std::sync::Arc;
+
+use crate::{api, request_metadata::RequestMetadata, service::AuthDetails};
 
 mod idp;
 mod kubernetes;

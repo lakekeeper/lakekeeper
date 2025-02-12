@@ -1,12 +1,17 @@
-use super::ReadWrite;
-use crate::api::{ErrorModel, Result};
-use crate::service::health::{Health, HealthExt};
-use crate::service::secrets::{Secret, SecretIdent, SecretStore};
-use crate::CONFIG;
 use async_trait::async_trait;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+
+use super::ReadWrite;
+use crate::{
+    api::{ErrorModel, Result},
+    service::{
+        health::{Health, HealthExt},
+        secrets::{Secret, SecretIdent, SecretStore},
+    },
+    CONFIG,
+};
 
 #[derive(Debug, Clone)]
 pub struct SecretsState {
@@ -170,9 +175,8 @@ impl SecretStore for SecretsState {
 
 #[cfg(test)]
 mod tests {
-    use crate::service::storage::{S3Credential, StorageCredential};
-
     use super::*;
+    use crate::service::storage::{S3Credential, StorageCredential};
 
     #[sqlx::test]
     async fn test_write_read_secret(pool: sqlx::PgPool) {

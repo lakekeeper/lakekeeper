@@ -5,26 +5,28 @@ mod error;
 mod gcs;
 mod s3;
 
-use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
-use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
-use crate::catalog::compression_codec::CompressionCodec;
-use crate::catalog::io::list_location;
-use crate::service::tabular_idents::TabularIdentUuid;
-use crate::WarehouseIdent;
 pub use az::{AdlsLocation, AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
 use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::io::FileIO;
-use iceberg_ext::catalog::rest::ErrorModel;
-use iceberg_ext::configs::table::TableProperties;
-use iceberg_ext::configs::Location;
+use iceberg_ext::{
+    catalog::rest::ErrorModel,
+    configs::{table::TableProperties, Location},
+};
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
-
-use crate::retry::retry_fn;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
+use crate::{
+    api::{iceberg::v1::DataAccess, CatalogConfig},
+    catalog::{compression_codec::CompressionCodec, io::list_location},
+    retry::retry_fn,
+    service::tabular_idents::TabularIdentUuid,
+    WarehouseIdent,
+};
 
 /// Storage profile for a warehouse.
 #[derive(
@@ -81,8 +83,9 @@ impl StorageProfile {
             StorageProfile::S3(profile) => profile.generate_catalog_config(warehouse_id),
             #[cfg(test)]
             StorageProfile::Test(_) => {
-                use crate::api;
                 use std::collections::HashMap;
+
+                use crate::api;
                 CatalogConfig {
                     overrides: HashMap::default(),
                     defaults: HashMap::default(),
@@ -722,9 +725,11 @@ pub(crate) async fn check_location_is_empty(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use needs_env_var::needs_env_var;
     use std::str::FromStr;
+
+    use needs_env_var::needs_env_var;
+
+    use super::*;
 
     #[test]
     fn test_reduce_scheme_string() {

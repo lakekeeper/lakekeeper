@@ -1,17 +1,21 @@
-use crate::api::management::v1::TabularType;
-use crate::api::Result;
-use crate::catalog::io::remove_all;
-use crate::catalog::maybe_get_secret;
-use crate::service::task_queue::{Task, TaskQueue};
-use crate::service::{Catalog, SecretStore, Transaction};
-use crate::WarehouseIdent;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use iceberg_ext::catalog::rest::ErrorModel;
-use iceberg_ext::configs::{Location, ParseFromStr};
-use std::time::Duration;
+use iceberg_ext::{
+    catalog::rest::ErrorModel,
+    configs::{Location, ParseFromStr},
+};
 use tracing::Instrument;
 use uuid::Uuid;
+
+use crate::{
+    api::{management::v1::TabularType, Result},
+    catalog::{io::remove_all, maybe_get_secret},
+    service::{
+        task_queue::{Task, TaskQueue},
+        Catalog, SecretStore, Transaction,
+    },
+    WarehouseIdent,
+};
 
 pub type TabularPurgeQueue =
     Arc<dyn TaskQueue<Task = TabularPurgeTask, Input = TabularPurgeInput> + Send + Sync + 'static>;

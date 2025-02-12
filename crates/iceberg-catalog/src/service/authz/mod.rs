@@ -1,20 +1,20 @@
-use super::health::HealthExt;
-use super::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
-    TabularDetails, ViewIdentUuid, WarehouseIdent,
-};
-use crate::api::iceberg::v1::Result;
-use crate::request_metadata::RequestMetadata;
-use axum::Router;
 use std::collections::HashSet;
+
+use axum::Router;
 use strum::EnumIter;
+
+use super::{
+    health::HealthExt, Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State,
+    TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent,
+};
+use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
 
 pub mod implementations;
 
-use crate::api::ApiContext;
-use crate::service::authn::UserId;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use implementations::allow_all::AllowAllAuthorizer;
+
+use crate::{api::ApiContext, service::authn::UserId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
 #[strum(serialize_all = "snake_case")]

@@ -10,22 +10,22 @@ pub(crate) mod tables;
 pub(crate) mod tabular;
 pub(crate) mod views;
 
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
+
+use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
+use itertools::{FoldWhile, Itertools};
 pub use namespace::{MAX_NAMESPACE_DEPTH, NAMESPACE_ID_PROPERTY, UNSUPPORTED_NAMESPACE_PROPERTIES};
 
-use crate::api::iceberg::v1::{PageToken, MAX_PAGE_SIZE};
-use crate::api::{iceberg::v1::Prefix, ErrorModel, Result};
-use crate::service::storage::StorageCredential;
 use crate::{
-    service::{authz::Authorizer, secrets::SecretStore, Catalog},
+    api::{
+        iceberg::v1::{PageToken, Prefix, MAX_PAGE_SIZE},
+        ErrorModel, Result,
+    },
+    service::{authz::Authorizer, secrets::SecretStore, storage::StorageCredential, Catalog},
     WarehouseIdent,
 };
-use futures::future::BoxFuture;
-use itertools::{FoldWhile, Itertools};
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::marker::PhantomData;
 
 pub trait CommonMetadata {
     fn properties(&self) -> &HashMap<String, String>;
@@ -236,33 +236,41 @@ where
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test {
-    use crate::api::iceberg::types::Prefix;
-    use crate::api::iceberg::v1::namespace::Service;
-    use crate::api::management::v1::bootstrap::{BootstrapRequest, Service as _};
-    use crate::api::management::v1::warehouse::{
-        CreateWarehouseRequest, CreateWarehouseResponse, Service as _, TabularDeleteProfile,
-    };
-    use crate::api::management::v1::ApiServer;
-    use crate::api::ApiContext;
-    use crate::catalog::CatalogServer;
-    use crate::implementations::postgres::{
-        CatalogState, PostgresCatalog, ReadWrite, SecretsState,
-    };
-    use crate::request_metadata::RequestMetadata;
-    use crate::service::authz::Authorizer;
-    use crate::service::contract_verification::ContractVerifiers;
-    use crate::service::event_publisher::CloudEventsPublisher;
-    use crate::service::storage::{
-        S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
-    };
-    use crate::service::task_queue::TaskQueues;
-    use crate::service::{AuthDetails, State, UserId};
-    use crate::CONFIG;
+    use std::sync::Arc;
+
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
     use sqlx::PgPool;
-    use std::sync::Arc;
     use uuid::Uuid;
+
+    use crate::{
+        api::{
+            iceberg::{types::Prefix, v1::namespace::Service},
+            management::v1::{
+                bootstrap::{BootstrapRequest, Service as _},
+                warehouse::{
+                    CreateWarehouseRequest, CreateWarehouseResponse, Service as _,
+                    TabularDeleteProfile,
+                },
+                ApiServer,
+            },
+            ApiContext,
+        },
+        catalog::CatalogServer,
+        implementations::postgres::{CatalogState, PostgresCatalog, ReadWrite, SecretsState},
+        request_metadata::RequestMetadata,
+        service::{
+            authz::Authorizer,
+            contract_verification::ContractVerifiers,
+            event_publisher::CloudEventsPublisher,
+            storage::{
+                S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
+            },
+            task_queue::TaskQueues,
+            AuthDetails, State, UserId,
+        },
+        CONFIG,
+    };
 
     pub(crate) fn test_io_profile() -> StorageProfile {
         TestProfile::default().into()

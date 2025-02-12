@@ -1,17 +1,18 @@
 mod tabular_expiration_queue;
 mod tabular_purge_queue;
 
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::ReadWrite;
-use crate::service::task_queue::{Task, TaskFilter, TaskQueueConfig, TaskStatus};
-use crate::WarehouseIdent;
-pub use tabular_expiration_queue::TabularExpirationQueue;
-pub use tabular_purge_queue::TabularPurgeQueue;
-
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use sqlx::{PgConnection, PgPool};
+pub use tabular_expiration_queue::TabularExpirationQueue;
+pub use tabular_purge_queue::TabularPurgeQueue;
 use uuid::Uuid;
+
+use crate::{
+    implementations::postgres::{dbutils::DBErrorHandler, ReadWrite},
+    service::task_queue::{Task, TaskFilter, TaskQueueConfig, TaskStatus},
+    WarehouseIdent,
+};
 
 #[derive(Debug, Clone)]
 struct PgQueue {
@@ -176,8 +177,7 @@ async fn record_success(id: Uuid, pool: &PgPool) -> Result<(), IcebergErrorRespo
 
 macro_rules! impl_pg_task_queue {
     ($name:ident) => {
-        use crate::implementations::postgres::task_queues::PgQueue;
-        use crate::implementations::postgres::ReadWrite;
+        use crate::implementations::postgres::{task_queues::PgQueue, ReadWrite};
 
         #[derive(Debug, Clone)]
         pub struct $name {
@@ -275,11 +275,11 @@ async fn cancel_pending_tasks(
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
-    use crate::WarehouseIdent;
     use sqlx::PgPool;
     use uuid::Uuid;
+
+    use super::*;
+    use crate::WarehouseIdent;
     const TEST_WAREHOUSE: WarehouseIdent = WarehouseIdent(Uuid::nil());
 
     #[sqlx::test]

@@ -1,30 +1,34 @@
-use crate::api::iceberg::v1::{
-    ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Prefix, Result,
-    ViewParameters,
-};
-use crate::catalog::compression_codec::CompressionCodec;
-use crate::catalog::io::write_metadata_file;
-use crate::catalog::require_warehouse_id;
-use crate::catalog::tables::{
-    determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
-    require_active_warehouse, validate_table_or_view_ident,
-};
-use crate::catalog::views::{parse_view_location, validate_view_updates};
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{CatalogViewAction, CatalogWarehouseAction};
-use crate::service::contract_verification::ContractVerification;
-use crate::service::event_publisher::EventMetadata;
-use crate::service::storage::{StorageLocations as _, StoragePermissions};
-use crate::service::{
-    authz::Authorizer, secrets::SecretStore, Catalog, GetWarehouseResponse, State, Transaction,
-    ViewMetadataWithLocation,
-};
-use crate::service::{TabularIdentUuid, ViewIdentUuid};
 use http::StatusCode;
 use iceberg::spec::{AppendViewVersion, ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
-use iceberg_ext::catalog::rest::ViewUpdate;
-use iceberg_ext::catalog::ViewRequirement;
+use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
 use uuid::Uuid;
+
+use crate::{
+    api::iceberg::v1::{
+        ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Prefix, Result,
+        ViewParameters,
+    },
+    catalog::{
+        compression_codec::CompressionCodec,
+        io::write_metadata_file,
+        require_warehouse_id,
+        tables::{
+            determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
+            require_active_warehouse, validate_table_or_view_ident,
+        },
+        views::{parse_view_location, validate_view_updates},
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        contract_verification::ContractVerification,
+        event_publisher::EventMetadata,
+        secrets::SecretStore,
+        storage::{StorageLocations as _, StoragePermissions},
+        Catalog, GetWarehouseResponse, State, TabularIdentUuid, Transaction, ViewIdentUuid,
+        ViewMetadataWithLocation,
+    },
+};
 
 /// Commit updates to a view
 // TODO: break up into smaller fns
@@ -299,18 +303,20 @@ fn build_new_metadata(
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters};
-
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CommitViewRequest;
     use maplit::hashmap;
-
     use serde_json::json;
     use sqlx::PgPool;
-
-    use crate::catalog::views::create::test::{create_view, create_view_request};
-    use crate::catalog::views::test::setup;
     use uuid::Uuid;
+
+    use crate::{
+        api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
+        catalog::views::{
+            create::test::{create_view, create_view_request},
+            test::setup,
+        },
+    };
 
     #[sqlx::test]
     async fn test_commit_view(pool: PgPool) {

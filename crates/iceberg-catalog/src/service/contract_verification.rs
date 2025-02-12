@@ -1,11 +1,14 @@
 #![allow(clippy::module_name_repetitions)]
-use crate::service::TabularIdentUuid;
+use std::{fmt::Debug, sync::Arc};
+
 use async_trait::async_trait;
-use iceberg::spec::{TableMetadata, ViewMetadata};
-use iceberg::{TableIdent, TableUpdate};
+use iceberg::{
+    spec::{TableMetadata, ViewMetadata},
+    TableIdent, TableUpdate,
+};
 use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
-use std::fmt::Debug;
-use std::sync::Arc;
+
+use crate::service::TabularIdentUuid;
 
 /// A trait for checking if a table change is allowed.
 ///

@@ -1,22 +1,30 @@
 //! Get `OpenFGA` clients
 
-use super::{
-    ClientHelper as _, ModelVersion, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG,
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    task::{Context, Poll},
 };
-use crate::service::authz::implementations::openfga::migration::get_auth_model_id;
-use crate::{service::authz::implementations::Authorizers, OpenFGAAuth};
+
 use http::{HeaderMap, Request};
-use openfga_rs::tonic::body::BoxBody;
-use openfga_rs::tonic::transport::{Channel, Endpoint};
 use openfga_rs::{
     authentication::{ClientCredentials, RefreshConfiguration},
     open_fga_service_client::OpenFgaServiceClient,
+    tonic::{
+        body::BoxBody,
+        transport::{Channel, Endpoint},
+    },
 };
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::task::{Context, Poll};
 use tokio::sync::RwLock;
 use tower::ServiceBuilder;
+
+use super::{
+    ClientHelper as _, ModelVersion, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG,
+};
+use crate::{
+    service::authz::implementations::{openfga::migration::get_auth_model_id, Authorizers},
+    OpenFGAAuth,
+};
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
 pub type BearerOpenFGAAuthorizer = OpenFGAAuthorizer;

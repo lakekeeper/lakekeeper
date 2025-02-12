@@ -1,11 +1,15 @@
-use crate::api::ApiContext;
-use crate::api::Result;
-use crate::request_metadata::RequestMetadata;
 use async_trait::async_trait;
-use axum::extract::{Query, State};
-use axum::routing::get;
-use axum::{Extension, Router};
+use axum::{
+    extract::{Query, State},
+    routing::get,
+    Extension, Router,
+};
 use iceberg_ext::catalog::rest::{CatalogConfig, IcebergErrorResponse};
+
+use crate::{
+    api::{ApiContext, Result},
+    request_metadata::RequestMetadata,
+};
 
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>

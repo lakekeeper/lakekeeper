@@ -1,12 +1,16 @@
-use super::dbutils::DBErrorHandler;
-use crate::api::iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE};
-use crate::api::management::v1::user::{
-    ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
-};
-use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::authn::UserId;
-use crate::service::{CreateOrUpdateUserResponse, Result};
 use itertools::Itertools;
+
+use super::dbutils::DBErrorHandler;
+use crate::{
+    api::{
+        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        management::v1::user::{
+            ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
+        },
+    },
+    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    service::{authn::UserId, CreateOrUpdateUserResponse, Result},
+};
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
 #[sqlx(rename_all = "kebab-case", type_name = "user_last_updated_with")]
@@ -269,10 +273,8 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::types::PageToken;
-    use crate::implementations::postgres::CatalogState;
-
     use super::*;
+    use crate::{api::iceberg::types::PageToken, implementations::postgres::CatalogState};
 
     #[sqlx::test]
     async fn test_create_or_update_user(pool: sqlx::PgPool) {

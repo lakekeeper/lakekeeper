@@ -1,14 +1,13 @@
-use super::dbutils::DBErrorHandler as _;
-use crate::api::{CatalogConfig, ErrorModel, Result};
-use crate::service::{GetProjectResponse, GetWarehouseResponse, WarehouseStatus};
-use crate::{service::storage::StorageProfile, ProjectIdent, SecretIdent, WarehouseIdent};
-use sqlx::Error;
-use std::collections::HashSet;
-use std::ops::Deref;
+use std::{collections::HashSet, ops::Deref};
 
-use super::CatalogState;
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
-use sqlx::types::Json;
+use sqlx::{types::Json, Error};
+
+use super::{dbutils::DBErrorHandler as _, CatalogState};
+use crate::{
+    api::{management::v1::warehouse::TabularDeleteProfile, CatalogConfig, ErrorModel, Result},
+    service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
+    ProjectIdent, SecretIdent, WarehouseIdent,
+};
 
 pub(super) async fn get_warehouse_by_name(
     warehouse_name: &str,
@@ -559,12 +558,16 @@ impl From<TabularDeleteProfile> for DbTabularDeleteProfile {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use super::*;
-    use crate::implementations::postgres::PostgresCatalog;
-    use crate::service::storage::S3Flavor;
-    use crate::service::{Catalog as _, Transaction};
-    use crate::{implementations::postgres::PostgresTransaction, service::storage::S3Profile};
     use http::StatusCode;
+
+    use super::*;
+    use crate::{
+        implementations::postgres::{PostgresCatalog, PostgresTransaction},
+        service::{
+            storage::{S3Flavor, S3Profile},
+            Catalog as _, Transaction,
+        },
+    };
 
     pub(crate) async fn initialize_warehouse(
         state: CatalogState,

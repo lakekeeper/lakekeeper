@@ -1,11 +1,11 @@
-use crate::service::storage::error::TableConfigError;
-use crate::service::storage::gcs::GcsServiceKey;
-use crate::service::storage::StoragePermissions;
+use std::sync::OnceLock;
+
 use google_cloud_auth::credentials::CredentialsFile;
 use iceberg_ext::configs::Location;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 use url::Url;
+
+use crate::service::storage::{error::TableConfigError, gcs::GcsServiceKey, StoragePermissions};
 
 static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static STS_URL: OnceLock<Url> = OnceLock::new();

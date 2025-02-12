@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::hash::Hash;
+use std::{collections::HashSet, fmt::Debug, hash::Hash};
 
 /// Validate that a vector of items is unique.
 ///

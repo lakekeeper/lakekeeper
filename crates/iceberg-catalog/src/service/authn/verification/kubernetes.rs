@@ -1,10 +1,14 @@
-use crate::api;
-use crate::service::authn::verification::Verifier;
-use crate::service::AuthDetails;
 use iceberg_ext::catalog::rest::ErrorModel;
-use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::{
+    api::authentication::v1::{TokenReview, TokenReviewSpec},
+    apimachinery::pkg::apis::meta::v1::ObjectMeta,
+};
 use kube::api::PostParams;
+
+use crate::{
+    api,
+    service::{authn::verification::Verifier, AuthDetails},
+};
 
 #[derive(Clone)]
 pub struct K8sVerifier {

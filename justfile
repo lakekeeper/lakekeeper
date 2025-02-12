@@ -4,7 +4,7 @@ set export
 RUST_LOG := "debug"
 
 check-format:
-	cargo fmt --all -- --check
+	cargo +nightly fmt --all -- --check
 
 check-clippy:
 	cargo clippy --all-targets --all-features --workspace -- -D warnings
@@ -16,7 +16,7 @@ check: check-format check-clippy check-cargo-sort
 
 fix:
     cargo clippy --all-targets --all-features --workspace --fix --allow-staged
-    cargo fmt --all
+    cargo +nightly fmt --all
     cargo sort -w
 
 sqlx-prepare:

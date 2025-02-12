@@ -1,15 +1,17 @@
-use crate::api::management::v1::ApiServer;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::Authorizer;
-use crate::service::{
-    Actor, AuthDetails, Catalog, Result, SecretStore, StartupValidationData, State, Transaction,
-};
-use crate::{config, ProjectIdent, CONFIG, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
 use super::user::{UserLastUpdatedWith, UserType};
+use crate::{
+    api::{management::v1::ApiServer, ApiContext},
+    config,
+    request_metadata::RequestMetadata,
+    service::{
+        authz::Authorizer, Actor, AuthDetails, Catalog, Result, SecretStore, StartupValidationData,
+        State, Transaction,
+    },
+    ProjectIdent, CONFIG, DEFAULT_PROJECT_ID,
+};
 
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]

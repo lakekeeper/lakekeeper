@@ -1,26 +1,30 @@
-use crate::service::event_publisher::CloudEventsPublisher;
-use crate::tracing::{MakeRequestUuid7, RestMakeSpan};
-
-use crate::api::management::v1::{api_doc as v1_api_doc, ApiServer};
-use crate::api::{iceberg::v1::new_v1_full_router, shutdown_signal, ApiContext};
-use crate::service::authn::IdpVerifier;
-use crate::service::authn::K8sVerifier;
-use crate::service::authn::VerifierChain;
-use crate::service::contract_verification::ContractVerifiers;
-use crate::service::health::ServiceHealthProvider;
-use crate::service::task_queue::TaskQueues;
-use crate::service::{authz::Authorizer, Catalog, SecretStore, State};
-use axum::response::IntoResponse;
-use axum::{routing::get, Json, Router};
+use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderValue, Method};
 use tower::ServiceBuilder;
-use tower_http::cors::AllowOrigin;
 use tower_http::{
-    catch_panic::CatchPanicLayer, compression::CompressionLayer,
+    catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
     sensitive_headers::SetSensitiveHeadersLayer, timeout::TimeoutLayer, trace, trace::TraceLayer,
     ServiceBuilderExt,
+};
+
+use crate::{
+    api::{
+        iceberg::v1::new_v1_full_router,
+        management::v1::{api_doc as v1_api_doc, ApiServer},
+        shutdown_signal, ApiContext,
+    },
+    service::{
+        authn::{IdpVerifier, K8sVerifier, VerifierChain},
+        authz::Authorizer,
+        contract_verification::ContractVerifiers,
+        event_publisher::CloudEventsPublisher,
+        health::ServiceHealthProvider,
+        task_queue::TaskQueues,
+        Catalog, SecretStore, State,
+    },
+    tracing::{MakeRequestUuid7, RestMakeSpan},
 };
 
 lazy_static::lazy_static! {

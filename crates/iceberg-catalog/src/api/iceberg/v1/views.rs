@@ -1,24 +1,28 @@
-use crate::api::iceberg::types::{DropParams, Prefix};
-use crate::api::iceberg::v1::namespace::{NamespaceIdentUrl, NamespaceParameters};
-use crate::api::iceberg::v1::DataAccess;
-use crate::api::{
-    ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
-    RenameTableRequest, Result,
-};
-use crate::request_metadata::RequestMetadata;
 use async_trait::async_trait;
-use axum::extract::State;
-use axum::response::IntoResponse;
-use axum::routing::post;
 use axum::{
-    extract::{Path, Query},
-    routing::get,
+    extract::{Path, Query, State},
+    response::IntoResponse,
+    routing::{get, post},
     Extension, Json, Router,
 };
 use http::{HeaderMap, StatusCode};
 use iceberg::TableIdent;
 
 use super::ListTablesQuery;
+use crate::{
+    api::{
+        iceberg::{
+            types::{DropParams, Prefix},
+            v1::{
+                namespace::{NamespaceIdentUrl, NamespaceParameters},
+                DataAccess,
+            },
+        },
+        ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
+        RenameTableRequest, Result,
+    },
+    request_metadata::RequestMetadata,
+};
 
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>

@@ -1,14 +1,23 @@
-use crate::api::iceberg::v1::{DataAccess, ViewParameters};
-use crate::api::{set_not_found_status_code, ApiContext};
-use crate::catalog::require_warehouse_id;
-use crate::catalog::tables::{require_active_warehouse, validate_table_or_view_ident};
-use crate::catalog::views::parse_view_location;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction};
-use crate::service::storage::{StorageCredential, StoragePermissions};
-use crate::service::{Catalog, SecretStore, State, Transaction, ViewMetadataWithLocation};
-use crate::service::{GetWarehouseResponse, Result};
 use iceberg_ext::catalog::rest::LoadViewResult;
+
+use crate::{
+    api::{
+        iceberg::v1::{DataAccess, ViewParameters},
+        set_not_found_status_code, ApiContext,
+    },
+    catalog::{
+        require_warehouse_id,
+        tables::{require_active_warehouse, validate_table_or_view_ident},
+        views::parse_view_location,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
+        storage::{StorageCredential, StoragePermissions},
+        Catalog, GetWarehouseResponse, Result, SecretStore, State, Transaction,
+        ViewMetadataWithLocation,
+    },
+};
 
 pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
@@ -108,24 +117,22 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
 #[cfg(test)]
 pub(crate) mod test {
-    use crate::api::iceberg::v1::{views, DataAccess, Prefix, ViewParameters};
-    use crate::api::ApiContext;
-    use crate::catalog::CatalogServer;
-
-    use crate::implementations::postgres::secrets::SecretsState;
-
-    use crate::implementations::postgres::PostgresCatalog;
-    use crate::service::authz::AllowAllAuthorizer;
-
-    use crate::service::State;
-
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::{CreateViewRequest, LoadViewResult};
-
     use sqlx::PgPool;
 
-    use crate::catalog::views::create::test::create_view;
-    use crate::catalog::views::test::setup;
+    use crate::{
+        api::{
+            iceberg::v1::{views, DataAccess, Prefix, ViewParameters},
+            ApiContext,
+        },
+        catalog::{
+            views::{create::test::create_view, test::setup},
+            CatalogServer,
+        },
+        implementations::postgres::{secrets::SecretsState, PostgresCatalog},
+        service::{authz::AllowAllAuthorizer, State},
+    };
 
     pub(crate) async fn load_view(
         api_context: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,

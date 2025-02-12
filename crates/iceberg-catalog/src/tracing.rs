@@ -1,6 +1,8 @@
 use http::Request;
-use tower_http::request_id::{MakeRequestId, RequestId};
-use tower_http::trace::MakeSpan;
+use tower_http::{
+    request_id::{MakeRequestId, RequestId},
+    trace::MakeSpan,
+};
 use tracing::{Level, Span};
 use uuid::Uuid;
 

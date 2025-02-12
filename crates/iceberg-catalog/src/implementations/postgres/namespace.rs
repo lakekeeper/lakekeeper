@@ -1,17 +1,22 @@
-use super::dbutils::DBErrorHandler;
-use crate::api::iceberg::v1::{PaginatedMapping, MAX_PAGE_SIZE};
-use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::{
-    CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
-    ListNamespacesQuery, NamespaceIdent, Result,
-};
-use crate::{catalog::namespace::MAX_NAMESPACE_DEPTH, service::NamespaceIdentUuid, WarehouseIdent};
+use std::{collections::HashMap, ops::Deref};
+
 use chrono::Utc;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use sqlx::types::Json;
-use std::{collections::HashMap, ops::Deref};
 use uuid::Uuid;
+
+use super::dbutils::DBErrorHandler;
+use crate::{
+    api::iceberg::v1::{PaginatedMapping, MAX_PAGE_SIZE},
+    catalog::namespace::MAX_NAMESPACE_DEPTH,
+    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    service::{
+        CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
+        ListNamespacesQuery, NamespaceIdent, NamespaceIdentUuid, Result,
+    },
+    WarehouseIdent,
+};
 
 pub(crate) async fn get_namespace(
     warehouse_id: WarehouseIdent,
@@ -410,13 +415,16 @@ pub(crate) async fn update_namespace_properties(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::implementations::postgres::{CatalogState, PostgresTransaction};
-    use crate::service::{Catalog as _, Transaction as _};
-
-    use super::super::warehouse::test::initialize_warehouse;
-    use super::super::PostgresCatalog;
-    use super::*;
-    use crate::implementations::postgres::tabular::table::tests::initialize_table;
+    use super::{
+        super::{warehouse::test::initialize_warehouse, PostgresCatalog},
+        *,
+    };
+    use crate::{
+        implementations::postgres::{
+            tabular::table::tests::initialize_table, CatalogState, PostgresTransaction,
+        },
+        service::{Catalog as _, Transaction as _},
+    };
 
     pub(crate) async fn initialize_namespace(
         state: CatalogState,
