@@ -11,9 +11,8 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        authn::UserId,
         authz::{Authorizer, CatalogServerAction, CatalogUserAction},
-        Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction,
+        Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
     },
 };
 
