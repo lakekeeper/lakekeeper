@@ -1,12 +1,13 @@
 mod stats;
 
+use std::sync::Arc;
+
 use http::Method;
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
     CreateNamespaceRequest, CreateNamespaceResponse, LoadTableResult, LoadViewResult,
 };
 use sqlx::PgPool;
-use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{

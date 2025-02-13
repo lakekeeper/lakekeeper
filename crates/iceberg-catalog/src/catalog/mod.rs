@@ -236,10 +236,11 @@ where
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test {
+    use std::sync::Arc;
+
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
     use sqlx::PgPool;
-    use std::sync::Arc;
     use uuid::Uuid;
 
     use crate::{

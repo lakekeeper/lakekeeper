@@ -1,17 +1,3 @@
-create table endpoint_stats
-(
-    warehouse_id uuid references warehouse (warehouse_id) on delete cascade,
-    --  warehouse_name text collate "case_insensitive" references warehouse (warehouse_name) on update cascade on delete cascade,
-    project_id   uuid references project (project_id) on delete cascade,
-    matched_path text        not null,
-    method       text        not null,
-    status_code  int         not null,
-    count        bigint      not null default 0,
-    -- we keep stats in hourly intervals, every hour we create a new row,
-    valid_until  timestamptz not null,
-    primary key (project_id, warehouse_id, matched_path, method, status_code, valid_until)
-);
-
 create type api_endpoints as enum (
     'catalog-post-aws-s3-sign',
     'catalog-post-prefix-aws-s3-sign',
@@ -80,6 +66,21 @@ create type api_endpoints as enum (
     'management-post-permission',
     'management-head-permission',
     'management-delete-permission');
+
+
+create table endpoint_stats
+(
+    endpoint_stats_id int generated always as identity primary key,
+    warehouse_id      uuid references warehouse (warehouse_id) on delete cascade,
+    --  warehouse_name text collate "case_insensitive" references warehouse (warehouse_name) on update cascade on delete cascade,
+    project_id        uuid references project (project_id) on delete cascade,
+    matched_path      api_endpoints not null,
+    status_code       int           not null,
+    count             bigint        not null default 0,
+    -- we keep stats in hourly intervals, every hour we create a new row,
+    valid_until       timestamptz   not null default get_stats_date_default() + interval '1 hour',
+    unique nulls not distinct (project_id, warehouse_id, matched_path, status_code, valid_until)
+);
 
 
 

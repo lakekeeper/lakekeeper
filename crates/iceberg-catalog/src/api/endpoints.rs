@@ -125,7 +125,7 @@ impl Endpoints {
     }
 
     pub fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
-        if inp.starts_with("/v1/management/permissions") {
+        if inp.starts_with("/management/v1/permissions") {
             return match method.as_str() {
                 "GET" => Some(Endpoints::ManagementGetPermissions),
                 "POST" => Some(Endpoints::ManagementPostPermissions),
@@ -134,132 +134,138 @@ impl Endpoints {
                 _ => None,
             };
         }
-        MAP.get(inp).copied()
+        MAP.get(format!("{method} {inp}").as_str()).copied()
     }
 
     #[allow(clippy::too_many_lines)]
     pub fn to_http_string(self) -> &'static str {
         match self {
-            Endpoints::CatalogPostAwsS3Sign => "POST /v1/catalog/aws/s3/sign",
-            Endpoints::CatalogPostPrefixAwsS3Sign => "POST /v1/catalog/{prefix}/aws/s3/sign",
-            Endpoints::CatalogGetConfig => "GET /v1/config",
-            Endpoints::CatalogGetNamespaces => "GET /v1/{prefix}/namespaces",
-            Endpoints::CatalogPostNamespaces => "POST /v1/{prefix}/namespaces",
-            Endpoints::CatalogGetNamespace => "GET /v1/{prefix}/namespaces/{namespace}",
-            Endpoints::CatalogPostNamespace => "POST /v1/{prefix}/namespaces/{namespace}",
-            Endpoints::CatalogDeleteNamespace => "DELETE /v1/{prefix}/namespaces/{namespace}",
+            Endpoints::CatalogPostAwsS3Sign => "POST /catalog/v1/aws/s3/sign",
+            Endpoints::CatalogPostPrefixAwsS3Sign => "POST /catalog/v1/{prefix}/v1/aws/s3/sign",
+            Endpoints::CatalogGetConfig => "GET /catalog/v1/config",
+            Endpoints::CatalogGetNamespaces => "GET /catalog/v1/{prefix}/namespaces",
+            Endpoints::CatalogPostNamespaces => "POST /catalog/v1/{prefix}/namespaces",
+            Endpoints::CatalogGetNamespace => "GET /catalog/v1/{prefix}/namespaces/{namespace}",
+            Endpoints::CatalogPostNamespace => "POST /catalog/v1/{prefix}/namespaces/{namespace}",
+            Endpoints::CatalogDeleteNamespace => {
+                "DELETE /catalog/v1/{prefix}/namespaces/{namespace}"
+            }
             Endpoints::CatalogPostNamespaceProperties => {
-                "POST /v1/{prefix}/namespaces/{namespace}/properties"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/properties"
             }
             Endpoints::CatalogGetNamespaceTables => {
-                "GET /v1/{prefix}/namespaces/{namespace}/tables"
+                "GET /catalog/v1/{prefix}/namespaces/{namespace}/tables"
             }
             Endpoints::CatalogPostNamespaceTables => {
-                "POST /v1/{prefix}/namespaces/{namespace}/tables"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables"
             }
             Endpoints::CatalogGetNamespaceTable => {
-                "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}"
+                "GET /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}"
             }
             Endpoints::CatalogPostNamespaceTable => {
-                "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}"
             }
             Endpoints::CatalogDeleteNamespaceTable => {
-                "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}"
+                "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}"
             }
             Endpoints::CatalogHeadNamespaceTable => {
-                "Head /v1/{prefix}/namespaces/{namespace}/tables/{table}"
+                "Head /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}"
             }
             Endpoints::CatalogGetNamespaceTableCredentials => {
-                "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials"
+                "GET /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials"
             }
-            Endpoints::CatalogPostTablesRename => "POST /v1/{prefix}/tables/rename",
+            Endpoints::CatalogPostTablesRename => "POST /catalog/v1/{prefix}/tables/rename",
             Endpoints::CatalogPostNamespaceRegister => {
-                "POST /v1/{prefix}/namespaces/{namespace}/register"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/register"
             }
             Endpoints::CatalogPostNamespaceTableMetrics => {
-                "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics"
             }
-            Endpoints::CatalogPostTransactionsCommit => "POST /v1/{prefix}/transactions/commit",
+            Endpoints::CatalogPostTransactionsCommit => {
+                "POST /catalog/v1/{prefix}/transactions/commit"
+            }
             Endpoints::CatalogPostNamespaceViews => {
-                "POST /v1/{prefix}/namespaces/{namespace}/views"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/views"
             }
-            Endpoints::CatalogGetNamespaceViews => "Get /v1/{prefix}/namespaces/{namespace}/views",
+            Endpoints::CatalogGetNamespaceViews => {
+                "Get /catalog/v1/{prefix}/namespaces/{namespace}/views"
+            }
             Endpoints::CatalogGetNamespaceView => {
-                "GET /v1/{prefix}/namespaces/{namespace}/views/{view}"
+                "GET /catalog/v1/{prefix}/namespaces/{namespace}/views/{view}"
             }
             Endpoints::CatalogPostNamespaceView => {
-                "POST /v1/{prefix}/namespaces/{namespace}/views/{view}"
+                "POST /catalog/v1/{prefix}/namespaces/{namespace}/views/{view}"
             }
             Endpoints::CatalogDeleteNamespaceView => {
-                "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}"
+                "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/views/{view}"
             }
             Endpoints::CatalogHeadNamespaceView => {
-                "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}"
+                "HEAD /catalog/v1/{prefix}/namespaces/{namespace}/views/{view}"
             }
-            Endpoints::CatalogPostViewsRename => "POST /v1/{prefix}/views/rename",
-            Endpoints::ManagementGetInfo => "GET /v1/management/info",
-            Endpoints::ManagementPostBootstrap => "POST /v1/management/bootstrap",
-            Endpoints::ManagementPostRole => "POST /v1/management/role",
-            Endpoints::ManagementGetRole => "GET /v1/management/role",
-            Endpoints::ManagementPostRoleID => "POST /v1/management/role/{id}",
-            Endpoints::ManagementGetRoleID => "GET /v1/management/role/{id}",
-            Endpoints::ManagementDeleteRoleID => "DELETE /v1/management/role/{id}",
-            Endpoints::ManagementPostSearchRole => "POST /v1/management/search/role",
-            Endpoints::ManagementGetWhoami => "GET /v1/management/whoami",
-            Endpoints::ManagementPostSearchUser => "POST /v1/management/search/user",
-            Endpoints::ManagementPostUserID => "POST /v1/management/user/{user_id}",
-            Endpoints::ManagementGetUserID => "GET /v1/management/user/{user_id}",
-            Endpoints::ManagementDeleteUserID => "DELETE /v1/management/user/{user_id}",
-            Endpoints::ManagementPostUser => "POST /v1/management/user",
-            Endpoints::ManagementGetUser => "GET /v1/management/user",
-            Endpoints::ManagementPostProject => "POST /v1/management/project",
-            Endpoints::ManagementGetDefaultProject => "GET /v1/management/project",
-            Endpoints::ManagementDeleteDefaultProject => "DELETE /v1/management/project",
-            Endpoints::ManagementPostRenameProject => "POST /v1/management/project/rename",
-            Endpoints::ManagementGetProjectID => "GET /v1/management/project/{project_id}",
-            Endpoints::ManagementDeleteProjectID => "DELETE /v1/management/project/{project_id}",
-            Endpoints::ManagementPostWarehouse => "POST /v1/management/warehouse",
-            Endpoints::ManagementGetWarehouse => "GET /v1/management/warehouse",
-            Endpoints::ManagementGetProjectList => "GET /v1/management/project-list",
-            Endpoints::ManagementGetWarehouseID => "GET /v1/management/warehouse/{warehouse_id}",
+            Endpoints::CatalogPostViewsRename => "POST /catalog/v1/{prefix}/views/rename",
+            Endpoints::ManagementGetInfo => "GET /management/v1/info",
+            Endpoints::ManagementPostBootstrap => "POST /management/v1/bootstrap",
+            Endpoints::ManagementPostRole => "POST /management/v1/role",
+            Endpoints::ManagementGetRole => "GET /management/v1/role",
+            Endpoints::ManagementPostRoleID => "POST /management/v1/role/{id}",
+            Endpoints::ManagementGetRoleID => "GET /management/v1/role/{id}",
+            Endpoints::ManagementDeleteRoleID => "DELETE /management/v1/role/{id}",
+            Endpoints::ManagementPostSearchRole => "POST /management/v1/search/role",
+            Endpoints::ManagementGetWhoami => "GET /management/v1/whoami",
+            Endpoints::ManagementPostSearchUser => "POST /management/v1/search/user",
+            Endpoints::ManagementPostUserID => "POST /management/v1/user/{user_id}",
+            Endpoints::ManagementGetUserID => "GET /management/v1/user/{user_id}",
+            Endpoints::ManagementDeleteUserID => "DELETE /management/v1/user/{user_id}",
+            Endpoints::ManagementPostUser => "POST /management/v1/user",
+            Endpoints::ManagementGetUser => "GET /management/v1/user",
+            Endpoints::ManagementPostProject => "POST /management/v1/project",
+            Endpoints::ManagementGetDefaultProject => "GET /management/v1/project",
+            Endpoints::ManagementDeleteDefaultProject => "DELETE /management/v1/project",
+            Endpoints::ManagementPostRenameProject => "POST /management/v1/project/rename",
+            Endpoints::ManagementGetProjectID => "GET /management/v1/project/{project_id}",
+            Endpoints::ManagementDeleteProjectID => "DELETE /management/v1/project/{project_id}",
+            Endpoints::ManagementPostWarehouse => "POST /management/v1/warehouse",
+            Endpoints::ManagementGetWarehouse => "GET /management/v1/warehouse",
+            Endpoints::ManagementGetProjectList => "GET /management/v1/project-list",
+            Endpoints::ManagementGetWarehouseID => "GET /management/v1/warehouse/{warehouse_id}",
             Endpoints::ManagementDeleteWarehouseID => {
-                "DELETE /v1/management/warehouse/{warehouse_id}"
+                "DELETE /management/v1/warehouse/{warehouse_id}"
             }
             Endpoints::ManagementPostWarehouseRename => {
-                "POST /v1/management/warehouse/{warehouse_id}/rename"
+                "POST /management/v1/warehouse/{warehouse_id}/rename"
             }
             Endpoints::ManagementPostWarehouseDeactivate => {
-                "POST /v1/management/warehouse/{warehouse_id}/deactivate"
+                "POST /management/v1/warehouse/{warehouse_id}/deactivate"
             }
             Endpoints::ManagementPostWarehouseActivate => {
-                "POST /v1/management/warehouse/{warehouse_id}/activate"
+                "POST /management/v1/warehouse/{warehouse_id}/activate"
             }
             Endpoints::ManagementPostWarehouseStorage => {
-                "POST /v1/management/warehouse/{warehouse_id}/storage"
+                "POST /management/v1/warehouse/{warehouse_id}/storage"
             }
             Endpoints::ManagementPostWarehouseStorageCredential => {
-                "POST /v1/management/warehouse/{warehouse_id}/storage-credential"
+                "POST /management/v1/warehouse/{warehouse_id}/storage-credential"
             }
             Endpoints::ManagementGetWarehouseStatistics => {
-                "GET /v1/management/warehouse/{warehouse_id}/statistics"
+                "GET /management/v1/warehouse/{warehouse_id}/statistics"
             }
             Endpoints::ManagementGetWarehouseDeletedTabulars => {
-                "GET /v1/management/warehouse/{warehouse_id}/deleted-tabulars"
+                "GET /management/v1/warehouse/{warehouse_id}/deleted-tabulars"
             }
             Endpoints::ManagementPostWarehouseDeletedTabularsUndrop1 => {
-                "POST /v1/management/warehouse/{warehouse_id}/deleted_tabulars/undrop"
+                "POST /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop"
             }
             Endpoints::ManagementPostWarehouseDeletedTabularsUndrop2 => {
-                "POST /v1/management/warehouse/{warehouse_id}/deleted-tabulars/undrop"
+                "POST /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop"
             }
             Endpoints::ManagementPostWarehouseDeleteProfile => {
-                "POST /v1/management/warehouse/{warehouse_id}/delete-profile"
+                "POST /management/v1/warehouse/{warehouse_id}/delete-profile"
             }
 
-            Endpoints::ManagementGetPermissions => "GET /v1/management/permissions",
-            Endpoints::ManagementPostPermissions => "POST /v1/management/permissions",
-            Endpoints::ManagementHeadPermissions => "HEAD /v1/management/permissions",
-            Endpoints::ManagementDeletePermissions => "DELETE /v1/management/permissions",
+            Endpoints::ManagementGetPermissions => "GET /management/v1/permissions",
+            Endpoints::ManagementPostPermissions => "POST /management/v1/permissions",
+            Endpoints::ManagementHeadPermissions => "HEAD /management/v1/permissions",
+            Endpoints::ManagementDeletePermissions => "DELETE /management/v1/permissions",
         }
     }
 }
