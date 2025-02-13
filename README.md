@@ -84,14 +84,14 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 ### Supported Catalog Backends
 
 | Backend  | Status  | Comment |
-|----------|:-------:|---------|
+| -------- | :-----: | ------- |
 | Postgres | ![done] |         |
 | MongoDB  | ![open] |         |
 
 ### Supported Secret Stores
 
 | Backend         | Status  | Comment       |
-|-----------------|:-------:|---------------|
+| --------------- | :-----: | ------------- |
 | Postgres        | ![done] |               |
 | kv2 (hcp-vault) | ![done] | userpass auth |
 
