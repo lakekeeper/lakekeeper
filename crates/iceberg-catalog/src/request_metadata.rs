@@ -1,11 +1,13 @@
 use std::str::FromStr;
 
-use axum::{middleware::Next, response::Response, extract::MatchedPath};
+use axum::{extract::MatchedPath, middleware::Next, response::Response};
 use http::{HeaderMap, Method};
 use uuid::Uuid;
-use crate::{ProjectIdent, DEFAULT_PROJECT_ID};
 
-use crate::service::authn::{Actor, AuthDetails};
+use crate::{
+    service::authn::{Actor, AuthDetails},
+    ProjectIdent, DEFAULT_PROJECT_ID,
+};
 
 /// A struct to hold metadata about a request.
 ///

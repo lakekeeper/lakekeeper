@@ -1,11 +1,15 @@
-use crate::api::endpoints::Endpoints;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::service::stats::endpoint::{EndpointIdentifier, StatsSink, WarehouseIdentOrPrefix};
-use crate::{ProjectIdent, WarehouseIdent};
-use http::{Method, StatusCode};
-use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
+
+use http::StatusCode;
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
+
+use crate::{
+    api::endpoints::Endpoints,
+    implementations::postgres::dbutils::DBErrorHandler,
+    service::stats::endpoint::{EndpointIdentifier, StatsSink, WarehouseIdentOrPrefix},
+    ProjectIdent, WarehouseIdent,
+};
 
 #[derive(Debug)]
 pub struct PostgresStatsSink {
@@ -33,7 +37,6 @@ impl StatsSink for PostgresStatsSink {
                 EndpointIdentifier {
                     uri,
                     status_code,
-                    method,
                     warehouse,
                 },
                 count,
@@ -49,17 +52,7 @@ impl StatsSink for PostgresStatsSink {
                 let ident = ident.flatten();
                 let prefix = prefix.flatten();
 
-                insert_stats(
-                    &mut conn,
-                    project,
-                    uri,
-                    status_code,
-                    method,
-                    count,
-                    ident,
-                    prefix,
-                )
-                .await;
+                insert_stats(&mut conn, project, uri, status_code, count, ident, prefix).await;
             }
         }
         conn.commit().await.unwrap();
@@ -67,11 +60,10 @@ impl StatsSink for PostgresStatsSink {
 }
 
 async fn insert_stats(
-    conn: &mut Transaction<Postgres>,
+    conn: &mut Transaction<'_, Postgres>,
     project: Option<ProjectIdent>,
     uri: Endpoints,
     status_code: StatusCode,
-    method: Method,
     count: i64,
     ident: Option<WarehouseIdent>,
     prefix: Option<String>,
@@ -84,20 +76,24 @@ async fn insert_stats(
                             ELSE $2::uuid
                         END AS warehouse_id
                     )
-                    INSERT INTO endpoint_stats (project_id, warehouse_id, matched_path, status_code, method, count)
-                    VALUES ($1, (SELECT warehouse_id from warehouse_id), $4, $5, $6, $7)
-                    ON CONFLICT (project_id, warehouse_id, matched_path, method, status_code, valid_until)
-                    DO UPDATE SET count = endpoint_stats.count + $7
+                    INSERT INTO endpoint_stats (project_id, warehouse_id, matched_path, status_code, count, valid_until)
+                    SELECT $1, (SELECT warehouse_id from warehouse_id), $4, $5, count + $6, get_stats_date_default() FROM endpoint_stats
+                    WHERE project_id = $1
+                      AND warehouse_id = (select warehouse_id from warehouse_id)
+                      AND matched_path = $4
+                      AND status_code = $5
+                      AND valid_until = get_stats_date_default()
+                    ON CONFLICT (project_id, warehouse_id, matched_path, status_code, valid_until)
+                    DO UPDATE SET count = EXCLUDED.count
                     "#,
                     project.map(|p| *p),
                     ident.as_deref().copied() as Option<Uuid>,
                     prefix,
                     uri as _,
                     status_code.as_u16() as i32,
-                    method.as_str(),
                     count
                 )
-        .execute(&mut *conn)
+        .execute(&mut **conn)
         .await
         .map_err(|e| e.into_error_model("failed to consume stats")).unwrap();
 }

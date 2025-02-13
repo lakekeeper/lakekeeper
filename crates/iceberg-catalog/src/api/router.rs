@@ -22,8 +22,7 @@ use crate::{
         event_publisher::CloudEventsPublisher,
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
-        Catalog, SecretStore, State,
-        TrackerTx
+        Catalog, SecretStore, State, TrackerTx,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
 };

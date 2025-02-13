@@ -37,10 +37,9 @@ pub mod v1 {
         UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest, WarehouseStatsResponse,
     };
 
-    use crate::api::iceberg::types::PageToken;
-    use crate::api::iceberg::v1::PaginationQuery;
     use crate::{
         api::{
+            iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::UndropTabularsRequest,

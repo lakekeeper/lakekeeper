@@ -1,21 +1,23 @@
 #![allow(clippy::module_name_repetitions)]
 
-use crate::api::endpoints::Endpoints;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogProjectAction};
-use crate::service::{Catalog, SecretStore, State as ServiceState};
-use crate::{ProjectIdent, WarehouseIdent};
-use axum::extract::{Path, Request, State};
-use axum::middleware::Next;
-use axum::response::Response;
-use http::{Method, StatusCode};
-use iceberg_ext::catalog::rest::ErrorModel;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::str::FromStr;
-use std::sync::atomic::AtomicI64;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    str::FromStr,
+    sync::{atomic::AtomicI64, Arc},
+    time::Duration,
+};
+
+use axum::{
+    extract::{Path, Request, State},
+    middleware::Next,
+    response::Response,
+};
+use http::StatusCode;
+
+use crate::{
+    api::endpoints::Endpoints, request_metadata::RequestMetadata, ProjectIdent, WarehouseIdent,
+};
 
 #[derive(Debug, Clone)]
 pub struct TrackerTx(tokio::sync::mpsc::Sender<Message>);
@@ -83,7 +85,6 @@ impl ProjectStats {
 pub struct EndpointIdentifier {
     pub uri: Endpoints,
     pub status_code: StatusCode,
-    pub method: Method,
     pub warehouse: Option<WarehouseIdentOrPrefix>,
 }
 
@@ -142,11 +143,10 @@ impl Tracker {
                         continue;
                     };
 
-                    let Some(uri) = Endpoints::from_http_string(&format!(
-                        "{} {}",
+                    let Some(uri) = Endpoints::from_method_and_matched_path(
                         request_metadata.request_method,
                         mp.as_str(),
-                    )) else {
+                    ) else {
                         tracing::error!(
                             "Could not parse endpoint from matched path: '{}'.",
                             mp.as_str()
@@ -162,7 +162,6 @@ impl Tracker {
                             warehouse,
                             uri,
                             status_code: response_status,
-                            method: request_metadata.request_method,
                         })
                         .or_insert_with(|| AtomicI64::new(0))
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

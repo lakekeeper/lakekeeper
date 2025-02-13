@@ -3,15 +3,15 @@ use std::{collections::HashSet, ops::Deref};
 use sqlx::{types::Json, Error, PgPool};
 
 use super::{dbutils::DBErrorHandler as _, CatalogState};
-use crate::api::iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE};
-use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
 use crate::{
     api::{
+        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
         management::v1::warehouse::{
             TabularDeleteProfile, WarehouseStatistics, WarehouseStatsResponse,
         },
         CatalogConfig, ErrorModel, Result,
     },
+    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
     ProjectIdent, SecretIdent, WarehouseIdent,
 };

@@ -19,7 +19,7 @@ use crate::{
         iceberg::v1::{PageToken, PaginationQuery},
         management::v1::{
             role::require_project_id, ApiServer, DeletedTabularResponse,
-            ListDeletedTabularsResponse, GetWarehouseStatisticsQuery
+            GetWarehouseStatisticsQuery, ListDeletedTabularsResponse,
         },
         ApiContext, Result,
     },

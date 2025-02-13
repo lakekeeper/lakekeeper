@@ -8,7 +8,7 @@ use iceberg_catalog::{
     implementations::{
         postgres::{
             task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-            CatalogState, PostgresCatalog, ReadWrite,
+            CatalogState, PostgresCatalog, PostgresStatsSink, ReadWrite,
         },
         Secrets,
     },
@@ -24,6 +24,7 @@ use iceberg_catalog::{
             NatsBackend, TracingPublisher,
         },
         health::ServiceHealthProvider,
+        stats::endpoint::Tracker,
         task_queue::TaskQueues,
         Catalog, StartupValidationData, TrackerTx,
     },
@@ -33,10 +34,6 @@ use reqwest::Url;
 
 #[cfg(feature = "ui")]
 use crate::ui;
-#[cfg(feature = "ui")]
-use axum::routing::get;
-use iceberg_catalog::implementations::postgres::PostgresStatsSink;
-use iceberg_catalog::service::stats::endpoint::Tracker;
 
 pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow::Error> {
     let read_pool = iceberg_catalog::implementations::postgres::get_reader_pool(

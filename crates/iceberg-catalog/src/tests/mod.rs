@@ -1,36 +1,50 @@
 mod stats;
 
-use crate::api::iceberg::types::Prefix;
-use crate::api::iceberg::v1::namespace::Service as _;
-use crate::api::iceberg::v1::tables::TablesService;
-use crate::api::iceberg::v1::views::Service;
-use crate::api::iceberg::v1::{DataAccess, DropParams, NamespaceParameters, TableParameters};
-use crate::api::management::v1::bootstrap::{BootstrapRequest, Service as _};
-use crate::api::management::v1::warehouse::{
-    CreateWarehouseRequest, CreateWarehouseResponse, Service as _, TabularDeleteProfile,
-};
-use crate::api::management::v1::ApiServer;
-use crate::api::ApiContext;
-use crate::catalog::CatalogServer;
-use crate::implementations::postgres::task_queues::{TabularExpirationQueue, TabularPurgeQueue};
-use crate::implementations::postgres::{CatalogState, PostgresCatalog, ReadWrite, SecretsState};
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::Authorizer;
-use crate::service::contract_verification::ContractVerifiers;
-use crate::service::event_publisher::CloudEventsPublisher;
-use crate::service::storage::{
-    S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
-};
-use crate::service::task_queue::{TaskQueueConfig, TaskQueues};
-use crate::service::{AuthDetails, State, UserId};
-use crate::CONFIG;
+use std::sync::Arc;
+
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
     CreateNamespaceRequest, CreateNamespaceResponse, LoadTableResult, LoadViewResult,
 };
 use sqlx::PgPool;
-use std::sync::Arc;
 use uuid::Uuid;
+
+use crate::{
+    api::{
+        iceberg::{
+            types::Prefix,
+            v1::{
+                namespace::Service as _, tables::TablesService, views::Service, DataAccess,
+                DropParams, NamespaceParameters, TableParameters,
+            },
+        },
+        management::v1::{
+            bootstrap::{BootstrapRequest, Service as _},
+            warehouse::{
+                CreateWarehouseRequest, CreateWarehouseResponse, Service as _, TabularDeleteProfile,
+            },
+            ApiServer,
+        },
+        ApiContext,
+    },
+    catalog::CatalogServer,
+    implementations::postgres::{
+        task_queues::{TabularExpirationQueue, TabularPurgeQueue},
+        CatalogState, PostgresCatalog, ReadWrite, SecretsState,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::Authorizer,
+        contract_verification::ContractVerifiers,
+        event_publisher::CloudEventsPublisher,
+        storage::{
+            S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
+        },
+        task_queue::{TaskQueueConfig, TaskQueues},
+        AuthDetails, State, UserId,
+    },
+    CONFIG,
+};
 
 pub(crate) fn test_io_profile() -> StorageProfile {
     TestProfile::default().into()

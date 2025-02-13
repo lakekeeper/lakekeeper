@@ -16,15 +16,15 @@ use std::{str::FromStr, sync::Arc};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+pub use endpoint_stats::PostgresStatsSink;
 pub use secrets::SecretsState;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     ConnectOptions, Executor, PgPool,
 };
 pub use tabular::DeletionKind;
-pub use endpoint_stats::PostgresStatsSink;
-
 use tokio::sync::RwLock;
+
 use self::dbutils::DBErrorHandler;
 use crate::{
     api::Result,

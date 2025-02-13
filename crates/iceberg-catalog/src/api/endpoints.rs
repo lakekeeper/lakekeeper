@@ -1,5 +1,6 @@
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::{collections::HashMap, string::ToString, sync::LazyLock};
+
+use http::Method;
 use strum::IntoEnumIterator;
 
 #[derive(
@@ -74,40 +75,27 @@ pub enum Endpoints {
     ManagementPostWarehouseDeletedTabularsUndrop1,
     ManagementPostWarehouseDeletedTabularsUndrop2,
     ManagementPostWarehouseDeleteProfile,
-    // authz, for now all of these are openfga
-    ManagementGetPermissionsRoleAccess,
-    ManagementGetPermissionsServerAccess,
-    ManagementGetPermissionsProjectAccess,
-    ManagementGetPermissionsWarehouseAccess,
-    ManagementGetPermissionsWarehouse,
-    ManagementPostPermissionsWarehouseManagedAccess,
-    ManagementGetPermissionsProjectIDAccess,
-    ManagementGetPermissionsNamespaceAccess,
-    ManagementGetPermissionsNamespace,
-    ManagementPostPermissionsNamespaceManagedAccess,
-    ManagementGetPermissionsTableAccess,
-    ManagementGetPermissionsViewAccess,
-    ManagementGetPermissionsRoleAssignments,
-    ManagementPostPermissionsRoleAssignments,
-    ManagementGetPermissionsServerAssignments,
-    ManagementPostPermissionsServerAssignments,
-    ManagementGetPermissionsProjectAssignments,
-    ManagementPostPermissionsProjectAssignments,
-    ManagementGetPermissionsProjectIDAssignments,
-    ManagementPostPermissionsProjectIDAssignments,
-    ManagementGetPermissionsWarehouseAssignments,
-    ManagementPostPermissionsWarehouseAssignments,
-    ManagementGetPermissionsNamespaceAssignments,
-    ManagementPostPermissionsNamespaceAssignments,
-    ManagementGetPermissionsTableAssignments,
-    ManagementPostPermissionsTableAssignments,
-    ManagementGetPermissionsViewAssignments,
-    ManagementPostPermissionsViewAssignments,
-    ManagementPostPermissionsCheck,
+    // authz, we don't resolve single endpoints since every authorizer may have their own set
+    ManagementGetPermissions,
+    ManagementPostPermissions,
+    ManagementHeadPermissions,
+    ManagementDeletePermissions,
 }
 
-static MAP: LazyLock<HashMap<&str, Endpoints>> =
-    LazyLock::new(|| Endpoints::iter().map(|e| (e.to_http_string(), e)).collect());
+static MAP: LazyLock<HashMap<&str, Endpoints>> = LazyLock::new(|| {
+    Endpoints::iter()
+        .filter(|e| {
+            !matches!(
+                e,
+                Endpoints::ManagementGetPermissions
+                    | Endpoints::ManagementPostPermissions
+                    | Endpoints::ManagementHeadPermissions
+                    | Endpoints::ManagementDeletePermissions
+            )
+        })
+        .map(|e| (e.to_http_string(), e))
+        .collect()
+});
 
 impl Endpoints {
     pub fn catalog() -> Vec<Self> {
@@ -122,7 +110,30 @@ impl Endpoints {
         self.to_string().starts_with("Management")
     }
 
-    pub fn from_http_string(inp: &str) -> Option<Self> {
+    pub fn is_real_endpoint(&self) -> bool {
+        !matches!(
+            self,
+            Endpoints::ManagementGetPermissions
+                | Endpoints::ManagementPostPermissions
+                | Endpoints::ManagementHeadPermissions
+                | Endpoints::ManagementDeletePermissions
+        )
+    }
+
+    pub fn is_grouped_endpoint(&self) -> bool {
+        !self.is_real_endpoint()
+    }
+
+    pub fn from_method_and_matched_path(method: Method, inp: &str) -> Option<Self> {
+        if inp.starts_with("/v1/management/permissions") {
+            return match method.as_str() {
+                "GET" => Some(Endpoints::ManagementGetPermissions),
+                "POST" => Some(Endpoints::ManagementPostPermissions),
+                "HEAD" => Some(Endpoints::ManagementHeadPermissions),
+                "DELETE" => Some(Endpoints::ManagementDeletePermissions),
+                _ => None,
+            };
+        }
         MAP.get(inp).copied()
     }
 
@@ -243,99 +254,20 @@ impl Endpoints {
             Endpoints::ManagementPostWarehouseDeleteProfile => {
                 "POST /v1/management/warehouse/{warehouse_id}/delete-profile"
             }
-            Endpoints::ManagementGetPermissionsRoleAccess => {
-                "GET /v1/management/permissions/role/{role_id}/access"
-            }
-            Endpoints::ManagementGetPermissionsServerAccess => {
-                "GET /v1/management/permissions/server/access"
-            }
-            Endpoints::ManagementGetPermissionsProjectAccess => {
-                "GET /v1/management/permissions/project/access"
-            }
-            Endpoints::ManagementGetPermissionsWarehouseAccess => {
-                "GET /v1/management/permissions/warehouse/{warehouse_id}/access"
-            }
-            Endpoints::ManagementGetPermissionsWarehouse => {
-                "GET /v1/management/permissions/warehouse/{warehouse_id}"
-            }
-            Endpoints::ManagementPostPermissionsWarehouseManagedAccess => {
-                "POST /v1/management/permissions/warehouse/{warehouse_id}/managed-access"
-            }
-            Endpoints::ManagementGetPermissionsProjectIDAccess => {
-                "GET /v1/management/permissions/project/{project_id}/access"
-            }
-            Endpoints::ManagementGetPermissionsNamespaceAccess => {
-                "GET /permissions/namespace/{namespace_id}/access"
-            }
-            Endpoints::ManagementGetPermissionsNamespace => {
-                "GET /v1/management/permissions/namespace/{namespace_id}"
-            }
-            Endpoints::ManagementPostPermissionsNamespaceManagedAccess => {
-                "POST /v1/management/permissions/namespace/{namespace_id}/managed-access"
-            }
-            Endpoints::ManagementGetPermissionsTableAccess => {
-                "GET /v1/management/permissions/table/{table_id}/access"
-            }
-            Endpoints::ManagementGetPermissionsViewAccess => {
-                "GET /v1/management/permissions/view/{table_id}/access"
-            }
-            Endpoints::ManagementGetPermissionsRoleAssignments => {
-                "GET /v1/management/permissions/role/{role_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsRoleAssignments => {
-                "POST /v1/management/permissions/role/{role_id}/assignments"
-            }
-            Endpoints::ManagementGetPermissionsServerAssignments => {
-                "GET /v1/management/permissions/server/assignments"
-            }
-            Endpoints::ManagementPostPermissionsServerAssignments => {
-                "POST /v1/management/permissions/server/assignments"
-            }
-            Endpoints::ManagementGetPermissionsProjectAssignments => {
-                "GET /v1/management/permissions/project/assignments"
-            }
-            Endpoints::ManagementPostPermissionsProjectAssignments => {
-                "POST /v1/management/permissions/project/assignments"
-            }
-            Endpoints::ManagementGetPermissionsProjectIDAssignments => {
-                "GET /v1/management/permissions/project/{project_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsProjectIDAssignments => {
-                "POST /v1/management/permissions/project/{project_id}/assignments"
-            }
-            Endpoints::ManagementGetPermissionsWarehouseAssignments => {
-                "GET /v1/management/permissions/warehouse/{warehouse_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsWarehouseAssignments => {
-                "POST /v1/management/permissions/warehouse/{warehouse_id}/assignments"
-            }
-            Endpoints::ManagementGetPermissionsNamespaceAssignments => {
-                "GET /v1/management/permissions/namespace/{namespace_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsNamespaceAssignments => {
-                "POST /v1/management/permissions/namespace/{namespace_id}/assignments"
-            }
-            Endpoints::ManagementGetPermissionsTableAssignments => {
-                "GET /v1/management/permissions/table/{table_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsTableAssignments => {
-                "POST /v1/management/permissions/table/{table_id}/assignments"
-            }
-            Endpoints::ManagementGetPermissionsViewAssignments => {
-                "GET /v1/management/permissions/view/{view_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsViewAssignments => {
-                "POST /v1/management/permissions/view/{view_id}/assignments"
-            }
-            Endpoints::ManagementPostPermissionsCheck => "POST /v1/management/permissions/check",
+
+            Endpoints::ManagementGetPermissions => "GET /v1/management/permissions",
+            Endpoints::ManagementPostPermissions => "POST /v1/management/permissions",
+            Endpoints::ManagementHeadPermissions => "HEAD /v1/management/permissions",
+            Endpoints::ManagementDeletePermissions => "DELETE /v1/management/permissions",
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::api::endpoints::Endpoints;
     use strum::IntoEnumIterator;
+
+    use crate::api::endpoints::Endpoints;
     #[test]
     fn test() {
         Endpoints::iter().for_each(|e| {

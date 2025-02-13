@@ -25,12 +25,12 @@ pub use catalog::{
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
+pub use stats::endpoint::TrackerTx;
 pub(crate) use tabular_idents::TabularIdentBorrowed;
 pub use tabular_idents::{TabularIdentOwned, TabularIdentUuid};
 
 use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
-pub use stats::endpoint::TrackerTx;
 use crate::{
     api::{iceberg::v1::Prefix, ThreadSafe as ServiceState},
     service::{
