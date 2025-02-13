@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                                            ti.task_id,\n                                            ti.task_instance_id,\n                                            ti.attempt,\n                                            ti.status as \"status: TaskInstanceStatus\",\n                                            ti.last_error_details,\n                                            ti.picked_up_at,\n                                            ti.suspend_until,\n                                            ti.completed_at,\n                                            ti.created_at,\n                                            ti.updated_at,\n                                            t.project_id,\n                                            t.queue_name,\n                                            t.parent_task_id,\n                                            array_agg(tieh.error_details) FILTER (WHERE tieh.error_details IS NOT NULL) as error_details\n                                        FROM task_instance ti\n                                        JOIN task t\n                                            ON ti.task_id = t.task_id\n                                        LEFT JOIN task_instance_error_history tieh\n                                            ON ti.task_instance_id = tieh.task_instance_id\n                                        WHERE\n                                            (t.task_id = $1 OR $1 IS NULL)\n                                            AND (\n                                                (t.created_at > $2 OR $2 IS NULL)\n                                                OR (t.created_at = $2 AND t.task_id > $3)\n                                            )\n                                        GROUP BY\n                                            ti.task_id,\n                                            ti.task_instance_id,\n                                            ti.attempt,\n                                            ti.status,\n                                            ti.last_error_details,\n                                            ti.picked_up_at,\n                                            ti.suspend_until,\n                                            ti.completed_at,\n                                            ti.created_at,\n                                            ti.updated_at,\n                                            t.project_id,\n                                            t.queue_name,\n                                            t.parent_task_id\n                                        LIMIT $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "task_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempt",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "status: TaskInstanceStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "running",
+                "success",
+                "failed",
+                "cancelled"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "last_error_details",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "picked_up_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "suspend_until",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "completed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "queue_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "error_details",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "78338f106812827ac6a63001ad9752a652528f14d580269f9babc8b04e10e23c"
+}

@@ -1,0 +1,200 @@
+@startuml
+skinparam participantPadding 20
+skinparam BoxPadding 10
+skinparam noteBackgroundColor WhiteSmoke
+skinparam noteBorderColor DarkGray
+
+box "Client" #LightBlue
+actor User
+end box
+
+box "System Components" #LightYellow
+participant "Lakekeeper" as lk
+participant "Scheduler" as sched
+participant "Executor" as ex
+participant "StatsTask" as sti
+database "Database" as db
+end box
+
+== Warehouse Creation ==
+
+User -> lk: create warehouse(params)
+activate lk
+
+    lk -> sched: queue stats task
+    activate sched
+
+    sched -> db: queue_task(queue_name=stats)
+    note right of db
+        INSERT INTO tasks (
+            queue_name,
+            status,
+            schedule,
+            next_tick
+        ) VALUES (
+            "stats",
+            "enabled",
+            "0 0/5 * * * *",
+            :next_tick
+        )
+    end note
+    db --> sched: task created
+    sched -> db: create task instance
+    note right of db
+     see below in Task Scheduling for details
+    end note
+    db --> sched: instance created
+
+    sched --> lk: task creation success
+    deactivate sched
+
+    lk --> User: CreateWarehouseResponse
+deactivate lk
+
+== Task Scheduling ==
+
+loop every scheduling interval
+
+    sched -> db: fetch executable tasks
+    activate sched
+    note right of db
+        SELECT t.task_id, schedule, t.idempotency_key
+        FROM task t
+        WHERE ($1 = t.task_id or $1 is null)
+            AND t.status = 'enabled'
+            AND (next_tick < now() AT TIME ZONE 'UTC'
+                 AND next_tick is not null)
+        ORDER BY next_tick
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1;
+    end note
+    db --> sched: task
+
+    alt task found
+        sched -> db: create task instance
+        note right of db
+           WITH updated_tasks AS (
+           UPDATE task
+           SET
+               next_tick = :next_tick,
+               status = CASE
+                   WHEN :next_tick IS NOT NULL THEN 'enabled'::schedule_status
+                   ELSE 'disabled'::schedule_status
+               END
+           WHERE task_id = :task_id
+           )
+           INSERT INTO task_instance (
+               task_id,
+               task_instance_id,
+               status,
+               suspend_until,
+               idempotency_key
+           )
+           VALUES (:task_id, :task_instance_id, 'pending', :suspend_until, :idempotency_key)
+           ON CONFLICT ON CONSTRAINT task_instance_unique_idempotency_key
+           DO NOTHING
+           RETURNING task_instance_id
+        end note
+        db --> sched: instance created
+    end
+    deactivate sched
+end
+
+== Task Execution ==
+
+loop every execution interval
+
+    ex -> db: fetch pending instances
+    activate ex
+    note right of db
+                WITH updated_task_instance AS (
+                    SELECT
+                        ti.task_id,
+                        ti.task_instance_id,
+                        t.queue_name,
+                        t.parent_task_id,
+                        t.project_id
+                    FROM task_instance ti
+                    JOIN task t ON ti.task_id = t.task_id
+                    WHERE (
+                        ti.status = 'pending'
+                        AND t.queue_name = $1
+                        AND (
+                            (ti.suspend_until < now() AT TIME ZONE 'UTC')
+                            OR (ti.suspend_until IS NULL)
+                        )
+                    ) OR (
+                        ti.status = 'running'
+                        AND (now() - ti.picked_up_at) > $2
+                    )
+                    ORDER BY ti.suspend_until NULLS FIRST
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE task_instance ti
+                SET
+                    status = 'running',
+                    picked_up_at = now(),
+                    attempt = ti.attempt + 1
+                FROM updated_task_instance
+                WHERE ti.task_instance_id = updated_task_instance.task_instance_id
+                RETURNING
+                    ti.task_id,
+                    ti.task_instance_id,
+                    ti.status as "status: TaskInstanceStatus",
+                    ti.picked_up_at,
+                    ti.attempt,
+                    (select parent_task_id from updated_task_instance),
+                    (select queue_name from updated_task_instance) as "queue_name!",
+                    (select project_id from updated_task_instance) as "project_ident!",
+                    '{}'::TEXT[] as "error_history!"
+    end note
+    db --> ex: instance
+
+    alt instance found
+        ex -> sti: execute(instance)
+        activate sti
+
+        alt execution successful
+            sti --> ex: execution complete
+            ex -> db: mark as completed
+            note right of db
+               UPDATE task_instance
+               SET status = 'success', completed_at = now()
+               WHERE task_instance_id = $1
+            end note
+            db --> ex: updated
+        else execution failed
+            sti --> ex: execution error
+            ex -> db: mark as failed
+            note right of db
+                WITH cte as (
+                    SELECT attempt >= :max_retries as should_fail
+                    FROM task_instance
+                    WHERE task_instance_id = :task_instance_id
+                ),
+                cte2 as (
+                    INSERT INTO task_instance_error_history (
+                        task_instance_id,
+                        task_instance_error_history_id,
+                        error_details
+                     ) VALUES (
+                         :task_instance_id,
+                         :task_instance_error_history_id,
+                         :error_details)
+                )
+                UPDATE task_instance
+                    SET status = CASE WHEN (select should_fail from cte)
+                                    THEN 'failed'::task_status
+                                    ELSE 'pending'::task_status
+                                 END
+                WHERE task_instance_id = :task_instance_id
+            end note
+            db --> ex: updated
+        end
+        deactivate sti
+    end
+    deactivate ex
+end
+
+@enduml

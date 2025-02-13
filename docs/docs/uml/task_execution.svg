@@ -1,0 +1,686 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentStyleType="text/css"
+     height="2887px" preserveAspectRatio="none" style="width:1364px;height:2887px;background:#FFFFFF;" version="1.1"
+     viewBox="0 0 1364 2887" width="1364px" zoomAndPan="magnify">
+    <defs/>
+    <g>
+        <rect fill="#ADD8E6" height="2875.166" style="stroke:#181818;stroke-width:0.5;" width="45.1396" x="11" y="6"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="39.1396" x="14" y="18.5684">Client
+        </text>
+        <rect fill="#FFFFE0" height="2875.166" style="stroke:#181818;stroke-width:0.5;" width="664.6582" x="163.1953"
+              y="6"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="136.5317" x="427.2585" y="18.5684">System Components
+        </text>
+        <rect fill="#FFFFFF" height="428.9004" style="stroke:#181818;stroke-width:1.0;" width="10" x="227.8457"
+              y="176.4199"/>
+        <rect fill="#FFFFFF" height="370.2793" style="stroke:#181818;stroke-width:1.0;" width="10" x="395.9209"
+              y="205.7305"/>
+        <rect fill="#FFFFFF" height="626.5586" style="stroke:#181818;stroke-width:1.0;" width="10" x="395.9209"
+              y="702.252"/>
+        <rect fill="#FFFFFF" height="1359.9355" style="stroke:#181818;stroke-width:1.0;" width="10" x="522.7568"
+              y="1424.7422"/>
+        <rect fill="#FFFFFF" height="637.582" style="stroke:#181818;stroke-width:1.0;" width="10" x="680.7964"
+              y="2140.0957"/>
+        <rect fill="none" height="665.1797" style="stroke:#000000;stroke-width:1.5;" width="1026.7896" x="320.7837"
+              y="663.6309"/>
+        <rect fill="none" height="417.4531" style="stroke:#000000;stroke-width:1.5;" width="1006.7896" x="330.7837"
+              y="904.3574"/>
+        <rect fill="none" height="1398.5566" style="stroke:#000000;stroke-width:1.5;" width="831.2612" x="441.0581"
+              y="1386.1211"/>
+        <rect fill="none" height="676.2031" style="stroke:#000000;stroke-width:1.5;" width="735.9575" x="451.0581"
+              y="2101.4746"/>
+        <rect fill="none" height="615.582" style="stroke:#000000;stroke-width:1.5;" width="715.9575" x="461.0581"
+              y="2155.0957"/>
+        <line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="33.3872" x2="33.3872" y1="101.7988"
+              y2="2801.6777"/>
+        <line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="232.1953" x2="232.1953"
+              y1="101.7988" y2="2801.6777"/>
+        <line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="400.7837" x2="400.7837"
+              y1="101.7988" y2="2801.6777"/>
+        <line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="527.0581" x2="527.0581"
+              y1="101.7988" y2="2801.6777"/>
+        <line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="685.4043" x2="685.4043"
+              y1="101.7988" y2="2801.6777"/>
+        <line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="789.1885" x2="789.1885"
+              y1="101.7988" y2="2801.6777"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="30.3652"
+              x="15.3872" y="98.8457">User
+        </text>
+        <ellipse cx="33.5698" cy="33.8105" fill="#E2E2F0" rx="8" ry="8" style="stroke:#181818;stroke-width:0.5;"/>
+        <path d="M33.5698,41.8105 L33.5698,68.8105 M20.5698,49.8105 L46.5698,49.8105 M33.5698,68.8105 L20.5698,83.8105 M33.5698,68.8105 L46.5698,83.8105 "
+              fill="none" style="stroke:#181818;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="30.3652"
+              x="15.3872" y="2814.2129">User
+        </text>
+        <ellipse cx="33.5698" cy="2825.666" fill="#E2E2F0" rx="8" ry="8" style="stroke:#181818;stroke-width:0.5;"/>
+        <path d="M33.5698,2833.666 L33.5698,2860.666 M20.5698,2841.666 L46.5698,2841.666 M33.5698,2860.666 L20.5698,2875.666 M33.5698,2860.666 L46.5698,2875.666 "
+              fill="none" style="stroke:#181818;stroke-width:0.5;"/>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="91.3008"
+              x="187.1953" y="70.3105"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="77.3008"
+              x="194.1953" y="90.8457">Lakekeeper
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="91.3008"
+              x="187.1953" y="2800.6777"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="77.3008"
+              x="194.1953" y="2821.2129">Lakekeeper
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="80.2744"
+              x="360.7837" y="70.3105"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="66.2744"
+              x="367.7837" y="90.8457">Scheduler
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="80.2744"
+              x="360.7837" y="2800.6777"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="66.2744"
+              x="367.7837" y="2821.2129">Scheduler
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="73.3975"
+              x="491.0581" y="70.3105"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="59.3975"
+              x="498.0581" y="90.8457">Executor
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="73.3975"
+              x="491.0581" y="2800.6777"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="59.3975"
+              x="498.0581" y="2821.2129">Executor
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="78.7842"
+              x="646.4043" y="70.3105"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="64.7842"
+              x="653.4043" y="90.8457">StatsTask
+        </text>
+        <rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="78.7842"
+              x="646.4043" y="2800.6777"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="64.7842"
+              x="653.4043" y="2821.2129">StatsTask
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="62.665"
+              x="755.1885" y="98.8457">Database
+        </text>
+        <path d="M771.521,49.3105 C771.521,39.3105 789.521,39.3105 789.521,39.3105 C789.521,39.3105 807.521,39.3105 807.521,49.3105 L807.521,75.3105 C807.521,85.3105 789.521,85.3105 789.521,85.3105 C789.521,85.3105 771.521,85.3105 771.521,75.3105 L771.521,49.3105 "
+              fill="#E2E2F0" style="stroke:#181818;stroke-width:1.5;"/>
+        <path d="M771.521,49.3105 C771.521,59.3105 789.521,59.3105 789.521,59.3105 C789.521,59.3105 807.521,59.3105 807.521,49.3105 "
+              fill="none" style="stroke:#181818;stroke-width:1.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="62.665"
+              x="755.1885" y="2814.2129">Database
+        </text>
+        <path d="M771.521,2827.166 C771.521,2817.166 789.521,2817.166 789.521,2817.166 C789.521,2817.166 807.521,2817.166 807.521,2827.166 L807.521,2853.166 C807.521,2863.166 789.521,2863.166 789.521,2863.166 C789.521,2863.166 771.521,2863.166 771.521,2853.166 L771.521,2827.166 "
+              fill="#E2E2F0" style="stroke:#181818;stroke-width:1.5;"/>
+        <path d="M771.521,2827.166 C771.521,2837.166 789.521,2837.166 789.521,2837.166 C789.521,2837.166 807.521,2837.166 807.521,2827.166 "
+              fill="none" style="stroke:#181818;stroke-width:1.5;"/>
+        <rect fill="#FFFFFF" height="428.9004" style="stroke:#181818;stroke-width:1.0;" width="10" x="227.8457"
+              y="176.4199"/>
+        <rect fill="#FFFFFF" height="370.2793" style="stroke:#181818;stroke-width:1.0;" width="10" x="395.9209"
+              y="205.7305"/>
+        <rect fill="#FFFFFF" height="626.5586" style="stroke:#181818;stroke-width:1.0;" width="10" x="395.9209"
+              y="702.252"/>
+        <rect fill="#FFFFFF" height="1359.9355" style="stroke:#181818;stroke-width:1.0;" width="10" x="522.7568"
+              y="1424.7422"/>
+        <rect fill="#FFFFFF" height="637.582" style="stroke:#181818;stroke-width:1.0;" width="10" x="680.7964"
+              y="2140.0957"/>
+        <rect fill="#EEEEEE" height="3" style="stroke:#EEEEEE;stroke-width:1.0;" width="1357.5732" x="0" y="132.4541"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="0" x2="1357.5732" y1="132.4541" y2="132.4541"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="0" x2="1357.5732" y1="135.4541" y2="135.4541"/>
+        <rect fill="#EEEEEE" height="23.3105" style="stroke:#000000;stroke-width:2.0;" width="152.6011" x="602.4861"
+              y="121.7988"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="134.3164" x="608.4861" y="138.3672">Warehouse Creation
+        </text>
+        <polygon fill="#181818" points="215.8457,172.4199,225.8457,176.4199,215.8457,180.4199,219.8457,176.4199"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="33.5698" x2="221.8457" y1="176.4199" y2="176.4199"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="165.4453"
+              x="40.5698" y="171.6777">create warehouse(params)
+        </text>
+        <polygon fill="#181818" points="383.9209,201.7305,393.9209,205.7305,383.9209,209.7305,387.9209,205.7305"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="237.8457" x2="389.9209" y1="205.7305" y2="205.7305"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="103.4541"
+              x="244.8457" y="200.9883">queue stats task
+        </text>
+        <polygon fill="#181818" points="777.521,231.041,787.521,235.041,777.521,239.041,781.521,235.041"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="405.9209" x2="783.521" y1="235.041" y2="235.041"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="200.4463"
+              x="412.9209" y="230.2988">queue_task(queue_name=stats)
+        </text>
+        <path d="M794,248.041 L794,426.041 L939,426.041 L939,258.041 L929,248.041 L794,248.041 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M929,248.041 L929,258.041 L939,258.041 L929,248.041 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="124.9663"
+              x="800" y="265.6094">INSERT INTO tasks (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="84.043"
+              x="816.4531" y="280.9199">queue_name,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="42.3389"
+              x="816.4531" y="296.2305">status,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="59.96"
+              x="816.4531" y="311.541">schedule,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="57.5225"
+              x="816.4531" y="326.8516">next_tick
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="64.1367" x="800"
+              y="342.1621">) VALUES (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="43.9829"
+              x="816.4531" y="357.4727">"stats",
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="63.6797"
+              x="816.4531" y="372.7832">"enabled",
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="90.9302"
+              x="816.4531" y="388.0938">"0 0/5 * * * *",
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="61.6357"
+              x="816.4531" y="403.4043">:next_tick
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275" x="800"
+              y="418.7148">)
+        </text>
+        <polygon fill="#181818" points="416.9209,448.7676,406.9209,452.7676,416.9209,456.7676,412.9209,452.7676"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="410.9209" x2="788.521" y1="452.7676"
+              y2="452.7676"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="77.0669"
+              x="422.9209" y="448.0254">task created
+        </text>
+        <polygon fill="#181818" points="777.521,478.0781,787.521,482.0781,777.521,486.0781,781.521,482.0781"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="405.9209" x2="783.521" y1="482.0781" y2="482.0781"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="125.4614"
+              x="412.9209" y="477.3359">create task instance
+        </text>
+        <path d="M794,495.0781 L794,520.0781 L1068,520.0781 L1068,505.0781 L1058,495.0781 L794,495.0781 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M1058,495.0781 L1058,505.0781 L1068,505.0781 L1058,495.0781 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="253.0303"
+              x="800" y="512.6465">see below in Task Scheduling for details
+        </text>
+        <polygon fill="#181818" points="416.9209,542.6992,406.9209,546.6992,416.9209,550.6992,412.9209,546.6992"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="410.9209" x2="788.521" y1="546.6992"
+              y2="546.6992"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="103.2637"
+              x="422.9209" y="541.957">instance created
+        </text>
+        <polygon fill="#181818" points="248.8457,572.0098,238.8457,576.0098,248.8457,580.0098,244.8457,576.0098"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="242.8457" x2="399.9209"
+              y1="576.0098" y2="576.0098"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="134.0752"
+              x="254.8457" y="571.2676">task creation success
+        </text>
+        <polygon fill="#181818" points="44.5698,601.3203,34.5698,605.3203,44.5698,609.3203,40.5698,605.3203"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="38.5698" x2="231.8457" y1="605.3203"
+              y2="605.3203"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="169.8887"
+              x="50.5698" y="600.5781">CreateWarehouseResponse
+        </text>
+        <rect fill="#EEEEEE" height="3" style="stroke:#EEEEEE;stroke-width:1.0;" width="1357.5732" x="0" y="633.9756"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="0" x2="1357.5732" y1="633.9756" y2="633.9756"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="0" x2="1357.5732" y1="636.9756" y2="636.9756"/>
+        <rect fill="#EEEEEE" height="23.3105" style="stroke:#000000;stroke-width:2.0;" width="127.9785" x="614.7974"
+              y="623.3203"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="109.6938" x="620.7974" y="639.8887">Task Scheduling
+        </text>
+        <path d="M320.7837,663.6309 L395.2305,663.6309 L395.2305,670.9414 L385.2305,680.9414 L320.7837,680.9414 L320.7837,663.6309 "
+              fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/>
+        <rect fill="none" height="665.1797" style="stroke:#000000;stroke-width:1.5;" width="1026.7896" x="320.7837"
+              y="663.6309"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="29.4468" x="335.7837" y="677.1992">loop
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="151.4004" x="410.2305" y="676.2656">[every scheduling interval]
+        </text>
+        <polygon fill="#181818" points="777.521,698.252,787.521,702.252,777.521,706.252,781.521,702.252"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="405.9209" x2="783.521" y1="702.252" y2="702.252"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="141.1401"
+              x="412.9209" y="697.5098">fetch executable tasks
+        </text>
+        <path d="M794,715.252 L794,862.252 L1109,862.252 L1109,725.252 L1099,715.252 L794,715.252 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M1099,715.252 L1099,725.252 L1109,725.252 L1099,715.252 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="293.5537"
+              x="800" y="732.8203">SELECT t.task_id, schedule, t.idempotency_key
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="75.8418" x="800"
+              y="748.1309">FROM task t
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="224.4722"
+              x="800" y="763.4414">WHERE ($1 = t.task_id or $1 is null)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="153.9941"
+              x="816.4531" y="778.752">AND t.status = 'enabled'
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="277.894"
+              x="816.4531" y="794.0625">AND (next_tick &lt; now() AT TIME ZONE 'UTC'
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="161.4653"
+              x="837.0195" y="809.373">AND next_tick is not null)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="124.6489"
+              x="800" y="824.6836">ORDER BY next_tick
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="165.5088"
+              x="800" y="839.9941">FOR UPDATE SKIP LOCKED
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="50.2861" x="800"
+              y="855.3047">LIMIT 1;
+        </text>
+        <polygon fill="#181818" points="416.9209,885.3574,406.9209,889.3574,416.9209,893.3574,412.9209,889.3574"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="410.9209" x2="788.521" y1="889.3574"
+              y2="889.3574"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="26.2666"
+              x="422.9209" y="884.6152">task
+        </text>
+        <path d="M330.7837,904.3574 L392.9224,904.3574 L392.9224,911.668 L382.9224,921.668 L330.7837,921.668 L330.7837,904.3574 "
+              fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/>
+        <rect fill="none" height="417.4531" style="stroke:#000000;stroke-width:1.5;" width="1006.7896" x="330.7837"
+              y="904.3574"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="17.1387" x="345.7837" y="917.9258">alt
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="69.2065" x="407.9224" y="916.9922">[task found]
+        </text>
+        <polygon fill="#181818" points="777.521,938.9785,787.521,942.9785,777.521,946.9785,781.521,942.9785"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="405.9209" x2="783.521" y1="942.9785" y2="942.9785"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="125.4614"
+              x="412.9209" y="938.2363">create task instance
+        </text>
+        <path d="M794,955.9785 L794,1286.9785 L1327,1286.9785 L1327,965.9785 L1317,955.9785 L794,955.9785 "
+              fill="#F5F5F5" style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M1317,955.9785 L1317,965.9785 L1327,965.9785 L1317,955.9785 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="156.4697"
+              x="800" y="973.5469">WITH updated_tasks AS (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="80.5454" x="800"
+              y="988.8574">UPDATE task
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="22.2676" x="800"
+              y="1004.168">SET
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="141.832"
+              x="816.4531" y="1019.4785">next_tick = :next_tick,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="88.7974"
+              x="816.4531" y="1034.7891">status = CASE
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="393.8149"
+              x="832.9063" y="1050.0996">WHEN :next_tick IS NOT NULL THEN 'enabled'::schedule_status
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="200.002"
+              x="832.9063" y="1065.4102">ELSE 'disabled'::schedule_status
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="26.3872"
+              x="816.4531" y="1080.7207">END
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="159.1865"
+              x="800" y="1096.0313">WHERE task_id = :task_id
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275" x="800"
+              y="1111.3418">)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="177.3027"
+              x="800" y="1126.6523">INSERT INTO task_instance (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="48.8198"
+              x="816.4531" y="1141.9629">task_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="107.7832"
+              x="816.4531" y="1157.2734">task_instance_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="42.3389"
+              x="816.4531" y="1172.584">status,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="92.1235"
+              x="816.4531" y="1187.8945">suspend_until,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="109.2432"
+              x="816.4531" y="1203.2051">idempotency_key
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275" x="800"
+              y="1218.5156">)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="512.5732"
+              x="800" y="1233.8262">VALUES (:task_id, :task_instance_id, 'pending', :suspend_until, :idempotency_key)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="452.9561"
+              x="800" y="1249.1367">ON CONFLICT ON CONSTRAINT task_instance_unique_idempotency_key
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="84.1699" x="800"
+              y="1264.4473">DO NOTHING
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="180.8447"
+              x="800" y="1279.7578">RETURNING task_instance_id
+        </text>
+        <polygon fill="#181818" points="416.9209,1309.8105,406.9209,1313.8105,416.9209,1317.8105,412.9209,1313.8105"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="410.9209" x2="788.521"
+              y1="1313.8105" y2="1313.8105"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="103.2637"
+              x="422.9209" y="1309.0684">instance created
+        </text>
+        <rect fill="#EEEEEE" height="3" style="stroke:#EEEEEE;stroke-width:1.0;" width="1357.5732" x="0" y="1356.4658"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="0" x2="1357.5732" y1="1356.4658" y2="1356.4658"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="0" x2="1357.5732" y1="1359.4658" y2="1359.4658"/>
+        <rect fill="#EEEEEE" height="23.3105" style="stroke:#000000;stroke-width:2.0;" width="119.6567" x="618.9583"
+              y="1345.8105"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="101.3721" x="624.9583" y="1362.3789">Task Execution
+        </text>
+        <path d="M441.0581,1386.1211 L515.5049,1386.1211 L515.5049,1393.4316 L505.5049,1403.4316 L441.0581,1403.4316 L441.0581,1386.1211 "
+              fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/>
+        <rect fill="none" height="1398.5566" style="stroke:#000000;stroke-width:1.5;" width="831.2612" x="441.0581"
+              y="1386.1211"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="29.4468" x="456.0581" y="1399.6895">loop
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="144.2622" x="530.5049" y="1398.7559">[every execution interval]
+        </text>
+        <polygon fill="#181818" points="777.521,1420.7422,787.521,1424.7422,777.521,1428.7422,781.521,1424.7422"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="532.7568" x2="783.521" y1="1424.7422" y2="1424.7422"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="150.5347"
+              x="539.7568" y="1420">fetch pending instances
+        </text>
+        <path d="M794,1437.7422 L794,2059.7422 L1262,2059.7422 L1262,1447.7422 L1252,1437.7422 L794,1437.7422 "
+              fill="#F5F5F5" style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M1252,1437.7422 L1252,1447.7422 L1262,1447.7422 L1252,1437.7422 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="208.8062"
+              x="800" y="1455.3105">WITH updated_task_instance AS (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="45.2397"
+              x="816.4531" y="1470.6211">SELECT
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="61.5532"
+              x="832.9063" y="1485.9316">ti.task_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="120.5166"
+              x="832.9063" y="1501.2422">ti.task_instance_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="93.0186"
+              x="832.9063" y="1516.5527">t.queue_name,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="105.1489"
+              x="832.9063" y="1531.8633">t.parent_task_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="71.6206"
+              x="832.9063" y="1547.1738">t.project_id
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="138.563"
+              x="816.4531" y="1562.4844">FROM task_instance ti
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="224.4595"
+              x="816.4531" y="1577.7949">JOIN task t ON ti.task_id = t.task_id
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="51.3271"
+              x="816.4531" y="1593.1055">WHERE (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="127.0801"
+              x="832.9063" y="1608.416">ti.status = 'pending'
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="156.3301"
+              x="832.9063" y="1623.7266">AND t.queue_name = $1
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="36.6514"
+              x="832.9063" y="1639.0371">AND (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="292.9189"
+              x="849.3594" y="1654.3477">(ti.suspend_until &lt; now() AT TIME ZONE 'UTC')
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="183.0791"
+              x="849.3594" y="1669.6582">OR (ti.suspend_until IS NULL)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275"
+              x="832.9063" y="1684.9688">)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="35.001"
+              x="816.4531" y="1700.2793">) OR (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="124.9282"
+              x="832.9063" y="1715.5898">ti.status = 'running'
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="221.7998"
+              x="832.9063" y="1730.9004">AND (now() - ti.picked_up_at) &gt; $2
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275"
+              x="816.4531" y="1746.2109">)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="249.7295"
+              x="816.4531" y="1761.5215">ORDER BY ti.suspend_until NULLS FIRST
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="165.5088"
+              x="816.4531" y="1776.832">FOR UPDATE SKIP LOCKED
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="46.1729"
+              x="816.4531" y="1792.1426">LIMIT 1
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275" x="800"
+              y="1807.4531">)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="152.2422"
+              x="800" y="1822.7637">UPDATE task_instance ti
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="22.2676" x="800"
+              y="1838.0742">SET
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="116.3081"
+              x="816.4531" y="1853.3848">status = 'running',
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="140.1118"
+              x="816.4531" y="1868.6953">picked_up_at = now(),
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="156.73"
+              x="816.4531" y="1884.0059">attempt = ti.attempt + 1
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="184.228" x="800"
+              y="1899.3164">FROM updated_task_instance
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="433.4751"
+              x="800" y="1914.627">WHERE ti.task_instance_id = updated_task_instance.task_instance_id
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="73.0615" x="800"
+              y="1929.9375">RETURNING
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="61.5532"
+              x="816.4531" y="1945.248">ti.task_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="120.5166"
+              x="816.4531" y="1960.5586">ti.task_instance_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="253.9443"
+              x="816.4531" y="1975.8691">ti.status as "status: TaskInstanceStatus",
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="99.7598"
+              x="816.4531" y="1991.1797">ti.picked_up_at,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="66.1743"
+              x="816.4531" y="2006.4902">ti.attempt,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="327.209"
+              x="816.4531" y="2021.8008">(select parent_task_id from updated_task_instance),
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="430.8662"
+              x="816.4531" y="2037.1113">(select queue_name from updated_task_instance) as "queue_name!",
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="416.4697"
+              x="816.4531" y="2052.4219">(select project_id from updated_task_instance) as "project_ident!",
+        </text>
+        <polygon fill="#181818" points="543.7568,2082.4746,533.7568,2086.4746,543.7568,2090.4746,539.7568,2086.4746"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="537.7568" x2="788.521"
+              y1="2086.4746" y2="2086.4746"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="52.4634"
+              x="549.7568" y="2081.7324">instance
+        </text>
+        <path d="M451.0581,2101.4746 L513.1968,2101.4746 L513.1968,2108.7852 L503.1968,2118.7852 L451.0581,2118.7852 L451.0581,2101.4746 "
+              fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/>
+        <rect fill="none" height="676.2031" style="stroke:#000000;stroke-width:1.5;" width="735.9575" x="451.0581"
+              y="2101.4746"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="17.1387" x="466.0581" y="2115.043">alt
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="92.5708" x="528.1968" y="2114.1094">[instance found]
+        </text>
+        <polygon fill="#181818" points="668.7964,2136.0957,678.7964,2140.0957,668.7964,2144.0957,672.7964,2140.0957"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="532.7568" x2="674.7964" y1="2140.0957" y2="2140.0957"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="110.208"
+              x="539.7568" y="2135.3535">execute(instance)
+        </text>
+        <path d="M461.0581,2155.0957 L523.1968,2155.0957 L523.1968,2162.4063 L513.1968,2172.4063 L461.0581,2172.4063 L461.0581,2155.0957 "
+              fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/>
+        <rect fill="none" height="615.582" style="stroke:#000000;stroke-width:1.5;" width="715.9575" x="461.0581"
+              y="2155.0957"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="17.1387" x="476.0581" y="2168.6641">alt
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="125.9307" x="538.1968" y="2167.7305">[execution successful]
+        </text>
+        <polygon fill="#181818" points="543.7568,2189.7168,533.7568,2193.7168,543.7568,2197.7168,539.7568,2193.7168"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="537.7568" x2="679.7964"
+              y1="2193.7168" y2="2193.7168"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="124.0396"
+              x="549.7568" y="2188.9746">execution complete
+        </text>
+        <polygon fill="#181818" points="777.521,2219.0273,787.521,2223.0273,777.521,2227.0273,781.521,2223.0273"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="532.7568" x2="783.521" y1="2223.0273" y2="2223.0273"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="120.5166"
+              x="539.7568" y="2218.2852">mark as completed
+        </text>
+        <path d="M794,2236.0273 L794,2291.0273 L1098,2291.0273 L1098,2246.0273 L1088,2236.0273 L794,2236.0273 "
+              fill="#F5F5F5" style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M1088,2236.0273 L1088,2246.0273 L1098,2246.0273 L1088,2236.0273 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="139.5088"
+              x="800" y="2253.5957">UPDATE task_instance
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="283.7339"
+              x="800" y="2268.9063">SET status = 'success', completed_at = now()
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="185.7705"
+              x="800" y="2284.2168">WHERE task_instance_id = $1
+        </text>
+        <polygon fill="#181818" points="543.7568,2314.2695,533.7568,2318.2695,543.7568,2322.2695,539.7568,2318.2695"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="537.7568" x2="788.521"
+              y1="2318.2695" y2="2318.2695"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="51.8984"
+              x="549.7568" y="2313.5273">updated
+        </text>
+        <line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="461.0581" x2="1177.0156"
+              y1="2327.2695" y2="2327.2695"/>
+        <text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="98.4468" x="466.0581" y="2337.9043">[execution failed]
+        </text>
+        <polygon fill="#181818" points="543.7568,2358.5352,533.7568,2362.5352,543.7568,2366.5352,539.7568,2362.5352"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="537.7568" x2="679.7964"
+              y1="2362.5352" y2="2362.5352"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="97.1572"
+              x="549.7568" y="2357.793">execution error
+        </text>
+        <polygon fill="#181818" points="777.521,2387.8457,787.521,2391.8457,777.521,2395.8457,781.521,2391.8457"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;" x1="532.7568" x2="783.521" y1="2391.8457" y2="2391.8457"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="89.1655"
+              x="539.7568" y="2387.1035">mark as failed
+        </text>
+        <path d="M794,2404.8457 L794,2735.8457 L1167,2735.8457 L1167,2414.8457 L1157,2404.8457 L794,2404.8457 "
+              fill="#F5F5F5" style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <path d="M1157,2404.8457 L1157,2414.8457 L1167,2414.8457 L1157,2404.8457 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:0.5;"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="81.7769" x="800"
+              y="2422.4141">WITH cte as (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="296.5435"
+              x="816.4531" y="2437.7246">SELECT attempt &gt;= :max_retries as should_fail
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="125.8296"
+              x="816.4531" y="2453.0352">FROM task_instance
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="277.1133"
+              x="816.4531" y="2468.3457">WHERE task_instance_id = :task_instance_id
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="8.3408" x="800"
+              y="2483.6563">),
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="53.2441" x="800"
+              y="2498.9668">cte2 as (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="264.9004"
+              x="816.4531" y="2514.2773">INSERT INTO task_instance_error_history (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="107.7832"
+              x="832.9063" y="2529.5879">task_instance_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="195.3809"
+              x="832.9063" y="2544.8984">task_instance_error_history_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="79.2949"
+              x="832.9063" y="2560.209">error_details
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="64.1367"
+              x="820.5664" y="2575.5195">) VALUES (
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="111.8965"
+              x="837.0195" y="2590.8301">:task_instance_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="199.4941"
+              x="837.0195" y="2606.1406">:task_instance_error_history_id,
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="87.6357"
+              x="837.0195" y="2621.4512">:error_details)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="4.2275" x="800"
+              y="2636.7617">)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="139.5088"
+              x="800" y="2652.0723">UPDATE task_instance
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="335.5625"
+              x="816.4531" y="2667.3828">SET status = CASE WHEN (select should_fail from cte)
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="158.6089"
+              x="882.2656" y="2682.6934">THEN 'failed'::task_status
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="168.9175"
+              x="882.2656" y="2698.0039">ELSE 'pending'::task_status
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="26.3872"
+              x="869.9258" y="2713.3145">END
+        </text>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="277.1133"
+              x="800" y="2728.625">WHERE task_instance_id = :task_instance_id
+        </text>
+        <polygon fill="#181818" points="543.7568,2758.6777,533.7568,2762.6777,543.7568,2766.6777,539.7568,2762.6777"
+                 style="stroke:#181818;stroke-width:1.0;"/>
+        <line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="537.7568" x2="788.521"
+              y1="2762.6777" y2="2762.6777"/>
+        <text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="51.8984"
+              x="549.7568" y="2757.9355">updated
+        </text><!--SRC=[fLXjZzf64FxkNp6baGxQv9gBr2zkYSI1Bw4X465VqxIgh0KFEHTZK-ywuLJrltVMB-ktjI6fJphCxipkpEmppyp2ztvuP34x0FqN_jO_ib2yOvxdXn_XnNE3g_dRw5ICtrJ7mqZWBTlkFyPH4dhJA8XYUF_W2xGFqHwRWb7iOPm9pLYyVnMpHyFOH2SOJ0CVGp60RnV-nmTn6oHeiAqWkNkEiO6X1oIMozgFNE01fj7X68ManGkr3nW4qMUZuWiC5coFUyGZnWDW789zVThUFg2N1Faibz_g0jO9jmaPaixZgQ4jcE0Eu_jCM_Y6nmJRC8umcELlwPItANqOZ-4zY_4XIaXi6YCJVXJ2U6mOqbTuzfACD64h9n0-5vB3D8ny9CFYVv9Jv8e1z0HxgPEQRiBV2IP8bf1T8CYmL4AfPFwbO-chLFGskPOhvOVPQyWEE4vN6QNIylGWbZ66Q2UzWVoPBsrhxT27iqhtup1KS_8fbtjQ6vTh9xmnbfz5VJJ4at0fv7irEe9V9ujxosviDKZj7TIr1nYoJO1US_WvFF_XH_Wk-sjCcfejqpTvX38IwHTl0y_Ak4lVypFpsl7D3pCLyaEoCznYJrmv8coGe4p28E45EKnb-kqeAJmKp0_uEQEAhPHXLSjod9M6InJoPBj5dYtieGut4csaAg5gPkX5XUOrSif8ZaP5LQAK4D_qGi8zYA8Zu2UC7ukZbpD-A33-n08DJ7SejW-KX38ZvQbcYDD1l1UpjhMmfWw8Qwdk-jxJ4daqw7j8l28mt3wwUtnKMdVhrTiiMaADlNzjhIqOFhc1SRaSq07HYCyXJ89WL8FMP3aZmGpyf7ELe_Eg9JHK68IVoPFFmn5C773cRotuVRMquEhUcTQrb6gfAKs8HCECrNfchU7sWoQnxbPhk7ytcpWMs6_cxs2nchwnPcfwCNyxT-3cfqjo8Jiz5eWiP3jP7OnQef_DZTupbC6VEwyXENeIsMx6FPC69-JEA29K072QeIk3Dgxa_zEcc3gvwSIssk5F4R6iB01p6vOh1vRtYmKuSauTkMaMg7EpLNNBMGkRpjhp-OKwrd9crArPP-vBN99d-MjLfWRG9fsxYaA6pQsAvD6Fvsew0Htro-647mbKRX8AFsZDTcLbqu6YCfWgjysMGN0bDoAkkQBP-hPWDZQgBRvQmdIrl5lCYJsoTzjPJoXO3QUJqAUwv_ROF5j9MBoUBrzLHzUMSxzUqc0hY4ggbdONC7wkeoTqEQ78EMjqYbQamise9khKZASwB-T1LJOqY9bwftCPhK_h4eFDz8OweskdKaZwrrreRSlq8BSKlkxgQ-fIrBDHV-gUt_pw64T_uLOqSXDQnQSC1ZMREibVLlDbNgOaHalNgoLAgvaNixu8bOMhoA1EwQpIbM4YfIStlTBTEyjdABUlvcfFNHprhaH5hhsOv6dYw6vD_SmeNUsoaCL969uDsJ3pwPbKFL81eHn8ZYuJ8tW9JruObrkcodpBLUcd3NVpjQtFc3DTGFN9EmBZl4cLIjmBOKrfhXTU5KPzDbLZHj9fDFMIJD0byYY5A4B5b-yrpgIvfoKaGvz26YgXNRGhN7SIVQic65_3R1UpMebKkgqEibSpBGppNDLEnmQTwjN8TmhbSTRF3pa6n85GPqtOnT517xrH_peLykbP8tMu5FrcSCOuHTHd5or5oPskTQ_- -PVQEiVwpVdZprGBupYAtGUVYoX-_6RGsMpZgIptPRUjSglUSMUrcWlVpCiv3fMjIgZi3YWnor5QjMm1yWlYBWaQrtbV6LKARwF3CK1HpvEoRJYmU2zTBiJgu3_NAEWOnMYpIOKvSjkfwrCxLbZ2qEToEv4RPQpLaJNEA0T8UHG1nqgCTdIHRtYk3sQAYpEHr2nsMR-r9I76UxihHPWlwHvnO2StHX7xc186f-j_uBbo-mlRbvuEH1DoyonDQgY0V7hHxLJdJSUj9M1VSR-yNUnUlrSlawp-sADfGBI_XTKUyt9BcxANsmfcpThHL_O47G1qwZVlx9fTK785VHadqydtju35azt8iwmX5aujwRwCTzpEYrRu2_KRL_N_am1VJ46Lob2z5ERzcEQ-I9StEVeV]-->
+    </g>
+</svg>

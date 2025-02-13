@@ -2,6 +2,7 @@ pub mod v1 {
     pub mod bootstrap;
     pub mod project;
     pub mod role;
+    pub mod task;
     pub mod user;
     pub mod warehouse;
 
@@ -13,6 +14,10 @@ pub mod v1 {
     use crate::request_metadata::RequestMetadata;
     use std::marker::PhantomData;
 
+    use crate::api::management::v1::task::{
+        ListTaskInstancesQuery, ListTaskInstancesResponse, ListTasksQuery, ListTasksRequest,
+        ListTasksResponse, TaskService,
+    };
     use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
     use crate::api::management::v1::warehouse::UndropTabularsRequest;
     use crate::api::IcebergErrorResponse;
@@ -486,7 +491,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<CreateWarehouseRequest>,
     ) -> Result<CreateWarehouseResponse> {
-        ApiServer::<C, A, S>::create_warehouse(request, api_context, metadata).await
+        ApiServer::<C, A, S>::create_warehouse(request, None, api_context, metadata).await
     }
 
     /// List all projects the requesting user has access to
@@ -885,6 +890,43 @@ pub mod v1 {
         pub next_page_token: Option<String>,
     }
 
+    #[utoipa::path(
+        get,
+        tag = "task",
+        path = "/management/v1/task",
+        params(ListTasksQuery),
+        responses(
+            (status = 200, description = "List Tasks"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn list_tasks<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Query(query): Query<ListTasksQuery>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(body): Json<ListTasksRequest>,
+    ) -> Result<ListTasksResponse> {
+        api_context.list_tasks(metadata, body, query).await
+    }
+
+    #[utoipa::path(
+        get,
+        tag = "task",
+        path = "/management/v1/task/instances",
+        params(ListTaskInstancesQuery),
+        responses(
+            (status = 200, description = "List Tasks"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn list_task_instances<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Query(query): Query<ListTaskInstancesQuery>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTaskInstancesResponse> {
+        api_context.list_task_instances(metadata, query).await
+    }
+
     #[derive(Debug, Serialize, utoipa::ToSchema)]
     pub struct DeletedTabularResponse {
         /// Unique identifier of the tabular
@@ -975,6 +1017,10 @@ pub mod v1 {
                 .route("/warehouse", post(create_warehouse))
                 // List all projects
                 .route("/project-list", get(list_projects))
+                // List all tasks
+                // TODO: should this be top-level management, a whole new api or warehouse?
+                .route("/task", get(list_tasks))
+                .route("/task/instances", get(list_task_instances))
                 .route(
                     "/warehouse",
                     // List all warehouses within a project

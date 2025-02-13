@@ -831,8 +831,12 @@ pub(crate) async fn get_table_metadata_by_s3_location(
 
     let table = match table {
         Ok(table) => table,
-        Err(sqlx::Error::RowNotFound) => return Ok(None),
+        Err(sqlx::Error::RowNotFound) => {
+            tracing::debug!("Table not found by location");
+            return Ok(None);
+        }
         Err(e) => {
+            tracing::debug!("Error fetching table by location: {e}");
             return Err(e
                 .into_error_model("Error fetching table".to_string())
                 .into());

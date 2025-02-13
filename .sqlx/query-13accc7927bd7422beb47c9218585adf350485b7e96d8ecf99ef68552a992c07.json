@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH updated_task_instance AS (\n            SELECT\n                ti.task_id,\n                ti.task_instance_id,\n                t.queue_name,\n                t.parent_task_id,\n                t.project_id\n            FROM task_instance ti\n            JOIN task t ON ti.task_id = t.task_id\n            WHERE (\n                ti.status = 'pending'\n                AND t.queue_name = $1\n                AND (\n                    (ti.suspend_until < now() AT TIME ZONE 'UTC')\n                    OR (ti.suspend_until IS NULL)\n                )\n            ) OR (\n                ti.status = 'running'\n                AND (now() - ti.picked_up_at) > $2\n            )\n            ORDER BY ti.suspend_until NULLS FIRST\n            FOR UPDATE SKIP LOCKED\n            LIMIT 1\n        )\n        UPDATE task_instance ti\n        SET\n            status = 'running',\n            picked_up_at = now(),\n            attempt = ti.attempt + 1\n        FROM updated_task_instance\n        WHERE ti.task_instance_id = updated_task_instance.task_instance_id\n        RETURNING\n            ti.task_id,\n            ti.task_instance_id,\n            ti.status as \"status: TaskInstanceStatus\",\n            ti.picked_up_at,\n            ti.attempt,\n            (select parent_task_id from updated_task_instance),\n            (select queue_name from updated_task_instance) as \"queue_name!\",\n            (select project_id from updated_task_instance) as \"project_ident!\",\n            '{}'::TEXT[] as \"error_history!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "task_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "status: TaskInstanceStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "running",
+                "success",
+                "failed",
+                "cancelled"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "picked_up_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "attempt",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "queue_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "project_ident!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "error_history!",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Interval"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "13accc7927bd7422beb47c9218585adf350485b7e96d8ecf99ef68552a992c07"
+}

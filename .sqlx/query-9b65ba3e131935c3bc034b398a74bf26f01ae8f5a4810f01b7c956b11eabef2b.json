@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM task\n                    WHERE task_id = ANY($1)\n                    AND (\n                        -- Case 1: No task instances exist\n                        NOT EXISTS (\n                            SELECT 1\n                            FROM task_instance\n                            WHERE task_instance.task_id = task.task_id\n                        )\n                        OR\n                        -- Case 2: All instances are in pending/failed/done state\n                        NOT EXISTS (\n                            SELECT 1\n                            FROM task_instance\n                            WHERE task_instance.task_id = task.task_id\n                            AND status NOT IN ('pending', 'failed', 'success')\n                        ));",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b65ba3e131935c3bc034b398a74bf26f01ae8f5a4810f01b7c956b11eabef2b"
+}

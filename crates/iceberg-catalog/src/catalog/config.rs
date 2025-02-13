@@ -7,7 +7,7 @@ use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
 use crate::service::{authz::Authorizer, Catalog, ProjectIdent, State};
 use crate::service::{AuthDetails, SecretStore, Transaction};
-use crate::{CONFIG, DEFAULT_PROJECT_ID};
+use crate::CONFIG;
 use std::str::FromStr;
 
 use super::CatalogServer;
@@ -22,7 +22,7 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CatalogConfig> {
         let authorizer = api_context.v1_state.authz;
-        let project_id_from_auth = &request_metadata.auth_details.project_id();
+        let project_id_from_auth = &request_metadata.auth_details.preferred_project_id();
         let warehouse_id_from_auth = &request_metadata.auth_details.warehouse_id();
 
         maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone()).await?;
@@ -32,7 +32,6 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
             let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
             let project_id = project_from_arg
                 .or(*project_id_from_auth)
-                .or(*DEFAULT_PROJECT_ID)
                 .ok_or_else(|| {
                     // ToDo Christian: Split Project into separate endpoint, Use name
                     ErrorModel::bad_request(
@@ -43,7 +42,7 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
                 .require_project_action(
                     &request_metadata,
                     project_id,
-                    &CatalogProjectAction::CanListWarehouses,
+                    CatalogProjectAction::CanListWarehouses,
                 )
                 .await?;
             C::require_warehouse_by_name(

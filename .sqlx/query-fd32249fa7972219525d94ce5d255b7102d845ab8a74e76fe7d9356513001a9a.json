@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH cte as (\n            SELECT attempt >= $3 as should_fail\n            FROM task_instance\n            WHERE task_instance_id = $1\n        ),\n        cte2 as (\n            INSERT INTO task_instance_error_history (task_instance_id, task_instance_error_history_id, error_details) VALUES ($1, $2, $4)\n        )\n        UPDATE task_instance\n        SET status = CASE WHEN (select should_fail from cte) THEN 'failed'::task_status ELSE 'pending'::task_status END\n        WHERE task_instance_id = $1\n        RETURNING task_instance_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_instance_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fd32249fa7972219525d94ce5d255b7102d845ab8a74e76fe7d9356513001a9a"
+}

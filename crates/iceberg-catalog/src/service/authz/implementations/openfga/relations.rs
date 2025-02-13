@@ -416,6 +416,7 @@ pub(super) enum ProjectRelation {
     CanGrantProjectAdmin,
     CanGrantSecurityAdmin,
     CanGrantDataAdmin,
+    CanListTasks,
 }
 
 impl OpenFgaRelation for ProjectRelation {}
@@ -607,6 +608,7 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::CanCreateRole => ProjectRelation::CanCreateRole,
             CatalogProjectAction::CanListRoles => ProjectRelation::CanListRoles,
             CatalogProjectAction::CanSearchRoles => ProjectRelation::CanSearchRoles,
+            CatalogProjectAction::CanListTasks => ProjectRelation::CanListTasks,
         }
     }
 }

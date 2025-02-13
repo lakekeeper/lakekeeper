@@ -1,4 +1,5 @@
 mod v2;
+mod v3;
 
 use super::{ClientHelper, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use crate::service::authz::implementations::openfga::client::ClientConnection;
@@ -70,6 +71,7 @@ pub(crate) async fn migrate(
                     // no migration to be done, we start at v1
                 }
                 ModelVersion::V2 => v2::migrate(client, &written_model.auth_model_id, &store).await,
+                ModelVersion::V3 => v3::migrate(client, &written_model.auth_model_id, &store).await,
             }
             tracing::info!("Marking model version {} as applied", model_version);
             mark_as_applied(client, &store, written_model).await?;

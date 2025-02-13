@@ -73,6 +73,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         tabular_location: location,
                         tabular_id: *view_id,
                         warehouse_ident: warehouse_id,
+                        project_ident: warehouse.project_id,
                         tabular_type: TabularType::View,
                         parent_id: None,
                     })
@@ -90,6 +91,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .queues
                 .queue_tabular_expiration(TabularExpirationInput {
                     tabular_id: *view_id,
+                    project_ident: warehouse.project_id,
                     warehouse_ident: warehouse_id,
                     tabular_type: TabularType::View,
                     purge: purge_requested,

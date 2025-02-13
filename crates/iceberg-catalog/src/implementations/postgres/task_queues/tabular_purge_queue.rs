@@ -5,12 +5,12 @@ use crate::api::management::v1::TabularType;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::implementations::postgres::tabular::TabularType as DbTabularType;
 use crate::implementations::postgres::task_queues::{
-    pick_task, queue_task, record_failure, record_success,
+    delete_task, pick_task, queue_task, record_failure, record_success,
 };
 use crate::service::task_queue::tabular_purge_queue::{TabularPurgeInput, TabularPurgeTask};
-use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
+use crate::service::task_queue::{TaskId, TaskQueue, TaskQueueConfig};
 
-use super::{cancel_pending_tasks, TaskFilter};
+use super::TaskFilter;
 
 super::impl_pg_task_queue!(TabularPurgeQueue);
 
@@ -47,7 +47,7 @@ impl TaskQueue for TabularPurgeQueue {
             FROM tabular_purges
             WHERE task_id = $1
             "#,
-            task.task_id
+            *task.task_id
         )
         .fetch_one(&self.pg_queue.read_write.read_pool)
         .await
@@ -86,10 +86,11 @@ impl TaskQueue for TabularPurgeQueue {
             tabular_location,
             tabular_id,
             warehouse_ident,
+            project_ident,
             tabular_type,
             parent_id,
         }: TabularPurgeInput,
-    ) -> crate::api::Result<()> {
+    ) -> crate::api::Result<Option<TaskId>> {
         let mut transaction = self
             .pg_queue
             .read_write
@@ -108,9 +109,9 @@ impl TaskQueue for TabularPurgeQueue {
         let Some(task_id) = queue_task(
             &mut transaction,
             self.queue_name(),
-            parent_id,
+            parent_id.as_deref().copied(),
             idempotency_key,
-            warehouse_ident,
+            project_ident,
             None,
         )
         .await?
@@ -120,7 +121,7 @@ impl TaskQueue for TabularPurgeQueue {
                 tracing::error!(?e, "failed to commit");
                 e.into_error_model("failed commiting transaction")
             })?;
-            return Ok(());
+            return Ok(None);
         };
 
         let it = sqlx::query!(
@@ -156,29 +157,34 @@ impl TaskQueue for TabularPurgeQueue {
             e.into_error_model("failed to commit tabular purge task")
         })?;
 
-        Ok(())
+        Ok(Some(task_id.into()))
     }
 
-    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
-        cancel_pending_tasks(&self.pg_queue, filter, self.queue_name()).await
+    async fn delete_task(&self, filter: TaskFilter) -> crate::api::Result<()> {
+        delete_task(&self.pg_queue.read_write.write_pool, &filter).await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::super::test::setup;
+    use crate::implementations::postgres::task_queues::test::create_test_project;
     use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
     use crate::service::task_queue::{TaskQueue, TaskQueueConfig};
+    use crate::DEFAULT_PROJECT_ID;
     use sqlx::PgPool;
 
     #[sqlx::test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {
+        create_test_project(pool.clone()).await;
         let config = TaskQueueConfig::default();
         let pg_queue = setup(pool, config);
         let queue = super::TabularPurgeQueue { pg_queue };
         let input = TabularPurgeInput {
             tabular_id: uuid::Uuid::new_v4(),
             warehouse_ident: uuid::Uuid::new_v4().into(),
+            project_ident: DEFAULT_PROJECT_ID.unwrap(),
             tabular_type: crate::api::management::v1::TabularType::Table,
             parent_id: None,
             tabular_location: String::new(),

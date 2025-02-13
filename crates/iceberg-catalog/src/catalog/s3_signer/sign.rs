@@ -56,6 +56,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // Include staged tables as this might be a commit
         let include_staged = true;
 
+        tracing::debug!("Signing request URL: {}", request_url);
         let parsed_url = s3_utils::parse_s3_url(&request_url)?;
 
         // Unfortunately there is currently no way to pass information about warehouse_id & table_id
@@ -75,6 +76,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             storage_secret_ident,
             storage_profile,
         } = if let Ok(table_id) = require_table_id(table.clone()) {
+            tracing::debug!("Table ID: {}", table_id);
             let metadata = C::get_table_metadata_by_id(
                 warehouse_id,
                 table_id,
@@ -93,8 +95,15 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     metadata,
                     &CatalogTableAction::CanGetMetadata,
                 )
-                .await?
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!(error = %e.error, "Failed to authorize table action");
+                })?
         } else {
+            tracing::debug!(
+                "Table ID not provided, trying to resolve table by location: {}",
+                parsed_url.location
+            );
             let metadata = C::get_table_metadata_by_s3_location(
                 warehouse_id,
                 parsed_url.location.location(),
@@ -108,14 +117,25 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 },
                 state.v1_state.catalog.clone(),
             )
-            .await;
+            .await
+            .inspect(|inner| {
+                tracing::debug!(
+                    "Table resolve result: '{}' ",
+                    inner
+                        .as_ref()
+                        .map_or("None".to_string(), |t| t.table_id.to_string())
+                );
+            });
             authorizer
                 .require_table_action(
                     &request_metadata,
                     metadata,
                     &CatalogTableAction::CanGetMetadata,
                 )
-                .await?
+                .await
+                .inspect_err(|e| {
+                    tracing::debug!(error = %e.error, "Failed to authorize table action");
+                })?
         };
 
         // First check - fail fast if requested table is not allowed.

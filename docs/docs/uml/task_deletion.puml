@@ -1,0 +1,58 @@
+@startuml
+!theme plain
+skinparam participantPadding 20
+skinparam BoxPadding 10
+skinparam noteBackgroundColor WhiteSmoke
+skinparam noteBorderColor DarkGray
+
+box "Client" #LightBlue
+actor User
+end box
+
+box "Lakekeeper" #LightYellow
+participant "API Server" as server
+participant "Catalog" as catalog
+participant "Task Queues" as queue
+participant "Postgres" as db
+end box
+
+User -> server: POST /deleted_tabulars/undrop
+
+server -> catalog: undrop_tabulars()
+activate catalog
+catalog -> db: clear tabular.deleted_at
+catalog --> server: success
+deactivate catalog
+
+server -> queue: cancel_tabular_expiration()
+activate queue
+
+alt task exists and status ∉ ['pending', 'failed', 'success']
+    queue -> db: delete task
+    note right of db
+    DELETE FROM task
+    WHERE task_id = ANY($1)
+    -- we cascade delete task instances
+    AND (
+        -- Case 1: No task instances exist
+        NOT EXISTS (
+            SELECT 1
+            FROM task_instance
+            WHERE task_instance.task_id = task.task_id
+        )
+        OR
+        -- Case 2: All instances are in pending/failed/success state
+        NOT EXISTS (
+            SELECT 1
+            FROM task_instance
+            WHERE task_instance.task_id = task.task_id
+            AND status NOT IN ('pending', 'failed', 'success')
+        ));"
+    end note
+end
+queue --> server: success
+deactivate queue
+
+server --> User: 200 OK
+
+@enduml

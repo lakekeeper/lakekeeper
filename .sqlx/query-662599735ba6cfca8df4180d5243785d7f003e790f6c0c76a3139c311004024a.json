@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE task_instance\n           SET status = 'success', completed_at = now()\n           WHERE task_instance_id = $1\n           RETURNING task_instance_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_instance_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "662599735ba6cfca8df4180d5243785d7f003e790f6c0c76a3139c311004024a"
+}

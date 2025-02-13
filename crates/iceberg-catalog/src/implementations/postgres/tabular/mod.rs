@@ -364,13 +364,14 @@ where
             t.typ as "typ: TabularType",
             t.created_at,
             t.deleted_at,
-            tt.suspend_until as "cleanup_at?",
+            ti.suspend_until as "cleanup_at?",
             tt.task_id as "cleanup_task_id?"
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
         LEFT JOIN tabular_expirations te ON t.tabular_id = te.tabular_id
         LEFT JOIN task tt ON te.task_id = tt.task_id
+        LEFT JOIN task_instance ti ON tt.task_id = ti.task_id
         WHERE n.warehouse_id = $1
             AND (namespace_name = $2 OR $2 IS NULL)
             AND (n.namespace_id = $11 OR $11 IS NULL)

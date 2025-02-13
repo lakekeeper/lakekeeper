@@ -1,32 +1,37 @@
 mod undrop;
 
+use super::default_page_size;
+use crate::api::iceberg::v1::{PageToken, PaginationQuery};
+use crate::api::management::v1::role::require_project_id;
 use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse};
 use crate::api::{ApiContext, Result};
+use crate::catalog::UnfilteredPage;
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
 pub use crate::service::storage::{
     AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
     StorageCredential, StorageProfile,
 };
-use futures::FutureExt;
-use itertools::Itertools;
-
-use crate::api::iceberg::v1::{PageToken, PaginationQuery};
-use crate::service::{NamespaceIdentUuid, TableIdentUuid};
-
-use super::default_page_size;
-use crate::api::management::v1::role::require_project_id;
-use crate::catalog::UnfilteredPage;
+use crate::service::task_queue::stats::StatsInput;
 use crate::service::task_queue::TaskFilter;
 pub use crate::service::WarehouseStatus;
 use crate::service::{
     authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
     Transaction,
 };
+use crate::service::{NamespaceIdentUuid, TableIdentUuid};
 use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
+use futures::FutureExt;
 use iceberg_ext::catalog::rest::ErrorModel;
-use serde::Deserialize;
+use itertools::Itertools;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use std::sync::LazyLock;
 use utoipa::ToSchema;
+
+static STATS_SCHEDULE: LazyLock<cron::Schedule> = LazyLock::new(|| {
+    cron::Schedule::from_str("0 0/5 * * * *").expect("Failed to parse cron schedule")
+});
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +228,22 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     }
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WarehouseStatistics {
+    pub number_of_tables: i64, // silly but necessary due to sqlx wanting i64, not usize
+    pub number_of_views: i64,
+    pub taken_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct WarehouseStatsResponse {
+    /// ID of the warehouse for which the stats were collected.
+    pub warehouse_ident: uuid::Uuid,
+    /// Ordered list of warehouse statistics.
+    pub stats: Vec<WarehouseStatistics>,
+}
+
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
@@ -236,6 +257,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for Api
 pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     async fn create_warehouse(
         request: CreateWarehouseRequest,
+        stats_schedule: Option<cron::Schedule>,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CreateWarehouseResponse> {
@@ -246,7 +268,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id = project_id
+        let project_ident = project_id
             .or(*DEFAULT_PROJECT_ID)
             .ok_or(ErrorModel::bad_request(
                 "project_id must be specified",
@@ -259,8 +281,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
-                &CatalogProjectAction::CanCreateWarehouse,
+                project_ident,
+                CatalogProjectAction::CanCreateWarehouse,
             )
             .await?;
 
@@ -286,7 +308,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         let warehouse_id = C::create_warehouse(
             warehouse_name,
-            project_id,
+            project_ident,
             storage_profile,
             delete_profile,
             secret_id,
@@ -294,10 +316,21 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         )
         .await?;
         authorizer
-            .create_warehouse(&request_metadata, warehouse_id, project_id)
+            .create_warehouse(&request_metadata, warehouse_id, project_ident)
             .await?;
 
         transaction.commit().await?;
+
+        context
+            .v1_state
+            .queues
+            .queue_stats_task(StatsInput {
+                warehouse_ident: warehouse_id,
+                schedule: stats_schedule.unwrap_or(STATS_SCHEDULE.clone()),
+                parent_id: None,
+                project_ident,
+            })
+            .await?;
 
         Ok(CreateWarehouseResponse { warehouse_id })
     }
@@ -315,7 +348,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanListWarehouses,
+                CatalogProjectAction::CanListWarehouses,
             )
             .await?;
 
@@ -368,6 +401,25 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let warehouses = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
         transaction.commit().await?;
         Ok(warehouses.into())
+    }
+
+    async fn get_warehouse_stats(
+        warehouse_id: WarehouseIdent,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<WarehouseStatsResponse> {
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanGetMetadata,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        C::get_warehouse_stats(warehouse_id, context.v1_state.catalog.clone()).await
     }
 
     async fn delete_warehouse(
@@ -896,7 +948,7 @@ mod test {
 
     use crate::api::iceberg::v1::views::Service;
     use crate::api::management::v1::warehouse::{
-        ListDeletedTabularsQuery, Service as _, TabularDeleteProfile,
+        ListDeletedTabularsQuery, Service as _, TabularDeleteProfile, STATS_SCHEDULE,
     };
     use crate::api::management::v1::ApiServer;
     use crate::api::ApiContext;
@@ -1211,6 +1263,17 @@ mod test {
 
         for (idx, i) in (7..10).enumerate() {
             assert_eq!(next_page_items[idx], format!("view-{i}"));
+        }
+    }
+
+    #[test]
+    fn assert_stats_schedule_increments_in_5_minute_steps() {
+        let mut schedule = STATS_SCHEDULE.upcoming(chrono::Utc);
+        let mut last = schedule.next().unwrap();
+        for _ in 0..10 {
+            let next = schedule.next().unwrap();
+            assert_eq!(last.timestamp() + 300, next.timestamp());
+            last = next;
         }
     }
 }

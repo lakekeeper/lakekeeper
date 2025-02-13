@@ -8,6 +8,7 @@ use std::fmt::Debug;
 mod identities;
 mod verification;
 
+use crate::DEFAULT_PROJECT_ID;
 pub use identities::{Principal, UserId};
 pub(crate) use verification::{auth_middleware_fn, VerifierChain};
 pub use verification::{IdpVerifier, K8sVerifier};
@@ -114,8 +115,8 @@ impl AuthDetails {
     }
 
     #[must_use]
-    pub fn project_id(&self) -> Option<ProjectIdent> {
-        None
+    pub fn preferred_project_id(&self) -> Option<ProjectIdent> {
+        *DEFAULT_PROJECT_ID
     }
 
     #[must_use]

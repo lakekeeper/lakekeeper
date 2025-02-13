@@ -54,6 +54,7 @@ pub enum CatalogProjectAction {
     CanCreateRole,
     CanListRoles,
     CanSearchRoles,
+    CanListTasks,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
@@ -207,7 +208,7 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: ProjectIdent,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -415,7 +416,7 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: ProjectIdent,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<()> {
         if self
             .is_allowed_project_action(metadata, project_id, action)
@@ -471,7 +472,12 @@ where
         let typ = "NamespaceActionForbidden";
 
         match namespace_id {
-            Ok(None) => Err(ErrorModel::forbidden(msg, typ, None).into()),
+            Ok(None) => {
+                tracing::debug!(
+                    "Namespace does not exist, returning forbidden to prevent probing."
+                );
+                Err(ErrorModel::forbidden(msg, typ, None).into())
+            }
             Ok(Some(namespace_id)) => {
                 if self
                     .is_allowed_namespace_action(metadata, namespace_id, action)
@@ -479,6 +485,7 @@ where
                 {
                     Ok(namespace_id)
                 } else {
+                    tracing::debug!("Namespace action not allowed.");
                     Err(ErrorModel::forbidden(msg, typ, None).into())
                 }
             }
@@ -501,7 +508,10 @@ where
         let typ = "TableActionForbidden";
 
         match table_id {
-            Ok(None) => Err(ErrorModel::forbidden(msg, typ, None).into()),
+            Ok(None) => {
+                tracing::debug!("Table does not exist, returning forbidden to prevent probing.");
+                Err(ErrorModel::forbidden(msg, typ, None).into())
+            }
             Ok(Some(table_id)) => {
                 if self
                     .is_allowed_table_action(metadata, table_id.table_uuid(), action)
@@ -509,6 +519,7 @@ where
                 {
                     Ok(table_id)
                 } else {
+                    tracing::debug!("Table action not allowed.");
                     Err(ErrorModel::forbidden(msg, typ, None).into())
                 }
             }

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO statistics_task (task_id, warehouse_id)\n            VALUES ($1, $2)\n            ON CONFLICT (task_id) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3107f0d00728bd471ab03090cf3c1934212096de424fdce9498f158a481e8afe"
+}

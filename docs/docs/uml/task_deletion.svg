@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentStyleType="text/css"
+     height="785px" preserveAspectRatio="none" style="width:1134px;height:785px;background:#FFFFFF;" version="1.1"
+     viewBox="0 0 1134 785" width="1134px" zoomAndPan="magnify">
+    <defs/>
+    <g>
+        <rect fill="#ADD8E6" height="773.4102" style="stroke:#000000;stroke-width:1.0;" width="48.1104" x="16" y="6"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="42.1104" x="19" y="19.0698">Client
+        </text>
+        <rect fill="#FFFFE0" height="773.4102" style="stroke:#000000;stroke-width:1.0;" width="547.6836" x="203.3018"
+              y="6"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="84.4937" x="434.8967" y="19.0698">Lakekeeper
+        </text>
+        <rect fill="#FFFFFF" height="59.5986" style="stroke:#000000;stroke-width:1.0;" width="10" x="410.0713"
+              y="165.4126"/>
+        <rect fill="#FFFFFF" height="395.7856" style="stroke:#000000;stroke-width:1.0;" width="10" x="545.7803"
+              y="254.8105"/>
+        <rect fill="#FFFFFF" height="351.9863" style="stroke:#000000;stroke-width:1.0;" width="660.1245" x="468.6563"
+              y="269.8105"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="39.1274" x2="39.1274" y1="103.814" y2="698.3955"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="271.3018" x2="271.3018" y1="103.814" y2="698.3955"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="414.4863" x2="414.4863" y1="103.814" y2="698.3955"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="550.6563" x2="550.6563" y1="103.814" y2="698.3955"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="689.9043" x2="689.9043" y1="103.814" y2="698.3955"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="31.8555"
+              x="21.1274" y="100.8745">User
+        </text>
+        <ellipse cx="40.0552" cy="34.7993" fill="#FFFFFF" rx="8" ry="8" style="stroke:#000000;stroke-width:1.0;"/>
+        <path d="M40.0552,42.7993 L40.0552,69.7993 M27.0552,50.7993 L53.0552,50.7993 M40.0552,69.7993 L27.0552,84.7993 M40.0552,69.7993 L53.0552,84.7993 "
+              fill="none" style="stroke:#000000;stroke-width:1.0;"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="31.8555"
+              x="21.1274" y="711.4707">User
+        </text>
+        <ellipse cx="40.0552" cy="723.4102" fill="#FFFFFF" rx="8" ry="8" style="stroke:#000000;stroke-width:1.0;"/>
+        <path d="M40.0552,731.4102 L40.0552,758.4102 M27.0552,739.4102 L53.0552,739.4102 M40.0552,758.4102 L27.0552,773.4102 M40.0552,758.4102 L53.0552,773.4102 "
+              fill="none" style="stroke:#000000;stroke-width:1.0;"/>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="89.3115"
+              x="227.3018" y="71.7993"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="75.3115"
+              x="234.3018" y="92.8745">API Server
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="89.3115"
+              x="227.3018" y="697.3955"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="75.3115"
+              x="234.3018" y="718.4707">API Server
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="67.1699"
+              x="381.4863" y="71.7993"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="53.1699"
+              x="388.4863" y="92.8745">Catalog
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="67.1699"
+              x="381.4863" y="697.3955"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="53.1699"
+              x="388.4863" y="718.4707">Catalog
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="104.248"
+              x="498.6563" y="71.7993"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="90.248"
+              x="505.6563" y="92.8745">Task Queues
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="104.248"
+              x="498.6563" y="697.3955"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="90.248"
+              x="505.6563" y="718.4707">Task Queues
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="74.0811"
+              x="652.9043" y="71.7993"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="60.0811"
+              x="659.9043" y="92.8745">Postgres
+        </text>
+        <rect fill="#FFFFFF" height="31.0146" rx="2.5" ry="2.5" style="stroke:#000000;stroke-width:1.0;" width="74.0811"
+              x="652.9043" y="697.3955"/>
+        <text fill="#000000" font-family="Verdana" font-size="14" lengthAdjust="spacing" textLength="60.0811"
+              x="659.9043" y="718.4707">Postgres
+        </text>
+        <rect fill="#FFFFFF" height="59.5986" style="stroke:#000000;stroke-width:1.0;" width="10" x="410.0713"
+              y="165.4126"/>
+        <rect fill="#FFFFFF" height="395.7856" style="stroke:#000000;stroke-width:1.0;" width="10" x="545.7803"
+              y="254.8105"/>
+        <polygon fill="#000000" points="259.9575,131.6133,269.9575,135.6133,259.9575,139.6133,263.9575,135.6133"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="40.0552" x2="265.9575" y1="135.6133" y2="135.6133"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="206.7749"
+              x="47.0552" y="130.8838">POST /deleted_tabulars/undrop
+        </text>
+        <polygon fill="#000000" points="398.0713,161.4126,408.0713,165.4126,398.0713,169.4126,402.0713,165.4126"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="271.9575" x2="404.0713" y1="165.4126" y2="165.4126"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="119.1138"
+              x="278.9575" y="160.6831">undrop_tabulars()
+        </text>
+        <polygon fill="#000000" points="677.9448,191.2119,687.9448,195.2119,677.9448,199.2119,681.9448,195.2119"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="420.0713" x2="683.9448" y1="195.2119" y2="195.2119"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="156.2349"
+              x="427.0713" y="190.4824">clear tabular.deleted_at
+        </text>
+        <polygon fill="#000000" points="282.9575,221.0112,272.9575,225.0112,282.9575,229.0112,278.9575,225.0112"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="276.9575" x2="414.0713"
+              y1="225.0112" y2="225.0112"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="49.8354"
+              x="288.9575" y="220.2817">success
+        </text>
+        <polygon fill="#000000" points="533.7803,250.8105,543.7803,254.8105,533.7803,258.8105,537.7803,254.8105"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="271.9575" x2="539.7803" y1="254.8105" y2="254.8105"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="180.6733"
+              x="278.9575" y="250.0811">cancel_tabular_expiration()
+        </text>
+        <path d="M468.6563,269.8105 L532.7056,269.8105 L532.7056,277.6099 L522.7056,287.6099 L468.6563,287.6099 L468.6563,269.8105 "
+              fill="#FFFFFF" style="stroke:#000000;stroke-width:1.0;"/>
+        <rect fill="none" height="351.9863" style="stroke:#000000;stroke-width:1.0;" width="660.1245" x="468.6563"
+              y="269.8105"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" font-weight="bold" lengthAdjust="spacing"
+              textLength="19.0493" x="483.6563" y="283.8804">alt
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="11" font-weight="bold" lengthAdjust="spacing"
+              textLength="342.6919" x="547.7056" y="282.8696">[task exists and status &#8713; ['pending', 'failed',
+            'success']]
+        </text>
+        <polygon fill="#000000" points="677.9448,305.4092,687.9448,309.4092,677.9448,313.4092,681.9448,309.4092"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;" x1="555.7803" x2="683.9448" y1="309.4092" y2="309.4092"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="71.9888"
+              x="562.7803" y="304.6797">delete task
+        </text>
+        <path d="M694,322.4092 L694,616.4092 L1118,616.4092 L1118,332.4092 L1108,322.4092 L694,322.4092 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:1.0;"/>
+        <path d="M1108,322.4092 L1108,332.4092 L1118,332.4092 L1108,322.4092 " fill="#F5F5F5"
+              style="stroke:#A9A9A9;stroke-width:1.0;"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="124.1602" x="700"
+              y="340.479">DELETE FROM task
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="174.7256" x="700"
+              y="356.2783">WHERE task_id = ANY($1)
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="233.251" x="700"
+              y="372.0776">-- we cascade delete task instances
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="39.1016" x="700"
+              y="387.877">AND (
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="221.7236"
+              x="718.2813" y="403.6763">-- Case 1: No task instances exist
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="91.3936"
+              x="718.2813" y="419.4756">NOT EXISTS (
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="62.4863"
+              x="736.5625" y="435.2749">SELECT 1
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="132.1709"
+              x="736.5625" y="451.0742">FROM task_instance
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="293.8647"
+              x="736.5625" y="466.8735">WHERE task_instance.task_id = task.task_id
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="5.9033"
+              x="718.2813" y="482.6729">)
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="19.2715"
+              x="718.2813" y="498.4722">OR
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="385.4995"
+              x="718.2813" y="514.2715">-- Case 2: All instances are in pending/failed/success state
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="91.3936"
+              x="718.2813" y="530.0708">NOT EXISTS (
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="62.4863"
+              x="736.5625" y="545.8701">SELECT 1
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="132.1709"
+              x="736.5625" y="561.6694">FROM task_instance
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="293.8647"
+              x="736.5625" y="577.4688">WHERE task_instance.task_id = task.task_id
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="318.5063"
+              x="736.5625" y="593.2681">AND status NOT IN ('pending', 'failed', 'success')
+        </text>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="23.6768"
+              x="718.2813" y="609.0674">));"
+        </text>
+        <polygon fill="#000000" points="282.9575,646.5962,272.9575,650.5962,282.9575,654.5962,278.9575,650.5962"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="276.9575" x2="549.7803"
+              y1="650.5962" y2="650.5962"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="49.8354"
+              x="288.9575" y="645.8667">success
+        </text>
+        <polygon fill="#000000" points="51.0552,676.3955,41.0552,680.3955,51.0552,684.3955,47.0552,680.3955"
+                 style="stroke:#000000;stroke-width:1.0;"/>
+        <line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="45.0552" x2="270.9575" y1="680.3955"
+              y2="680.3955"/>
+        <text fill="#000000" font-family="Verdana" font-size="13" lengthAdjust="spacing" textLength="48.604" x="57.0552"
+              y="675.666">200 OK
+        </text><!--SRC=[pLJTRjCm5BxtKnmAKbk9hUikYq3gkW8LeorjqPWGgaxZiywA6mVRsSeRm6lo9DYEawQRj6joaHpxVCV-llEJ5_QETWIvH94naueiHuqxS6yh4f5ZPkV8kSYsS7xMy5-eVRNVR-vdoj859kbMgoBZ8oMLXkixOMcvKoaz1YhDIPUWIzJf1us_6DkeFRH6Kb1cM_3oIcplx8KiY65Y7Uwh8Sqeu-1W4Nk5AQL4EUaAVqDIgWVM406juNm2IzBt7eK6J32F8IEqADKs-9FIFWQiqAJmfQ22J03zzEOnPAwCtUhevvi3LKySJjx5YmSmdorNqECaoH9VMzmK4hNfkQnfbJDMmdn0P3A0qbL3ErsV4d6FbcgsyUl3-6O0YIJK40DEgxlG7d0DGgP84ZA6SNfoR8DDaEnEnYmXMN5PqpuN6grGMPDLcHw6qZeEBdEq5yOQG9SIOz4M1lx-_WFVsxbBakkazcjetwAGnBqLwRH_C71FEAgILGe9PmQdxoNGll2WRdtI_URb-6gy6iFxnUpp0NdzSRmOX-LQS7WBm-bDvrM_6tmd9_3W9Pi4EJNl094vkawl2RZXz18wmOfH8pG4_G5CrIDuARY6JcSh67-RB5VBHhn_bexgQ0NzeysQ-BewxyZTL1BzfmTTtggMTLYtjcQB9_pF1p2Kii4TDRaLnDhqoiBqObL2_UY_KLQL9NQLfpEPGkVvnZgaezjzqmeBFwo-cVpKijXopqz8RF5gFXpOp_d0_IpFOFQ9_GC0]-->
+    </g>
+</svg>

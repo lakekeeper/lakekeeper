@@ -15,13 +15,17 @@ use crate::api::management::v1::role::{ListRolesResponse, Role, SearchRoleRespon
 use crate::api::management::v1::user::{
     ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType,
 };
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
+use crate::api::management::v1::warehouse::{TabularDeleteProfile, WarehouseStatsResponse};
 use crate::service::tabular_idents::{TabularIdentOwned, TabularIdentUuid};
 use iceberg::spec::{TableMetadata, ViewMetadata};
 use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::configs::Location;
 
+use crate::api::management::v1::task::{
+    ListTaskInstancesResponse, ListTasksRequest, ListTasksResponse,
+};
+use crate::api::management::v1::warehouse::WarehouseStatistics;
 use crate::catalog::tables::TableMetadataDiffs;
 use crate::service::authn::UserId;
 use crate::service::task_queue::TaskId;
@@ -528,6 +532,11 @@ where
         )
     }
 
+    async fn get_warehouse_stats(
+        warehouse_id: WarehouseIdent,
+        state: Self::State,
+    ) -> Result<WarehouseStatsResponse>;
+
     /// Delete a warehouse.
     async fn delete_warehouse<'a>(
         warehouse_id: WarehouseIdent,
@@ -649,6 +658,24 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TabularDetails>>;
+
+    async fn update_warehouse_statistics(
+        warehouse_id: WarehouseIdent,
+        list_flags: ListFlags,
+        transaction: Self::State,
+    ) -> Result<WarehouseStatistics>;
+
+    async fn list_tasks(
+        pagination: PaginationQuery,
+        body: ListTasksRequest,
+        state: Self::State,
+    ) -> Result<ListTasksResponse>;
+
+    async fn list_task_instances(
+        task_id: Option<TaskId>,
+        pagination: PaginationQuery,
+        state: Self::State,
+    ) -> Result<ListTaskInstancesResponse>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
