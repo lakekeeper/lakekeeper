@@ -31,6 +31,9 @@ use iceberg_catalog::{
 use limes::{Authenticator, AuthenticatorEnum};
 use reqwest::Url;
 
+const OIDC_IDP_ID: &str = "oidc";
+const K8S_IDP_ID: &str = "kubernetes";
+
 #[cfg(feature = "ui")]
 use crate::ui;
 
@@ -155,7 +158,7 @@ async fn serve_with_authn<A: Authorizer>(
     let authn_k8s = if CONFIG.enable_kubernetes_authentication {
         Some(
             limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
-                Some("kubernetes"),
+                Some(K8S_IDP_ID),
                 vec![], // All audiences accepted
             )
             .await
@@ -172,7 +175,7 @@ async fn serve_with_authn<A: Authorizer>(
             Some(std::time::Duration::from_secs(3600)),
         )
         .await?
-        .set_idp_id("oidc");
+        .set_idp_id(OIDC_IDP_ID);
         if let Some(aud) = &CONFIG.openid_audience {
             authenticator = authenticator.set_accepted_audiences(aud.clone());
         }

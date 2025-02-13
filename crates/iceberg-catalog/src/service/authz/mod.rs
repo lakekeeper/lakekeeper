@@ -153,9 +153,11 @@ pub enum NamespaceParent {
 
 #[async_trait::async_trait]
 /// Interface to provide AuthZ functions to the catalog.
-/// The provided `Actor` arguments of the all methods except `check_actor`
+/// The provided `Actor` argument of all methods except `check_actor`
 /// are assumed to be valid. Please ensure to call `check_actor` before, preferably
 /// during Authentication.
+/// `check_actor` ensures that the Actor itself is valid, especially that the principal
+/// is allowed to assume the role.
 pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone,
