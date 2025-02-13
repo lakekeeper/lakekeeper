@@ -23,6 +23,7 @@ use crate::{
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
         Catalog, SecretStore, State,
+        TrackerTx
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
 };
@@ -47,6 +48,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
+    pub tracker_tx: TrackerTx,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> std::fmt::Debug for RouterArgs<C, A, S> {
@@ -66,6 +68,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> std::fmt::Debug for Rout
                 "metrics_layer",
                 &self.metrics_layer.as_ref().map(|_| "PrometheusMetricLayer"),
             )
+            .field("tracker_tx", &self.tracker_tx)
             .finish()
     }
 }
@@ -87,6 +90,7 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         service_health_provider,
         cors_origins,
         metrics_layer,
+        tracker_tx,
     }: RouterArgs<C, A, S>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -129,6 +133,10 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            tracker_tx,
+            crate::service::stats::endpoint::stats_middleware_fn,
+        ))
         .layer(maybe_auth_layer)
         .route(
             "/health",

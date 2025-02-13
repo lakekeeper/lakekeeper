@@ -1045,14 +1045,9 @@ pub mod v1 {
                 )
                 .route("/project/{project_id}/rename", post(rename_project_by_id))
                 // Create a new warehouse
-                .route("/warehouse", post(create_warehouse))
+                .route("/warehouse", post(create_warehouse).get(list_warehouses))
                 // List all projects
                 .route("/project-list", get(list_projects))
-                .route(
-                    "/warehouse",
-                    // List all warehouses within a project
-                    get(list_warehouses),
-                )
                 .route(
                     "/warehouse/{warehouse_id}",
                     get(get_warehouse).delete(delete_warehouse),
@@ -1091,6 +1086,10 @@ pub mod v1 {
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
+                    post(undrop_tabulars),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/deleted-tabulars/undrop",
                     post(undrop_tabulars),
                 )
                 .route(

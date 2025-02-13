@@ -5,6 +5,7 @@ pub mod contract_verification;
 pub mod event_publisher;
 pub mod health;
 pub mod secrets;
+pub mod stats;
 pub mod storage;
 mod tabular_idents;
 pub mod task_queue;
@@ -29,6 +30,7 @@ pub use tabular_idents::{TabularIdentOwned, TabularIdentUuid};
 
 use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
+pub use stats::endpoint::TrackerTx;
 use crate::{
     api::{iceberg::v1::Prefix, ThreadSafe as ServiceState},
     service::{
@@ -36,7 +38,6 @@ use crate::{
         task_queue::TaskQueues,
     },
 };
-
 // ---------------- State ----------------
 #[derive(Clone, Debug)]
 pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {

@@ -1,6 +1,7 @@
 mod bootstrap;
 mod catalog;
 pub(crate) mod dbutils;
+mod endpoint_stats;
 pub mod migrations;
 pub(crate) mod namespace;
 mod pagination;
@@ -21,8 +22,9 @@ use sqlx::{
     ConnectOptions, Executor, PgPool,
 };
 pub use tabular::DeletionKind;
-use tokio::sync::RwLock;
+pub use endpoint_stats::PostgresStatsSink;
 
+use tokio::sync::RwLock;
 use self::dbutils::DBErrorHandler;
 use crate::{
     api::Result,

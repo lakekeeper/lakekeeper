@@ -235,7 +235,11 @@ pub(crate) fn get_api_context<T: Authorizer>(
 pub(crate) fn random_request_metadata() -> RequestMetadata {
     RequestMetadata {
         request_id: Uuid::new_v4(),
+        request_method: Default::default(),
+        matched_path: None,
+        uri: "".to_string(),
         auth_details: AuthDetails::Unauthenticated,
+        project_id_header: None,
     }
 }
 
