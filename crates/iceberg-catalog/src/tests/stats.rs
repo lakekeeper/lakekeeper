@@ -1,21 +1,29 @@
-use crate::api::management::v1::warehouse::{CreateWarehouseResponse, TabularDeleteProfile};
-use crate::api::ApiContext;
-use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-use crate::service::authz::AllowAllAuthorizer;
-use crate::service::task_queue::TaskQueueConfig;
-use crate::service::{State, UserId};
 use sqlx::PgPool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
+use crate::{
+    api::{
+        management::v1::warehouse::{CreateWarehouseResponse, TabularDeleteProfile},
+        ApiContext,
+    },
+    implementations::postgres::{PostgresCatalog, SecretsState},
+    service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig, State, UserId},
+};
+
 mod test {
-    use crate::api::iceberg::types::PageToken;
-    use crate::api::management::v1::warehouse::Service;
-    use crate::api::management::v1::{ApiServer, GetWarehouseStatisticsQuery};
-    use crate::tests::{random_request_metadata, spawn_drop_queues};
-    use sqlx::PgPool;
     use std::time::Duration;
+
+    use sqlx::PgPool;
     use uuid::Uuid;
+
+    use crate::{
+        api::{
+            iceberg::types::PageToken,
+            management::v1::{warehouse::Service, ApiServer, GetWarehouseStatisticsQuery},
+        },
+        tests::{random_request_metadata, spawn_drop_queues},
+    };
 
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {

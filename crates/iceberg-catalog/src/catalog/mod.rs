@@ -267,7 +267,7 @@ pub(crate) mod test {
                 S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
             },
             task_queue::TaskQueues,
-            AuthDetails, State, UserId,
+            State, UserId,
         },
         CONFIG,
     };
@@ -401,12 +401,7 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) fn random_request_metadata() -> RequestMetadata {
-        RequestMetadata {
-            request_id: Uuid::new_v4(),
-            auth_details: AuthDetails::Unauthenticated,
-        }
-    }
+    pub(crate) use crate::tests::random_request_metadata;
 
     macro_rules! impl_pagination_tests {
         ($typ:ident, $setup_fn:ident, $server_typ:ident, $query_typ:ident, $entity_ident:ident, $map_block:expr) => {

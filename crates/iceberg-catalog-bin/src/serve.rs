@@ -8,7 +8,7 @@ use iceberg_catalog::{
     implementations::{
         postgres::{
             task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-            CatalogState, PostgresCatalog, ReadWrite,
+            CatalogState, PostgresCatalog, PostgresStatsSink, ReadWrite,
         },
         Secrets,
     },
@@ -24,8 +24,9 @@ use iceberg_catalog::{
             NatsBackend, TracingPublisher,
         },
         health::ServiceHealthProvider,
+        stats::endpoint::Tracker,
         task_queue::TaskQueues,
-        Catalog, StartupValidationData,
+        Catalog, StartupValidationData, TrackerTx,
     },
     SecretBackend, CONFIG,
 };
@@ -200,6 +201,16 @@ async fn serve_inner<A: Authorizer>(
     }
     let (layer, metrics_future) =
         iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?;
+
+    let (tracker_tx, tracker_rx) = tokio::sync::mpsc::channel(1000);
+
+    let tracker = Tracker::new(
+        tracker_rx,
+        vec![Arc::new(PostgresStatsSink::new(catalog_state.write_pool()))],
+    );
+
+    let tracker_tx = TrackerTx::new(tracker_tx);
+
     let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
@@ -224,6 +235,7 @@ async fn serve_inner<A: Authorizer>(
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
+        tracker_tx,
     })?;
 
     #[cfg(feature = "ui")]
@@ -250,11 +262,12 @@ async fn serve_inner<A: Authorizer>(
             Err(e) => tracing::error!("Publisher task failed: {e}"),
         };
     });
-
+    let stats_handle = tokio::task::spawn(tracker.run());
     tokio::select!(
         _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
         _ = metrics_future => tracing::error!("Metrics server failed"),
+        _ = stats_handle => tracing::error!("Stats task failed"),
     );
 
     tracing::debug!("Sending shutdown signal to event publisher.");

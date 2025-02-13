@@ -5,6 +5,7 @@ pub mod contract_verification;
 pub mod event_publisher;
 pub mod health;
 pub mod secrets;
+pub mod stats;
 pub mod storage;
 mod tabular_idents;
 pub mod task_queue;
@@ -24,6 +25,7 @@ pub use catalog::{
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
+pub use stats::endpoint::TrackerTx;
 pub(crate) use tabular_idents::TabularIdentBorrowed;
 pub use tabular_idents::{TabularIdentOwned, TabularIdentUuid};
 
@@ -36,7 +38,6 @@ use crate::{
         task_queue::TaskQueues,
     },
 };
-
 // ---------------- State ----------------
 #[derive(Clone, Debug)]
 pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
