@@ -1,20 +1,20 @@
-use super::health::HealthExt;
-use super::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
-    TabularDetails, ViewIdentUuid, WarehouseIdent,
-};
-use crate::api::iceberg::v1::Result;
-use crate::request_metadata::RequestMetadata;
-use axum::Router;
 use std::collections::HashSet;
+
+use axum::Router;
 use strum::EnumIter;
+
+use super::{
+    health::HealthExt, Actor, Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore,
+    State, TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent,
+};
+use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
 
 pub mod implementations;
 
-use crate::api::ApiContext;
-use crate::service::authn::UserId;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use implementations::allow_all::AllowAllAuthorizer;
+
+use crate::{api::ApiContext, service::authn::UserId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
 #[strum(serialize_all = "snake_case")]
@@ -153,6 +153,9 @@ pub enum NamespaceParent {
 
 #[async_trait::async_trait]
 /// Interface to provide AuthZ functions to the catalog.
+/// The provided `Actor` arguments of the all methods except `check_actor`
+/// are assumed to be valid. Please ensure to call `check_actor` before, preferably
+/// during Authentication.
 pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone,
@@ -162,6 +165,10 @@ where
 
     /// Router for the API
     fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>>;
+
+    /// Check if the requested actor combination is allowed - especially if the user
+    /// is allowed to assume the specified role.
+    async fn check_actor(&self, actor: &Actor) -> Result<()>;
 
     /// Check if this server can be bootstrapped.
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()>;

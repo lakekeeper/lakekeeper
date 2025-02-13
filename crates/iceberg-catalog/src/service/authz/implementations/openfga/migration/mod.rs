@@ -1,12 +1,17 @@
 mod v2;
 
-use super::{ClientHelper, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
-use crate::service::authz::implementations::openfga::client::ClientConnection;
-use crate::service::authz::implementations::openfga::ModelVersion;
-use crate::service::authz::implementations::FgaType;
-use openfga_rs::open_fga_service_client::OpenFgaServiceClient;
-use openfga_rs::{ReadRequestTupleKey, Store, Tuple, TupleKey, WriteRequest, WriteRequestWrites};
 use std::collections::{HashMap, HashSet};
+
+use openfga_rs::{
+    open_fga_service_client::OpenFgaServiceClient, ReadRequestTupleKey, Store, Tuple, TupleKey,
+    WriteRequest, WriteRequestWrites,
+};
+
+use super::{ClientHelper, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use crate::service::authz::implementations::{
+    openfga::{client::ClientConnection, ModelVersion},
+    FgaType,
+};
 
 const AUTH_MODEL_ID_TYPE: &FgaType = &FgaType::AuthModelId;
 const MODEL_VERSION_TYPE: &FgaType = &FgaType::ModelVersion;
@@ -258,12 +263,15 @@ fn parse_applied_model_versions(
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use super::super::client::new_authorizer;
-    use super::super::OpenFGAAuthorizer;
-    use super::*;
-    use crate::service::authz::implementations::openfga::client::ClientConnection;
-    use crate::service::authz::implementations::openfga::new_client_from_config;
     use needs_env_var::needs_env_var;
+
+    use super::{
+        super::{client::new_authorizer, OpenFGAAuthorizer},
+        *,
+    };
+    use crate::service::authz::implementations::openfga::{
+        client::ClientConnection, new_client_from_config,
+    };
 
     pub(crate) async fn authorizer_for_empty_store(
     ) -> (OpenFgaServiceClient<ClientConnection>, OpenFGAAuthorizer) {

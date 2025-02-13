@@ -1,12 +1,12 @@
+use core::result::Result::Err;
+use std::{cell::LazyCell, default::Default};
+
 use axum::{
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
-use core::result::Result::Err;
 use iceberg_catalog::{AuthZBackend, CONFIG};
 use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
-use std::cell::LazyCell;
-use std::default::Default;
 
 // Static configuration for UI
 #[allow(clippy::declare_interior_mutable_const)]

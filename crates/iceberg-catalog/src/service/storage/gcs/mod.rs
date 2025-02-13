@@ -1,22 +1,27 @@
 #![allow(clippy::module_name_repetitions)]
 
-use crate::WarehouseIdent;
+use std::{collections::HashMap, str::FromStr};
 
-use crate::api::{iceberg::v1::DataAccess, CatalogConfig};
-use crate::service::storage::error::{
-    CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
+use base64::Engine;
+use iceberg_ext::configs::{
+    table::{gcs, TableProperties},
+    Location,
 };
-use crate::service::storage::{StoragePermissions, TableConfig};
+use serde::{Deserialize, Serialize};
+use veil::Redact;
 
 use super::StorageType;
-use crate::api::iceberg::supported_endpoints;
-use base64::Engine;
-use iceberg_ext::configs::table::{gcs, TableProperties};
-use iceberg_ext::configs::Location;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::str::FromStr;
-use veil::Redact;
+use crate::{
+    api::{
+        iceberg::{supported_endpoints, v1::DataAccess},
+        CatalogConfig,
+    },
+    service::storage::{
+        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
+        StoragePermissions, TableConfig,
+    },
+    WarehouseIdent,
+};
 
 mod sts;
 
@@ -328,8 +333,9 @@ fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod test {
-    use crate::service::storage::gcs::validate_bucket_name;
     use needs_env_var::needs_env_var;
+
+    use crate::service::storage::gcs::validate_bucket_name;
 
     // Bucket names: Your bucket names must meet the following requirements:
     //
@@ -365,9 +371,10 @@ mod test {
 
     #[needs_env_var(TEST_GCS = 1)]
     mod cloud_tests {
-        use crate::service::storage::gcs::{GcsCredential, GcsProfile, GcsServiceKey};
-        use crate::service::storage::StorageCredential;
-        use crate::service::storage::StorageProfile;
+        use crate::service::storage::{
+            gcs::{GcsCredential, GcsProfile, GcsServiceKey},
+            StorageCredential, StorageProfile,
+        };
 
         #[tokio::test]
         async fn test_can_validate() {

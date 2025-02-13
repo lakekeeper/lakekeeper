@@ -37,7 +37,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          toolchain:  ${{ env.RUST_TOOLCHAIN }}
+          toolchain:  ${{ env.RUST_TOOLCHAIN }},nightly
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 

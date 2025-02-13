@@ -1,10 +1,13 @@
-use super::io::IoError;
-use super::CommonMetadata;
+use std::{
+    collections::HashMap,
+    io::{Read as _, Write},
+};
+
 use flate2::{write::GzEncoder, Compression};
 use iceberg::spec::view_properties::METADATA_COMPRESSION;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use std::collections::HashMap;
-use std::io::{Read as _, Write};
+
+use super::{io::IoError, CommonMetadata};
 
 #[derive(thiserror::Error, Debug)]
 #[error("Unsupported compression codec: {0}")]

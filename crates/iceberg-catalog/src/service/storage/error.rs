@@ -1,7 +1,9 @@
-use crate::catalog::compression_codec::UnsupportedCompressionCodec;
-use crate::catalog::io::IoError;
-use crate::service::storage::{StorageProfile, StorageType};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+
+use crate::{
+    catalog::{compression_codec::UnsupportedCompressionCodec, io::IoError},
+    service::storage::{StorageProfile, StorageType},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {

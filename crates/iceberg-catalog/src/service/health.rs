@@ -1,11 +1,9 @@
 #![allow(clippy::module_name_repetitions)]
+use std::{collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
+
 use itertools::{FoldWhile, Itertools};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt::Formatter;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::task::JoinHandle;
 
 #[async_trait::async_trait]

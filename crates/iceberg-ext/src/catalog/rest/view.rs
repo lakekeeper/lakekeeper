@@ -1,8 +1,9 @@
 #[cfg(feature = "axum")]
 use crate::catalog::rest::impl_into_response;
-use crate::catalog::rest::ViewUpdate;
-use crate::catalog::{TableIdent, ViewRequirement};
-use crate::spec::{Schema, ViewMetadata, ViewVersion};
+use crate::{
+    catalog::{rest::ViewUpdate, TableIdent, ViewRequirement},
+    spec::{Schema, ViewMetadata, ViewVersion},
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CreateViewRequest {

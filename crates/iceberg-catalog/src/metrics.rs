@@ -1,11 +1,12 @@
-use axum_prometheus::metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
+use std::{future::Future, pin::Pin};
+
 use axum_prometheus::{
-    metrics, utils, PrometheusMetricLayer, PrometheusMetricLayerBuilder,
+    metrics,
+    metrics_exporter_prometheus::{Matcher, PrometheusBuilder},
+    utils, PrometheusMetricLayer, PrometheusMetricLayerBuilder,
     AXUM_HTTP_REQUESTS_DURATION_SECONDS, PREFIXED_HTTP_REQUESTS_DURATION_SECONDS,
 };
 use futures::TryFutureExt;
-use std::future::Future;
-use std::pin::Pin;
 
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 

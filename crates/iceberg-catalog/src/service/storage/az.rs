@@ -1,32 +1,39 @@
-use crate::WarehouseIdent;
-
-use crate::api::{iceberg::v1::DataAccess, CatalogConfig, Result};
-use crate::catalog::io::IoError;
-use crate::service::storage::error::{
-    CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{Arc, OnceLock},
 };
-use crate::service::storage::path_utils::reduce_scheme_string;
-use crate::service::storage::{StoragePermissions, StorageProfile, StorageType, TableConfig};
-use azure_storage::prelude::{BlobSasPermissions, BlobSignedResource};
-use azure_storage::shared_access_signature::service_sas::BlobSharedAccessSignature;
-use azure_storage::shared_access_signature::SasToken;
-use azure_storage::StorageCredentials;
-use futures::StreamExt;
 
-use crate::api::iceberg::supported_endpoints;
 use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_storage::{
+    prelude::{BlobSasPermissions, BlobSignedResource},
+    shared_access_signature::{service_sas::BlobSharedAccessSignature, SasToken},
+    StorageCredentials,
+};
 use azure_storage_blobs::prelude::BlobServiceClient;
+use futures::StreamExt;
 use iceberg::io::AzdlsConfigKeys;
 use iceberg_ext::configs::{
     table::{custom, TableProperties},
     Location,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
 use url::{Host, Url};
 use veil::Redact;
+
+use crate::{
+    api::{
+        iceberg::{supported_endpoints, v1::DataAccess},
+        CatalogConfig, Result,
+    },
+    catalog::io::IoError,
+    service::storage::{
+        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
+        path_utils::reduce_scheme_string,
+        StoragePermissions, StorageProfile, StorageType, TableConfig,
+    },
+    WarehouseIdent,
+};
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -762,17 +769,18 @@ fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod test {
+    use needs_env_var::needs_env_var;
+
+    use super::*;
     use crate::service::{
         storage::StorageLocations, tabular_idents::TabularIdentUuid, NamespaceIdentUuid,
     };
 
-    use super::*;
-    use needs_env_var::needs_env_var;
-
     #[needs_env_var(TEST_AZURE = 1)]
     mod azure_tests {
-        use crate::service::storage::{AdlsProfile, AzCredential};
-        use crate::service::storage::{StorageCredential, StorageProfile};
+        use crate::service::storage::{
+            AdlsProfile, AzCredential, StorageCredential, StorageProfile,
+        };
 
         fn azure_profile() -> (AdlsProfile, AzCredential) {
             let account_name = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").unwrap();

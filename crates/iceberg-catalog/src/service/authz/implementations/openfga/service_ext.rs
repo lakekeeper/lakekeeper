@@ -1,12 +1,13 @@
-use super::{OpenFGAError, OpenFGAResult};
-use openfga_rs::open_fga_service_client::OpenFgaServiceClient;
 use openfga_rs::{
+    open_fga_service_client::OpenFgaServiceClient,
     tonic::{
         self,
         codegen::{Body, Bytes, StdError},
     },
     ListStoresRequest, ReadRequestTupleKey, Store, Tuple,
 };
+
+use super::{OpenFGAError, OpenFGAResult};
 
 const DEFAULT_MAX_PAGES: u32 = 500;
 const PAGE_SIZE: i16 = 100;
@@ -233,9 +234,8 @@ mod test {
         use openfga_rs::{CreateStoreRequest, TupleKey, WriteAuthorizationModelRequest};
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::client::ClientConnection;
         use crate::service::authz::implementations::openfga::{
-            new_client_from_config, ModelVersion,
+            client::ClientConnection, new_client_from_config, ModelVersion,
         };
 
         async fn new_store(client: &mut OpenFgaServiceClient<ClientConnection>) -> String {

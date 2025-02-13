@@ -1,23 +1,22 @@
-use crate::api::{ErrorModel, Result};
-use crate::service::health::{Health, HealthExt, HealthStatus};
-use crate::service::secrets::{Secret, SecretIdent, SecretStore};
-use std::fmt::Formatter;
-
-use async_trait::async_trait;
+use std::{fmt::Formatter, sync::Arc};
 
 use anyhow::Context;
+use async_trait::async_trait;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::time::Sleep;
+use serde::{de::DeserializeOwned, Serialize};
+use tokio::{sync::RwLock, time::Sleep};
 use uuid::Uuid;
 use vaultrs::client::{Client, VaultClient};
+use vaultrs_login::{engines::userpass::UserpassLogin, LoginMethod};
 
-use crate::config::KV2Config;
-use vaultrs_login::engines::userpass::UserpassLogin;
-use vaultrs_login::LoginMethod;
+use crate::{
+    api::{ErrorModel, Result},
+    config::KV2Config,
+    service::{
+        health::{Health, HealthExt, HealthStatus},
+        secrets::{Secret, SecretIdent, SecretStore},
+    },
+};
 
 #[async_trait::async_trait]
 impl SecretStore for SecretsState {
@@ -259,10 +258,11 @@ mod tests {
 
     #[needs_env_var(TEST_KV2 = 1)]
     mod kv2 {
-        use crate::service::storage::{S3Credential, StorageCredential};
-        use crate::CONFIG;
-
         use super::super::*;
+        use crate::{
+            service::storage::{S3Credential, StorageCredential},
+            CONFIG,
+        };
 
         #[tokio::test]
         async fn test_write_read_secret() {

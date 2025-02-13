@@ -1,29 +1,32 @@
 mod load;
 
-use crate::implementations::postgres::dbutils::DBErrorHandler as _;
-use crate::{
-    service::{ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, ViewIdentUuid},
-    WarehouseIdent,
-};
+use std::{collections::HashMap, default::Default};
 
-use http::StatusCode;
-
-use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
-use crate::implementations::postgres::tabular::{
-    self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
-    TabularIdentUuid, TabularType,
-};
-pub(crate) use crate::service::ViewMetadataWithLocation;
 use chrono::{DateTime, Utc};
-use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
-use iceberg::NamespaceIdent;
+use http::StatusCode;
+use iceberg::{
+    spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef},
+    NamespaceIdent,
+};
 use iceberg_ext::configs::Location;
 pub(crate) use load::load_view;
 use serde::Deserialize;
 use sqlx::{FromRow, Postgres, Transaction};
-use std::collections::HashMap;
-use std::default::Default;
 use uuid::Uuid;
+
+pub(crate) use crate::service::ViewMetadataWithLocation;
+use crate::{
+    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
+    implementations::postgres::{
+        dbutils::DBErrorHandler as _,
+        tabular::{
+            self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
+            TabularIdentUuid, TabularType,
+        },
+    },
+    service::{ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, ViewIdentUuid},
+    WarehouseIdent,
+};
 
 pub(crate) async fn view_ident_to_id<'e, 'c: 'e, E>(
     warehouse_id: WarehouseIdent,
@@ -511,25 +514,26 @@ impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::implementations::postgres::namespace::tests::initialize_namespace;
-
-    use crate::implementations::postgres::tabular::view::load_view;
-    use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::implementations::postgres::CatalogState;
-
-    use crate::service::ViewIdentUuid;
-
-    use iceberg::spec::{ViewMetadata, ViewMetadataBuilder};
-    use iceberg::{NamespaceIdent, TableIdent};
-
-    use crate::api::iceberg::v1::PaginationQuery;
-    use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
-    use crate::service::TabularIdentUuid;
-    use crate::WarehouseIdent;
+    use iceberg::{
+        spec::{ViewMetadata, ViewMetadataBuilder},
+        NamespaceIdent, TableIdent,
+    };
     use iceberg_ext::configs::Location;
     use serde_json::json;
     use sqlx::PgPool;
     use uuid::Uuid;
+
+    use crate::{
+        api::iceberg::v1::PaginationQuery,
+        implementations::postgres::{
+            namespace::tests::initialize_namespace,
+            tabular::{mark_tabular_as_deleted, view::load_view},
+            warehouse::test::initialize_warehouse,
+            CatalogState,
+        },
+        service::{TabularIdentUuid, ViewIdentUuid},
+        WarehouseIdent,
+    };
 
     fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
         serde_json::from_value(json!({

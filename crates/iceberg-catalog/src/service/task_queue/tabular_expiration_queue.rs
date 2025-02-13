@@ -1,16 +1,23 @@
-use crate::api::management::v1::{DeleteKind, TabularType};
-use crate::api::Result;
-use crate::service::task_queue::{Task, TaskQueue};
-use crate::service::{Catalog, TableIdentUuid, Transaction, ViewIdentUuid};
-use crate::WarehouseIdent;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use crate::service::task_queue::tabular_purge_queue::{TabularPurgeInput, TabularPurgeQueue};
-
-use crate::service::authz::Authorizer;
-use std::time::Duration;
 use tracing::Instrument;
 use uuid::Uuid;
+
+use crate::{
+    api::{
+        management::v1::{DeleteKind, TabularType},
+        Result,
+    },
+    service::{
+        authz::Authorizer,
+        task_queue::{
+            tabular_purge_queue::{TabularPurgeInput, TabularPurgeQueue},
+            Task, TaskQueue,
+        },
+        Catalog, TableIdentUuid, Transaction, ViewIdentUuid,
+    },
+    WarehouseIdent,
+};
 
 pub type ExpirationQueue = Arc<
     dyn TaskQueue<Task = TabularExpirationTask, Input = TabularExpirationInput>

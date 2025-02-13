@@ -1,11 +1,18 @@
-use crate::api::iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE};
-use crate::api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse};
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::{Result, RoleId};
-use crate::ProjectIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use uuid::Uuid;
+
+use crate::{
+    api::{
+        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        management::v1::role::{ListRolesResponse, Role, SearchRoleResponse},
+    },
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        pagination::{PaginateToken, V1PaginateToken},
+    },
+    service::{Result, RoleId},
+    ProjectIdent,
+};
 
 #[derive(sqlx::FromRow, Debug)]
 struct RoleRow {
@@ -244,9 +251,11 @@ pub(crate) async fn delete_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::api::iceberg::v1::PageToken;
-    use crate::implementations::postgres::{CatalogState, PostgresCatalog, PostgresTransaction};
-    use crate::service::{Catalog, Transaction};
+    use crate::{
+        api::iceberg::v1::PageToken,
+        implementations::postgres::{CatalogState, PostgresCatalog, PostgresTransaction},
+        service::{Catalog, Transaction},
+    };
 
     #[sqlx::test]
     async fn test_create_role(pool: sqlx::PgPool) {

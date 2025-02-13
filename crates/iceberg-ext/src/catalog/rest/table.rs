@@ -1,8 +1,9 @@
-use crate::catalog::{TableIdent, TableRequirement, TableUpdate};
-use crate::spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec};
-
 #[cfg(feature = "axum")]
 use super::impl_into_response;
+use crate::{
+    catalog::{TableIdent, TableRequirement, TableUpdate},
+    spec::{Schema, SortOrder, TableMetadata, UnboundPartitionSpec},
+};
 
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StorageCredential {

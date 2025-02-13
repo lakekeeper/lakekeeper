@@ -1,11 +1,15 @@
-use super::{TableIdentUuid, ViewIdentUuid};
+use std::{
+    fmt::{Display, Formatter},
+    ops::Deref,
+};
+
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::Deserialize;
-use std::fmt::{Display, Formatter};
-use std::ops::Deref;
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+use super::{TableIdentUuid, ViewIdentUuid};
 
 #[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]

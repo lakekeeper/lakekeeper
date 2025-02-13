@@ -5,26 +5,14 @@ pub mod v1 {
     pub mod user;
     pub mod warehouse;
 
-    use axum::{Extension, Json, Router};
-    use utoipa::openapi::security::SecurityScheme;
-    use utoipa::OpenApi;
-
-    use crate::api::{ApiContext, Result};
-    use crate::request_metadata::RequestMetadata;
     use std::marker::PhantomData;
 
-    use crate::api::management::v1::user::{ListUsersQuery, ListUsersResponse};
-    use crate::api::management::v1::warehouse::UndropTabularsRequest;
-    use crate::api::IcebergErrorResponse;
-    use crate::service::authn::UserId;
-    use crate::service::{
-        authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse, RoleId, SecretStore, State,
-        TabularIdentUuid,
+    use axum::{
+        extract::{Path, Query, State as AxumState},
+        response::{IntoResponse, Response},
+        routing::{get, post},
+        Extension, Json, Router,
     };
-    use crate::{ProjectIdent, WarehouseIdent};
-    use axum::extract::{Path, Query, State as AxumState};
-    use axum::response::{IntoResponse, Response};
-    use axum::routing::{get, post};
     use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
@@ -41,11 +29,28 @@ pub mod v1 {
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
         User,
     };
+    use utoipa::{openapi::security::SecurityScheme, OpenApi};
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
         RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
         UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+    };
+
+    use crate::{
+        api::{
+            management::v1::{
+                user::{ListUsersQuery, ListUsersResponse},
+                warehouse::UndropTabularsRequest,
+            },
+            ApiContext, IcebergErrorResponse, Result,
+        },
+        request_metadata::RequestMetadata,
+        service::{
+            authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
+            SecretStore, State, TabularIdentUuid,
+        },
+        ProjectIdent, WarehouseIdent,
     };
 
     pub(crate) fn default_page_size() -> i64 {

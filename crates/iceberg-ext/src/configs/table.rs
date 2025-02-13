@@ -1,10 +1,8 @@
 #![allow(clippy::module_name_repetitions)]
 
-use super::{ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr};
-use std::collections::HashMap;
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
-use super::impl_properties;
+use super::{impl_properties, ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr};
 
 impl_properties!(TableProperties, TableProperty);
 
@@ -47,10 +45,13 @@ impl From<TableProperties> for HashMap<String, String> {
 }
 
 pub mod s3 {
-    use super::super::ConfigProperty;
-    use super::{ConfigParseError, NotCustomProp, ParseFromStr, TableProperties, TableProperty};
-    use crate::configs::impl_config_values;
     use url::Url;
+
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
+    use crate::configs::impl_config_values;
 
     impl_config_values!(
         Table,
@@ -69,8 +70,10 @@ pub mod s3 {
 }
 
 pub mod gcs {
-    use super::super::ConfigProperty;
-    use super::{ConfigParseError, NotCustomProp, ParseFromStr, TableProperties, TableProperty};
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
     use crate::configs::impl_config_values;
 
     impl_config_values!(
@@ -85,8 +88,10 @@ pub mod gcs {
 }
 
 pub mod client {
-    use super::super::ConfigProperty;
-    use super::{ConfigParseError, NotCustomProp, ParseFromStr, TableProperties, TableProperty};
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
     use crate::configs::impl_config_values;
     impl_config_values!(
         Table,

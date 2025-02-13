@@ -1,8 +1,7 @@
-use crate::api::Result;
-use crate::service::health::HealthExt;
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
+
+use crate::{api::Result, service::health::HealthExt};
 
 /// Interface for Handling Secrets.
 #[async_trait]

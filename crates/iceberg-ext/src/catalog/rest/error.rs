@@ -1,9 +1,12 @@
 // macro to implement IntoResponse
+use std::{
+    error::Error as StdError,
+    fmt::{Display, Formatter},
+};
+
 use http::StatusCode;
 pub use iceberg::Error;
 use serde::{Deserialize, Serialize};
-use std::error::Error as StdError;
-use std::fmt::{Display, Formatter};
 
 #[cfg(feature = "axum")]
 macro_rules! impl_into_response {
@@ -269,8 +272,9 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
 #[cfg(test)]
 #[cfg(feature = "axum")]
 mod tests {
-    use super::*;
     use futures_util::stream::StreamExt;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_iceberg_error_response_serialization() {

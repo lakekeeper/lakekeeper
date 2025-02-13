@@ -1,20 +1,22 @@
-use crate::api::iceberg::v1::Result;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authn::UserId;
-use crate::service::authz::{
-    Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
-    CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-    CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
-};
-use crate::service::health::{Health, HealthExt};
-use crate::service::{
-    Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
-    ViewIdentUuid, WarehouseIdent,
-};
 use async_trait::async_trait;
 use axum::Router;
 use utoipa::OpenApi;
+
+use crate::{
+    api::{iceberg::v1::Result, ApiContext},
+    request_metadata::RequestMetadata,
+    service::{
+        authn::UserId,
+        authz::{
+            Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
+            CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
+            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+        },
+        health::{Health, HealthExt},
+        Actor, Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State,
+        TableIdentUuid, ViewIdentUuid, WarehouseIdent,
+    },
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct AllowAllAuthorizer;
@@ -41,6 +43,10 @@ impl Authorizer for AllowAllAuthorizer {
 
     fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
         Router::new()
+    }
+
+    async fn check_actor(&self, _actor: &Actor) -> Result<()> {
+        Ok(())
     }
 
     async fn can_bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {

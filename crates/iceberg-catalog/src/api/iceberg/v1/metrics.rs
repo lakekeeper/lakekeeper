@@ -1,15 +1,21 @@
-use super::namespace::NamespaceIdentUrl;
-use crate::api::iceberg::types::Prefix;
-use crate::api::iceberg::v1::tables::TableParameters;
-use crate::api::{ApiContext, Result};
-use crate::request_metadata::RequestMetadata;
 use async_trait::async_trait;
-use axum::extract::{Path, State};
-use axum::response::IntoResponse;
-use axum::routing::post;
-use axum::{Extension, Json, Router};
+use axum::{
+    extract::{Path, State},
+    response::IntoResponse,
+    routing::post,
+    Extension, Json, Router,
+};
 use http::StatusCode;
 use iceberg_ext::TableIdent;
+
+use super::namespace::NamespaceIdentUrl;
+use crate::{
+    api::{
+        iceberg::{types::Prefix, v1::tables::TableParameters},
+        ApiContext, Result,
+    },
+    request_metadata::RequestMetadata,
+};
 
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>

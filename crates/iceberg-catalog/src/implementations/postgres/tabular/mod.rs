@@ -1,28 +1,28 @@
 pub mod table;
 pub(crate) mod view;
 
+use std::{
+    collections::{HashMap, HashSet},
+    default::Default,
+    fmt::Debug,
+};
+
+use chrono::Utc;
+use http::StatusCode;
+use iceberg_ext::{configs::Location, NamespaceIdent};
+use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
+use uuid::Uuid;
+
 use super::dbutils::DBErrorHandler as _;
 use crate::{
-    service::{ErrorModel, NamespaceIdentUuid, Result, TableIdent},
+    api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    service::{
+        task_queue::TaskId, DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent,
+        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid,
+    },
     WarehouseIdent,
 };
-use http::StatusCode;
-use iceberg_ext::NamespaceIdent;
-
-use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE};
-
-use crate::implementations::postgres::pagination::{PaginateToken, V1PaginateToken};
-use crate::service::task_queue::TaskId;
-use crate::service::DeletionDetails;
-use crate::service::{TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid};
-use chrono::Utc;
-use iceberg_ext::configs::Location;
-use sqlx::postgres::PgArguments;
-use sqlx::{Arguments, Execute, FromRow, Postgres, QueryBuilder};
-use std::collections::{HashMap, HashSet};
-use std::default::Default;
-use std::fmt::Debug;
-use uuid::Uuid;
 
 const MAX_PARAMETERS: usize = 30000;
 

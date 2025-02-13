@@ -1,23 +1,27 @@
-use crate::api::management::v1::ApiServer;
-use crate::api::{ApiContext, Result};
-use crate::request_metadata::RequestMetadata;
-pub use crate::service::storage::{
-    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
-    StorageCredential, StorageProfile,
-};
-use serde::{Deserialize, Serialize};
-
-use crate::api::management::v1::role::require_project_id;
-use crate::service::authz::{CatalogProjectAction, CatalogServerAction};
-pub use crate::service::WarehouseStatus;
-use crate::service::{
-    authz::{Authorizer, ListProjectsResponse as AuthZListProjectsResponse},
-    secrets::SecretStore,
-    Catalog, State, Transaction,
-};
-use crate::ProjectIdent;
 use iceberg_ext::catalog::rest::ErrorModel;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+pub use crate::service::{
+    storage::{
+        AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
+        S3Profile, StorageCredential, StorageProfile,
+    },
+    WarehouseStatus,
+};
+use crate::{
+    api::{management::v1::ApiServer, ApiContext, Result},
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{
+            Authorizer, CatalogProjectAction, CatalogServerAction,
+            ListProjectsResponse as AuthZListProjectsResponse,
+        },
+        secrets::SecretStore,
+        Catalog, State, Transaction,
+    },
+    ProjectIdent,
+};
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -116,7 +120,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let project_id = require_project_id(project_ident, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_ident)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -141,7 +145,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetProjectResponse> {
-        let project_id = require_project_id(project_ident, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_ident)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -175,7 +179,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let project_id = require_project_id(project_ident, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_ident)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer

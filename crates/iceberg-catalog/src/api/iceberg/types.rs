@@ -208,10 +208,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::{body::Body, extract::Query, http::Request, routing::get, Router};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    use super::*;
 
     #[test]
     fn test_drop_parms() {
