@@ -13,7 +13,6 @@ use iceberg_catalog::{
         Secrets,
     },
     service::{
-        authn::{IdpVerifier, K8sVerifier},
         authz::{
             implementations::{get_default_authorizer_from_config, Authorizers},
             Authorizer,
@@ -29,7 +28,11 @@ use iceberg_catalog::{
     },
     SecretBackend, CONFIG,
 };
+use limes::{Authenticator, AuthenticatorEnum};
 use reqwest::Url;
+
+const OIDC_IDP_ID: &str = "oidc";
+const K8S_IDP_ID: &str = "kubernetes";
 
 #[cfg(feature = "ui")]
 use crate::ui;
@@ -118,7 +121,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
 
     match authorizer {
         Authorizers::AllowAll(a) => {
-            serve_inner(
+            serve_with_authn(
                 a,
                 catalog_state,
                 secrets_state,
@@ -129,7 +132,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
             .await?
         }
         Authorizers::OpenFGA(a) => {
-            serve_inner(
+            serve_with_authn(
                 a,
                 catalog_state,
                 secrets_state,
@@ -144,9 +147,114 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     Ok(())
 }
 
-/// Helper function to remove redundant code from matching different implementations
-async fn serve_inner<A: Authorizer>(
+async fn serve_with_authn<A: Authorizer>(
     authorizer: A,
+    catalog_state: CatalogState,
+    secrets_state: Secrets,
+    queues: TaskQueues,
+    health_provider: ServiceHealthProvider,
+    listener: tokio::net::TcpListener,
+) -> Result<(), anyhow::Error> {
+    let authn_k8s = if CONFIG.enable_kubernetes_authentication {
+        Some(
+            limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
+                Some(K8S_IDP_ID),
+                vec![], // All audiences accepted
+            )
+            .await
+            .inspect_err(|e| tracing::info!("Failed to create K8s authorizer: {e}"))
+            .inspect(|v| tracing::info!("K8s authorizer created {:?}", v))?,
+        )
+    } else {
+        None
+    };
+
+    let authn_oidc = if let Some(uri) = CONFIG.openid_provider_uri.clone() {
+        let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
+            uri.as_ref(),
+            Some(std::time::Duration::from_secs(3600)),
+        )
+        .await?
+        .set_idp_id(OIDC_IDP_ID);
+        if let Some(aud) = &CONFIG.openid_audience {
+            authenticator = authenticator.set_accepted_audiences(aud.clone());
+        }
+        if let Some(iss) = &CONFIG.openid_additional_issuers {
+            authenticator = authenticator.add_additional_issuers(iss.clone());
+        }
+        if let Some(scope) = &CONFIG.openid_scope {
+            authenticator = authenticator.set_scope(scope.clone());
+        }
+        if let Some(subject_claim) = &CONFIG.openid_subject_claim {
+            authenticator = authenticator.with_subject_claim(subject_claim.clone());
+        } else {
+            // "oid" should be used for entra-id, as the `sub` is different between applications.
+            // We prefer oid here by default as no other IdP sets this field (that we know of) and
+            // we can provide an out-of-the-box experience for users.
+            // Nevertheless we document this behavior in the docs and recommend as part of the
+            // `production` checklist to set the claim explicitly.
+            authenticator =
+                authenticator.with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
+        }
+        Some(authenticator)
+    } else {
+        None
+    };
+
+    if authn_k8s.is_none() && authn_oidc.is_none() {
+        tracing::warn!("Authentication is disabled. This is not suitable for production!");
+    }
+
+    let authn_k8s = authn_k8s.map(AuthenticatorEnum::from);
+    let authn_oidc = authn_oidc.map(AuthenticatorEnum::from);
+    match (authn_k8s, authn_oidc) {
+        (Some(k8s), Some(oidc)) => {
+            let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
+                .add_authenticator(k8s)
+                .add_authenticator(oidc)
+                .build();
+            serve_inner(
+                authorizer,
+                Some(authenticator),
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await
+        }
+        (Some(auth), None) | (None, Some(auth)) => {
+            serve_inner(
+                authorizer,
+                Some(auth),
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await
+        }
+        (None, None) => {
+            serve_inner(
+                authorizer,
+                None::<AuthenticatorEnum>,
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await
+        }
+    }
+}
+
+/// Helper function to remove redundant code from matching different implementations
+async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
+    authorizer: A,
+    authenticator: Option<N>,
     catalog_state: CatalogState,
     secrets_state: Secrets,
     queues: TaskQueues,
@@ -179,48 +287,17 @@ async fn serve_inner<A: Authorizer>(
         sinks: cloud_event_sinks,
     };
 
-    let k8s_token_verifier = if CONFIG.enable_kubernetes_authentication {
-        Some(
-            K8sVerifier::try_new()
-                .await
-                .map_err(|e| {
-                    tracing::info!("Failed to create K8s authorizer: {e}");
-                    e
-                })
-                .map(|v| {
-                    tracing::info!("K8s authorizer created {:?}", v);
-                    v
-                })?,
-        )
-    } else {
-        None
-    };
-    if k8s_token_verifier.is_none() && CONFIG.openid_provider_uri.is_none() {
-        tracing::warn!("Authentication is disabled. This is not suitable for production!");
-    }
     let (layer, metrics_future) =
         iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)?;
-    let router = new_full_router::<PostgresCatalog, _, Secrets>(RouterArgs {
+
+    let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
+        authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
         queues: queues.clone(),
         publisher: CloudEventsPublisher::new(tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
-        token_verifier: if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-            Some(
-                IdpVerifier::new(
-                    uri,
-                    CONFIG.openid_audience.clone(),
-                    CONFIG.openid_additional_issuers.clone(),
-                    CONFIG.openid_scope.clone(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        },
-        k8s_token_verifier,
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),

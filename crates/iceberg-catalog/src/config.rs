@@ -159,6 +159,8 @@ pub struct DynAppConfig {
     /// A scopes that must be present in provided tokens
     pub openid_scope: Option<String>,
     pub enable_kubernetes_authentication: bool,
+    /// Claim to use in provided JWT tokens as the subject.
+    pub openid_subject_claim: Option<String>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -379,6 +381,7 @@ impl Default for DynAppConfig {
             openid_additional_issuers: None,
             openid_scope: None,
             enable_kubernetes_authentication: false,
+            openid_subject_claim: None,
             listen_port: 8181,
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,

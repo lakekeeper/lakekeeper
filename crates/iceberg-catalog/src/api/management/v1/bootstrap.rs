@@ -1,14 +1,14 @@
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
-use super::user::{UserLastUpdatedWith, UserType};
+use super::user::{parse_create_user_request, CreateUserRequest, UserLastUpdatedWith, UserType};
 use crate::{
     api::{management::v1::ApiServer, ApiContext},
     config,
     request_metadata::RequestMetadata,
     service::{
-        authz::Authorizer, Actor, AuthDetails, Catalog, Result, SecretStore, StartupValidationData,
-        State, Transaction,
+        authz::Authorizer, Actor, Catalog, Result, SecretStore, StartupValidationData, State,
+        Transaction,
     },
     ProjectIdent, CONFIG, DEFAULT_PROJECT_ID,
 };
@@ -105,30 +105,23 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
+
         // Create user in the catalog
-        let principal = match request_metadata.auth_details.clone() {
-            AuthDetails::Unauthenticated => None,
-            AuthDetails::Principal(principal) => Some(principal),
-        };
-
-        if let Some(principal) = principal {
-            let acting_user_id = principal.user_id();
-
-            let (name, user_type, email) =
-                if let (Some(name), Some(user_type)) = (user_name.clone(), user_type) {
-                    (name, user_type, None)
-                } else {
-                    let (p_name, p_type) = principal.get_name_and_type()?;
-                    (
-                        user_name.unwrap_or(p_name.to_string()),
-                        user_type.unwrap_or(p_type),
-                        principal.email(),
-                    )
-                };
+        if request_metadata.is_authenticated() {
+            let (creation_user_id, name, user_type, email) = parse_create_user_request(
+                &request_metadata,
+                Some(CreateUserRequest {
+                    name: user_name.clone(),
+                    email: user_email.clone(),
+                    user_type,
+                    id: None,
+                    update_if_exists: false, // Ignored in `parse_create_user_request`
+                }),
+            )?;
             C::create_or_update_user(
-                acting_user_id,
+                &creation_user_id,
                 &name,
-                user_email.as_deref().or(email),
+                email.as_deref(),
                 UserLastUpdatedWith::UpdateEndpoint,
                 user_type,
                 t.transaction(),
@@ -139,7 +132,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer.bootstrap(&request_metadata, is_operator).await?;
         t.commit().await?;
 
-        // If default project is is specified, and the project does not exist, create it
+        // If default project is specified, and the project does not exist, create it
         if let Some(default_project_id) = *DEFAULT_PROJECT_ID {
             let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
             let p = C::get_project(default_project_id, t.transaction()).await?;
@@ -164,8 +157,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ServerInfo> {
-        let actor = request_metadata.auth_details.actor();
-        match actor {
+        match request_metadata.actor() {
             Actor::Anonymous => {
                 if CONFIG.authn_enabled() {
                     return Err(ErrorModel::unauthorized(

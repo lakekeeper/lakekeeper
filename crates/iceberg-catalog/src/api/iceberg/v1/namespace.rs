@@ -434,7 +434,8 @@ mod tests {
             .uri("/test/namespaces?pageToken&pageSize=10")
             .body(axum::body::Body::empty())
             .unwrap();
-        req.extensions_mut().insert(RequestMetadata::new_random());
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
         let r = router.oneshot(req).await.unwrap();
 
         // // parse json body
@@ -538,7 +539,8 @@ mod tests {
             .uri("/test/namespaces/this-namespace?pageToken&pageSize=10")
             .body(axum::body::Body::empty())
             .unwrap();
-        req.extensions_mut().insert(RequestMetadata::new_random());
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
 
         let r = router.clone().oneshot(req).await.unwrap();
 
@@ -553,7 +555,8 @@ mod tests {
             .uri("/test/namespaces/accounting%1Ftax?pageToken&pageSize=10")
             .body(axum::body::Body::empty())
             .unwrap();
-        req.extensions_mut().insert(RequestMetadata::new_random());
+        req.extensions_mut()
+            .insert(RequestMetadata::new_unauthenticated());
 
         let r = router.oneshot(req).await.unwrap();
         assert_eq!(r.status().as_u16(), 406);

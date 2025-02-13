@@ -11,7 +11,7 @@ pub mod task_queue;
 
 use std::{ops::Deref, str::FromStr};
 
-pub use authn::{Actor, AuthDetails, IdpVerifier, K8sVerifier, UserId};
+pub use authn::{Actor, UserId};
 pub use catalog::{
     Catalog, CommitTableResponse, CreateNamespaceRequest, CreateNamespaceResponse,
     CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse, DeletionDetails,

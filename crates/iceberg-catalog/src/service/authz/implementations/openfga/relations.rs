@@ -1483,7 +1483,7 @@ mod test {
 
     #[test]
     fn test_assignment_serialization() {
-        let user_id = UserId::oidc("my_user").unwrap();
+        let user_id = UserId::new_unchecked("oidc", "my_user");
         let user_or_role = UserOrRole::User(user_id);
         let assignment = ServerAssignment::Admin(user_or_role);
         let serialized = serde_json::to_string(&assignment).unwrap();

@@ -101,7 +101,7 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
         )
         .await;
@@ -154,7 +154,7 @@ mod test {
                 destination: destination.clone(),
             },
             api_context.clone(),
-            RequestMetadata::new_random(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -221,7 +221,7 @@ mod test {
                 destination: destination.clone(),
             },
             api_context.clone(),
-            RequestMetadata::new_random(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();

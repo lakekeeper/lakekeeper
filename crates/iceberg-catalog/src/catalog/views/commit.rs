@@ -188,7 +188,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                     .unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
         )
         .await;
@@ -348,7 +348,7 @@ mod test {
                 vended_credentials: true,
                 remote_signing: false,
             },
-            crate::request_metadata::RequestMetadata::new_random(),
+            crate::request_metadata::RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -401,7 +401,7 @@ mod test {
                 vended_credentials: true,
                 remote_signing: false,
             },
-            crate::request_metadata::RequestMetadata::new_random(),
+            crate::request_metadata::RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("This unexpectedly didn't fail the uuid assertion.");

@@ -10,10 +10,7 @@ pub use crate::service::{
     WarehouseStatus,
 };
 use crate::{
-    api::{
-        management::v1::{role::require_project_id, ApiServer},
-        ApiContext, Result,
-    },
+    api::{management::v1::ApiServer, ApiContext, Result},
     request_metadata::RequestMetadata,
     service::{
         authz::{
@@ -123,7 +120,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let project_id = require_project_id(project_ident, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_ident)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -148,7 +145,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetProjectResponse> {
-        let project_id = require_project_id(project_ident, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_ident)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -182,7 +179,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let project_id = require_project_id(project_ident, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_ident)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer

@@ -16,6 +16,8 @@ pub mod implementations;
 
 mod request_metadata;
 
+pub use request_metadata::PROJECT_ID_HEADER;
+
 pub mod api;
 
 #[cfg(feature = "router")]

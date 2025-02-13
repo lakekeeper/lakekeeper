@@ -11,9 +11,8 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        authn::UserId,
         authz::{Authorizer, CatalogServerAction, CatalogUserAction},
-        AuthDetails, Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction,
+        Catalog, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
     },
 };
 
@@ -37,6 +36,15 @@ pub enum UserType {
     Human,
     /// Application / Technical User
     Application,
+}
+
+impl From<limes::PrincipalType> for UserType {
+    fn from(principal_type: limes::PrincipalType) -> Self {
+        match principal_type {
+            limes::PrincipalType::Human => UserType::Human,
+            limes::PrincipalType::Application => UserType::Application,
+        }
+    }
 }
 
 /// User of the catalog
@@ -174,6 +182,76 @@ pub struct UpdateUserRequest {
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
 
+/// Parse a create user request and extend with information
+/// from the request metadata if this is a self-provisioning request.
+pub(crate) fn parse_create_user_request(
+    request_metadata: &RequestMetadata,
+    request: Option<CreateUserRequest>,
+) -> Result<(UserId, String, UserType, Option<String>)> {
+    let (request_name, request_email, request_id, request_user_type) = match request {
+        Some(CreateUserRequest {
+            update_if_exists: _,
+            name: request_name,
+            email: request_email,
+            id: request_id,
+            user_type: request_user_type,
+        }) => (request_name, request_email, request_id, request_user_type),
+        None => (None, None, None, None),
+    };
+
+    let request_email = request_email.filter(|e| !e.is_empty());
+    let request_name = request_name.filter(|n| !n.is_empty());
+    let self_provision = is_self_provisioning(request_metadata.user_id(), request_id.as_ref());
+
+    let creation_user_id = request_id
+        .or_else(|| request_metadata.user_id().cloned())
+        .ok_or(ErrorModel::bad_request(
+        "User ID could not be extracted from the token and must be provided for creating a user.",
+        "MissingUserId",
+        None,
+    ))?;
+
+    let (name, user_type, email) = if self_provision {
+        // If this is self provisioning, provided values take precedence, but we may
+        // use auth info from the token.
+        let auth_details = request_metadata.authentication();
+        let name =
+            request_name.or(auth_details.and_then(|a| a.full_name().map(ToString::to_string)));
+        let email = request_email.or(auth_details.and_then(|a| a.email().map(ToString::to_string)));
+        // Human users can typically be identified by the token, which is why we default to Application
+        let user_type = request_user_type
+            .or_else(|| auth_details.and_then(|a| a.principal_type().map(Into::into)))
+            .unwrap_or(UserType::Application);
+        let name = name.ok_or(ErrorModel::bad_request(
+            "User name could not be extracted from the token and must be provided",
+            "MissingUserName",
+            None,
+        ))?;
+
+        (name, user_type, email)
+    } else {
+        // If this is not self-provisioning, token data may not be used
+        let name = request_name.ok_or(ErrorModel::bad_request(
+            "Name must be provided for user provisioning",
+            "MissingUserName",
+            None,
+        ))?;
+        let user_type = request_user_type.ok_or(ErrorModel::bad_request(
+            "Name and user_type must be provided for user provisioning",
+            "MissingUserType",
+            None,
+        ))?;
+        (name, user_type, request_email)
+    };
+
+    if name.is_empty() {
+        return Err(ErrorModel::bad_request("Name cannot be empty", "EmptyName", None).into());
+    }
+    let email = email.filter(|e| !e.is_empty());
+
+    Ok((creation_user_id, name, user_type, email))
+}
+
 #[async_trait::async_trait]
 pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     async fn create_user(
@@ -181,89 +259,26 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
         request: CreateUserRequest,
     ) -> Result<CreateOrUpdateUserResponse> {
-        let CreateUserRequest {
-            update_if_exists,
-            name,
-            email,
-            id,
-            user_type,
-        } = request;
-        let email = email.filter(|e| !e.is_empty());
-        let name = name.filter(|n| !n.is_empty());
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
 
-        let principal = match request_metadata.auth_details.clone() {
-            AuthDetails::Unauthenticated => None,
-            AuthDetails::Principal(principal) => Some(principal),
-        };
-        let acting_user_id = principal.as_ref().map(|p| p.user_id().clone());
+        let acting_user_id = request_metadata.user_id();
 
-        // Everything else is self-registration
-        let self_provision = if acting_user_id.is_none() || (id.is_some() && (id != acting_user_id))
-        {
+        let self_provision = is_self_provisioning(acting_user_id, request.id.as_ref());
+        if !self_provision {
             authorizer
                 .require_server_action(&request_metadata, &CatalogServerAction::CanProvisionUsers)
                 .await?;
-            false
-        } else {
-            true
         };
 
         // ------------------- Business Logic -------------------
-        let id = id
-            .or_else(|| acting_user_id.clone())
-            .ok_or(ErrorModel::bad_request(
-                "User ID could not be extracted from the token and must be provided.",
-                "MissingUserId",
-                None,
-            ))?;
-
-        let (name, user_type) = if let (Some(name), Some(user_type)) = (name.clone(), user_type) {
-            (name, user_type)
-        } else {
-            if !self_provision {
-                return Err(ErrorModel::bad_request(
-                    "Name and user_type must be provided for user provisioning",
-                    "MissingName",
-                    None,
-                )
-                .into());
-            }
-
-            let (p_name, p_type) = principal
-                .as_ref()
-                .map(|p| p.get_name_and_type())
-                .transpose()?
-                .ok_or(ErrorModel::bad_request(
-                    "User name could not be extracted from the token and must be provided",
-                    "MissingUserName",
-                    None,
-                ))?;
-
-            (
-                name.unwrap_or(p_name.to_string()),
-                user_type.unwrap_or(p_type),
-            )
-        };
-
-        if name.is_empty() {
-            return Err(ErrorModel::bad_request("Name cannot be empty", "EmptyName", None).into());
-        }
-
-        let email = email.or_else(|| {
-            if self_provision {
-                principal
-                    .as_ref()
-                    .and_then(|p| p.email().map(ToString::to_string))
-            } else {
-                None
-            }
-        });
+        let update_if_exists = request.update_if_exists;
+        let (creation_user_id, name, user_type, email) =
+            parse_create_user_request(&request_metadata, Some(request))?;
 
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let user = C::create_or_update_user(
-            &id,
+            &creation_user_id,
             &name,
             email.as_deref(),
             UserLastUpdatedWith::CreateEndpoint,
@@ -275,12 +290,13 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         if !matches!(user, CreateOrUpdateUserResponse::Created(_)) && !update_if_exists {
             t.rollback().await?;
             return Err(ErrorModel::conflict(
-                format!("User with id {id} already exists."),
+                format!("User with id {creation_user_id} already exists."),
                 "UserAlreadyExists",
                 None,
             )
             .into());
         }
+        tracing::debug!("User created: {:?}", user);
 
         t.commit().await?;
 
@@ -421,5 +437,17 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }
         authorizer.delete_user(&request_metadata, user_id).await?;
         t.commit().await
+    }
+}
+
+fn is_self_provisioning(acting_user_id: Option<&UserId>, request_id: Option<&UserId>) -> bool {
+    if let Some(acting_user_id) = acting_user_id {
+        if let Some(request_id) = request_id {
+            request_id == acting_user_id
+        } else {
+            true
+        }
+    } else {
+        false
     }
 }

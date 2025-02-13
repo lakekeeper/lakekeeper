@@ -1,5 +1,3 @@
-use itertools::Itertools;
-
 use super::dbutils::DBErrorHandler;
 use crate::{
     api::{
@@ -9,7 +7,7 @@ use crate::{
         },
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
-    service::{authn::UserId, CreateOrUpdateUserResponse, Result},
+    service::{CreateOrUpdateUserResponse, Result, UserId},
 };
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
@@ -136,7 +134,7 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         filter_user_id
             .unwrap_or_default()
             .into_iter()
-            .map_into()
+            .map(|u| u.to_string())
             .collect::<Vec<String>>() as Vec<String>,
         token_ts,
         token_id,
@@ -280,7 +278,7 @@ mod test {
     async fn test_create_or_update_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::oidc("test_user_1").unwrap();
+        let user_id = UserId::new_unchecked("oidc", "test_user_1");
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -347,7 +345,7 @@ mod test {
     async fn test_search_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::kubernetes("test_user_1").unwrap();
+        let user_id = UserId::new_unchecked("kubernetes", "test_user_1");
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -374,7 +372,7 @@ mod test {
     async fn test_delete_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let user_id = UserId::oidc("test_user_1").unwrap();
+        let user_id = UserId::new_unchecked("oidc", "test_user_1");
         let user_name = "Test User 1";
 
         create_or_update_user(
@@ -407,7 +405,7 @@ mod test {
         assert_eq!(users.users.len(), 0);
 
         // Delete non-existent user
-        let user_id = UserId::oidc("test_user_2").unwrap();
+        let user_id = UserId::new_unchecked("oidc", "test_user_2");
         let result = delete_user(user_id, &state.read_write.write_pool)
             .await
             .unwrap();
@@ -418,7 +416,7 @@ mod test {
     async fn test_paginate_user(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         for i in 0..10 {
-            let user_id = UserId::oidc(&format!("test_user_{i}")).unwrap();
+            let user_id = UserId::new_unchecked("oidc", &format!("test_user_{i}"));
             let user_name = &format!("test user {i}");
 
             create_or_update_user(
@@ -460,7 +458,7 @@ mod test {
         assert_eq!(users.users.len(), 5);
 
         for (uidx, u) in users.users.iter().enumerate() {
-            let user_id = UserId::oidc(&format!("test_user_{uidx}")).unwrap();
+            let user_id = UserId::new_unchecked("oidc", &format!("test_user_{uidx}"));
             let user_name = format!("test user {uidx}");
             assert_eq!(u.id, user_id);
             assert_eq!(u.name, user_name);
@@ -482,7 +480,7 @@ mod test {
 
         for (uidx, u) in users.users.iter().enumerate() {
             let uidx = uidx + 5;
-            let user_id = UserId::oidc(&format!("test_user_{uidx}")).unwrap();
+            let user_id = UserId::new_unchecked("oidc", &format!("test_user_{uidx}"));
             let user_name = format!("test user {uidx}");
             assert_eq!(u.id, user_id);
             assert_eq!(u.name, user_name);

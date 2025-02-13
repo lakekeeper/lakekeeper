@@ -45,7 +45,7 @@ use crate::{
         Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
         ViewIdentUuid,
     },
-    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+    ProjectIdent, WarehouseIdent,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -145,7 +145,7 @@ pub(super) struct GetProjectAssignmentsQuery {
 #[serde(rename_all = "kebab-case")]
 struct GetProjectAssignmentsResponse {
     assignments: Vec<ProjectAssignment>,
-    #[schema(value_type = uuid::Uuid)]
+    #[schema(value_type = Uuid)]
     project_id: ProjectIdent,
 }
 
@@ -297,7 +297,7 @@ struct SetManagedAccessRequest {
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
     params(
-        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+        ("role_id" = Uuid, Path, description = "Role ID"),
     ),
     request_body = UpdateRoleAssignmentsRequest,
     responses(
@@ -376,9 +376,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
-        .auth_details
-        .project_id()
-        .or(*DEFAULT_PROJECT_ID)
+        .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     let relations = get_allowed_actions(
         authorizer,
@@ -403,7 +401,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/{project_id}/access",
     params(
         GetAccessQuery,
-        ("project_id" = uuid::Uuid, Path, description = "Project ID"),
+        ("project_id" = Uuid, Path, description = "Project ID"),
     ),
     responses(
             (status = 200, description = "Server Relations", body = GetProjectAccessResponse),
@@ -439,7 +437,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/warehouse/{warehouse_id}/access",
     params(
         GetAccessQuery,
-        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
             (status = 200, body = GetWarehouseAccessResponse),
@@ -474,7 +472,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}",
     params(
-        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
             (status = 200, body = GetWarehouseAuthPropertiesResponse),
@@ -508,7 +506,7 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/warehouse/{warehouse_id}/managed-access",
     params(
-        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
             (status = 200),
@@ -540,7 +538,7 @@ async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}/managed-access",
     params(
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+        ("namespace_id" = Uuid, Path, description = "Namespace ID"),
     ),
     request_body = SetManagedAccessRequest,
     responses(
@@ -573,7 +571,7 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
     tag = "permissions",
     path = "/management/v1/permissions/namespace/{namespace_id}",
     params(
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+        ("namespace_id" = Uuid, Path, description = "Namespace ID"),
     ),
     responses(
             (status = 200, body = GetNamespaceAuthPropertiesResponse),
@@ -618,7 +616,7 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/namespace/{namespace_id}/access",
     params(
         GetAccessQuery,
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID")
+        ("namespace_id" = Uuid, Path, description = "Namespace ID")
     ),
     responses(
             (status = 200, description = "Server Relations", body = GetNamespaceAccessResponse),
@@ -654,7 +652,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/table/{table_id}/access",
     params(
         GetAccessQuery,
-        ("table_id" = uuid::Uuid, Path, description = "Table ID")
+        ("table_id" = Uuid, Path, description = "Table ID")
     ),
     responses(
             (status = 200, description = "Server Relations", body = GetTableAccessResponse),
@@ -690,7 +688,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/view/{view_id}/access",
     params(
         GetAccessQuery,
-        ("view_id" = uuid::Uuid, Path, description = "View ID")
+        ("view_id" = Uuid, Path, description = "View ID")
     ),
     responses(
             (status = 200, body = GetViewAccessResponse),
@@ -726,7 +724,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/role/{role_id}/assignments",
     params(
         GetRoleAssignmentsQuery,
-        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+        ("role_id" = Uuid, Path, description = "Role ID"),
     ),
     responses(
             (status = 200, body = GetRoleAssignmentsResponse),
@@ -802,9 +800,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetProjectAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
-        .auth_details
-        .project_id()
-        .or(*DEFAULT_PROJECT_ID)
+        .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     authorizer
         .require_action(
@@ -831,7 +827,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/{project_id}/assignments",
     params(
         GetProjectAssignmentsQuery,
-        ("project_id" = uuid::Uuid, Path, description = "Project ID"),
+        ("project_id" = Uuid, Path, description = "Project ID"),
     ),
     responses(
             (status = 200, body = GetProjectAssignmentsResponse),
@@ -869,7 +865,7 @@ async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     params(
         GetWarehouseAssignmentsQuery,
-        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
             (status = 200, body = GetWarehouseAssignmentsResponse),
@@ -901,7 +897,7 @@ async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     params(
         GetNamespaceAssignmentsQuery,
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+        ("namespace_id" = Uuid, Path, description = "Namespace ID"),
     ),
     responses(
             (status = 200, body = GetNamespaceAssignmentsResponse),
@@ -937,7 +933,7 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/table/{table_id}/assignments",
     params(
         GetTableAssignmentsQuery,
-        ("table_id" = uuid::Uuid, Path, description = "Table ID"),
+        ("table_id" = Uuid, Path, description = "Table ID"),
     ),
     responses(
             (status = 200, body = GetTableAssignmentsResponse),
@@ -969,7 +965,7 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/view/{view_id}/assignments",
     params(
         GetViewAssignmentsQuery,
-        ("view_id" = uuid::Uuid, Path, description = "View ID"),
+        ("view_id" = Uuid, Path, description = "View ID"),
     ),
     responses(
             (status = 200, body = GetViewAssignmentsResponse),
@@ -1039,9 +1035,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
     let project_id = metadata
-        .auth_details
-        .project_id()
-        .or(*DEFAULT_PROJECT_ID)
+        .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     checked_write(
         authorizer,
@@ -1062,7 +1056,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/project/{project_id}/assignments",
     request_body = UpdateProjectAssignmentsRequest,
     params(
-        ("project_id" = uuid::Uuid, Path, description = "Project ID"),
+        ("project_id" = Uuid, Path, description = "Project ID"),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),
@@ -1094,7 +1088,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/warehouse/{warehouse_id}/assignments",
     request_body = UpdateWarehouseAssignmentsRequest,
     params(
-        ("warehouse_id" = uuid::Uuid, Path, description = "Warehouse ID"),
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),
@@ -1126,7 +1120,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/namespace/{namespace_id}/assignments",
     request_body = UpdateNamespaceAssignmentsRequest,
     params(
-        ("namespace_id" = uuid::Uuid, Path, description = "Namespace ID"),
+        ("namespace_id" = Uuid, Path, description = "Namespace ID"),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),
@@ -1158,7 +1152,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/table/{table_id}/assignments",
     request_body = UpdateTableAssignmentsRequest,
     params(
-        ("table_id" = uuid::Uuid, Path, description = "Table ID"),
+        ("table_id" = Uuid, Path, description = "Table ID"),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),
@@ -1190,7 +1184,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/view/{view_id}/assignments",
     request_body = UpdateViewAssignmentsRequest,
     params(
-        ("view_id" = uuid::Uuid, Path, description = "View ID"),
+        ("view_id" = Uuid, Path, description = "View ID"),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),
@@ -1222,7 +1216,7 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/role/{role_id}/assignments",
     request_body = UpdateRoleAssignmentsRequest,
     params(
-        ("role_id" = uuid::Uuid, Path, description = "Role ID"),
+        ("role_id" = Uuid, Path, description = "Role ID"),
     ),
     responses(
             (status = 204, description = "Permissions updated successfully"),
@@ -1630,6 +1624,7 @@ mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_rs::TupleKey;
+        use uuid::Uuid;
 
         use super::super::*;
         use crate::service::{
@@ -1641,8 +1636,8 @@ mod tests {
         async fn test_cannot_assign_role_to_itself() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let role_id = RoleId::new(uuid::Uuid::nil());
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role_id = RoleId::new(Uuid::nil());
 
             authorizer
                 .write(
@@ -1678,7 +1673,7 @@ mod tests {
                     .unwrap();
             assert!(relations.is_empty());
 
-            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             authorizer
                 .write(
                     Some(vec![TupleKey {
@@ -1732,7 +1727,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_as_user() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Principal(user_id.clone());
             let access: Vec<ServerAction> =
                 get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
@@ -1765,8 +1760,8 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_as_role() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-            let role_id = RoleId::new(uuid::Uuid::now_v7());
-            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let role_id = RoleId::new(Uuid::now_v7());
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Role {
                 principal: user_id.clone(),
                 assumed_role: role_id,
@@ -1802,8 +1797,8 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_for_other_principal() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let role_id = RoleId::new(uuid::Uuid::now_v7());
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role_id = RoleId::new(Uuid::now_v7());
             let actor = Actor::Principal(user_id.clone());
 
             authorizer
@@ -1859,8 +1854,8 @@ mod tests {
         async fn test_checked_write() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user1_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let user2_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let user2_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
 
             authorizer
                 .write(
@@ -1896,9 +1891,9 @@ mod tests {
         async fn test_assign_to_role() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user_id_owner = UserId::kubernetes(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let role_id_1 = RoleId::new(uuid::Uuid::nil());
-            let role_id_2 = RoleId::new(uuid::Uuid::now_v7());
+            let user_id_owner = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
+            let role_id_1 = RoleId::new(Uuid::nil());
+            let role_id_2 = RoleId::new(Uuid::now_v7());
 
             authorizer
                 .write(
@@ -1937,10 +1932,10 @@ mod tests {
         async fn test_assign_to_project() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let user_id_owner = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
-            let user_id_assignee = UserId::kubernetes(&uuid::Uuid::nil().to_string()).unwrap();
-            let role_id = RoleId::new(uuid::Uuid::now_v7());
-            let project_id = ProjectIdent::from(uuid::Uuid::nil());
+            let user_id_owner = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::nil().to_string());
+            let role_id = RoleId::new(Uuid::now_v7());
+            let project_id = ProjectIdent::from(Uuid::nil());
 
             authorizer
                 .write(
@@ -1980,7 +1975,7 @@ mod tests {
         async fn test_set_namespace_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let namespace_id = NamespaceIdentUuid::from(uuid::Uuid::now_v7());
+            let namespace_id = NamespaceIdentUuid::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
@@ -2013,7 +2008,7 @@ mod tests {
         async fn test_warehouse_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let warehouse_id = WarehouseIdent::from(uuid::Uuid::now_v7());
+            let warehouse_id = WarehouseIdent::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();

@@ -1,7 +1,10 @@
+use std::fmt::Debug;
+
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderValue, Method};
+use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
@@ -15,8 +18,9 @@ use crate::{
         management::v1::{api_doc as v1_api_doc, ApiServer},
         shutdown_signal, ApiContext,
     },
+    request_metadata::create_request_metadata_with_trace_and_project_fn,
     service::{
-        authn::{IdpVerifier, K8sVerifier, VerifierChain},
+        authn::{auth_middleware_fn, AuthMiddlewareState},
         authz::Authorizer,
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
@@ -35,21 +39,22 @@ lazy_static::lazy_static! {
     };
 }
 
-pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
+pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
+    pub authenticator: Option<N>,
     pub authorizer: A,
     pub catalog_state: C::State,
     pub secrets_state: S,
     pub queues: TaskQueues,
     pub publisher: CloudEventsPublisher,
     pub table_change_checkers: ContractVerifiers,
-    pub token_verifier: Option<IdpVerifier>,
-    pub k8s_token_verifier: Option<K8sVerifier>,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
 }
 
-impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> std::fmt::Debug for RouterArgs<C, A, S> {
+impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
+    for RouterArgs<C, A, S, N>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RouterArgs")
             .field("authorizer", &"Authorizer")
@@ -58,8 +63,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> std::fmt::Debug for Rout
             .field("queues", &self.queues)
             .field("publisher", &self.publisher)
             .field("table_change_checkers", &self.table_change_checkers)
-            .field("token_verifier", &self.token_verifier)
-            .field("k8s_token_verifier", &self.k8s_token_verifier)
+            .field("authenticator", &self.authenticator)
             .field("svhp", &self.service_health_provider)
             .field("cors_origins", &self.cors_origins)
             .field(
@@ -74,20 +78,24 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> std::fmt::Debug for Rout
 ///
 /// # Errors
 /// - Fails if the token verifier chain cannot be created
-pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+pub fn new_full_router<
+    C: Catalog,
+    A: Authorizer + Clone,
+    S: SecretStore,
+    N: Authenticator + 'static,
+>(
     RouterArgs {
+        authenticator,
         authorizer,
         catalog_state,
         secrets_state,
         queues,
         publisher,
         table_change_checkers,
-        token_verifier,
-        k8s_token_verifier,
         service_health_provider,
         cors_origins,
         metrics_layer,
-    }: RouterArgs<C, A, S>,
+    }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
@@ -118,12 +126,17 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
                 Method::OPTIONS,
             ])
     }));
-    let maybe_auth_layer = match (token_verifier, k8s_token_verifier) {
-        (None, None) => option_layer(None),
-        (idp_verifier, k8s_verifier) => option_layer(Some(axum::middleware::from_fn_with_state(
-            VerifierChain::try_new(idp_verifier, k8s_verifier)?,
-            crate::service::authn::auth_middleware_fn,
-        ))),
+
+    let maybe_auth_layer = if let Some(authenticator) = authenticator {
+        option_layer(Some(axum::middleware::from_fn_with_state(
+            AuthMiddlewareState {
+                authenticator,
+                authorizer: authorizer.clone(),
+            },
+            auth_middleware_fn,
+        )))
+    } else {
+        option_layer(None)
     };
 
     let router = Router::new()
@@ -146,7 +159,7 @@ pub fn new_full_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
                 ),
         )
         .layer(axum::middleware::from_fn(
-            crate::request_metadata::create_request_metadata_with_trace_id_fn,
+            create_request_metadata_with_trace_and_project_fn,
         ))
         .layer(
             ServiceBuilder::new()

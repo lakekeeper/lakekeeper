@@ -184,7 +184,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
         )
         .await;
@@ -237,7 +237,7 @@ pub(crate) mod test {
                 vended_credentials: true,
                 remote_signing: false,
             },
-            RequestMetadata::new_random(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
     }

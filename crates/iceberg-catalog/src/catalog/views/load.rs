@@ -147,7 +147,7 @@ pub(crate) mod test {
                 vended_credentials: true,
                 remote_signing: false,
             },
-            crate::request_metadata::RequestMetadata::new_random(),
+            crate::request_metadata::RequestMetadata::new_unauthenticated(),
         )
         .await
     }

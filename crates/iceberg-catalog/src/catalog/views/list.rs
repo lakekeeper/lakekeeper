@@ -89,11 +89,9 @@ mod test {
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
-        catalog::{
-            test::{impl_pagination_tests, random_request_metadata},
-            CatalogServer,
-        },
+        catalog::{test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
+        request_metadata::RequestMetadata,
         service::{
             authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
             State, UserId,
@@ -118,7 +116,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -143,7 +141,7 @@ mod test {
                     vended_credentials: true,
                     remote_signing: false,
                 },
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -179,7 +177,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -205,7 +203,7 @@ mod test {
                     vended_credentials: true,
                     remote_signing: false,
                 },
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -220,7 +218,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -235,7 +233,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -250,7 +248,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -266,7 +264,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -291,7 +289,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -325,7 +323,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -351,7 +349,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();

@@ -990,6 +990,28 @@ dependencies = [
 
 [[package]]
 name = "axum-extra"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fc6f625a1f7705c6cf62d0d070794e94668988b1c38111baeec177c715f7b"
+dependencies = [
+ "axum 0.8.2",
+ "axum-core 0.5.1",
+ "bytes",
+ "futures-util",
+ "headers",
+ "http 1.2.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "serde",
+ "tower 0.5.2",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-extra"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "543f0799d22486525744f06a3580b64f3e51d97aba73ea0e09040969c0034722"
@@ -2920,7 +2942,7 @@ dependencies = [
  "aws-sigv4",
  "aws-smithy-http",
  "axum 0.8.2",
- "axum-extra",
+ "axum-extra 0.11.0",
  "axum-prometheus",
  "azure_core",
  "azure_identity",
@@ -2943,10 +2965,10 @@ dependencies = [
  "itertools 0.14.0",
  "jsonwebtoken",
  "jwks_client_rs",
- "k8s-openapi",
  "kube",
  "lazy-regex",
  "lazy_static",
+ "limes",
  "maplit",
  "mockall",
  "needs_env_var",
@@ -2992,6 +3014,7 @@ dependencies = [
  "clap",
  "iceberg-catalog",
  "lakekeeper-console",
+ "limes",
  "mime_guess",
  "moka",
  "reqwest",
@@ -3589,6 +3612,29 @@ checksum = "3302702afa434ffa30847a83305f0a69d6abd74293b6554c18ec85c7ef30c980"
 dependencies = [
  "anyhow",
  "version_check",
+]
+
+[[package]]
+name = "limes"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d58b7370a43ab7aab9f4d12fdb12da95602069217b6faa4c85f22f00d3f41a2"
+dependencies = [
+ "axum 0.8.2",
+ "axum-extra 0.10.0",
+ "jsonwebtoken",
+ "jwks_client_rs",
+ "k8s-openapi",
+ "kube",
+ "once_cell",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.11",
+ "tracing",
+ "trait-variant",
+ "typed-builder 0.20.0",
+ "url",
 ]
 
 [[package]]
@@ -6627,6 +6673,17 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "trait-variant"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70977707304198400eb4835a78f6a9f928bf41bba420deb8fdb175cd965d77a7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.87",
 ]
 
 [[package]]

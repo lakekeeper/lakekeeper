@@ -13,8 +13,8 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State, TableIdentUuid,
-        ViewIdentUuid, WarehouseIdent,
+        Actor, Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State,
+        TableIdentUuid, ViewIdentUuid, WarehouseIdent,
     },
 };
 
@@ -43,6 +43,10 @@ impl Authorizer for AllowAllAuthorizer {
 
     fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
         Router::new()
+    }
+
+    async fn check_actor(&self, _actor: &Actor) -> Result<()> {
+        Ok(())
     }
 
     async fn can_bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {

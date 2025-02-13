@@ -315,7 +315,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             body,
             "createTable",
@@ -419,7 +419,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             maybe_body_to_json(&request),
             "registerTable",
@@ -746,7 +746,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             serde_json::Value::Null,
             "dropTable",
@@ -872,7 +872,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             body,
             "renameTable",
@@ -1224,7 +1224,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                     .unwrap_or_default(),
                 num_events: number_of_events,
                 sequence_number: event_sequence_number,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             body,
             "updateTable",
@@ -1817,12 +1817,9 @@ mod test {
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
-        catalog::{
-            tables::validate_table_properties,
-            test::{impl_pagination_tests, random_request_metadata},
-            CatalogServer,
-        },
+        catalog::{tables::validate_table_properties, test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
+        request_metadata::RequestMetadata,
         service::{
             authz::{
                 implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
@@ -1941,7 +1938,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -1960,7 +1957,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2030,7 +2027,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2045,7 +2042,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2087,7 +2084,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -2106,7 +2103,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2171,7 +2168,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2186,7 +2183,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2220,7 +2217,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2232,7 +2229,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2259,7 +2256,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -2274,7 +2271,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2302,7 +2299,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -2317,7 +2314,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2383,7 +2380,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2395,7 +2392,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2445,7 +2442,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2457,7 +2454,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2502,7 +2499,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2514,7 +2511,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2540,7 +2537,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2552,7 +2549,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2588,7 +2585,7 @@ mod test {
                 remote_signing: false,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2641,7 +2638,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2651,7 +2648,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2671,7 +2668,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2681,7 +2678,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2701,7 +2698,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2711,7 +2708,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Table was created at same location which should not be possible");
@@ -2734,7 +2731,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2744,7 +2741,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
@@ -2767,7 +2764,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2777,7 +2774,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
@@ -2799,7 +2796,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2809,7 +2806,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
@@ -2836,7 +2833,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -2857,7 +2854,7 @@ mod test {
                 create_request,
                 DataAccess::none(),
                 ctx.clone(),
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -2893,7 +2890,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -2916,7 +2913,7 @@ mod test {
                     remote_signing: false,
                 },
                 ctx.clone(),
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -2931,7 +2928,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2946,7 +2943,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2961,7 +2958,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2977,7 +2974,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -3002,7 +2999,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -3035,7 +3032,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -3061,7 +3058,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();

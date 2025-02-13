@@ -27,7 +27,7 @@ use crate::{
         Catalog, ListFlags, NamespaceIdentUuid, Result, SecretStore, State, TableIdentUuid,
         Transaction, ViewIdentUuid,
     },
-    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+    ProjectIdent, WarehouseIdent,
 };
 
 /// Check if a specific action is allowed on the given object
@@ -115,7 +115,7 @@ async fn check_internal<C: Catalog, S: SecretStore>(
     let user = if let Some(for_principal) = &for_principal {
         for_principal.to_openfga()
     } else {
-        metadata.auth_details.actor().to_openfga()
+        metadata.actor().to_openfga()
     };
 
     let allowed = authorizer
@@ -161,8 +161,7 @@ async fn check_project(
     project_id: Option<&ProjectIdent>,
 ) -> Result<(String, String)> {
     let project_id = project_id
-        .or(metadata.auth_details.project_id().as_ref())
-        .or(DEFAULT_PROJECT_ID.as_ref())
+        .or(metadata.preferred_project_id().as_ref())
         .ok_or(OpenFGAError::NoProjectId)?
         .to_openfga();
     authorizer
@@ -488,9 +487,10 @@ mod tests {
             },
         };
         let check = CheckRequest {
-            identity: Some(UserOrRole::User(
-                UserId::oidc("cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8").unwrap(),
-            )),
+            identity: Some(UserOrRole::User(UserId::new_unchecked(
+                "oidc",
+                "cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8",
+            ))),
             operation,
         };
         let json = serde_json::to_value(&check).unwrap();
@@ -519,6 +519,7 @@ mod tests {
         use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
         use openfga_rs::TupleKey;
         use strum::IntoEnumIterator;
+        use uuid::Uuid;
 
         use super::super::{super::relations::*, *};
         use crate::{
@@ -577,9 +578,9 @@ mod tests {
 
         #[sqlx::test]
         async fn test_check_assume_role(pool: sqlx::PgPool) {
-            let operator_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, _warehouse, _namespace) = setup(operator_id.clone(), pool).await;
-            let user_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user_metadata = RequestMetadata::random_human(user_id.clone());
             let operator_metadata = RequestMetadata::random_human(operator_id.clone());
 
@@ -622,7 +623,7 @@ mod tests {
 
         #[sqlx::test]
         async fn test_check(pool: sqlx::PgPool) {
-            let operator_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, warehouse, namespace) = setup(operator_id.clone(), pool).await;
             let namespace_id = NamespaceIdentUuid::from_str(
                 namespace
@@ -633,9 +634,9 @@ mod tests {
             )
             .unwrap();
 
-            let nobody_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let nobody_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let nobody_metadata = RequestMetadata::random_human(nobody_id.clone());
-            let user_1_id = UserId::oidc(&uuid::Uuid::now_v7().to_string()).unwrap();
+            let user_1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user_1_metadata = RequestMetadata::random_human(user_1_id.clone());
 
             ctx.v1_state
@@ -696,10 +697,13 @@ mod tests {
                         .unwrap();
                     assert!(!allowed);
                     // Anonymous can check his own access
-                    let allowed =
-                        check_internal(ctx.clone(), &RequestMetadata::new_random(), request)
-                            .await
-                            .unwrap();
+                    let allowed = check_internal(
+                        ctx.clone(),
+                        &RequestMetadata::new_unauthenticated(),
+                        request,
+                    )
+                    .await
+                    .unwrap();
                     assert!(!allowed);
                 } else {
                     check_internal(ctx.clone(), &nobody_metadata, request.clone())
@@ -736,9 +740,13 @@ mod tests {
                     identity: Some(UserOrRole::User(operator_id.clone())),
                     operation: action.clone(),
                 };
-                check_internal(ctx.clone(), &RequestMetadata::new_random(), request.clone())
-                    .await
-                    .unwrap_err();
+                check_internal(
+                    ctx.clone(),
+                    &RequestMetadata::new_unauthenticated(),
+                    request.clone(),
+                )
+                .await
+                .unwrap_err();
                 // Operator can check own access
                 let request = CheckRequest {
                     identity: Some(UserOrRole::User(operator_id.clone())),

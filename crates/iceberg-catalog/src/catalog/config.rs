@@ -7,14 +7,14 @@ use crate::{
             config::GetConfigQueryParams, ApiContext, CatalogConfig, ErrorModel, PageToken,
             PaginationQuery, Result,
         },
-        management::v1::user::UserLastUpdatedWith,
+        management::v1::user::{parse_create_user_request, UserLastUpdatedWith},
     },
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        AuthDetails, Catalog, ProjectIdent, SecretStore, State, Transaction,
+        Catalog, ProjectIdent, SecretStore, State, Transaction,
     },
-    CONFIG, DEFAULT_PROJECT_ID,
+    CONFIG,
 };
 
 #[async_trait::async_trait]
@@ -27,23 +27,13 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CatalogConfig> {
         let authorizer = api_context.v1_state.authz;
-        let project_id_from_auth = &request_metadata.auth_details.project_id();
-        let warehouse_id_from_auth = &request_metadata.auth_details.warehouse_id();
 
         maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone()).await?;
 
         // Arg takes precedence over auth
         let warehouse_id = if let Some(query_warehouse) = query.warehouse {
             let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
-            let project_id = project_from_arg
-                .or(*project_id_from_auth)
-                .or(*DEFAULT_PROJECT_ID)
-                .ok_or_else(|| {
-                    // ToDo Christian: Split Project into separate endpoint, Use name
-                    ErrorModel::bad_request(
-                        "No project provided. Please provide warehouse as: <project-name>/<warehouse-name>",
-                        "GetConfigNoProjectProvided", None)
-                })?;
+            let project_id = request_metadata.require_project_id(project_from_arg)?;
             authorizer
                 .require_project_action(
                     &request_metadata,
@@ -58,9 +48,7 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
             )
             .await?
         } else {
-            warehouse_id_from_auth.ok_or_else(|| {
-                ErrorModel::bad_request("No warehouse specified. Please specify the 'warehouse' parameter in the GET /config request.".to_string(), "GetConfigNoWarehouseProvided", None)
-            })?
+            return Err(ErrorModel::bad_request("No warehouse specified. Please specify the 'warehouse' parameter in the GET /config request.".to_string(), "GetConfigNoWarehouseProvided", None).into());
         };
 
         authorizer
@@ -119,17 +107,13 @@ async fn maybe_register_user<D: Catalog>(
     request_metadata: &RequestMetadata,
     state: <D as Catalog>::State,
 ) -> Result<()> {
-    let principal = match &request_metadata.auth_details {
-        AuthDetails::Unauthenticated => {
-            tracing::debug!("Got no user_id from request_metadata, not trying to register.");
-            return Ok(());
-        }
-        AuthDetails::Principal(principal) => principal,
+    let Some(user_id) = request_metadata.user_id() else {
+        return Ok(());
     };
 
-    // principal.get_name() can fail - we can't run it for already registered users
+    // `parse_create_user_request` can fail - we can't run it for already registered users
     let user = D::list_user(
-        Some(vec![principal.user_id().clone()]),
+        Some(vec![user_id.clone()]),
         None,
         PaginationQuery {
             page_token: PageToken::Empty,
@@ -140,15 +124,17 @@ async fn maybe_register_user<D: Catalog>(
     .await?;
 
     if user.users.is_empty() {
+        let (creation_user_id, name, user_type, email) =
+            parse_create_user_request(request_metadata, None)?;
+
         // If the user is authenticated, create a user in the catalog
         let mut t = D::Transaction::begin_write(state).await?;
-        let (name, r#type) = principal.get_name_and_type()?;
         D::create_or_update_user(
-            principal.user_id(),
-            name,
-            principal.email(),
+            &creation_user_id,
+            &name,
+            email.as_deref(),
             UserLastUpdatedWith::ConfigCallCreation,
-            r#type,
+            user_type,
             t.transaction(),
         )
         .await?;

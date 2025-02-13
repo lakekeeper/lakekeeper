@@ -95,7 +95,7 @@ mod test {
                 },
             },
             api_context.clone(),
-            RequestMetadata::new_random(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -109,7 +109,7 @@ mod test {
                 },
             },
             api_context.clone(),
-            RequestMetadata::new_random(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap_err();

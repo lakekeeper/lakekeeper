@@ -76,7 +76,7 @@ use crate::{
             CatalogRoleAction, CatalogUserAction, NamespaceParent,
         },
         health::Health,
-        AuthDetails, Catalog, RoleId, SecretStore, State, ViewIdentUuid,
+        Catalog, RoleId, SecretStore, State, ViewIdentUuid,
     },
 };
 
@@ -116,6 +116,40 @@ impl Authorizer for OpenFGAAuthorizer {
 
     fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
         api::new_v1_router()
+    }
+
+    /// Check if the requested actor combination is allowed - especially if the user
+    /// is allowed to assume the specified role.
+    async fn check_actor(&self, actor: &Actor) -> Result<()> {
+        match actor {
+            Actor::Principal(_user_id) => Ok(()),
+            Actor::Anonymous => Ok(()),
+            Actor::Role {
+                principal,
+                assumed_role,
+            } => {
+                let assume_role_allowed = self
+                    .check(CheckRequestTupleKey {
+                        user: Actor::Principal(principal.clone()).to_openfga(),
+                        relation: relations::RoleRelation::CanAssume.to_string(),
+                        object: assumed_role.to_openfga(),
+                    })
+                    .await?;
+
+                if assume_role_allowed {
+                    Ok(())
+                } else {
+                    Err(ErrorModel::forbidden(
+                        format!(
+                            "Principal is not allowed to assume the role with id {assumed_role}"
+                        ),
+                        "RoleAssumptionNotAllowed",
+                        None,
+                    )
+                    .into())
+                }
+            }
+        }
     }
 
     async fn can_bootstrap(&self, metadata: &RequestMetadata) -> Result<()> {
@@ -175,14 +209,8 @@ impl Authorizer for OpenFGAAuthorizer {
     }
 
     async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool> {
-        let actor = metadata.actor();
         // Currently all authenticated principals can search users
-        self.check_actor(actor).await?;
-
-        match metadata.auth_details {
-            AuthDetails::Unauthenticated => Ok(false),
-            AuthDetails::Principal(_) => Ok(true),
-        }
+        Ok(metadata.actor().is_authenticated())
     }
 
     async fn is_allowed_role_action(
@@ -191,17 +219,13 @@ impl Authorizer for OpenFGAAuthorizer {
         role_id: RoleId,
         action: &CatalogRoleAction,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: role_id.to_openfga(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
     async fn is_allowed_user_action(
@@ -211,7 +235,6 @@ impl Authorizer for OpenFGAAuthorizer {
         action: &CatalogUserAction,
     ) -> Result<bool> {
         let actor = metadata.actor();
-        self.check_actor(actor).await?;
 
         let is_same_user = match actor {
             Actor::Role {
@@ -260,17 +283,13 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         action: &CatalogServerAction,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: OPENFGA_SERVER.clone(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
     async fn is_allowed_project_action(
@@ -279,17 +298,13 @@ impl Authorizer for OpenFGAAuthorizer {
         project_id: ProjectIdent,
         action: &CatalogProjectAction,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: project_id.to_openfga(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
     async fn is_allowed_warehouse_action(
@@ -298,77 +313,58 @@ impl Authorizer for OpenFGAAuthorizer {
         warehouse_id: WarehouseIdent,
         action: &CatalogWarehouseAction,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: warehouse_id.to_openfga(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
-    /// Return the namespace_id if the action is allowed, otherwise return None.
     async fn is_allowed_namespace_action(
         &self,
         metadata: &RequestMetadata,
         namespace_id: NamespaceIdentUuid,
         action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: namespace_id.to_openfga(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
-    /// Return the table_id if the action is allowed, otherwise return None.
     async fn is_allowed_table_action(
         &self,
         metadata: &RequestMetadata,
         table_id: TableIdentUuid,
         action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: table_id.to_openfga(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
-    /// Return the view_id if the action is allowed, otherwise return None.
     async fn is_allowed_view_action(
         &self,
         metadata: &RequestMetadata,
         view_id: ViewIdentUuid,
         action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<bool> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
+        self.check(CheckRequestTupleKey {
+            user: metadata.actor().to_openfga(),
             relation: action.to_string(),
             object: view_id.to_openfga(),
-        });
-
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        check.map_err(Into::into)
+        })
+        .await
+        .map_err(Into::into)
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, user_id: UserId) -> Result<()> {
@@ -656,16 +652,13 @@ impl Authorizer for OpenFGAAuthorizer {
 
 impl OpenFGAAuthorizer {
     async fn list_projects_internal(&self, actor: &Actor) -> Result<ListProjectsResponse> {
-        let check_actor_fut = self.check_actor(actor);
-        let list_all_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
-            relation: relations::ServerRelation::CanListAllProjects.to_string(),
-            object: OPENFGA_SERVER.clone(),
-        });
-
-        let (check_actor, list_all) = futures::join!(check_actor_fut, list_all_fut);
-        check_actor?;
-        let list_all = list_all?;
+        let list_all = self
+            .check(CheckRequestTupleKey {
+                user: actor.to_openfga(),
+                relation: ServerRelation::CanListAllProjects.to_string(),
+                object: OPENFGA_SERVER.clone(),
+            })
+            .await?;
 
         if list_all {
             return Ok(ListProjectsResponse::All);
@@ -787,17 +780,14 @@ impl OpenFGAAuthorizer {
         action: impl OpenFgaRelation,
         object: &str,
     ) -> Result<()> {
-        let actor = metadata.actor();
-        let check_actor_fut = self.check_actor(actor);
-        let check_fut = self.check(CheckRequestTupleKey {
-            user: actor.to_openfga(),
-            relation: action.to_string(),
-            object: object.to_string(),
-        });
+        let allowed = self
+            .check(CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: action.to_string(),
+                object: object.to_string(),
+            })
+            .await?;
 
-        let (check_actor, check) = futures::join!(check_actor_fut, check_fut);
-        check_actor?;
-        let allowed = check?;
         if !allowed {
             return Err(ErrorModel::forbidden(
                 format!("Action {action} not allowed for object {object}"),
@@ -1061,40 +1051,6 @@ impl OpenFGAAuthorizer {
             })
             .map(|response| response.into_inner().objects)
     }
-
-    /// Check if the requested actor combination is allowed - especially if the user
-    /// is allowed to assume the specified role.
-    async fn check_actor(&self, actor: &Actor) -> Result<()> {
-        match actor {
-            Actor::Principal(_user_id) => Ok(()),
-            Actor::Anonymous => Ok(()),
-            Actor::Role {
-                principal,
-                assumed_role,
-            } => {
-                let assume_role_allowed = self
-                    .check(CheckRequestTupleKey {
-                        user: Actor::Principal(principal.clone()).to_openfga(),
-                        relation: relations::RoleRelation::CanAssume.to_string(),
-                        object: assumed_role.to_openfga(),
-                    })
-                    .await?;
-
-                if assume_role_allowed {
-                    Ok(())
-                } else {
-                    Err(ErrorModel::forbidden(
-                        format!(
-                            "Principal is not allowed to assume the specified role with id {assumed_role}"
-                        ),
-                        "RoleAssumptionNotAllowed",
-                        None,
-                    )
-                    .into())
-                }
-            }
-        }
-    }
 }
 
 #[cfg_attr(test, mockall::automock)]
@@ -1265,7 +1221,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_list_projects() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let user_id = UserId::oidc("this_user").unwrap();
+            let user_id = UserId::new_unchecked("oidc", "this_user");
             let actor = Actor::Principal(user_id.clone());
             let project = ProjectIdent::from(uuid::Uuid::now_v7());
 

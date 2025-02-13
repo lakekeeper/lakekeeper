@@ -267,7 +267,7 @@ pub(crate) mod test {
                 S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
             },
             task_queue::TaskQueues,
-            AuthDetails, State, UserId,
+            State, UserId,
         },
         CONFIG,
     };
@@ -322,7 +322,7 @@ pub(crate) mod test {
                 properties: None,
             },
             api_context.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -344,7 +344,10 @@ pub(crate) mod test {
         let metadata = if let Some(user_id) = user_id {
             RequestMetadata::random_human(user_id)
         } else {
-            random_request_metadata()
+            RequestMetadata::random_human(UserId::new_unchecked(
+                "oidc",
+                &uuid::Uuid::now_v7().to_string(),
+            ))
         };
         ApiServer::bootstrap(
             api_context.clone(),
@@ -401,13 +404,6 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) fn random_request_metadata() -> RequestMetadata {
-        RequestMetadata {
-            request_id: Uuid::new_v4(),
-            auth_details: AuthDetails::Unauthenticated,
-        }
-    }
-
     macro_rules! impl_pagination_tests {
         ($typ:ident, $setup_fn:ident, $server_typ:ident, $query_typ:ident, $entity_ident:ident, $map_block:expr) => {
             use paste::paste;
@@ -427,7 +423,7 @@ pub(crate) mod test {
                             }
                         )).unwrap(),
                         ctx.clone(),
-                        random_request_metadata(),
+                        RequestMetadata::new_unauthenticated(),
                     )
                     .await
                     .unwrap();
@@ -447,7 +443,7 @@ pub(crate) mod test {
                                 "returnUuids": true,
                             })).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -468,7 +464,7 @@ pub(crate) mod test {
                             }
                             )).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -490,7 +486,7 @@ pub(crate) mod test {
                                 "returnUuids": true,
                                 })).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -518,7 +514,7 @@ pub(crate) mod test {
                             }
                             )).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -546,7 +542,7 @@ pub(crate) mod test {
                             }
                             )).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -570,7 +566,7 @@ pub(crate) mod test {
                             }
                             )).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -598,7 +594,7 @@ pub(crate) mod test {
                             }
                             )).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();
@@ -622,7 +618,7 @@ pub(crate) mod test {
                             }
                             )).unwrap(),
                             ctx.clone(),
-                            random_request_metadata(),
+                            RequestMetadata::new_unauthenticated(),
                         )
                         .await
                         .unwrap();

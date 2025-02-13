@@ -122,7 +122,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
         )
         .await;
@@ -187,7 +187,7 @@ mod test {
                 purge_requested: None,
             },
             api_context.clone(),
-            RequestMetadata::new_random(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect("View should be droppable");
