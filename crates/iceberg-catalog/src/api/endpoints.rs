@@ -1,32 +1,12 @@
-use http::{Method, Uri};
-use iceberg_ext::catalog::rest::ErrorModel;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::LazyLock;
-use strum::{EnumString, IntoEnumIterator, VariantIterator, VariantMetadata, VariantNames};
-
-static PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let mut paths = Vec::new();
-    for endpoint in Endpoints::iter() {
-        paths.push(endpoint.to_string());
-    }
-    paths
-});
+use strum::IntoEnumIterator;
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum_macros::EnumString,
-    strum_macros::EnumIter,
-    strum_macros::VariantNames,
-    strum::Display,
-    strum::EnumDiscriminants,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, strum::Display, sqlx::Type,
 )]
-#[strum_discriminants(derive(strum::Display, strum::EnumIterAdditionalDerive))]
+#[strum(serialize_all = "kebab-case")]
+#[sqlx(type_name = "api_endpoints", rename_all = "kebab-case")]
 pub enum Endpoints {
     // Signer
     CatalogPostAwsS3Sign,
@@ -349,5 +329,17 @@ impl Endpoints {
             }
             Endpoints::ManagementPostPermissionsCheck => "POST /v1/management/permissions/check",
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::api::endpoints::Endpoints;
+    use strum::IntoEnumIterator;
+    #[test]
+    fn test() {
+        Endpoints::iter().for_each(|e| {
+            eprintln!("{}", e.to_string());
+        });
     }
 }

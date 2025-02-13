@@ -1,6 +1,3 @@
-use http::Method;
-use strum::IntoEnumIterator;
-
 pub mod types;
 
 pub mod v1 {

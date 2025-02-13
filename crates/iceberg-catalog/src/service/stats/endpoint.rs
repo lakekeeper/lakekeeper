@@ -1,6 +1,6 @@
 #![allow(clippy::module_name_repetitions)]
 
-use crate::api::iceberg::supported_endpoints;
+use crate::api::endpoints::Endpoints;
 use crate::request_metadata::RequestMetadata;
 use crate::service::authz::{Authorizer, CatalogProjectAction};
 use crate::service::{Catalog, SecretStore, State as ServiceState};
@@ -9,6 +9,7 @@ use axum::extract::{Path, Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use http::{Method, StatusCode};
+use iceberg_ext::catalog::rest::ErrorModel;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
@@ -58,7 +59,7 @@ pub(crate) async fn stats_middleware_fn(
 pub enum Message {
     EndpointCalled {
         request_metadata: RequestMetadata,
-        response_status: http::StatusCode,
+        response_status: StatusCode,
         path_params: HashMap<String, String>,
     },
 }
@@ -79,23 +80,8 @@ impl ProjectStats {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Uri {
-    Matched(String),
-    Unmatched(String),
-}
-
-impl Uri {
-    pub(crate) fn into_pair(self) -> (Option<String>, Option<String>) {
-        match self {
-            Uri::Matched(s) => (Some(s), None),
-            Uri::Unmatched(s) => (None, Some(s)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EndpointIdentifier {
-    pub uri: Uri,
+    pub uri: Endpoints,
     pub status_code: StatusCode,
     pub method: Method,
     pub warehouse: Option<WarehouseIdentOrPrefix>,
@@ -108,30 +94,21 @@ pub enum WarehouseIdentOrPrefix {
 }
 
 #[derive(Debug)]
-pub struct Tracker<A>
-where
-    A: Authorizer + Clone,
-{
+pub struct Tracker {
     rcv: tokio::sync::mpsc::Receiver<Message>,
     endpoint_stats: HashMap<Option<ProjectIdent>, ProjectStats>,
     stat_sinks: Vec<Arc<dyn StatsSink>>,
-    state: A,
 }
 
-impl<A> Tracker<A>
-where
-    A: Authorizer + Clone,
-{
+impl Tracker {
     pub fn new(
         rcv: tokio::sync::mpsc::Receiver<Message>,
-        state: A,
         stat_sinks: Vec<Arc<dyn StatsSink>>,
     ) -> Self {
         Self {
             rcv,
             endpoint_stats: HashMap::new(),
             stat_sinks,
-            state,
         }
     }
 
@@ -149,7 +126,7 @@ where
 
                     // TODO: use authz to check if project is accessible
 
-                    let whi = dbg!(&path_params)
+                    let warehouse = dbg!(&path_params)
                         .get("warehouse_id")
                         .map(|s| WarehouseIdent::from_str(s.as_str()))
                         .transpose()
@@ -160,19 +137,30 @@ where
                             .get("prefix")
                             .map(ToString::to_string)
                             .map(WarehouseIdentOrPrefix::Prefix));
+                    let Some(mp) = request_metadata.matched_path.as_ref() else {
+                        tracing::error!("No path matched.");
+                        continue;
+                    };
+
+                    let Some(uri) = Endpoints::from_http_string(&format!(
+                        "{} {}",
+                        request_metadata.request_method,
+                        mp.as_str(),
+                    )) else {
+                        tracing::error!(
+                            "Could not parse endpoint from matched path: '{}'.",
+                            mp.as_str()
+                        );
+                        continue;
+                    };
 
                     self.endpoint_stats
                         .entry(project_id)
                         .or_default()
                         .stats
                         .entry(EndpointIdentifier {
-                            warehouse: dbg!(whi),
-                            uri: request_metadata
-                                .matched_path
-                                .as_ref()
-                                .map(|s| s.as_str().to_string())
-                                .map(Uri::Matched)
-                                .unwrap_or(Uri::Unmatched(request_metadata.uri.clone())),
+                            warehouse,
+                            uri,
                             status_code: response_status,
                             method: request_metadata.request_method,
                         })

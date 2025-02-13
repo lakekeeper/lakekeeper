@@ -25,8 +25,7 @@ use iceberg_catalog::{
         },
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
-        Catalog, StartupValidationData,
-        TrackerTx
+        Catalog, StartupValidationData, TrackerTx,
     },
     SecretBackend, CONFIG,
 };
@@ -210,7 +209,6 @@ async fn serve_inner<A: Authorizer>(
 
     let tracker = Tracker::new(
         tracker_rx,
-        authorizer.clone(),
         vec![Arc::new(PostgresStatsSink::new(catalog_state.write_pool()))],
     );
 

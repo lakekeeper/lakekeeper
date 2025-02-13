@@ -1,6 +1,9 @@
+use crate::api::endpoints::Endpoints;
 use crate::implementations::postgres::dbutils::DBErrorHandler;
 use crate::service::stats::endpoint::{EndpointIdentifier, StatsSink, WarehouseIdentOrPrefix};
-use crate::ProjectIdent;
+use crate::{ProjectIdent, WarehouseIdent};
+use http::{Method, StatusCode};
+use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -46,8 +49,34 @@ impl StatsSink for PostgresStatsSink {
                 let ident = ident.flatten();
                 let prefix = prefix.flatten();
 
-                let (matched, non_matched) = uri.into_pair();
-                let _ = sqlx::query!(
+                insert_stats(
+                    &mut conn,
+                    project,
+                    uri,
+                    status_code,
+                    method,
+                    count,
+                    ident,
+                    prefix,
+                )
+                .await;
+            }
+        }
+        conn.commit().await.unwrap();
+    }
+}
+
+async fn insert_stats(
+    conn: &mut Transaction<Postgres>,
+    project: Option<ProjectIdent>,
+    uri: Endpoints,
+    status_code: StatusCode,
+    method: Method,
+    count: i64,
+    ident: Option<WarehouseIdent>,
+    prefix: Option<String>,
+) {
+    let _ = sqlx::query!(
                     r#"
                     WITH warehouse_id AS (
                         SELECT CASE
@@ -63,16 +92,12 @@ impl StatsSink for PostgresStatsSink {
                     project.map(|p| *p),
                     ident.as_deref().copied() as Option<Uuid>,
                     prefix,
-                    matched.unwrap(),
+                    uri as _,
                     status_code.as_u16() as i32,
                     method.as_str(),
                     count
                 )
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|e| e.into_error_model("failed to consume stats")).unwrap();
-            }
-        }
-        conn.commit().await.unwrap();
-    }
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| e.into_error_model("failed to consume stats")).unwrap();
 }
