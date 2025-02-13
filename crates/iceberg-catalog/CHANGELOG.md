@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/lakekeeper/lakekeeper/compare/v0.6.2...v0.6.3) (2025-02-13)
+
+
+### Bug Fixes
+
+* **s3:** set path style access in s3 file_io ([#796](https://github.com/lakekeeper/lakekeeper/issues/796)) ([33e690f](https://github.com/lakekeeper/lakekeeper/commit/33e690f77737ce3f7def54d4913164161aa60505))
+
 ## [0.6.2](https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2) (2025-01-30)
 
 
