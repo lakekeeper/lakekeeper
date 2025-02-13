@@ -102,6 +102,7 @@ pub struct Tracker {
 }
 
 impl Tracker {
+    #[must_use]
     pub fn new(
         rcv: tokio::sync::mpsc::Receiver<Message>,
         stat_sinks: Vec<Arc<dyn StatsSink>>,
@@ -144,7 +145,7 @@ impl Tracker {
                     };
 
                     let Some(uri) = Endpoints::from_method_and_matched_path(
-                        request_metadata.request_method,
+                        &request_metadata.request_method,
                         mp.as_str(),
                     ) else {
                         tracing::error!(

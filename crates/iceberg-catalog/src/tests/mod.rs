@@ -1,12 +1,12 @@
 mod stats;
 
-use std::sync::Arc;
-
+use http::Method;
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
     CreateNamespaceRequest, CreateNamespaceResponse, LoadTableResult, LoadViewResult,
 };
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
@@ -249,9 +249,9 @@ pub(crate) fn get_api_context<T: Authorizer>(
 pub(crate) fn random_request_metadata() -> RequestMetadata {
     RequestMetadata {
         request_id: Uuid::new_v4(),
-        request_method: Default::default(),
+        request_method: Method::default(),
         matched_path: None,
-        uri: "".to_string(),
+        uri: String::new(),
         auth_details: AuthDetails::Unauthenticated,
         project_id_header: None,
     }

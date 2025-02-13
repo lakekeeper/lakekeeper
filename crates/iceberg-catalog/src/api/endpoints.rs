@@ -99,18 +99,18 @@ static MAP: LazyLock<HashMap<&str, Endpoints>> = LazyLock::new(|| {
 
 impl Endpoints {
     pub fn catalog() -> Vec<Self> {
-        Endpoints::iter().filter(Self::is_catalog).collect()
+        Endpoints::iter().filter(|e| Self::is_catalog(*e)).collect()
     }
 
-    pub fn is_catalog(&self) -> bool {
+    pub fn is_catalog(self) -> bool {
         self.to_string().starts_with("Catalog")
     }
 
-    pub fn is_management(&self) -> bool {
+    pub fn is_management(self) -> bool {
         self.to_string().starts_with("Management")
     }
 
-    pub fn is_real_endpoint(&self) -> bool {
+    pub fn is_real_endpoint(self) -> bool {
         !matches!(
             self,
             Endpoints::ManagementGetPermissions
@@ -120,11 +120,11 @@ impl Endpoints {
         )
     }
 
-    pub fn is_grouped_endpoint(&self) -> bool {
+    pub fn is_grouped_endpoint(self) -> bool {
         !self.is_real_endpoint()
     }
 
-    pub fn from_method_and_matched_path(method: Method, inp: &str) -> Option<Self> {
+    pub fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
         if inp.starts_with("/v1/management/permissions") {
             return match method.as_str() {
                 "GET" => Some(Endpoints::ManagementGetPermissions),
@@ -137,7 +137,8 @@ impl Endpoints {
         MAP.get(inp).copied()
     }
 
-    pub fn to_http_string(&self) -> &'static str {
+    #[allow(clippy::too_many_lines)]
+    pub fn to_http_string(self) -> &'static str {
         match self {
             Endpoints::CatalogPostAwsS3Sign => "POST /v1/catalog/aws/s3/sign",
             Endpoints::CatalogPostPrefixAwsS3Sign => "POST /v1/catalog/{prefix}/aws/s3/sign",
@@ -195,7 +196,7 @@ impl Endpoints {
             Endpoints::CatalogHeadNamespaceView => {
                 "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}"
             }
-            Endpoints::CatalogPostViewsRename => "POST /v1/{prefix}/tables/rename",
+            Endpoints::CatalogPostViewsRename => "POST /v1/{prefix}/views/rename",
             Endpoints::ManagementGetInfo => "GET /v1/management/info",
             Endpoints::ManagementPostBootstrap => "POST /v1/management/bootstrap",
             Endpoints::ManagementPostRole => "POST /v1/management/role",
@@ -260,18 +261,5 @@ impl Endpoints {
             Endpoints::ManagementHeadPermissions => "HEAD /v1/management/permissions",
             Endpoints::ManagementDeletePermissions => "DELETE /v1/management/permissions",
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use strum::IntoEnumIterator;
-
-    use crate::api::endpoints::Endpoints;
-    #[test]
-    fn test() {
-        Endpoints::iter().for_each(|e| {
-            eprintln!("{}", e.to_string());
-        });
     }
 }

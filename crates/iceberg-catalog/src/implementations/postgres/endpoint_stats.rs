@@ -90,7 +90,7 @@ async fn insert_stats(
                     ident.as_deref().copied() as Option<Uuid>,
                     prefix,
                     uri as _,
-                    status_code.as_u16() as i32,
+                    i32::from(status_code.as_u16()),
                     count
                 )
         .execute(&mut **conn)

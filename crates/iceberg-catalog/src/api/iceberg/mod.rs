@@ -205,7 +205,7 @@ pub mod v1 {
 pub(crate) fn supported_endpoints() -> Vec<String> {
     crate::api::endpoints::Endpoints::catalog()
         .iter()
-        .map(|e| e.to_string())
+        .map(ToString::to_string)
         .collect()
 }
 

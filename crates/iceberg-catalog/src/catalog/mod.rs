@@ -236,11 +236,10 @@ where
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test {
-    use std::sync::Arc;
-
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
     use sqlx::PgPool;
+    use std::sync::Arc;
     use uuid::Uuid;
 
     use crate::{
@@ -267,7 +266,7 @@ pub(crate) mod test {
                 S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
             },
             task_queue::TaskQueues,
-            AuthDetails, State, UserId,
+            State, UserId,
         },
         CONFIG,
     };
@@ -401,16 +400,7 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) fn random_request_metadata() -> RequestMetadata {
-        RequestMetadata {
-            request_id: Uuid::new_v4(),
-            request_method: Default::default(),
-            matched_path: None,
-            uri: "".to_string(),
-            auth_details: AuthDetails::Unauthenticated,
-            project_id_header: None,
-        }
-    }
+    pub(crate) use crate::tests::random_request_metadata;
 
     macro_rules! impl_pagination_tests {
         ($typ:ident, $setup_fn:ident, $server_typ:ident, $query_typ:ident, $entity_ident:ident, $map_block:expr) => {
