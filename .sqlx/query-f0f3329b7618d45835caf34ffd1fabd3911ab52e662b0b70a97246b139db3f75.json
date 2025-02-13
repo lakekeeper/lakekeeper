@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT number_of_views, number_of_tables, created_at, updated_at, valid_until\n        FROM warehouse_statistics\n        WHERE warehouse_id = $1\n        AND (valid_until < $2 OR $2 IS NULL)\n        ORDER BY valid_until DESC\n        LIMIT $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number_of_views",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "number_of_tables",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "valid_until",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "f0f3329b7618d45835caf34ffd1fabd3911ab52e662b0b70a97246b139db3f75"
+}

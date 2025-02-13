@@ -24,7 +24,7 @@ pub mod v1 {
         CreateRoleRequest, ListRolesQuery, ListRolesResponse, Role, SearchRoleRequest,
         SearchRoleResponse, Service as _, UpdateRoleRequest,
     };
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
         User,
@@ -34,9 +34,11 @@ pub mod v1 {
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
         RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest, WarehouseStatsResponse,
     };
 
+    use crate::api::iceberg::types::PageToken;
+    use crate::api::iceberg::v1::PaginationQuery;
     use crate::{
         api::{
             management::v1::{
@@ -92,6 +94,7 @@ pub mod v1 {
             get_server_info,
             get_user,
             get_warehouse,
+            get_warehouse_statistics,
             list_deleted_tabulars,
             list_projects,
             list_roles,
@@ -834,6 +837,71 @@ pub mod v1 {
         .await
     }
 
+    #[derive(Debug, Deserialize, Serialize, utoipa::IntoParams)]
+    pub struct GetWarehouseStatisticsQuery {
+        /// Next page token
+        #[serde(skip_serializing_if = "PageToken::skip_serialize")]
+        #[param(value_type=String)]
+        pub page_token: PageToken,
+        /// Signals an upper bound of the number of results that a client will receive.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        pub page_size: Option<i64>,
+    }
+
+    impl GetWarehouseStatisticsQuery {
+        fn to_pagination_query(&self) -> PaginationQuery {
+            PaginationQuery {
+                page_token: self.page_token.clone(),
+                page_size: self.page_size,
+            }
+        }
+    }
+
+    /// Get warehouse statistics
+    ///
+    /// Get statistics about the warehouse, currently table and view counts over time.
+    ///
+    /// We lazily create a new statistics entry every hour, in between hours, the existing entry is
+    /// being updated. If there's a change at created_at + 1 hour, a new entry is created.
+    /// If there's been no change, no new entry is created, meaning there may be gaps.
+    ///
+    /// Example:
+    /// - 00:16:32: warehouse created:
+    ///     - created_at: 00:16:32, valid_until: 01:00:00, updated_at: null, 0 tables, 0 views
+    /// - 00:30:00: table created:
+    ///     - created_at: 00:16:32, valid_until: 01:00:00, updated_at: 00:30:00, 1 table, 0 views
+    /// - 00:45:00: view created:
+    ///     - created_at: 00:16:32, valid_until: 01:00:00, updated_at: 00:45:00, 1 table, 1 view
+    /// - 01:00:36: table deleted:
+    ///     - created_at: 01:00:36, valid_until: 02:00:00, updated_at: null, 0 tables, 1 view
+    ///     - created_at: 00:16:32, valid_until: 01:00:00, updated_at: 00:45:00, 1 table, 1 view
+    #[utoipa::path(
+        get,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/statistics",
+        params(GetWarehouseStatisticsQuery),
+        responses(
+            (status = 200, description = "Warehouse statistics", body = WarehouseStatsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_warehouse_statistics<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Query(query): Query<GetWarehouseStatisticsQuery>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<Json<WarehouseStatsResponse>> {
+        ApiServer::<C, A, S>::get_warehouse_statistics(
+            warehouse_id.into(),
+            query,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(Json)
+    }
+
     /// List soft-deleted tabulars
     ///
     /// List all soft-deleted tabulars in the warehouse that are visible to you.
@@ -1011,6 +1079,11 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/storage-credential",
                     post(update_storage_credential),
+                )
+                // Get warehouse statistics
+                .route(
+                    "/warehouse/{warehouse_id}/statistics",
+                    get(get_warehouse_statistics),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars",

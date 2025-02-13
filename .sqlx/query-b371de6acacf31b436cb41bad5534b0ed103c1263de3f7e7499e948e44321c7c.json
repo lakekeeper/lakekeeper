@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE OR REPLACE FUNCTION get_stats_interval_unit() RETURNS text AS\n        $$\n        BEGIN\n            RETURN 'second';\n        END;\n        $$ LANGUAGE plpgsql;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "b371de6acacf31b436cb41bad5534b0ed103c1263de3f7e7499e948e44321c7c"
+}
