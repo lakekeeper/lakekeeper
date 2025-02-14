@@ -2,6 +2,17 @@
 
 
 
+## [0.7.0](https://github.com/lakekeeper/lakekeeper/compare/v0.6.2...v0.7.0) (2025-02-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* Migrate Authentication to Limes, Support Unlimited Authenticators, Customizable Authentication ([#814](https://github.com/lakekeeper/lakekeeper/issues/814))
+
+### Features
+
+* Migrate Authentication to Limes, Support Unlimited Authenticators, Customizable Authentication ([#814](https://github.com/lakekeeper/lakekeeper/issues/814)) ([b72852d](https://github.com/lakekeeper/lakekeeper/commit/b72852de125a23691f75a291ecdf3c452b8e1c14))
+
 ## [0.6.2](https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2) (2025-01-30)
 
 
