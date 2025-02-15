@@ -61,7 +61,6 @@ fn get_config() -> DynAppConfig {
     // Fail early if the base_uri is not a valid URL
     config.s3_signer_uri_for_warehouse(WarehouseIdent::from(uuid::Uuid::new_v4()));
     config.base_uri_catalog();
-    config.base_uri_management();
     if config.secret_backend == SecretBackend::Postgres
         && config.pg_encryption_key == DEFAULT_ENCRYPTION_KEY
     {
@@ -156,7 +155,7 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub openid_additional_issuers: Option<Vec<String>>,
-    /// A scopes that must be present in provided tokens
+    /// A scope that must be present in provided tokens
     pub openid_scope: Option<String>,
     pub enable_kubernetes_authentication: bool,
     /// Claim to use in provided JWT tokens as the subject.
@@ -407,10 +406,6 @@ impl DynAppConfig {
         self.base_uri.join("catalog").expect("Valid URL")
     }
 
-    pub fn base_uri_management(&self) -> url::Url {
-        self.base_uri.join("management").expect("Valid URL")
-    }
-
     pub fn warehouse_prefix(&self, warehouse_id: WarehouseIdent) -> String {
         self.prefix_template
             .replace("{warehouse_id}", warehouse_id.to_string().as_str())
@@ -425,7 +420,7 @@ impl DynAppConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub enum PgSslMode {
     Disable,
     Allow,
@@ -461,6 +456,16 @@ impl FromStr for PgSslMode {
             "verifyfull" => Ok(Self::VerifyFull),
             _ => Err(anyhow!("PgSslMode not supported: '{}'", s)),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PgSslMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        PgSslMode::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -618,15 +623,33 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_pg_ssl_mode_case_insensitive() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DISABLED");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DisaBled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_base_uri_trailing_slash_stripped() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
             let config = get_config();
             assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
-            assert_eq!(
-                config.base_uri_management().to_string(),
-                "https://localhost:8181/a/b/management"
-            );
             assert_eq!(
                 config.base_uri_catalog().to_string(),
                 "https://localhost:8181/a/b/catalog"
@@ -637,10 +660,6 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
             let config = get_config();
             assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
-            assert_eq!(
-                config.base_uri_management().to_string(),
-                "https://localhost:8181/a/b/management"
-            );
             assert_eq!(
                 config.base_uri_catalog().to_string(),
                 "https://localhost:8181/a/b/catalog"
