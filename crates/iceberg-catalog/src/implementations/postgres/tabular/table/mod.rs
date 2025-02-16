@@ -24,6 +24,7 @@ use iceberg_ext::{configs::Location, spec::TableMetadata, NamespaceIdent};
 use sqlx::types::Json;
 use uuid::Uuid;
 
+use super::get_partial_fs_locations;
 use crate::{
     api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     implementations::postgres::{
@@ -35,8 +36,9 @@ use crate::{
         CatalogState,
     },
     service::{
-        storage::StorageProfile, ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result,
-        TableIdent, TableIdentUuid, TabularDetails,
+        storage::{join_location, split_location, StorageProfile},
+        ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result, TableIdent,
+        TableIdentUuid, TabularDetails,
     },
     SecretIdent, WarehouseIdent,
 };
@@ -139,7 +141,6 @@ pub(crate) async fn load_tables_old(
             ti."namespace_id",
             t."metadata" as "metadata: Json<TableMetadata>",
             ti."metadata_location",
-            ti.location as "table_location",
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id"
         FROM "table" t
@@ -264,7 +265,8 @@ struct TableQueryStruct {
     snapshot_schema_id: Option<Vec<Option<i32>>>,
     snapshot_timestamp_ms: Option<Vec<i64>>,
     metadata_location: Option<String>,
-    table_location: String,
+    table_fs_location: String,
+    table_fs_protocol: String,
     storage_profile: Json<StorageProfile>,
     storage_secret_id: Option<Uuid>,
     table_properties_keys: Option<Vec<String>>,
@@ -461,7 +463,7 @@ impl TableQueryStruct {
             TableMetadata::try_from_parts(Parts {
                 format_version: FormatVersion::from(expect!(self.table_format_version)),
                 table_uuid: self.table_id,
-                location: self.table_location,
+                location: join_location(&self.table_fs_protocol, &self.table_fs_location),
                 last_sequence_number: expect!(self.last_sequence_number),
                 last_updated_ms: expect!(self.last_updated_ms),
                 last_column_id: expect!(self.last_column_id),
@@ -542,7 +544,8 @@ pub(crate) async fn load_tables(
             t.last_partition_id,
             t.table_format_version as "table_format_version: DbTableFormatVersion",
             ti.name as "table_name",
-            ti.location as "table_location",
+            ti.fs_location as "table_fs_location",
+            ti.fs_protocol as "table_fs_protocol",
             namespace_name,
             ti.namespace_id,
             ti."metadata_location",
@@ -734,7 +737,8 @@ pub(crate) async fn get_table_metadata_by_id(
         SELECT
             t."table_id",
             ti.name as "table_name",
-            ti.location as "table_location",
+            ti.fs_location as "table_fs_location",
+            ti.fs_protocol as "table_fs_protocol",
             namespace_name,
             ti.namespace_id,
             t."metadata" as "metadata: Json<TableMetadata>",
@@ -780,7 +784,7 @@ pub(crate) async fn get_table_metadata_by_id(
         namespace_id: table.namespace_id.into(),
         table_id: table.table_id.into(),
         warehouse_id,
-        location: table.table_location,
+        location: join_location(&table.table_fs_protocol, &table.table_fs_location),
         metadata_location: table.metadata_location,
         storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
         storage_profile: table.storage_profile.deref().clone(),
@@ -793,11 +797,8 @@ pub(crate) async fn get_table_metadata_by_s3_location(
     list_flags: crate::service::ListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
-    let query_strings = location
-        .partial_locations()
-        .into_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let partial_locations = get_partial_fs_locations(location)?;
 
     // Location might also be a subpath of the table location.
     // We need to make sure that the location starts with the table location.
@@ -806,7 +807,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
          SELECT
              t."table_id",
              ti.name as "table_name",
-             ti.location as "table_location",
+             ti.fs_location as "fs_location",
              namespace_name,
              ti.namespace_id,
              t."metadata" as "metadata: Json<TableMetadata>",
@@ -818,14 +819,14 @@ pub(crate) async fn get_table_metadata_by_s3_location(
          INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
          INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
          WHERE w.warehouse_id = $1
-             AND ti.location = ANY($2)
-             AND LENGTH(ti.location) <= $3
+             AND ti.fs_location = ANY($2)
+             AND LENGTH(ti.fs_location) <= $3
              AND w.status = 'active'
              AND (ti.deleted_at IS NULL OR $4)
          "#,
         *warehouse_id,
-        query_strings.as_slice(),
-        i32::try_from(location.url().as_str().len()).unwrap_or(i32::MAX) + 1, // account for maybe trailing
+        partial_locations.as_slice(),
+        i32::try_from(fs_location.len()).unwrap_or(i32::MAX) + 1, // account for maybe trailing
         list_flags.include_deleted
     )
     .fetch_one(&catalog_state.read_pool())
@@ -855,7 +856,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
         table_id: table.table_id.into(),
         namespace_id: table.namespace_id.into(),
         warehouse_id,
-        location: table.table_location,
+        location: join_location(fs_protocol, &table.fs_location),
         metadata_location: table.metadata_location,
         storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
         storage_profile: table.storage_profile.deref().clone(),

@@ -933,7 +933,6 @@ def test_register_table(
     spark,
     namespace,
     warehouse: conftest.Warehouse,
-    io_fsspec: fsspec.AbstractFileSystem,
 ):
     spark.sql(
         f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT) USING iceberg"

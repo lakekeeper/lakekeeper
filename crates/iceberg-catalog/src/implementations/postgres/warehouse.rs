@@ -594,17 +594,14 @@ pub(crate) mod test {
             .unwrap();
         }
 
-        let storage_profile = storage_profile.unwrap_or(StorageProfile::S3(S3Profile {
-            bucket: "test_bucket".to_string(),
-            endpoint: None,
-            region: "us-east-1".to_string(),
-            assume_role_arn: None,
-            path_style_access: None,
-            key_prefix: None,
-            sts_role_arn: None,
-            sts_enabled: false,
-            flavor: S3Flavor::S3Compat,
-        }));
+        let storage_profile = storage_profile.unwrap_or(StorageProfile::S3(
+            S3Profile::builder()
+                .bucket("test_bucket".to_string())
+                .region("us-east-1".to_string())
+                .flavor(S3Flavor::S3Compat)
+                .sts_enabled(false)
+                .build(),
+        ));
 
         let warehouse_id = PostgresCatalog::create_warehouse(
             "test_warehouse".to_string(),

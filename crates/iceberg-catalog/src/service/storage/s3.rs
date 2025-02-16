@@ -26,36 +26,57 @@ use crate::{
 
 static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(
+    Debug,
+    Eq,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    utoipa::ToSchema,
+    typed_builder::TypedBuilder,
+)]
 #[serde(rename_all = "kebab-case")]
 pub struct S3Profile {
     /// Name of the S3 bucket
     pub bucket: String,
     /// Subpath in the bucket to use.
     /// The same prefix can be used for multiple warehouses.
+    #[builder(default, setter(strip_option))]
     pub key_prefix: Option<String>,
     #[serde(default)]
     /// Optional ARN to assume when accessing the bucket
+    #[builder(default, setter(strip_option))]
     pub assume_role_arn: Option<String>,
     /// Optional endpoint to use for S3 requests, if not provided
     /// the region will be used to determine the endpoint.
     /// If both region and endpoint are provided, the endpoint will be used.
     /// Example: `http://s3-de.my-domain.com:9000`
     #[serde(default)]
+    #[builder(default, setter(strip_option))]
     pub endpoint: Option<url::Url>,
     /// Region to use for S3 requests.
     pub region: String,
     /// Path style access for S3 requests.
     /// If the underlying S3 supports both, we recommend to not set `path_style_access`.
     #[serde(default)]
+    #[builder(default, setter(strip_option))]
     pub path_style_access: Option<bool>,
     /// Optional role ARN to assume for sts vended-credentials
+    #[builder(default, setter(strip_option))]
     pub sts_role_arn: Option<String>,
     pub sts_enabled: bool,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
     pub flavor: S3Flavor,
+    /// Allow `s3a://` and `s3n://` in locations.
+    /// This is disabled by default. We do not recommend to use this setting
+    /// except for migration of old hadoop-based tables via the register endpoint.
+    /// Tables with `s3a` paths are not accessible outside the Java ecosystem.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    allow_alternate_protocol: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -98,6 +119,21 @@ impl From<&S3Credential> for aws_credential_types::Credentials {
 }
 
 impl S3Profile {
+    /// Allow alternate schemes for S3 locations.
+    /// This is disabled by default.
+    #[must_use]
+    pub fn allow_alternate_schemes(&self) -> bool {
+        self.allow_alternate_protocol.unwrap_or_default()
+    }
+
+    /// Check if a s3 variant is allowed.
+    /// By default, only `s3` is allowed.
+    /// If `allow_variant_schemes` is set, `s3a` and `s3n` are also allowed.
+    #[must_use]
+    pub fn is_allowed_schema(&self, schema: &str) -> bool {
+        schema == "s3" || (self.allow_alternate_schemes() && (schema == "s3a" || schema == "s3n"))
+    }
+
     /// Create a new `FileIO` instance for S3.
     ///
     /// # Errors
@@ -174,7 +210,7 @@ impl S3Profile {
     ///
     /// # Errors
     /// Fails if the `bucket`, `region` or `key_prefix` is different.
-    pub fn can_be_updated_with(&self, other: &Self) -> Result<(), UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.bucket != other.bucket {
             return Err(UpdateError::ImmutableField("bucket".to_string()));
         }
@@ -187,7 +223,12 @@ impl S3Profile {
             return Err(UpdateError::ImmutableField("key_prefix".to_string()));
         }
 
-        Ok(())
+        if self.allow_alternate_schemes() && other.allow_alternate_protocol.is_none() {
+            // Keep previous true value if not specified explicitly in update
+            other.allow_alternate_protocol = Some(true);
+        }
+
+        Ok(other)
     }
 
     #[cfg(feature = "s3-signer")]
@@ -212,6 +253,7 @@ impl S3Profile {
             sts_role_arn: _,
             sts_enabled: _,
             flavor: _,
+            allow_alternate_protocol: _,
         } = self;
 
         // assume_role_arn is not supported currently
@@ -268,7 +310,7 @@ impl S3Profile {
             .as_ref()
             .map(|s| s.split('/').map(std::borrow::ToOwned::to_owned).collect())
             .unwrap_or_default();
-        S3Location::new(self.bucket.clone(), prefix)
+        S3Location::new(self.bucket.clone(), prefix, None)
     }
 
     /// Generate the table configuration for S3.
@@ -437,7 +479,7 @@ impl S3Profile {
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<String, TableConfigError> {
-        let table_location = S3Location::try_from(table_location.clone()).map_err(|e| {
+        let table_location = S3Location::try_from_location(table_location, true).map_err(|e| {
             TableConfigError::Misconfiguration(
                 format!("Location is no valid S3 location: {e}").to_string(),
             )
@@ -650,6 +692,7 @@ pub struct S3Location {
     key: Vec<String>,
     // Location is redundant but useful for type-safe access.
     location: Location,
+    custom_prefix: Option<String>,
 }
 
 impl std::fmt::Display for S3Location {
@@ -663,7 +706,11 @@ impl S3Location {
     ///
     /// # Errors
     /// Fails if the bucket name is invalid or the key contains unescaped slashes.
-    pub fn new(bucket_name: String, key: Vec<String>) -> Result<Self, ValidationError> {
+    pub fn new(
+        bucket_name: String,
+        key: Vec<String>,
+        custom_prefix: Option<String>,
+    ) -> Result<Self, ValidationError> {
         validate_bucket_name(&bucket_name)?;
         // Keys may not contain slashes
         if key.iter().any(|k| k.contains('/')) {
@@ -691,6 +738,7 @@ impl S3Location {
             bucket_name,
             key,
             location,
+            custom_prefix,
         })
     }
 
@@ -708,16 +756,33 @@ impl S3Location {
     pub fn location(&self) -> &Location {
         &self.location
     }
-}
 
-impl TryFrom<Location> for S3Location {
-    type Error = ValidationError;
-
-    fn try_from(location: Location) -> Result<Self, Self::Error> {
+    /// Create a new S3 location from a `Location`.
+    ///
+    /// If `allow_variants` is set to true, `s3a://` and `s3n://` schemes are allowed.
+    ///
+    /// # Errors
+    /// - Fails if the location is not a valid S3 location
+    pub fn try_from_location(
+        location: &Location,
+        allow_variants: bool,
+    ) -> Result<Self, ValidationError> {
+        let is_custom_variant = ["s3a", "s3n"].contains(&location.url().scheme());
         // Protocol must be s3
-        if location.url().scheme() != "s3" {
+        if (location.url().scheme() != "s3") && !(allow_variants && is_custom_variant) {
+            let reason = if allow_variants {
+                format!(
+                    "S3 location must use s3, s3a or s3n protocol. Found: {}",
+                    location.url().scheme()
+                )
+            } else {
+                format!(
+                    "S3 location must use s3 protocol. Found: {}",
+                    location.url().scheme()
+                )
+            };
             return Err(ValidationError::InvalidLocation {
-                reason: "S3 location must use s3 protocol.".to_string(),
+                reason,
                 location: location.to_string(),
                 source: None,
                 storage_type: StorageType::S3,
@@ -742,33 +807,48 @@ impl TryFrom<Location> for S3Location {
                 segments.map(std::string::ToString::to_string).collect()
             });
 
-        S3Location::new(bucket_name.to_string(), key)
+        if is_custom_variant {
+            S3Location::new(
+                bucket_name.to_string(),
+                key,
+                Some(location.url().scheme().to_string()),
+            )
+        } else {
+            S3Location::new(bucket_name.to_string(), key, None)
+        }
     }
-}
 
-impl FromStr for S3Location {
-    type Err = ValidationError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    /// Create a new S3 location from a string.
+    ///
+    /// If `allow_s3a` is set to true, `s3a://` and `s3n://` schemes are allowed.
+    ///
+    /// # Errors
+    /// - Fails if the location is not a valid S3 location
+    pub fn try_from_str(s: &str, allow_s3a: bool) -> Result<Self, ValidationError> {
         let location = Location::from_str(s).map_err(|e| ValidationError::InvalidLocation {
-            reason: format!("Invalid Location: {e}"),
+            reason: "Invalid S3 location.".to_string(),
             location: s.to_string(),
             source: Some(e.into()),
             storage_type: StorageType::S3,
         })?;
 
-        Self::try_from(location)
+        Self::try_from_location(&location, allow_s3a)
+    }
+
+    /// Always returns `s3://` prefixed location.
+    pub(crate) fn into_normalized_location(self) -> Location {
+        self.location
     }
 }
 
-impl From<S3Location> for Location {
-    fn from(location: S3Location) -> Self {
-        location.location
-    }
-}
+// impl From<S3Location> for Location {
+//     fn from(location: S3Location) -> Self {
+//         location.location
+//     }
+// }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use needs_env_var::needs_env_var;
 
     use super::*;
@@ -822,6 +902,7 @@ mod test {
             sts_role_arn: None,
             sts_enabled: false,
             flavor: S3Flavor::Aws,
+            allow_alternate_protocol: Some(false),
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -861,6 +942,7 @@ mod test {
             sts_role_arn: None,
             sts_enabled: false,
             flavor: S3Flavor::Aws,
+            allow_alternate_protocol: Some(false),
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -879,10 +961,39 @@ mod test {
     }
 
     #[needs_env_var(TEST_MINIO = 1)]
-    mod minio {
+    pub(crate) mod minio {
         use crate::service::storage::{
             S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
         };
+
+        lazy_static::lazy_static! {
+            static ref TEST_BUCKET: String = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
+            static ref TEST_REGION: String = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
+            static ref TEST_ACCESS_KEY: String = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
+            static ref TEST_SECRET_KEY: String = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
+            static ref TEST_ENDPOINT: String = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
+        }
+
+        pub(crate) fn storage_profile(prefix: &str) -> (S3Profile, S3Credential) {
+            let profile = S3Profile {
+                bucket: TEST_BUCKET.clone(),
+                key_prefix: Some(prefix.to_string()),
+                assume_role_arn: None,
+                endpoint: Some(TEST_ENDPOINT.clone().parse().unwrap()),
+                region: TEST_REGION.clone(),
+                path_style_access: Some(true),
+                sts_role_arn: None,
+                flavor: S3Flavor::S3Compat,
+                sts_enabled: true,
+                allow_alternate_protocol: Some(false),
+            };
+            let cred = S3Credential::AccessKey {
+                aws_access_key_id: TEST_ACCESS_KEY.clone(),
+                aws_secret_access_key: TEST_SECRET_KEY.clone(),
+            };
+
+            (profile, cred)
+        }
 
         #[test]
         fn test_can_validate() {
@@ -892,33 +1003,10 @@ mod test {
             // sqlx::test
             crate::test::test_block_on(
                 async {
-                    let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-                    let region =
-                        std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-                    let aws_access_key_id =
-                        std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-                    let aws_secret_access_key =
-                        std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-                    let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
-
-                    let cred: StorageCredential = S3Credential::AccessKey {
-                        aws_access_key_id,
-                        aws_secret_access_key,
-                    }
-                    .into();
-
-                    let profile = S3Profile {
-                        bucket,
-                        key_prefix: Some("test_prefix".to_string()),
-                        assume_role_arn: None,
-                        endpoint: Some(endpoint.parse().unwrap()),
-                        region,
-                        path_style_access: Some(true),
-                        sts_role_arn: None,
-                        flavor: S3Flavor::S3Compat,
-                        sts_enabled: true,
-                    };
+                    let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
+                    let (profile, cred) = storage_profile(&key_prefix);
                     let mut profile: StorageProfile = profile.into();
+                    let cred: StorageCredential = cred.into();
 
                     profile.normalize().unwrap();
                     profile.validate_access(Some(&cred), None).await.unwrap();
@@ -960,6 +1048,7 @@ mod test {
                         sts_role_arn: Some(sts_role_arn),
                         flavor: S3Flavor::Aws,
                         sts_enabled: true,
+                        allow_alternate_protocol: Some(false),
                     }
                     .into();
 
@@ -999,7 +1088,7 @@ mod test {
         ];
 
         for (location, bucket, prefix) in cases {
-            let result = S3Location::from_str(location).unwrap();
+            let result = S3Location::try_from_str(location, false).unwrap();
             assert_eq!(result.bucket_name, bucket);
             assert_eq!(result.key, prefix);
             assert_eq!(result.to_string(), location);
@@ -1015,10 +1104,12 @@ mod test {
             "/test-bucket/foo",
             // Invalid bucket name
             "s3://test_bucket/foo",
+            // S3a is not allowed
+            "s3a://test-bucket/foo",
         ];
 
         for case in cases {
-            let result = S3Location::from_str(case);
+            let result = S3Location::try_from_str(case, false);
             assert!(result.is_err());
         }
     }
@@ -1036,7 +1127,16 @@ mod test {
 
     #[test]
     fn test_parse_s3_location_invalid_proto() {
-        S3Location::from_str("adls://test-bucket/foo/").unwrap_err();
+        S3Location::try_from_str("adls://test-bucket/foo/", false).unwrap_err();
+    }
+
+    #[test]
+    fn test_parse_s3a_location() {
+        let location = S3Location::try_from_str("s3a://test-bucket/foo/", true).unwrap();
+        assert_eq!(
+            location.into_normalized_location().to_string(),
+            "s3://test-bucket/foo/",
+        );
     }
 
     #[test]
@@ -1047,7 +1147,7 @@ mod test {
             "s3://bucket/foo/bar/",
         ];
         for case in cases {
-            let location = S3Location::from_str(case).unwrap();
+            let location = S3Location::try_from_str(case, false).unwrap();
             let printed = location.to_string();
             assert_eq!(printed, case);
         }

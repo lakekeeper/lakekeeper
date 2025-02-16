@@ -19,7 +19,7 @@ use crate::{
         dbutils::DBErrorHandler,
         tabular::view::{ViewFormatVersion, ViewRepresentationType},
     },
-    service::{ViewIdentUuid, ViewMetadataWithLocation},
+    service::{storage::join_location, ViewIdentUuid, ViewMetadataWithLocation},
 };
 
 pub(crate) async fn load_view(
@@ -30,7 +30,8 @@ pub(crate) async fn load_view(
     let Query {
         view_id,
         view_format_version,
-        view_location,
+        view_fs_location,
+        view_fs_protocol,
         metadata_location,
         current_version_id,
         schema_ids,
@@ -76,7 +77,7 @@ pub(crate) async fn load_view(
                 ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
             },
             view_uuid: view_id,
-            location: view_location.trim_end_matches('/').to_string(),
+            location: join_location(&view_fs_protocol, &view_fs_location).to_string(),
             current_version_id,
             versions,
             version_log,
@@ -94,7 +95,8 @@ async fn query(
     let rs = sqlx::query_as!(Query,
             r#"SELECT v.view_id,
        v.view_format_version            as "view_format_version: ViewFormatVersion",
-       ta.location                      AS view_location,
+       ta.fs_location                      AS view_fs_location,
+       ta.fs_protocol                      AS view_fs_protocol,
        ta.metadata_location             AS "metadata_location!",
        cvv.version_id                   AS current_version_id,
        vs.schema_ids,
@@ -358,7 +360,8 @@ async fn get_namespace_ident_with_empty_support(
 struct Query {
     view_id: Uuid,
     view_format_version: ViewFormatVersion,
-    view_location: String,
+    view_fs_location: String,
+    view_fs_protocol: String,
     metadata_location: String,
     current_version_id: ViewVersionId,
     schema_ids: Option<Vec<i32>>,

@@ -277,12 +277,12 @@ pub(crate) mod test {
     }
 
     pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
-        let key_prefix = Some(format!("test_prefix-{}", Uuid::now_v7()));
+        let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
         let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
         let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
         let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
         let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-        let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT")
+        let endpoint: url::Url = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT")
             .unwrap()
             .parse()
             .unwrap();
@@ -293,18 +293,17 @@ pub(crate) mod test {
         }
         .into();
 
-        let mut profile: StorageProfile = S3Profile {
-            bucket,
-            key_prefix,
-            assume_role_arn: None,
-            endpoint: Some(endpoint),
-            region,
-            path_style_access: Some(true),
-            sts_role_arn: None,
-            flavor: S3Flavor::S3Compat,
-            sts_enabled: true,
-        }
-        .into();
+        let mut profile: StorageProfile = S3Profile::builder()
+            .bucket(bucket)
+            .key_prefix(key_prefix)
+            .region(region)
+            .endpoint(endpoint.clone())
+            .path_style_access(true)
+            .sts_enabled(true)
+            .flavor(S3Flavor::S3Compat)
+            .allow_alternate_schemes(false)
+            .build()
+            .into();
 
         profile.normalize().unwrap();
         (profile, cred)

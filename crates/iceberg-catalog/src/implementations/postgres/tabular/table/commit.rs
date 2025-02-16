@@ -9,12 +9,11 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::table::{
-            common,
-            common::{expire_metadata_log_entries, remove_snapshot_log_entries},
+            common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
             DbTableFormatVersion, TableUpdates, MAX_PARAMETERS,
         },
     },
-    service::TableCommit,
+    service::{storage::split_location, TableCommit},
     WarehouseIdent,
 };
 
@@ -46,7 +45,7 @@ pub(crate) async fn commit_table_transaction(
         handle_atomic_updates(transaction, updates, meta, diffs).await?;
     }
 
-    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta);
+    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta)?;
 
     // futures::try_join didn't work due to concurrent mutable borrow of transaction
     let updated_meta = query_meta_update
@@ -71,10 +70,13 @@ pub(crate) async fn commit_table_transaction(
 fn build_queries(
     n_commits: usize,
     meta: Vec<(TableMetadata, Location)>,
-) -> (
-    sqlx::QueryBuilder<'static, Postgres>,
-    sqlx::QueryBuilder<'static, Postgres>,
-) {
+) -> Result<
+    (
+        sqlx::QueryBuilder<'static, Postgres>,
+        sqlx::QueryBuilder<'static, Postgres>,
+    ),
+    ErrorModel,
+> {
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
@@ -91,11 +93,14 @@ fn build_queries(
         r#"
         UPDATE "tabular" as t
         SET "metadata_location" = c."metadata_location",
-        "location" = c."location"
+        "fs_location" = c."fs_location",
+        "fs_protocol" = c."fs_protocol"
         FROM (VALUES
         "#,
     );
     for (i, (new_metadata, new_metadata_location)) in meta.into_iter().enumerate() {
+        let (fs_protocol, fs_location) = split_location(new_metadata.location())?;
+
         query_builder_table.push("(");
         query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");
@@ -118,7 +123,9 @@ fn build_queries(
         query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(new_metadata_location.to_string());
         query_builder_tabular.push(", ");
-        query_builder_tabular.push_bind(new_metadata.location().to_string());
+        query_builder_tabular.push_bind(fs_location.to_string());
+        query_builder_tabular.push(", ");
+        query_builder_tabular.push_bind(fs_protocol.to_string());
         query_builder_tabular.push(")");
 
         if i != n_commits - 1 {
@@ -130,13 +137,13 @@ fn build_queries(
     query_builder_table
         .push(") as c(table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
     query_builder_tabular.push(
-        ") as c(table_id, metadata_location, location) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
+        ") as c(table_id, metadata_location, fs_location, fs_protocol) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
     );
 
     query_builder_table.push(" RETURNING t.table_id");
     query_builder_tabular.push(" RETURNING t.tabular_id");
 
-    (query_builder_table, query_builder_tabular)
+    Ok((query_builder_table, query_builder_tabular))
 }
 
 fn check_post_conditions(

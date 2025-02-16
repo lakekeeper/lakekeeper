@@ -18,8 +18,10 @@ use crate::{
     api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
-        task_queue::TaskId, DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent,
-        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid,
+        storage::{join_location, split_location},
+        task_queue::TaskId,
+        DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent, TabularIdentBorrowed,
+        TabularIdentOwned, TabularIdentUuid,
     },
     WarehouseIdent,
 };
@@ -47,7 +49,7 @@ where
 
     let rows = sqlx::query!(
         r#"
-        SELECT t.tabular_id, t.typ as "typ: TabularType", location
+        SELECT t.tabular_id, t.typ as "typ: TabularType", fs_protocol, fs_location
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -68,9 +70,10 @@ where
     .fetch_one(transaction)
     .await
     .map(|r| {
+        let location = join_location(&r.fs_protocol, &r.fs_location);
         Some(match r.typ {
-            TabularType::Table => (TabularIdentUuid::Table(r.tabular_id), r.location),
-            TabularType::View => (TabularIdentUuid::View(r.tabular_id), r.location),
+            TabularType::Table => (TabularIdentUuid::Table(r.tabular_id), location),
+            TabularType::View => (TabularIdentUuid::View(r.tabular_id), location),
         })
     });
 
@@ -248,6 +251,19 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) location: &'a Location,
 }
 
+pub(crate) fn get_partial_fs_locations(location: &Location) -> Result<Vec<String>> {
+    location
+        .partial_locations()
+        .into_iter()
+        // Keep only the last part of the location
+        .map(|l| {
+            split_location(l)
+                .map_err(Into::into)
+                .map(|(_, p)| p.to_string())
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
 pub(crate) async fn create_tabular(
     CreateTabular {
         id,
@@ -259,16 +275,13 @@ pub(crate) async fn create_tabular(
     }: CreateTabular<'_>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Uuid> {
-    let query_strings = location
-        .partial_locations()
-        .into_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let partial_locations = get_partial_fs_locations(location)?;
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)
-        VALUES ($1, $2, $3, $4, $5, $6, 'true')
+        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location, table_migrated)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'true')
         RETURNING tabular_id
         "#,
         id,
@@ -276,7 +289,8 @@ pub(crate) async fn create_tabular(
         namespace_id,
         typ as _,
         metadata_location.map(iceberg_ext::configs::Location::as_str),
-        location.as_str(),
+        fs_protocol,
+        fs_location
     )
     .fetch_one(&mut **transaction)
     .await
@@ -291,14 +305,14 @@ pub(crate) async fn create_tabular(
                FROM tabular ta
                JOIN namespace n ON ta.namespace_id = n.namespace_id
                JOIN warehouse w ON w.warehouse_id = n.warehouse_id
-               WHERE (location = ANY($1) OR
+               WHERE (fs_location = ANY($1) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
-                      (length($3) < length(location) AND ((TRIM(TRAILING '/' FROM location) || '/') LIKE $3 || '/%'))
+                      (length($3) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $3 || '/%'))
                ) AND tabular_id != $2
            ) as "exists!""#,
-        &query_strings,
+        &partial_locations,
         id,
-        location.as_str()
+        fs_location
     )
     .fetch_one(&mut **transaction)
     .await
@@ -667,12 +681,12 @@ pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    let location = sqlx::query_scalar!(
+    let location = sqlx::query!(
         r#"DELETE FROM tabular
                 WHERE tabular_id = $1
                     AND typ = $2
                     AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-               RETURNING location"#,
+               RETURNING fs_location, fs_protocol"#,
         *tabular_id,
         TabularType::from(tabular_id) as _
     )
@@ -691,7 +705,7 @@ pub(crate) async fn drop_tabular(
         }
     })?;
 
-    Ok(location)
+    Ok(join_location(&location.fs_protocol, &location.fs_location))
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {

@@ -372,7 +372,7 @@ fn validate_uri(
     // i.e. s3://bucket/key
     table_location: &str,
 ) -> Result<()> {
-    let table_location = S3Location::from_str(table_location)?;
+    let table_location = S3Location::try_from_str(table_location, false)?;
     let url_location = &parsed_url.location;
 
     if !url_location
@@ -450,7 +450,7 @@ pub(super) mod s3_utils {
             // Host Style Case
             Ok(ParsedS3Url {
                 url: uri.clone(),
-                location: S3Location::new(bucket.to_string(), path_segments)?,
+                location: S3Location::new(bucket.to_string(), path_segments, None)?,
                 endpoint: used_endpoint.to_string(),
                 port: uri.port_or_known_default().unwrap_or(443),
             })
@@ -461,6 +461,7 @@ pub(super) mod s3_utils {
                 location: S3Location::new(
                     path_segments[0].to_string(),
                     path_segments[1..].to_vec(),
+                    None,
                 )?,
                 endpoint: host.to_string(),
                 port: uri.port_or_known_default().unwrap_or(443),
@@ -723,17 +724,12 @@ mod test {
 
     #[test]
     fn test_validate_region() {
-        let storage_profile = S3Profile {
-            bucket: "should-not-be-used".to_string(),
-            endpoint: None,
-            region: "my-region".to_string(),
-            assume_role_arn: None,
-            path_style_access: None,
-            key_prefix: None,
-            sts_role_arn: None,
-            sts_enabled: false,
-            flavor: S3Flavor::S3Compat,
-        };
+        let storage_profile = S3Profile::builder()
+            .region("my-region".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .bucket("should-not-be-used".to_string())
+            .build();
 
         let result = validate_region("my-region", &storage_profile);
         assert!(result.is_ok());
