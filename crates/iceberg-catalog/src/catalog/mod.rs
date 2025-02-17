@@ -301,7 +301,7 @@ pub(crate) mod test {
             .path_style_access(true)
             .sts_enabled(true)
             .flavor(S3Flavor::S3Compat)
-            .allow_alternate_protocol(false)
+            .allow_alternative_protocols(false)
             .build()
             .into();
 

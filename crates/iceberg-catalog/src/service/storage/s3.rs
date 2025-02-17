@@ -76,7 +76,7 @@ pub struct S3Profile {
     /// Tables with `s3a` paths are not accessible outside the Java ecosystem.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
-    allow_alternate_protocol: Option<bool>,
+    allow_alternative_protocols: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -123,7 +123,7 @@ impl S3Profile {
     /// This is disabled by default.
     #[must_use]
     pub fn allow_alternate_schemes(&self) -> bool {
-        self.allow_alternate_protocol.unwrap_or_default()
+        self.allow_alternative_protocols.unwrap_or_default()
     }
 
     /// Check if a s3 variant is allowed.
@@ -223,9 +223,9 @@ impl S3Profile {
             return Err(UpdateError::ImmutableField("key_prefix".to_string()));
         }
 
-        if self.allow_alternate_schemes() && other.allow_alternate_protocol.is_none() {
+        if self.allow_alternate_schemes() && other.allow_alternative_protocols.is_none() {
             // Keep previous true value if not specified explicitly in update
-            other.allow_alternate_protocol = Some(true);
+            other.allow_alternative_protocols = Some(true);
         }
 
         Ok(other)
@@ -253,7 +253,7 @@ impl S3Profile {
             sts_role_arn: _,
             sts_enabled: _,
             flavor: _,
-            allow_alternate_protocol: _,
+            allow_alternative_protocols: _,
         } = self;
 
         // assume_role_arn is not supported currently
@@ -902,7 +902,7 @@ pub(crate) mod test {
             sts_role_arn: None,
             sts_enabled: false,
             flavor: S3Flavor::Aws,
-            allow_alternate_protocol: Some(false),
+            allow_alternative_protocols: Some(false),
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -942,7 +942,7 @@ pub(crate) mod test {
             sts_role_arn: None,
             sts_enabled: false,
             flavor: S3Flavor::Aws,
-            allow_alternate_protocol: Some(false),
+            allow_alternative_protocols: Some(false),
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -985,7 +985,7 @@ pub(crate) mod test {
                 sts_role_arn: None,
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
-                allow_alternate_protocol: Some(false),
+                allow_alternative_protocols: Some(false),
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1048,7 +1048,7 @@ pub(crate) mod test {
                         sts_role_arn: Some(sts_role_arn),
                         flavor: S3Flavor::Aws,
                         sts_enabled: true,
-                        allow_alternate_protocol: Some(false),
+                        allow_alternative_protocols: Some(false),
                     }
                     .into();
 
