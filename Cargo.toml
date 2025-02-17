@@ -55,7 +55,7 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "92065
 ] }
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "08cb6a4" }
 typed-builder = "^0.20.0"
-strum_macros = "^0.26"
+strum_macros = "^0.27.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
@@ -83,7 +83,7 @@ kube = { version = "0.98", default-features = false, features = [
 ] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 percent-encoding = "2.3.1"
-strum = { version = "^0.26", features = ["derive"] }
+strum = { version = "^0.27.0", features = ["derive"] }
 sqlx = { version = "^0.8.2", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
