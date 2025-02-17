@@ -1,9 +1,9 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
-mod az;
+pub(crate) mod az;
 mod error;
 mod gcs;
-mod s3;
+pub(crate) mod s3;
 
 pub use az::{AdlsLocation, AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
@@ -97,27 +97,26 @@ impl StorageProfile {
         }
     }
 
-    /// Check if the profile can be updated with the other profile.
-    /// This function should fail if the new profile might point to a different location
-    /// and thus existing data might be lost.
+    /// Update this profile with the other profile.
+    /// Fails if this is an incompatible update, such as changing the location.
     ///
     /// # Errors
     /// Fails if the profiles are not compatible, typically because the location changed
-    pub fn can_be_updated_with(&self, other: &Self) -> Result<(), UpdateError> {
+    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
         match (self, other) {
             (StorageProfile::S3(this_profile), StorageProfile::S3(other_profile)) => {
-                this_profile.can_be_updated_with(other_profile)
+                this_profile.update_with(other_profile).map(Into::into)
             }
             (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
-                this_profile.can_be_updated_with(other_profile)
+                this_profile.update_with(other_profile).map(Into::into)
             }
             #[cfg(test)]
-            (StorageProfile::Test(_), _) => Ok(()),
+            (StorageProfile::Test(_), other) => Ok(other),
             #[cfg(test)]
-            (_, StorageProfile::Test(_)) => Ok(()),
-            (_, _) => Err(UpdateError::IncompatibleProfiles(
-                self.storage_type().to_string(),
-                other.storage_type().to_string(),
+            (_, StorageProfile::Test(test_profile)) => Ok(test_profile.into()),
+            (this_profile, other_profile) => Err(UpdateError::IncompatibleProfiles(
+                this_profile.storage_type().to_string(),
+                other_profile.storage_type().to_string(),
             )),
         }
     }
@@ -153,7 +152,9 @@ impl StorageProfile {
     /// Can fail for un-normalized profiles.
     pub fn base_location(&self) -> Result<Location, ValidationError> {
         match self {
-            StorageProfile::S3(profile) => profile.base_location().map(Into::into),
+            StorageProfile::S3(profile) => profile
+                .base_location()
+                .map(s3::S3Location::into_normalized_location),
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
@@ -464,20 +465,31 @@ impl StorageProfile {
     #[must_use]
     /// Check whether the location is allowed for the storage profile.
     ///
-    /// Allowed locations are sublocations of the base location.
+    /// Allowed locations are sublocation of the base location.
     pub fn is_allowed_location(&self, other: &Location) -> bool {
-        let base_location = self.base_location().ok();
+        let Some(mut base_location) = self.base_location().ok() else {
+            return false;
+        };
 
-        if let Some(mut base_location) = base_location {
-            base_location.with_trailing_slash();
-            if other == &base_location {
+        if let StorageProfile::S3(profile) = self {
+            // For s3 locations we allow optionally in addition to s3:// prefixes
+            // also s3a:// and other custom variants.
+            let other_scheme = other.scheme();
+            if !profile.is_allowed_schema(other_scheme) {
+                tracing::debug!("Scheme {other_scheme} is not allowed for S3 profile.",);
                 return false;
             }
-
-            other.is_sublocation_of(&base_location)
-        } else {
-            false
+            if other_scheme != base_location.scheme() {
+                base_location.set_scheme_mut(other_scheme);
+            }
         }
+
+        base_location.with_trailing_slash();
+        if other == &base_location {
+            return false;
+        }
+
+        other.is_sublocation_of(&base_location)
     }
 
     /// Require that the location is allowed for the storage profile.
@@ -674,24 +686,29 @@ impl StorageCredential {
     }
 }
 
-pub mod path_utils {
-    use lazy_regex::regex;
+/// Split a location into a filesystem prefix and the path.
+/// Splits at "://"
+pub(crate) fn split_location(location: &str) -> Result<(&str, &str), ErrorModel> {
+    let mut split = location.splitn(2, "://");
+    let prefix = split.next().ok_or_else(|| {
+        ErrorModel::internal(
+            format!("Unexpected location: {location}"),
+            "UnexpectedLocationFormat",
+            None,
+        )
+    })?;
+    let path = split.next().ok_or_else(|| {
+        ErrorModel::internal(
+            format!("Unexpected location. Expected at least one `://`. Got: {location}"),
+            "UnexpectedLocationFormat",
+            None,
+        )
+    })?;
+    Ok((prefix, path))
+}
 
-    /// Reduce the scheme string to only the path.
-    #[must_use]
-    pub fn reduce_scheme_string(path: &str, only_path: bool) -> String {
-        let re = regex!("^(?<protocol>abfss?://)[^/@]+@[^/]+(?<path>/.+)");
-        if let Some(caps) = re.captures(path) {
-            let mut metadata_location = String::new();
-            if only_path {
-                caps.expand("$path", &mut metadata_location);
-            } else {
-                caps.expand("$protocol$path", &mut metadata_location);
-            }
-            return metadata_location;
-        };
-        path.to_string()
-    }
+pub(crate) fn join_location(prefix: &str, path: &str) -> String {
+    format!("{prefix}://{path}")
 }
 
 pub(crate) async fn check_location_is_empty(
@@ -732,29 +749,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_reduce_scheme_string() {
-        let path = "abfss://filesystem@dfs.windows.net/path/_test";
-        let reduced_path = path_utils::reduce_scheme_string(path, true);
-        assert_eq!(reduced_path, "/path/_test");
+    fn test_split_location() {
+        let location = "abfss://";
+        let (prefix, path) = split_location(location).unwrap();
+        assert_eq!(prefix, "abfss");
+        assert_eq!(path, "");
+        assert_eq!(join_location(prefix, path), location);
 
-        let reduced_path = path_utils::reduce_scheme_string(path, false);
-        // ToDo Tobi: Is this correct?
-        assert_eq!(reduced_path, "abfss:///path/_test");
+        let location = "abfss://foo/bar";
+        let (prefix, path) = split_location(location).unwrap();
+        assert_eq!(prefix, "abfss");
+        assert_eq!(path, "foo/bar");
+        assert_eq!(join_location(prefix, path), location);
     }
 
     #[test]
     fn test_default_locations() {
-        let profile = StorageProfile::S3(S3Profile {
-            bucket: "my-bucket".to_string(),
-            endpoint: Some("http://localhost:9000".parse().unwrap()),
-            region: "us-east-1".to_string(),
-            assume_role_arn: None,
-            path_style_access: None,
-            key_prefix: Some("subfolder".to_string()),
-            sts_role_arn: None,
-            sts_enabled: false,
-            flavor: S3Flavor::Aws,
-        });
+        let profile = StorageProfile::S3(
+            S3Profile::builder()
+                .bucket("my-bucket".to_string())
+                .endpoint("http://localhost:9000".parse().unwrap())
+                .region("us-east-1".to_string())
+                .key_prefix("subfolder".to_string())
+                .sts_enabled(false)
+                .flavor(S3Flavor::Aws)
+                .build(),
+        );
 
         let target_location = "s3://my-bucket/subfolder/00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002";
 
@@ -804,17 +824,15 @@ mod tests {
         let profile: StorageProfile = serde_json::from_value(value).unwrap();
         assert_eq!(
             profile,
-            StorageProfile::S3(S3Profile {
-                bucket: "my-bucket".to_string(),
-                endpoint: Some("http://localhost:9000".parse().unwrap()),
-                region: "us-east-1".to_string(),
-                assume_role_arn: None,
-                path_style_access: None,
-                key_prefix: None,
-                sts_role_arn: None,
-                sts_enabled: false,
-                flavor: S3Flavor::Aws,
-            })
+            StorageProfile::S3(
+                S3Profile::builder()
+                    .bucket("my-bucket".to_string())
+                    .endpoint("http://localhost:9000".parse().unwrap())
+                    .region("us-east-1".to_string())
+                    .sts_enabled(false)
+                    .flavor(S3Flavor::Aws)
+                    .build()
+            )
         );
     }
 
@@ -839,17 +857,16 @@ mod tests {
 
     #[test]
     fn test_is_allowed_location() {
-        let profile = StorageProfile::S3(S3Profile {
-            bucket: "my.bucket".to_string(),
-            endpoint: Some("http://localhost:9000".parse().unwrap()),
-            region: "us-east-1".to_string(),
-            assume_role_arn: None,
-            path_style_access: None,
-            key_prefix: Some("my/subpath".to_string()),
-            sts_role_arn: None,
-            sts_enabled: false,
-            flavor: S3Flavor::Aws,
-        });
+        let profile = StorageProfile::S3(
+            S3Profile::builder()
+                .bucket("my.bucket".to_string())
+                .endpoint("http://localhost:9000".parse().unwrap())
+                .region("us-east-1".to_string())
+                .sts_enabled(false)
+                .flavor(S3Flavor::Aws)
+                .key_prefix("my/subpath".to_string())
+                .build(),
+        );
 
         let cases = vec![
             ("s3://my.bucket/my/subpath/ns-id", true),
@@ -905,7 +922,7 @@ mod tests {
     fn test_vended_aws() {
         crate::test::test_block_on(
             async {
-                let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
+                let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                 let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
                 let region = std::env::var("AWS_S3_REGION").unwrap();
                 let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
@@ -915,18 +932,15 @@ mod tests {
                 }
                 .into();
 
-                let mut profile: StorageProfile = S3Profile {
-                    bucket,
-                    key_prefix: key_prefix.clone(),
-                    assume_role_arn: None,
-                    endpoint: None,
-                    region,
-                    path_style_access: Some(true),
-                    sts_role_arn: Some(sts_role_arn),
-                    flavor: S3Flavor::Aws,
-                    sts_enabled: true,
-                }
-                .into();
+                let mut profile: StorageProfile = S3Profile::builder()
+                    .bucket(bucket)
+                    .key_prefix(key_prefix.clone())
+                    .region(region)
+                    .sts_role_arn(sts_role_arn)
+                    .sts_enabled(true)
+                    .flavor(S3Flavor::Aws)
+                    .build()
+                    .into();
 
                 test_profile(&cred, &mut profile).await;
             },
@@ -937,34 +951,14 @@ mod tests {
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
     #[test]
     fn test_vended_minio() {
+        use super::s3::test::minio::storage_profile;
+
         crate::test::test_block_on(
             async {
-                let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
-                let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-                let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-                let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-                let aws_secret_access_key =
-                    std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-                let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
-
-                let cred: StorageCredential = S3Credential::AccessKey {
-                    aws_access_key_id,
-                    aws_secret_access_key,
-                }
-                .into();
-
-                let mut profile = S3Profile {
-                    bucket,
-                    key_prefix: key_prefix.clone(),
-                    assume_role_arn: None,
-                    endpoint: Some(endpoint.parse().unwrap()),
-                    region,
-                    path_style_access: Some(true),
-                    sts_role_arn: None,
-                    flavor: S3Flavor::S3Compat,
-                    sts_enabled: true,
-                }
-                .into();
+                let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
+                let (profile, cred) = storage_profile(&key_prefix);
+                let mut profile: StorageProfile = profile.into();
+                let cred: StorageCredential = cred.into();
 
                 test_profile(&cred, &mut profile).await;
             },

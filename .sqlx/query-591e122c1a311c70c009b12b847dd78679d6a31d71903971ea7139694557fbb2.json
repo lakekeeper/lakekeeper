@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, location, table_migrated)\n        VALUES ($1, $2, $3, $4, $5, $6, 'true')\n        RETURNING tabular_id\n        ",
+  "query": "\n        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location, table_migrated)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, 'true')\n        RETURNING tabular_id\n        ",
   "describe": {
     "columns": [
       {
@@ -26,6 +26,7 @@
           }
         },
         "Text",
+        "Text",
         "Text"
       ]
     },
@@ -33,5 +34,5 @@
       false
     ]
   },
-  "hash": "f09d28e2608c2b3440e39e7bc93f7aea95ef9f0b34088abdb1e1917cc10b7d39"
+  "hash": "591e122c1a311c70c009b12b847dd78679d6a31d71903971ea7139694557fbb2"
 }

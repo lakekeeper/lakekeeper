@@ -2994,6 +2994,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tryhard",
+ "typed-builder 0.20.0",
  "url",
  "urlencoding",
  "utoipa",

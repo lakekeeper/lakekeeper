@@ -17,6 +17,7 @@ use iceberg_ext::configs::{
     table::{custom, TableProperties},
     Location,
 };
+use lazy_regex::regex;
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 use veil::Redact;
@@ -29,7 +30,6 @@ use crate::{
     catalog::io::IoError,
     service::storage::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
-        path_utils::reduce_scheme_string,
         StoragePermissions, StorageProfile, StorageType, TableConfig,
     },
     WarehouseIdent,
@@ -77,7 +77,7 @@ impl AdlsProfile {
         Ok(())
     }
 
-    /// Check if the profile can be updated with the other profile.
+    /// Update the storage profile with another profile.
     /// `key_prefix`, `region` and `bucket` must be the same.
     /// We enforce this to avoid issues by accidentally changing the bucket or region
     /// of a warehouse, after which all tables would not be accessible anymore.
@@ -85,7 +85,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Fails if the `bucket`, `region` or `key_prefix` is different.
-    pub fn can_be_updated_with(&self, other: &Self) -> Result<(), UpdateError> {
+    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
         if self.filesystem != other.filesystem {
             return Err(UpdateError::ImmutableField("filesystem".to_string()));
         }
@@ -102,7 +102,7 @@ impl AdlsProfile {
             return Err(UpdateError::ImmutableField("host".to_string()));
         }
 
-        Ok(())
+        Ok(other)
     }
 
     // may change..
@@ -495,6 +495,23 @@ impl From<AdlsLocation> for Location {
     }
 }
 
+/// Removes the hostname and user from the path.
+/// Keeps only the path and optionally the scheme.
+#[must_use]
+pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
+    let re = regex!("^(?<protocol>abfss?://)[^/@]+@[^/]+(?<path>/.+)");
+    if let Some(caps) = re.captures(path) {
+        let mut location = String::new();
+        if only_path {
+            caps.expand("$path", &mut location);
+        } else {
+            caps.expand("$protocol$path", &mut location);
+        }
+        return location;
+    };
+    path.to_string()
+}
+
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
 pub enum AzCredential {
@@ -775,6 +792,16 @@ mod test {
     use crate::service::{
         storage::StorageLocations, tabular_idents::TabularIdentUuid, NamespaceIdentUuid,
     };
+
+    #[test]
+    fn test_reduce_scheme_string() {
+        let path = "abfss://filesystem@dfs.windows.net/path/_test";
+        let reduced_path = reduce_scheme_string(path, true);
+        assert_eq!(reduced_path, "/path/_test");
+
+        let reduced_path = reduce_scheme_string(path, false);
+        assert_eq!(reduced_path, "abfss:///path/_test");
+    }
 
     #[needs_env_var(TEST_AZURE = 1)]
     mod azure_tests {

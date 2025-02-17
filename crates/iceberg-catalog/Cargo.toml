@@ -82,6 +82,7 @@ tower-http = { workspace = true, optional = true, features = [
 ] }
 tracing = { workspace = true }
 tryhard = { workspace = true }
+typed-builder = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 utoipa = { workspace = true, features = ["uuid"] }

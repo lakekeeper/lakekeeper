@@ -5,7 +5,7 @@ info:
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  version: 0.5.2
+  version: 0.6.2
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -2806,6 +2806,15 @@ components:
       - region
       - sts-enabled
       properties:
+        allow-alternative-protocols:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            Allow `s3a://` and `s3n://` in locations.
+            This is disabled by default. We do not recommend to use this setting
+            except for migration of old hadoop-based tables via the register endpoint.
+            Tables with `s3a` paths are not accessible outside the Java ecosystem.
         assume-role-arn:
           type:
           - string

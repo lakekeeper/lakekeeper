@@ -544,9 +544,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
-        warehouse
-            .storage_profile
-            .can_be_updated_with(&storage_profile)?;
+        let storage_profile = warehouse.storage_profile.update_with(storage_profile)?;
         let old_secret_id = warehouse.storage_secret_id;
 
         let secret_id = if let Some(storage_credential) = storage_credential {

@@ -7,8 +7,24 @@ use super::compression_codec::CompressionCodec;
 use crate::{
     api::{ErrorModel, Result},
     retry::retry_fn,
-    service::storage::path_utils,
+    service::storage::az::reduce_scheme_string as reduce_azure_scheme,
 };
+
+fn normalize_location(location: &Location) -> String {
+    if location.as_str().starts_with("abfs") {
+        reduce_azure_scheme(location.as_str(), false)
+    } else if location.scheme().starts_with("s3") {
+        if location.scheme() == "s3" {
+            location.to_string()
+        } else {
+            let mut location = location.clone();
+            location.set_scheme_mut("s3");
+            location.to_string()
+        }
+    } else {
+        location.to_string()
+    }
+}
 
 pub(crate) async fn write_metadata_file(
     metadata_location: &Location,
@@ -16,12 +32,7 @@ pub(crate) async fn write_metadata_file(
     compression_codec: CompressionCodec,
     file_io: &FileIO,
 ) -> Result<(), IoError> {
-    let metadata_location = metadata_location.as_str();
-    let metadata_location = if metadata_location.starts_with("abfs") {
-        path_utils::reduce_scheme_string(metadata_location, false)
-    } else {
-        metadata_location.to_string()
-    };
+    let metadata_location = normalize_location(metadata_location);
     tracing::debug!("Writing metadata file to {}", metadata_location);
 
     let metadata_file = file_io
@@ -42,12 +53,7 @@ pub(crate) async fn write_metadata_file(
 }
 
 pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = location.as_str();
-    let location = if location.starts_with("abfs") {
-        path_utils::reduce_scheme_string(location, false)
-    } else {
-        location.to_string()
-    };
+    let location = normalize_location(location);
 
     retry_fn(|| async {
         file_io
@@ -60,12 +66,7 @@ pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result
 }
 
 pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u8>, IoError> {
-    let file = file.as_str();
-    let file = if file.starts_with("abfs") {
-        path_utils::reduce_scheme_string(file, false)
-    } else {
-        file.to_string()
-    };
+    let file = normalize_location(file);
 
     let content: Vec<_> = retry_fn(|| async {
         // InputFile isn't clone hence it's here
@@ -105,12 +106,7 @@ pub(crate) async fn read_metadata_file(
 }
 
 pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = location.as_str();
-    let location = if location.starts_with("abfs") {
-        path_utils::reduce_scheme_string(location, false)
-    } else {
-        location.to_string()
-    };
+    let location = normalize_location(location);
 
     retry_fn(|| async {
         file_io
@@ -129,9 +125,9 @@ pub(crate) async fn list_location<'a>(
     location: &'a Location,
     page_size: Option<usize>,
 ) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
-    let location = path_utils::reduce_scheme_string(location.as_str(), false);
-    tracing::debug!("Listing location: {}", location);
+    let location = normalize_location(location);
     let location = format!("{}/", location.trim_end_matches('/'));
+    tracing::debug!("Listing location: {}", location);
     let size = page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE);
 
     let entries = retry_fn(|| async {

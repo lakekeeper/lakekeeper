@@ -23,6 +23,11 @@ impl Location {
         self.0.as_str()
     }
 
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        self.0.scheme()
+    }
+
     pub fn with_trailing_slash(&mut self) -> &mut Self {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.pop_if_empty().push("");
@@ -34,6 +39,11 @@ impl Location {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.pop_if_empty();
         };
+        self
+    }
+
+    pub fn set_scheme_mut(&mut self, scheme: &str) -> &mut Self {
+        self.0.set_scheme(scheme).ok();
         self
     }
 
