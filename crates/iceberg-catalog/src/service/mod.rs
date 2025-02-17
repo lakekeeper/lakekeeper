@@ -110,35 +110,25 @@ pub enum WarehouseStatus {
 }
 
 #[derive(
-    Debug,
-    serde::Serialize,
-    serde::Deserialize,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Copy,
-    utoipa::ToSchema,
+    Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy,
 )]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
-pub struct ProjectIdent(uuid::Uuid);
+pub struct ProjectId(uuid::Uuid);
 
-impl Default for ProjectIdent {
+impl Default for ProjectId {
     fn default() -> Self {
         Self(uuid::Uuid::now_v7())
     }
 }
-impl From<ProjectIdent> for uuid::Uuid {
-    fn from(ident: ProjectIdent) -> Self {
+impl From<ProjectId> for uuid::Uuid {
+    fn from(ident: ProjectId) -> Self {
         ident.0
     }
 }
 
-impl ProjectIdent {
+impl ProjectId {
     #[must_use]
     pub fn new(id: uuid::Uuid) -> Self {
         Self(id)
@@ -350,7 +340,7 @@ impl TryFrom<TabularIdentUuid> for TableIdentUuid {
 
 // ---------------- Identifier ----------------
 
-impl Deref for ProjectIdent {
+impl Deref for ProjectId {
     type Target = uuid::Uuid;
 
     fn deref(&self) -> &Self::Target {
@@ -358,17 +348,17 @@ impl Deref for ProjectIdent {
     }
 }
 
-impl std::fmt::Display for ProjectIdent {
+impl std::fmt::Display for ProjectId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl FromStr for ProjectIdent {
+impl FromStr for ProjectId {
     type Err = IcebergErrorResponse;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(ProjectIdent(uuid::Uuid::from_str(s).map_err(|e| {
+        Ok(ProjectId(uuid::Uuid::from_str(s).map_err(|e| {
             ErrorModel::builder()
                 .code(StatusCode::BAD_REQUEST.into())
                 .message("Provided project id is not a valid UUID".to_string())
@@ -426,7 +416,7 @@ impl FromStr for WarehouseIdent {
     }
 }
 
-impl From<uuid::Uuid> for ProjectIdent {
+impl From<uuid::Uuid> for ProjectId {
     fn from(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }

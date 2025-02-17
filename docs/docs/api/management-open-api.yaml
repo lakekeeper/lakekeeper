@@ -2666,9 +2666,6 @@ components:
               enum:
               - modify
         title: ProjectAssignmentModify
-    ProjectIdent:
-      type: string
-      format: uuid
     ProjectRelation:
       type: string
       enum:
@@ -2868,13 +2865,15 @@ components:
       - search
       properties:
         project-id:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/ProjectIdent'
-            description: |-
-              Project ID in which the role is created.
-              Only required if the project ID cannot be inferred from the
-              users token and no default project is set.
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: |-
+            Deprecated: Please use the x-project-id header instead.
+            Project ID in which the role is created.
+            Only required if the project ID cannot be inferred from the
+            users token and no default project is set.
         search:
           type: string
           description: |-

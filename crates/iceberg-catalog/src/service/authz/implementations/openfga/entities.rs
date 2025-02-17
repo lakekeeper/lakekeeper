@@ -10,7 +10,7 @@ use crate::{
         },
         NamespaceIdentUuid, RoleId, TableIdentUuid, ViewIdentUuid,
     },
-    ProjectIdent, WarehouseIdent,
+    ProjectId, WarehouseIdent,
 };
 
 pub(super) trait ParseOpenFgaEntity: Sized {
@@ -139,7 +139,7 @@ impl OpenFgaEntity for Actor {
     }
 }
 
-impl OpenFgaEntity for ProjectIdent {
+impl OpenFgaEntity for ProjectId {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
     }
@@ -149,7 +149,7 @@ impl OpenFgaEntity for ProjectIdent {
     }
 }
 
-impl ParseOpenFgaEntity for ProjectIdent {
+impl ParseOpenFgaEntity for ProjectId {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
         if r#type != FgaType::Project {
             return Err(OpenFGAError::unexpected_entity(
@@ -158,7 +158,7 @@ impl ParseOpenFgaEntity for ProjectIdent {
             ));
         }
 
-        ProjectIdent::from_str(id)
+        ProjectId::from_str(id)
             .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string()))
     }
 }

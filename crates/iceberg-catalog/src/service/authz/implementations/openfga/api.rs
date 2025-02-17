@@ -45,7 +45,7 @@ use crate::{
         Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
         ViewIdentUuid,
     },
-    ProjectIdent, WarehouseIdent,
+    ProjectId, WarehouseIdent,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -146,7 +146,7 @@ pub(super) struct GetProjectAssignmentsQuery {
 struct GetProjectAssignmentsResponse {
     assignments: Vec<ProjectAssignment>,
     #[schema(value_type = Uuid)]
-    project_id: ProjectIdent,
+    project_id: ProjectId,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -408,7 +408,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
-    Path(project_id): Path<ProjectIdent>,
+    Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -834,7 +834,7 @@ async fn get_project_assignments<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(project_id): Path<ProjectIdent>,
+    Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetProjectAssignmentsQuery>,
@@ -1063,7 +1063,7 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(project_id): Path<ProjectIdent>,
+    Path(project_id): Path<ProjectId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateProjectAssignmentsRequest>,
@@ -1935,7 +1935,7 @@ mod tests {
             let user_id_owner = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::nil().to_string());
             let role_id = RoleId::new(Uuid::now_v7());
-            let project_id = ProjectIdent::from(Uuid::nil());
+            let project_id = ProjectId::from(Uuid::nil());
 
             authorizer
                 .write(

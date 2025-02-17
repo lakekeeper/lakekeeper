@@ -4,8 +4,8 @@ use axum::Router;
 use strum::EnumIter;
 
 use super::{
-    health::HealthExt, Actor, Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore,
-    State, TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent,
+    health::HealthExt, Actor, Catalog, NamespaceIdentUuid, ProjectId, RoleId, SecretStore, State,
+    TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent,
 };
 use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
 
@@ -140,7 +140,7 @@ impl TableUuid for TabularDetails {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListProjectsResponse {
     /// List of projects that the user is allowed to see.
-    Projects(HashSet<ProjectIdent>),
+    Projects(HashSet<ProjectId>),
     /// The user is allowed to see all projects.
     All,
 }
@@ -215,7 +215,7 @@ where
     async fn is_allowed_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectIdent,
+        project_id: ProjectId,
         action: &CatalogProjectAction,
     ) -> Result<bool>;
 
@@ -264,7 +264,7 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectIdent,
+        parent_project_id: ProjectId,
     ) -> Result<()>;
 
     /// Hook that is called when a role is deleted.
@@ -273,19 +273,13 @@ where
 
     /// Hook that is called when a new project is created.
     /// This is used to set up the initial permissions for the project.
-    async fn create_project(
-        &self,
-        metadata: &RequestMetadata,
-        project_id: ProjectIdent,
-    ) -> Result<()>;
+    async fn create_project(&self, metadata: &RequestMetadata, project_id: ProjectId)
+        -> Result<()>;
 
     /// Hook that is called when a project is deleted.
     /// This is used to clean up permissions for the project.
-    async fn delete_project(
-        &self,
-        metadata: &RequestMetadata,
-        project_id: ProjectIdent,
-    ) -> Result<()>;
+    async fn delete_project(&self, metadata: &RequestMetadata, project_id: ProjectId)
+        -> Result<()>;
 
     /// Hook that is called when a new warehouse is created.
     /// This is used to set up the initial permissions for the warehouse.
@@ -293,7 +287,7 @@ where
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        parent_project_id: ProjectIdent,
+        parent_project_id: ProjectId,
     ) -> Result<()>;
 
     /// Hook that is called when a warehouse is deleted.
@@ -423,7 +417,7 @@ where
     async fn require_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectIdent,
+        project_id: ProjectId,
         action: &CatalogProjectAction,
     ) -> Result<()> {
         if self
