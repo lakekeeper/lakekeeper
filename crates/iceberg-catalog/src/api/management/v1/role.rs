@@ -85,6 +85,7 @@ pub struct SearchRoleRequest {
     /// Search string for fuzzy search.
     /// Length is truncated to 64 characters.
     pub search: String,
+    /// Deprecated: Please use the x-project-id header instead.
     /// Project ID in which the role is created.
     /// Only required if the project ID cannot be inferred from the
     /// users token and no default project is set.
