@@ -27,7 +27,7 @@ use crate::{
         Catalog, ListFlags, NamespaceIdentUuid, Result, SecretStore, State, TableIdentUuid,
         Transaction, ViewIdentUuid,
     },
-    ProjectIdent, WarehouseIdent,
+    ProjectId, WarehouseIdent,
 };
 
 /// Check if a specific action is allowed on the given object
@@ -158,7 +158,7 @@ async fn check_project(
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIProjectAction,
-    project_id: Option<&ProjectIdent>,
+    project_id: Option<&ProjectId>,
 ) -> Result<(String, String)> {
     let project_id = project_id
         .or(metadata.preferred_project_id().as_ref())
@@ -340,7 +340,7 @@ pub(super) enum CheckOperation {
     Project {
         action: ProjectAction,
         #[schema(value_type = Option<uuid::Uuid>)]
-        project_id: Option<ProjectIdent>,
+        project_id: Option<ProjectId>,
     },
     #[serde(rename_all = "kebab-case")]
     Warehouse {

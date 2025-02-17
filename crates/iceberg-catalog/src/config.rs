@@ -19,13 +19,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{service::task_queue::TaskQueueConfig, ProjectIdent, WarehouseIdent};
+use crate::{service::task_queue::TaskQueueConfig, ProjectId, WarehouseIdent};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
-pub static DEFAULT_PROJECT_ID: LazyLock<Option<ProjectIdent>> = LazyLock::new(|| {
+pub static DEFAULT_PROJECT_ID: LazyLock<Option<ProjectId>> = LazyLock::new(|| {
     CONFIG
         .enable_default_project
         .then_some(uuid::Uuid::nil().into())

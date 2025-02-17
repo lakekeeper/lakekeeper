@@ -30,7 +30,7 @@ use crate::{
         },
         NamespaceIdentUuid, TableIdentUuid,
     },
-    ProjectIdent, WarehouseIdent, CONFIG,
+    ProjectId, WarehouseIdent, CONFIG,
 };
 
 pub(super) mod api;
@@ -295,7 +295,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectIdent,
+        project_id: ProjectId,
         action: &CatalogProjectAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
@@ -375,7 +375,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectIdent,
+        parent_project_id: ProjectId,
     ) -> Result<()> {
         let actor = metadata.actor();
 
@@ -411,7 +411,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_project(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectIdent,
+        project_id: ProjectId,
     ) -> Result<()> {
         let actor = metadata.actor();
 
@@ -449,7 +449,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn delete_project(
         &self,
         _metadata: &RequestMetadata,
-        project_id: ProjectIdent,
+        project_id: ProjectId,
     ) -> Result<()> {
         self.delete_all_relations(&project_id).await
     }
@@ -458,7 +458,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        parent_project_id: ProjectIdent,
+        parent_project_id: ProjectId,
     ) -> Result<()> {
         let actor = metadata.actor();
 
@@ -672,8 +672,8 @@ impl OpenFGAAuthorizer {
             )
             .await?
             .iter()
-            .map(|p| ProjectIdent::parse_from_openfga(p))
-            .collect::<std::result::Result<HashSet<ProjectIdent>, _>>()?;
+            .map(|p| ProjectId::parse_from_openfga(p))
+            .collect::<std::result::Result<HashSet<ProjectId>, _>>()?;
 
         Ok(ListProjectsResponse::Projects(projects))
     }
@@ -1223,7 +1223,7 @@ pub(crate) mod tests {
             let authorizer = new_authorizer_in_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", "this_user");
             let actor = Actor::Principal(user_id.clone());
-            let project = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project = ProjectId::from(uuid::Uuid::now_v7());
 
             let projects = authorizer
                 .list_projects_internal(&actor)
@@ -1258,7 +1258,7 @@ pub(crate) mod tests {
         async fn test_require_no_relations_own_relations() {
             let authorizer = new_authorizer_in_empty_store().await;
 
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1288,7 +1288,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_require_no_relations_used_in_other_relations() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1318,7 +1318,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_own_relations_direct() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1351,7 +1351,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_own_relations_usersets() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1384,7 +1384,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_own_relations_many() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1429,7 +1429,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_own_relations_empty() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1445,13 +1445,13 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_user_relations() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
                 .unwrap();
 
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
 
             authorizer
                 .write(
@@ -1480,7 +1480,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_non_existing_relation_gives_404() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             let result = authorizer
                 .write(
                     None,
@@ -1502,7 +1502,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_duplicate_writes_give_409() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .write(
                     Some(vec![TupleKey {
@@ -1534,7 +1534,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_user_relations_empty() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
@@ -1549,7 +1549,7 @@ pub(crate) mod tests {
         #[tokio::test]
         async fn test_delete_user_relations_many() {
             let authorizer = new_authorizer_in_empty_store().await;
-            let project_id = ProjectIdent::from(uuid::Uuid::now_v7());
+            let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .require_no_relations(&project_id, TEST_CONSISTENCY)
                 .await
