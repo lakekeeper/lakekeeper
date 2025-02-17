@@ -115,12 +115,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn rename_project(
-        project_ident: Option<ProjectId>,
+        project_id: Option<ProjectId>,
         request: RenameProjectRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let project_id = request_metadata.require_project_id(project_ident)?;
+        let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -141,11 +141,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn get_project(
-        project_ident: Option<ProjectId>,
+        project_id: Option<ProjectId>,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetProjectResponse> {
-        let project_id = request_metadata.require_project_id(project_ident)?;
+        let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -175,11 +175,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn delete_project(
-        project_ident: Option<ProjectId>,
+        project_id: Option<ProjectId>,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let project_id = request_metadata.require_project_id(project_ident)?;
+        let project_id = request_metadata.require_project_id(project_id)?;
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
