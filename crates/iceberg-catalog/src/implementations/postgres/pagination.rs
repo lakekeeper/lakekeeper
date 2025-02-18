@@ -90,14 +90,14 @@ fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) ->
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::service::ProjectIdent;
+    use crate::service::ProjectId;
 
     #[test]
     fn test_paginate_token() {
         let created_at = Utc::now();
         let token = PaginateToken::V1(V1PaginateToken {
             created_at,
-            id: ProjectIdent::new(uuid::Uuid::nil()),
+            id: ProjectId::new(uuid::Uuid::nil()),
         });
 
         let token_str = token.to_string();

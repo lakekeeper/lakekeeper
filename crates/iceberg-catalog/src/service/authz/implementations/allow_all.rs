@@ -13,8 +13,8 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceIdentUuid, ProjectIdent, RoleId, SecretStore, State,
-        TableIdentUuid, ViewIdentUuid, WarehouseIdent,
+        Actor, Catalog, NamespaceIdentUuid, ProjectId, RoleId, SecretStore, State, TableIdentUuid,
+        ViewIdentUuid, WarehouseIdent,
     },
 };
 
@@ -94,7 +94,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_project_action(
         &self,
         _metadata: &RequestMetadata,
-        _project_id: ProjectIdent,
+        _project_id: ProjectId,
         _action: &CatalogProjectAction,
     ) -> Result<bool> {
         Ok(true)
@@ -144,7 +144,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
-        _parent_project_id: ProjectIdent,
+        _parent_project_id: ProjectId,
     ) -> Result<()> {
         Ok(())
     }
@@ -156,7 +156,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_project(
         &self,
         _metadata: &RequestMetadata,
-        _project_id: ProjectIdent,
+        _project_id: ProjectId,
     ) -> Result<()> {
         Ok(())
     }
@@ -164,7 +164,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn delete_project(
         &self,
         _metadata: &RequestMetadata,
-        _project_id: ProjectIdent,
+        _project_id: ProjectId,
     ) -> Result<()> {
         Ok(())
     }
@@ -173,7 +173,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _warehouse_id: WarehouseIdent,
-        _parent_project_id: ProjectIdent,
+        _parent_project_id: ProjectId,
     ) -> Result<()> {
         Ok(())
     }

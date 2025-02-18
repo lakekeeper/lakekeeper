@@ -12,7 +12,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        Catalog, ProjectIdent, SecretStore, State, Transaction,
+        Catalog, ProjectId, SecretStore, State, Transaction,
     },
     CONFIG,
 };
@@ -75,7 +75,7 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
     }
 }
 
-fn parse_warehouse_arg(arg: &str) -> (Option<ProjectIdent>, String) {
+fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
     // structure of the argument is <(optional uuid project_id)>/<warehouse_name>
     // Warehouse names cannot include /
 
@@ -90,7 +90,7 @@ fn parse_warehouse_arg(arg: &str) -> (Option<ProjectIdent>, String) {
         2 => {
             // Maybe project_id and warehouse_id provided
             // If parts[0] is a valid UUID, it is a project_id, otherwise the whole thing is a warehouse_id
-            match ProjectIdent::from_str(parts[0]) {
+            match ProjectId::from_str(parts[0]) {
                 Ok(project_id) => {
                     let warehouse_name = parts[1].to_string();
                     (Some(project_id), warehouse_name)

@@ -10,7 +10,7 @@ use crate::{
         authz::Authorizer, Actor, Catalog, Result, SecretStore, StartupValidationData, State,
         Transaction,
     },
-    ProjectIdent, CONFIG, DEFAULT_PROJECT_ID,
+    ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
@@ -56,7 +56,7 @@ pub struct ServerInfo {
     pub server_id: uuid::Uuid,
     /// Default Project ID. Null if not set
     #[schema(value_type = uuid::Uuid)]
-    pub default_project_id: Option<ProjectIdent>,
+    pub default_project_id: Option<ProjectId>,
     /// `AuthZ` backend in use.
     pub authz_backend: AuthZBackend,
 }

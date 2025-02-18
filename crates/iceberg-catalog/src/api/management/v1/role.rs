@@ -14,7 +14,7 @@ use crate::{
         authz::{Authorizer, CatalogProjectAction, CatalogRoleAction},
         Catalog, Result, RoleId, SecretStore, State, Transaction,
     },
-    ProjectIdent,
+    ProjectId,
 };
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -29,7 +29,7 @@ pub struct CreateRoleRequest {
     /// Only required if the project ID cannot be inferred and no default project is set.
     #[serde(default)]
     #[schema(value_type=uuid::Uuid)]
-    pub project_id: Option<ProjectIdent>,
+    pub project_id: Option<ProjectId>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -44,7 +44,7 @@ pub struct Role {
     pub description: Option<String>,
     /// Project ID in which the role is created.
     #[schema(value_type=uuid::Uuid)]
-    pub project_id: ProjectIdent,
+    pub project_id: ProjectId,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the role was last updated
@@ -85,11 +85,13 @@ pub struct SearchRoleRequest {
     /// Search string for fuzzy search.
     /// Length is truncated to 64 characters.
     pub search: String,
+    /// Deprecated: Please use the x-project-id header instead.
     /// Project ID in which the role is created.
     /// Only required if the project ID cannot be inferred from the
     /// users token and no default project is set.
     #[serde(default)]
-    pub project_id: Option<ProjectIdent>,
+    #[schema(value_type=Option<uuid::Uuid>)]
+    pub project_id: Option<ProjectId>,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -110,7 +112,7 @@ pub struct ListRolesQuery {
     /// users token and no default project is set.
     #[serde(default)]
     #[param(value_type=uuid::Uuid)]
-    pub project_id: Option<ProjectIdent>,
+    pub project_id: Option<ProjectId>,
 }
 
 impl ListRolesQuery {

@@ -11,7 +11,7 @@ use crate::{
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{Result, RoleId},
-    ProjectIdent,
+    ProjectId,
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -19,7 +19,7 @@ struct RoleRow {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    pub project_id: ProjectIdent,
+    pub project_id: ProjectId,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -48,7 +48,7 @@ impl From<RoleRow> for Role {
 
 pub(crate) async fn create_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     role_id: RoleId,
-    project_id: ProjectIdent,
+    project_id: ProjectId,
     role_name: &str,
     description: Option<&str>,
     connection: E,
@@ -149,7 +149,7 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 }
 
 pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
-    filter_project_id: Option<ProjectIdent>,
+    filter_project_id: Option<ProjectId>,
     filter_role_id: Option<Vec<RoleId>>,
     filter_name: Option<String>,
     PaginationQuery {

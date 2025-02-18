@@ -29,7 +29,7 @@ use crate::{
         Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
         Transaction,
     },
-    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+    ProjectId, WarehouseIdent, DEFAULT_PROJECT_ID,
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -70,7 +70,7 @@ pub struct CreateWarehouseRequest {
     /// Project ID in which to create the warehouse.
     /// If no default project is set for this server, this field is required.
     #[schema(value_type=Option<uuid::Uuid>)]
-    pub project_id: Option<ProjectIdent>,
+    pub project_id: Option<ProjectId>,
     /// Storage profile to use for the warehouse.
     pub storage_profile: StorageProfile,
     /// Optional storage credential to use for the warehouse.
@@ -153,7 +153,7 @@ pub struct UpdateWarehouseStorageRequest {
     pub storage_credential: Option<StorageCredential>,
 }
 
-#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 pub struct ListWarehousesRequest {
     /// Optional filter to return only warehouses
@@ -166,7 +166,7 @@ pub struct ListWarehousesRequest {
     /// Setting a warehouse is required.
     #[serde(default)]
     #[param(value_type=Option::<uuid::Uuid>)]
-    pub project_id: Option<ProjectIdent>,
+    pub project_id: Option<ProjectId>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, ToSchema)]
