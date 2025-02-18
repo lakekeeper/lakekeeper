@@ -39,7 +39,7 @@ jobs:
 
       - name: Restore Docker image
         run:  docker load -i artifacts/iceberg-catalog-local-amd64.tar &&  kind load docker-image localhost/iceberg-catalog-local:amd64
-      - uses: azure/setup-helm@v4.2.0
+      - uses: azure/setup-helm@v4.3.0
         id: install
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
