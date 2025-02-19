@@ -57,11 +57,11 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                                  | Example | Description            |
-|-------------------------------------------|---------|------------------------|
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5       | Number of retries before a task is considered failed  Default: 5 |
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`       | 3600    | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600 |
-| `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL` | 10      | Amount of seconds between polling for new tasks. Default: 10 |
+| Variable                                  | Example                   | Description                                                                                                                                                                                                          |
+|-------------------------------------------|---------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5                         | Number of retries before a task is considered failed  Default: 5                                                                                                                                                     |
+| `LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`       | 3600                      | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600                                                                                                          |
+| `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL` | 3600ms/30s/30(deprecated) | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
 
 ### Nats
 

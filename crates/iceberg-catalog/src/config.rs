@@ -713,6 +713,48 @@ mod test {
     }
 
     #[test]
+    fn test_task_queue_config_millis() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5ms");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            let config = get_config();
+            assert_eq!(
+                config.queue_config.poll_interval,
+                std::time::Duration::from_millis(5)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_task_queue_config_seconds() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5s");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            let config = get_config();
+            assert_eq!(
+                config.queue_config.poll_interval,
+                std::time::Duration::from_secs(5)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_task_queue_config_legacy_seconds() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "\"5\"");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            let config = get_config();
+            assert_eq!(
+                config.queue_config.poll_interval,
+                std::time::Duration::from_secs(5)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_openfga_config_no_auth() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
