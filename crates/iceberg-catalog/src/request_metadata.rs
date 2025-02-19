@@ -277,7 +277,7 @@ mod test {
         headers.insert("x-forwarded-port", HeaderValue::from_static("8080"));
 
         let result = determine_host(&headers);
-        assert_eq!(result, Some("example.com:8080".to_string()));
+        assert_eq!(result, Some("https://example.com:8080".to_string()));
     }
 
     #[test]
@@ -289,7 +289,7 @@ mod test {
         );
 
         let result = determine_host(&headers);
-        assert_eq!(result, Some("example.com".to_string()));
+        assert_eq!(result, Some("https://example.com".to_string()));
     }
 
     #[test]
