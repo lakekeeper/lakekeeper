@@ -841,12 +841,6 @@ impl S3Location {
     }
 }
 
-// impl From<S3Location> for Location {
-//     fn from(location: S3Location) -> Self {
-//         location.location
-//     }
-// }
-
 #[cfg(test)]
 pub(crate) mod test {
     use needs_env_var::needs_env_var;

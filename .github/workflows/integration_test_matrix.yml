@@ -37,25 +37,33 @@ jobs:
           - spark_openfga-1.5.2
           - spark_openfga-1.6.1
           - spark_openfga-1.7.1
+          - spark_openfga-1.8.0
           - spark_kv2-1.7.1
           - spark_adls-1.5.2
           - spark_adls-1.6.1
+          - spark_adls-1.8.0
           # - spark_adls-1.7.1 adls is currently broken with 1.7.1 due to https://lists.apache.org/thread/xc0ddyjkwdl8rhp072fcydl4rondogx6
           - spark_aws_remote_signing-1.5.2
           - spark_aws_remote_signing-1.6.1
           - spark_aws_remote_signing-1.7.1
+          - spark_aws_remote_signing-1.8.0
           - spark_aws_sts-1.5.2
           - spark_aws_sts-1.6.1
           - spark_aws_sts-1.7.1
+          - spark_aws_sts-1.8.0
           - spark_gcs-1.5.2
           - spark_gcs-1.6.1
           - spark_gcs-1.7.1
+          - spark_gcs-1.8.0
           - spark_minio_sts-1.5.2
           - spark_minio_sts-1.6.1
           - spark_minio_sts-1.7.1
+          - spark_minio_sts-1.8.0
           - spark_minio_remote_signing-1.5.2
           - spark_minio_remote_signing-1.6.1
           - spark_minio_remote_signing-1.7.1
+          - spark_minio_remote_signing-1.8.0
+          - spark_minio_s3a-1.7.1
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
         test_name: ${{ matrix.names }}

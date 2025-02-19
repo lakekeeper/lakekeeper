@@ -511,7 +511,6 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.scope": settings.openid_scope,
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.token_endpoint}",
     }
-    print(f"Configuration: {configuration}")
     if (
         storage_config["storage-profile"]["type"] == "s3"
         and storage_config["storage-profile"]["sts-enabled"]
