@@ -1790,7 +1790,7 @@ mod test {
     use iceberg::{
         spec::{
             NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-            SnapshotRetention, Summary, Transform, Type, UnboundPartitionField,
+            SnapshotRetention, Summary, TableMetadata, Transform, Type, UnboundPartitionField,
             UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
         },
         TableIdent,
@@ -1961,7 +1961,7 @@ mod test {
         )
         .await
         .unwrap();
-        assert_eq!(tab.metadata, table_metadata.metadata);
+        assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
     fn schema() -> Schema {
@@ -1973,6 +1973,76 @@ mod test {
             ])
             .build()
             .unwrap()
+    }
+
+    fn assert_table_metadata_are_equal(expected: &TableMetadata, actual: &TableMetadata) {
+        assert_eq!(actual.location(), expected.location());
+        assert_eq!(actual.properties(), expected.properties());
+        assert_eq!(
+            actual
+                .snapshots()
+                .sorted_by_key(|s| s.snapshot_id())
+                .collect_vec(),
+            expected
+                .snapshots()
+                .sorted_by_key(|s| s.snapshot_id())
+                .collect_vec()
+        );
+        assert_eq!(
+            actual
+                .partition_specs_iter()
+                .sorted_by_key(|ps| ps.spec_id())
+                .collect_vec(),
+            expected
+                .partition_specs_iter()
+                .sorted_by_key(|ps| ps.spec_id())
+                .collect_vec()
+        );
+        assert_eq!(
+            actual
+                .partition_statistics_iter()
+                .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+                .collect_vec(),
+            expected
+                .partition_statistics_iter()
+                .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+                .collect_vec()
+        );
+        assert_eq!(
+            actual
+                .sort_orders_iter()
+                .sorted_by_key(|s| s.order_id)
+                .collect_vec(),
+            expected
+                .sort_orders_iter()
+                .sorted_by_key(|s| s.order_id)
+                .collect_vec()
+        );
+        assert_eq!(
+            actual
+                .statistics_iter()
+                .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+                .collect_vec(),
+            expected
+                .statistics_iter()
+                .sorted_by_key(|s| (s.snapshot_id, &s.statistics_path))
+                .collect_vec()
+        );
+        assert_eq!(actual.history(), expected.history());
+        assert_eq!(actual.current_schema_id(), expected.current_schema_id());
+        assert_eq!(actual.current_snapshot_id(), expected.current_snapshot_id());
+        assert_eq!(
+            actual.default_partition_spec(),
+            expected.default_partition_spec()
+        );
+        assert_eq!(actual.default_sort_order(), expected.default_sort_order());
+        assert_eq!(actual.format_version(), expected.format_version());
+        assert_eq!(actual.last_column_id(), expected.last_column_id());
+        assert_eq!(
+            actual.last_sequence_number(),
+            expected.last_sequence_number()
+        );
+        assert_eq!(actual.last_partition_id(), expected.last_partition_id());
     }
 
     #[sqlx::test]
@@ -2047,7 +2117,7 @@ mod test {
         .await
         .unwrap();
 
-        assert_eq!(tab.metadata, table_metadata.metadata);
+        assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
     #[sqlx::test]
@@ -2107,7 +2177,7 @@ mod test {
         )
         .await
         .unwrap();
-        assert_eq!(tab.metadata, table_metadata.metadata);
+        assert_table_metadata_are_equal(&table_metadata.metadata, &tab.metadata);
     }
 
     #[sqlx::test]
@@ -2233,7 +2303,7 @@ mod test {
         )
         .await
         .unwrap();
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
         let builder = builder
             .metadata
@@ -2276,7 +2346,7 @@ mod test {
         .await
         .unwrap();
 
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
 
         let builder = committed
             .new_metadata
@@ -2319,7 +2389,7 @@ mod test {
         .await
         .unwrap();
 
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
     }
 
     #[sqlx::test]
@@ -2565,7 +2635,7 @@ mod test {
                 .sorted_by_key(|s| s.snapshot_id())
                 .collect_vec()
         );
-        assert_eq!(tab.metadata, builder.metadata);
+        assert_table_metadata_are_equal(&builder.metadata, &tab.metadata);
     }
 
     async fn commit_test_setup(
