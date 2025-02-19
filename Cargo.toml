@@ -50,7 +50,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "92065e6", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2585f4f", features = [
     "storage-all",
 ] }
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "08cb6a4" }
@@ -59,7 +59,7 @@ strum_macros = "^0.26"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
-axum-extra = { version = "0.11.0" }
+axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.5.0" }
 itertools = "0.14.0"
 mockall = "0.13.0"
