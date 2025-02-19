@@ -723,7 +723,7 @@ mod test {
                 std::time::Duration::from_millis(5)
             );
             Ok(())
-        })
+        });
     }
 
     #[test]
@@ -737,7 +737,7 @@ mod test {
                 std::time::Duration::from_secs(5)
             );
             Ok(())
-        })
+        });
     }
 
     #[test]
@@ -751,7 +751,7 @@ mod test {
                 std::time::Duration::from_secs(5)
             );
             Ok(())
-        })
+        });
     }
 
     #[test]

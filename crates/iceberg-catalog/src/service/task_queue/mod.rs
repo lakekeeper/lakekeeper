@@ -233,7 +233,7 @@ where
         Duration::from_millis(
             u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
         )
-    } else if buf.ends_with("s") {
+    } else if buf.ends_with('s') {
         Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
     } else {
         Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
