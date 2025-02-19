@@ -78,9 +78,13 @@ pub struct TableConfig {
 
 impl StorageProfile {
     #[must_use]
-    pub fn generate_catalog_config(&self, warehouse_id: WarehouseIdent) -> CatalogConfig {
+    pub fn generate_catalog_config(
+        &self,
+        warehouse_id: WarehouseIdent,
+        host: Option<&str>,
+    ) -> CatalogConfig {
         match self {
-            StorageProfile::S3(profile) => profile.generate_catalog_config(warehouse_id),
+            StorageProfile::S3(profile) => profile.generate_catalog_config(warehouse_id, host),
             #[cfg(test)]
             StorageProfile::Test(_) => {
                 use std::collections::HashMap;

@@ -60,16 +60,25 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
             .await?;
 
         // Get config from DB and new token from AuthHandler simultaneously
-        let mut config =
-            C::require_config_for_warehouse(warehouse_id, api_context.v1_state.catalog).await?;
+        let mut config = C::require_config_for_warehouse(
+            warehouse_id,
+            request_metadata.host(),
+            api_context.v1_state.catalog,
+        )
+        .await?;
 
         config
             .overrides
             .insert("prefix".to_string(), CONFIG.warehouse_prefix(warehouse_id));
 
-        config
-            .overrides
-            .insert("uri".to_string(), CONFIG.base_uri_catalog().to_string());
+        config.overrides.insert(
+            "uri".to_string(),
+            request_metadata
+                .host()
+                .map_or(CONFIG.base_uri_catalog().to_string(), |h| {
+                    format!("{}/catalog", h.trim_end_matches('/'))
+                }),
+        );
 
         Ok(config)
     }

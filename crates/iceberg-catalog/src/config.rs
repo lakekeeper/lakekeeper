@@ -59,7 +59,6 @@ fn get_config() -> DynAppConfig {
         .extend(DEFAULT_RESERVED_NAMESPACES.into_iter().map(str::to_string));
 
     // Fail early if the base_uri is not a valid URL
-    config.s3_signer_uri_for_warehouse(WarehouseIdent::from(uuid::Uuid::new_v4()));
     config.base_uri_catalog();
     config.base_uri_management();
     if config.secret_backend == SecretBackend::Postgres
@@ -397,10 +396,15 @@ impl Default for DynAppConfig {
 }
 
 impl DynAppConfig {
-    pub fn s3_signer_uri_for_warehouse(&self, warehouse_id: WarehouseIdent) -> url::Url {
-        self.base_uri
-            .join(&format!("catalog/v1/{warehouse_id}"))
-            .expect("Valid URL")
+    pub fn s3_signer_uri_for_warehouse(
+        &self,
+        warehouse_id: WarehouseIdent,
+        host: Option<&str>,
+    ) -> String {
+        format!(
+            "{}/catalog/v1/{warehouse_id}",
+            host.unwrap_or(self.base_uri.as_str()).trim_end_matches('/')
+        )
     }
 
     pub fn base_uri_catalog(&self) -> url::Url {

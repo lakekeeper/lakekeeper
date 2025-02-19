@@ -72,6 +72,7 @@ pub(super) async fn set_warehouse_deletion_profile<
 pub(super) async fn get_config_for_warehouse(
     warehouse_id: WarehouseIdent,
     catalog_state: CatalogState,
+    host: Option<&str>,
 ) -> Result<Option<CatalogConfig>> {
     let storage_profile = sqlx::query_scalar!(
         r#"
@@ -87,7 +88,7 @@ pub(super) async fn get_config_for_warehouse(
     .await
     .map_err(map_select_warehouse_err)?;
 
-    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id)))
+    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id, host)))
 }
 
 pub(crate) async fn create_warehouse(

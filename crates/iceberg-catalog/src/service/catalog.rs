@@ -226,15 +226,17 @@ where
     async fn get_config_for_warehouse(
         warehouse_id: WarehouseIdent,
         catalog_state: Self::State,
+        host: Option<&str>,
     ) -> Result<Option<CatalogConfig>>;
 
     /// Wrapper around get_config_for_warehouse that returns
     /// not found error if the warehouse does not exist.
     async fn require_config_for_warehouse(
         warehouse_id: WarehouseIdent,
+        host: Option<&str>,
         catalog_state: Self::State,
     ) -> Result<CatalogConfig> {
-        Self::get_config_for_warehouse(warehouse_id, catalog_state)
+        Self::get_config_for_warehouse(warehouse_id, catalog_state, host)
             .await?
             .ok_or(
                 ErrorModel::not_found(

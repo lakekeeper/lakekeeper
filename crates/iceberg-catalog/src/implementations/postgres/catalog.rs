@@ -195,8 +195,9 @@ impl Catalog for super::PostgresCatalog {
     async fn get_config_for_warehouse(
         warehouse_id: WarehouseIdent,
         catalog_state: CatalogState,
+        host: Option<&str>,
     ) -> Result<Option<CatalogConfig>> {
-        get_config_for_warehouse(warehouse_id, catalog_state).await
+        get_config_for_warehouse(warehouse_id, catalog_state, host).await
     }
 
     async fn list_namespaces<'a>(
