@@ -35,7 +35,7 @@ aws-smithy-http = "0.60.11"
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
-google-cloud-auth = { version = "0.17.0", features = [
+google-cloud-auth = { version = "0.18.0", features = [
     "rustls-tls",
 ], default-features = false }
 figment = { version = "0.10.19", features = ["env"] }
