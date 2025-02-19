@@ -41,6 +41,7 @@ pub(super) fn apply_commit(
 
     // Update!
     for update in updates {
+        tracing::debug!("Applying update: '{}'", table_update_as_str(&update));
         match &update {
             TableUpdate::AssignUuid { uuid } => {
                 if uuid != &previous_uuid {
@@ -70,9 +71,42 @@ pub(super) fn apply_commit(
             }
         }
     }
+    builder
+        .build()
+        .map_err(|e| {
+            tracing::debug!("Table metadata build failed: {}", e);
+            let msg = e.message().to_string();
+            ErrorModel::bad_request(msg, "TableMetadataBuildFailed", Some(Box::new(e))).into()
+        })
+        .inspect(|r| {
+            tracing::debug!(
+                "Table metadata updated, at: {}",
+                r.metadata.last_updated_ms()
+            );
+        })
+}
 
-    builder.build().map_err(|e| {
-        let msg = e.message().to_string();
-        ErrorModel::bad_request(msg, "TableMetadataBuildFailed", Some(Box::new(e))).into()
-    })
+fn table_update_as_str(update: &TableUpdate) -> &str {
+    match update {
+        TableUpdate::UpgradeFormatVersion { .. } => "upgrade_format_version",
+        TableUpdate::AssignUuid { .. } => "assign_uuid",
+        TableUpdate::AddSchema { .. } => "add_schema",
+        TableUpdate::SetCurrentSchema { .. } => "set_current_schema",
+        TableUpdate::AddSpec { .. } => "add_spec",
+        TableUpdate::SetDefaultSpec { .. } => "set_default_spec",
+        TableUpdate::AddSortOrder { .. } => "add_sort_order",
+        TableUpdate::SetDefaultSortOrder { .. } => "set_default_sort_order",
+        TableUpdate::AddSnapshot { .. } => "add_snapshot",
+        TableUpdate::SetSnapshotRef { .. } => "set_snapshot_ref",
+        TableUpdate::RemoveSnapshots { .. } => "remove_snapshots",
+        TableUpdate::RemoveSnapshotRef { .. } => "remove_snapshot_ref",
+        TableUpdate::SetLocation { .. } => "set_location",
+        TableUpdate::SetProperties { .. } => "set_properties",
+        TableUpdate::RemoveProperties { .. } => "remove_properties",
+        TableUpdate::RemovePartitionSpecs { .. } => "remove_partition_specs",
+        TableUpdate::SetStatistics { .. } => "set_statistics",
+        TableUpdate::RemoveStatistics { .. } => "remove_statistics",
+        TableUpdate::SetPartitionStatistics { .. } => "set_partition_statistics",
+        TableUpdate::RemovePartitionStatistics { .. } => "remove_partition_statistics",
+    }
 }
