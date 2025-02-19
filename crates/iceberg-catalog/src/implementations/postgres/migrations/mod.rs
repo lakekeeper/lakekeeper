@@ -1,12 +1,21 @@
-use crate::implementations::postgres::migrations::split_table_metadata::SplitTableMetadataHook;
-use crate::implementations::postgres::{CatalogState, PostgresTransaction};
-use crate::service::Transaction;
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
+
 use anyhow::anyhow;
 use futures::future::BoxFuture;
-use sqlx::migrate::{AppliedMigration, Migrate, MigrateError, Migrator};
-use sqlx::{Error, Postgres};
-use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use sqlx::{
+    migrate::{AppliedMigration, Migrate, MigrateError, Migrator},
+    Error, Postgres,
+};
+
+use crate::{
+    implementations::postgres::{
+        migrations::split_table_metadata::SplitTableMetadataHook, CatalogState, PostgresTransaction,
+    },
+    service::Transaction,
+};
 
 mod split_table_metadata;
 

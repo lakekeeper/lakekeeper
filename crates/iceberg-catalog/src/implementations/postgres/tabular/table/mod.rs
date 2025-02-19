@@ -2,42 +2,44 @@ mod commit;
 mod common;
 mod create;
 
+use std::{
+    collections::{HashMap, HashSet},
+    default::Default,
+    ops::Deref,
+    str::FromStr,
+    sync::Arc,
+};
+
 pub(crate) use commit::commit_table_transaction;
 pub(crate) use create::create_table;
+use http::StatusCode;
+use iceberg::{
+    spec::{
+        BlobMetadata, FormatVersion, PartitionSpec, Parts, Schema, SchemaId, SnapshotRetention,
+        SortOrder, Summary, MAIN_BRANCH,
+    },
+    TableUpdate,
+};
+use iceberg_ext::{configs::Location, spec::TableMetadata, NamespaceIdent};
+use sqlx::types::Json;
+use uuid::Uuid;
 
-use crate::implementations::postgres::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
+    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
+    implementations::postgres::{
+        dbutils::DBErrorHandler as _,
+        tabular::{
+            drop_tabular, list_tabulars, try_parse_namespace_ident, TabularIdentBorrowed,
+            TabularIdentOwned, TabularIdentUuid, TabularType,
+        },
+        CatalogState,
+    },
     service::{
         storage::StorageProfile, ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result,
-        TableIdent, TableIdentUuid,
+        TableIdent, TableIdentUuid, TabularDetails,
     },
     SecretIdent, WarehouseIdent,
 };
-use http::StatusCode;
-use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
-
-use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
-use crate::implementations::postgres::tabular::{
-    drop_tabular, list_tabulars, try_parse_namespace_ident, TabularIdentBorrowed,
-    TabularIdentOwned, TabularIdentUuid, TabularType,
-};
-use iceberg::spec::{
-    BlobMetadata, FormatVersion, PartitionSpec, Parts, Schema, SchemaId, SnapshotRetention,
-    SortOrder, Summary, MAIN_BRANCH,
-};
-use iceberg_ext::configs::Location;
-
-use crate::service::TabularDetails;
-use iceberg::TableUpdate;
-use sqlx::types::Json;
-use std::default::Default;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Deref,
-};
-use uuid::Uuid;
 
 const MAX_PARAMETERS: usize = 30000;
 
@@ -920,27 +922,29 @@ pub(crate) mod tests {
     // - Stage-Create => Next stage-create works & overwrites
     // - Stage-Create => Next regular create works & overwrites
 
-    use super::*;
-    use crate::api::iceberg::types::PageToken;
-    use crate::api::management::v1::warehouse::WarehouseStatus;
-    use crate::implementations::postgres::namespace::tests::initialize_namespace;
-    use crate::implementations::postgres::warehouse::set_warehouse_status;
-    use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::service::{ListFlags, NamespaceIdentUuid, TableCreation};
-    use std::default::Default;
-    use std::time::SystemTime;
+    use std::{default::Default, time::SystemTime};
 
-    use crate::catalog::tables::create_table_request_into_table_metadata;
-    use crate::implementations::postgres::tabular::mark_tabular_as_deleted;
-    use crate::implementations::postgres::tabular::table::create::create_table;
-    use iceberg::spec::{
-        NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-        UnboundPartitionSpec,
+    use iceberg::{
+        spec::{
+            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
+            UnboundPartitionSpec,
+        },
+        NamespaceIdent,
     };
-    use iceberg::NamespaceIdent;
-    use iceberg_ext::catalog::rest::CreateTableRequest;
-    use iceberg_ext::configs::Location;
+    use iceberg_ext::{catalog::rest::CreateTableRequest, configs::Location};
     use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        api::{iceberg::types::PageToken, management::v1::warehouse::WarehouseStatus},
+        catalog::tables::create_table_request_into_table_metadata,
+        implementations::postgres::{
+            namespace::tests::initialize_namespace,
+            tabular::{mark_tabular_as_deleted, table::create::create_table},
+            warehouse::{set_warehouse_status, test::initialize_warehouse},
+        },
+        service::{ListFlags, NamespaceIdentUuid, TableCreation},
+    };
 
     fn create_request(
         stage_create: Option<bool>,

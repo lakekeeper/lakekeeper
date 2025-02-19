@@ -1,20 +1,26 @@
-use crate::api::Result;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::tabular::view::{ViewFormatVersion, ViewRepresentationType};
-use crate::service::{ViewIdentUuid, ViewMetadataWithLocation};
+use std::{collections::HashMap, sync::Arc};
+
 use chrono::{DateTime, Utc};
-use iceberg::spec::{
-    Schema, SqlViewRepresentation, ViewMetadata, ViewRepresentation, ViewRepresentations,
-    ViewVersion, ViewVersionId, ViewVersionLog,
+use iceberg::{
+    spec::{
+        Schema, SqlViewRepresentation, ViewMetadata, ViewRepresentation, ViewRepresentations,
+        ViewVersion, ViewVersionId, ViewVersionLog,
+    },
+    NamespaceIdent,
 };
-use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::izip;
-use sqlx::types::Json;
-use sqlx::{FromRow, PgConnection};
-use std::collections::HashMap;
-use std::sync::Arc;
+use sqlx::{types::Json, FromRow, PgConnection};
 use uuid::Uuid;
+
+use crate::{
+    api::Result,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::view::{ViewFormatVersion, ViewRepresentationType},
+    },
+    service::{ViewIdentUuid, ViewMetadataWithLocation},
+};
 
 pub(crate) async fn load_view(
     view_id: ViewIdentUuid,

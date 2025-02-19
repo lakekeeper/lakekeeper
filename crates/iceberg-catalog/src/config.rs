@@ -2,22 +2,24 @@
 
 #![allow(clippy::ref_option)]
 
-use anyhow::{anyhow, Context};
 use core::result::Result::Ok;
-use http::HeaderValue;
-use std::collections::HashSet;
-use std::convert::Infallible;
-use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::LazyLock;
-use url::Url;
+use std::{
+    collections::HashSet,
+    convert::Infallible,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    str::FromStr,
+    sync::LazyLock,
+};
 
-use crate::service::task_queue::TaskQueueConfig;
-use crate::{ProjectIdent, WarehouseIdent};
+use anyhow::{anyhow, Context};
+use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
+use url::Url;
 use veil::Redact;
+
+use crate::{service::task_queue::TaskQueueConfig, ProjectIdent, WarehouseIdent};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -157,6 +159,8 @@ pub struct DynAppConfig {
     /// A scopes that must be present in provided tokens
     pub openid_scope: Option<String>,
     pub enable_kubernetes_authentication: bool,
+    /// Claim to use in provided JWT tokens as the subject.
+    pub openid_subject_claim: Option<String>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -377,6 +381,7 @@ impl Default for DynAppConfig {
             openid_additional_issuers: None,
             openid_scope: None,
             enable_kubernetes_authentication: false,
+            openid_subject_claim: None,
             listen_port: 8181,
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,

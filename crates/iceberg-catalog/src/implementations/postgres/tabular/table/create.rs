@@ -1,15 +1,25 @@
-use crate::api::{self, Result};
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::tabular::table::{common, DbTableFormatVersion};
-use crate::implementations::postgres::tabular::{create_tabular, CreateTabular, TabularType};
-use crate::service::{CreateTableResponse, NamespaceIdentUuid, TableCreation, TableIdentUuid};
-use iceberg::spec::{FormatVersion, TableMetadata};
-use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::ErrorModel;
-use iceberg_ext::configs::Location;
-use sqlx::{Postgres, Transaction};
 use std::str::FromStr;
+
+use iceberg::{
+    spec::{FormatVersion, TableMetadata},
+    TableIdent,
+};
+use iceberg_ext::{catalog::rest::ErrorModel, configs::Location};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
+
+use crate::{
+    api::{self, Result},
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::{
+            create_tabular,
+            table::{common, DbTableFormatVersion},
+            CreateTabular, TabularType,
+        },
+    },
+    service::{CreateTableResponse, NamespaceIdentUuid, TableCreation, TableIdentUuid},
+};
 
 pub(crate) async fn create_table(
     TableCreation {

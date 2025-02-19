@@ -1,9 +1,11 @@
-use crate::api;
-use crate::api::management::v1::warehouse::UndropTabularsRequest;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::Authorizer;
-use crate::service::TabularIdentUuid;
 use iceberg_ext::catalog::rest::ErrorModel;
+
+use crate::{
+    api,
+    api::management::v1::warehouse::UndropTabularsRequest,
+    request_metadata::RequestMetadata,
+    service::{authz::Authorizer, TabularIdentUuid},
+};
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer>(
     request: &UndropTabularsRequest,

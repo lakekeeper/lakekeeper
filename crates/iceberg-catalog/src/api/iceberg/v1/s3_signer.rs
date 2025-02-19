@@ -1,10 +1,13 @@
+use async_trait::async_trait;
+use axum::{
+    extract::{Path, State},
+    routing::post,
+    Extension, Json, Router,
+};
+use iceberg_ext::catalog::rest::{S3SignRequest, S3SignResponse};
+
 use super::{ApiContext, Prefix, Result};
 use crate::request_metadata::RequestMetadata;
-use async_trait::async_trait;
-use axum::extract::State;
-use axum::routing::post;
-use axum::{extract::Path, Extension, Json, Router};
-use iceberg_ext::catalog::rest::{S3SignRequest, S3SignResponse};
 
 #[async_trait]
 pub trait Service<S: crate::api::ThreadSafe>

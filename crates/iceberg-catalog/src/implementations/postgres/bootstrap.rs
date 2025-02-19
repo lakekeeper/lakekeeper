@@ -1,7 +1,10 @@
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::service::{Result, StartupValidationData};
-use crate::CONFIG;
 use iceberg_ext::catalog::rest::ErrorModel;
+
+use crate::{
+    implementations::postgres::dbutils::DBErrorHandler,
+    service::{Result, StartupValidationData},
+    CONFIG,
+};
 
 pub(super) async fn get_validation_data<
     'e,
@@ -79,10 +82,10 @@ pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx:
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::implementations::postgres::CatalogState;
-    use crate::service::StartupValidationData;
     use sqlx::PgPool;
+
+    use super::*;
+    use crate::{implementations::postgres::CatalogState, service::StartupValidationData};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {

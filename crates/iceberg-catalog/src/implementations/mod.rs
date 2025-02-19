@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::{
     service::{
         health::{Health, HealthExt},
@@ -6,7 +8,6 @@ use crate::{
     },
     SecretIdent,
 };
-use async_trait::async_trait;
 
 #[cfg(feature = "sqlx-postgres")]
 pub mod postgres;

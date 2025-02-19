@@ -1,32 +1,41 @@
-use super::authz::TableUuid;
+use std::collections::{HashMap, HashSet};
+
+use iceberg::{
+    spec::{TableMetadata, ViewMetadata},
+    TableUpdate,
+};
+pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
+use iceberg_ext::{
+    catalog::rest::{CatalogConfig, ErrorModel},
+    configs::Location,
+};
+
 use super::{
-    storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId, TableIdentUuid,
-    TabularDetails, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
+    authz::TableUuid, storage::StorageProfile, NamespaceIdentUuid, ProjectIdent, RoleId,
+    TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
     TableIdent, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
-use crate::api::iceberg::v1::{PaginatedMapping, PaginationQuery};
-use crate::service::health::HealthExt;
-use crate::SecretIdent;
-
-use crate::api::management::v1::role::{ListRolesResponse, Role, SearchRoleResponse};
-use crate::api::management::v1::user::{
-    ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType,
+use crate::{
+    api::{
+        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        management::v1::{
+            role::{ListRolesResponse, Role, SearchRoleResponse},
+            user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
+            warehouse::TabularDeleteProfile,
+        },
+    },
+    catalog::tables::TableMetadataDiffs,
+    service::{
+        authn::UserId,
+        health::HealthExt,
+        tabular_idents::{TabularIdentOwned, TabularIdentUuid},
+        task_queue::TaskId,
+    },
+    SecretIdent,
 };
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
-use crate::service::tabular_idents::{TabularIdentOwned, TabularIdentUuid};
-use iceberg::spec::{TableMetadata, ViewMetadata};
-use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
-pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
-use iceberg_ext::configs::Location;
-
-use crate::catalog::tables::TableMetadataDiffs;
-use crate::service::authn::UserId;
-use crate::service::task_queue::TaskId;
-use iceberg::TableUpdate;
-use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]
 pub trait Transaction<D>

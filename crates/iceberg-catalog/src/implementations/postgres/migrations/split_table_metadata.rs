@@ -1,16 +1,19 @@
-use crate::api;
-use crate::api::iceberg::v1::PaginationQuery;
-use crate::implementations::postgres::migrations::MigrationHook;
-use crate::implementations::postgres::tabular::table::create_table;
-use crate::implementations::postgres::tabular::{
-    list_tabulars, mark_tabular_as_deleted, table, TabularType,
-};
-use crate::implementations::postgres::warehouse::{list_projects, list_warehouses};
-use crate::service::{ListFlags, TableCreation, TabularIdentUuid, WarehouseStatus};
-use futures::future::BoxFuture;
-use futures::FutureExt;
+use futures::{future::BoxFuture, FutureExt};
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::Postgres;
+
+use crate::{
+    api,
+    api::iceberg::v1::PaginationQuery,
+    implementations::postgres::{
+        migrations::MigrationHook,
+        tabular::{
+            list_tabulars, mark_tabular_as_deleted, table, table::create_table, TabularType,
+        },
+        warehouse::{list_projects, list_warehouses},
+    },
+    service::{ListFlags, TableCreation, TabularIdentUuid, WarehouseStatus},
+};
 
 pub(super) struct SplitTableMetadataHook;
 
@@ -123,19 +126,25 @@ async fn split_table_metadata(
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::v1::PaginationQuery;
-    use crate::implementations::postgres::migrations::split_table_metadata::split_table_metadata;
-    use crate::implementations::postgres::namespace::tests::initialize_namespace;
-    use crate::implementations::postgres::tabular::list_tabulars;
-    use crate::implementations::postgres::tabular::table::tests::get_namespace_id;
-    use crate::implementations::postgres::tabular::table::{create_table, load_tables};
-    use crate::implementations::postgres::warehouse::test::initialize_warehouse;
-    use crate::implementations::postgres::CatalogState;
-    use crate::service::{ListFlags, TableCreation, TabularIdentUuid};
-    use iceberg::spec::TableMetadata;
-    use iceberg::{NamespaceIdent, TableIdent};
-    use sqlx::PgPool;
     use std::collections::HashMap;
+
+    use iceberg::{spec::TableMetadata, NamespaceIdent, TableIdent};
+    use sqlx::PgPool;
+
+    use crate::{
+        api::iceberg::v1::PaginationQuery,
+        implementations::postgres::{
+            migrations::split_table_metadata::split_table_metadata,
+            namespace::tests::initialize_namespace,
+            tabular::{
+                list_tabulars,
+                table::{create_table, load_tables, tests::get_namespace_id},
+            },
+            warehouse::test::initialize_warehouse,
+            CatalogState,
+        },
+        service::{ListFlags, TableCreation, TabularIdentUuid},
+    };
 
     #[sqlx::test]
     async fn test_load_is_equal_to_deserialized_jsons(pool: PgPool) {

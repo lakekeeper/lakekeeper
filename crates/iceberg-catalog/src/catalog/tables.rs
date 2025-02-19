@@ -1,61 +1,68 @@
-use super::commit_tables::apply_commit;
-use super::io::delete_file;
-use super::namespace::authorized_namespace_ident_to_id;
-use super::{
-    io::{read_metadata_file, write_metadata_file},
-    maybe_get_secret,
-    namespace::validate_namespace_ident,
-    require_warehouse_id, CatalogServer,
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr as _,
 };
-use crate::api::iceberg::types::DropParams;
-use crate::api::iceberg::v1::{
-    ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
-    CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-    LoadTableResult, NamespaceParameters, PaginationQuery, Prefix, RegisterTableRequest,
-    RenameTableRequest, Result, TableIdent, TableParameters,
-};
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
-use crate::api::management::v1::TabularType;
-use crate::api::set_not_found_status_code;
-use crate::catalog::compression_codec::CompressionCodec;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction};
-use crate::service::contract_verification::{ContractVerification, ContractVerificationOutcome};
-use crate::service::event_publisher::{CloudEventsPublisher, EventMetadata};
-use crate::service::storage::{
-    StorageLocations as _, StoragePermissions, StorageProfile, ValidationError,
-};
-use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-use crate::service::task_queue::tabular_purge_queue::TabularPurgeInput;
-use crate::service::TabularIdentUuid;
-use crate::service::{
-    authz::Authorizer, secrets::SecretStore, Catalog, CreateTableResponse, ListFlags,
-    LoadTableResponse as CatalogLoadTableResult, State, TabularDetails, Transaction,
-};
-use crate::service::{
-    GetNamespaceResponse, TableCommit, TableCreation, TableIdentUuid, WarehouseStatus,
-};
+
 use futures::FutureExt;
 use fxhash::FxHashSet;
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr as _;
-
-use crate::catalog::tabular::list_entities;
-use crate::retry::retry_fn;
-use crate::{catalog, WarehouseIdent};
 use http::StatusCode;
-use iceberg::spec::{
-    FormatVersion, MetadataLog, SchemaId, SortOrder, TableMetadata, TableMetadataBuildResult,
-    TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
-    PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+use iceberg::{
+    spec::{
+        FormatVersion, MetadataLog, SchemaId, SortOrder, TableMetadata, TableMetadataBuildResult,
+        TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
+        PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+    },
+    NamespaceIdent, TableUpdate,
 };
-use iceberg::{NamespaceIdent, TableUpdate};
-use iceberg_ext::catalog::rest::{LoadCredentialsResponse, StorageCredential};
-use iceberg_ext::configs::namespace::NamespaceProperties;
-use iceberg_ext::configs::{Location, ParseFromStr};
+use iceberg_ext::{
+    catalog::rest::{LoadCredentialsResponse, StorageCredential},
+    configs::{namespace::NamespaceProperties, Location, ParseFromStr},
+};
 use itertools::Itertools;
 use serde::Serialize;
 use uuid::Uuid;
+
+use super::{
+    commit_tables::apply_commit,
+    io::{delete_file, read_metadata_file, write_metadata_file},
+    maybe_get_secret,
+    namespace::{authorized_namespace_ident_to_id, validate_namespace_ident},
+    require_warehouse_id, CatalogServer,
+};
+use crate::{
+    api::{
+        iceberg::{
+            types::DropParams,
+            v1::{
+                ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
+                CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
+                LoadTableResult, NamespaceParameters, PaginationQuery, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
+            },
+        },
+        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        set_not_found_status_code,
+    },
+    catalog,
+    catalog::{compression_codec::CompressionCodec, tabular::list_entities},
+    request_metadata::RequestMetadata,
+    retry::retry_fn,
+    service::{
+        authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
+        contract_verification::{ContractVerification, ContractVerificationOutcome},
+        event_publisher::{CloudEventsPublisher, EventMetadata},
+        secrets::SecretStore,
+        storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
+        task_queue::{
+            tabular_expiration_queue::TabularExpirationInput,
+            tabular_purge_queue::TabularPurgeInput,
+        },
+        Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
+        LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation,
+        TableIdentUuid, TabularDetails, TabularIdentUuid, Transaction, WarehouseStatus,
+    },
+    WarehouseIdent,
+};
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
     "write.metadata.delete-after-commit.enabled";
@@ -308,7 +315,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             body,
             "createTable",
@@ -412,7 +419,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             maybe_body_to_json(&request),
             "registerTable",
@@ -739,7 +746,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             serde_json::Value::Null,
             "dropTable",
@@ -865,7 +872,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
                 num_events: 1,
                 sequence_number: 0,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             body,
             "renameTable",
@@ -1217,7 +1224,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                     .unwrap_or_default(),
                 num_events: number_of_events,
                 sequence_number: event_sequence_number,
-                trace_id: request_metadata.request_id,
+                trace_id: request_metadata.request_id(),
             },
             body,
             "updateTable",
@@ -1777,40 +1784,50 @@ pub(crate) fn create_table_request_into_table_metadata(
 
 #[cfg(test)]
 mod test {
-    use crate::api::iceberg::types::{PageToken, Prefix};
-    use crate::api::iceberg::v1::tables::TablesService as _;
-    use crate::api::iceberg::v1::{
-        DataAccess, ListTablesQuery, NamespaceParameters, TableParameters,
-    };
-    use crate::api::management::v1::warehouse::TabularDeleteProfile;
-    use crate::api::ApiContext;
-    use crate::catalog::test::random_request_metadata;
-    use crate::catalog::CatalogServer;
-    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
-    use crate::service::authz::AllowAllAuthorizer;
-    use crate::service::{State, UserId};
+    use std::{collections::HashMap, str::FromStr};
 
     use http::StatusCode;
-    use iceberg::spec::{
-        NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
-        SnapshotRetention, Summary, Transform, Type, UnboundPartitionField, UnboundPartitionSpec,
-        MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+    use iceberg::{
+        spec::{
+            NestedField, Operation, PrimitiveType, Schema, Snapshot, SnapshotReference,
+            SnapshotRetention, Summary, Transform, Type, UnboundPartitionField,
+            UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
+        },
+        TableIdent,
     };
-    use iceberg::TableIdent;
-    use iceberg_ext::catalog::rest::{
-        CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
+    use iceberg_ext::{
+        catalog::rest::{
+            CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
+        },
+        configs::Location,
     };
     use itertools::Itertools;
     use sqlx::PgPool;
-    use std::collections::HashMap;
     use uuid::Uuid;
 
-    use crate::catalog::tables::validate_table_properties;
-    use crate::catalog::test::impl_pagination_tests;
-    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use iceberg_ext::configs::Location;
-    use std::str::FromStr;
+    use crate::{
+        api::{
+            iceberg::{
+                types::{PageToken, Prefix},
+                v1::{
+                    tables::TablesService as _, DataAccess, ListTablesQuery, NamespaceParameters,
+                    TableParameters,
+                },
+            },
+            management::v1::warehouse::TabularDeleteProfile,
+            ApiContext,
+        },
+        catalog::{tables::validate_table_properties, test::impl_pagination_tests, CatalogServer},
+        implementations::postgres::{PostgresCatalog, SecretsState},
+        request_metadata::RequestMetadata,
+        service::{
+            authz::{
+                implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
+                AllowAllAuthorizer,
+            },
+            State, UserId,
+        },
+    };
 
     #[test]
     fn test_mixed_case_properties() {
@@ -1921,7 +1938,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -1940,7 +1957,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2010,7 +2027,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2025,7 +2042,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2067,7 +2084,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -2086,7 +2103,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2151,7 +2168,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2166,7 +2183,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2200,7 +2217,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2212,7 +2229,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2239,7 +2256,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -2254,7 +2271,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2282,7 +2299,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap()
@@ -2297,7 +2314,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2363,7 +2380,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2375,7 +2392,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2425,7 +2442,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2437,7 +2454,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2482,7 +2499,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2494,7 +2511,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2520,7 +2537,7 @@ mod test {
                 }],
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2532,7 +2549,7 @@ mod test {
             },
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2568,7 +2585,7 @@ mod test {
                 remote_signing: false,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2621,7 +2638,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2631,7 +2648,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2651,7 +2668,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2661,7 +2678,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2681,7 +2698,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2691,7 +2708,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Table was created at same location which should not be possible");
@@ -2714,7 +2731,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2724,7 +2741,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
@@ -2747,7 +2764,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2757,7 +2774,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
@@ -2779,7 +2796,7 @@ mod test {
             create_request_1,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2789,7 +2806,7 @@ mod test {
             create_request_2,
             DataAccess::none(),
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect_err("Staged table could be created at sublocation which should not be possible");
@@ -2816,7 +2833,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -2837,7 +2854,7 @@ mod test {
                 create_request,
                 DataAccess::none(),
                 ctx.clone(),
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -2873,7 +2890,7 @@ mod test {
             None,
             authz,
             TabularDeleteProfile::Hard {},
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -2896,7 +2913,7 @@ mod test {
                     remote_signing: false,
                 },
                 ctx.clone(),
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -2911,7 +2928,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2926,7 +2943,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2941,7 +2958,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2957,7 +2974,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -2982,7 +2999,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -3015,7 +3032,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -3041,7 +3058,7 @@ mod test {
                 return_uuids: true,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();

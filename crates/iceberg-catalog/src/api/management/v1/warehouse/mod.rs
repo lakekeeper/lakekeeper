@@ -1,34 +1,38 @@
 mod undrop;
 
-use crate::api::management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse};
-use crate::api::{ApiContext, Result};
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{CatalogProjectAction, CatalogWarehouseAction};
-use crate::service::event_publisher::EventMetadata;
-pub use crate::service::storage::{
-    AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential, S3Profile,
-    StorageCredential, StorageProfile,
-};
 use futures::FutureExt;
-use itertools::Itertools;
-use uuid::Uuid;
-
-use crate::api::iceberg::v1::{PageToken, PaginationQuery};
-use crate::service::{NamespaceIdentUuid, TableIdentUuid};
-
-use super::default_page_size;
-use crate::api::management::v1::role::require_project_id;
-use crate::catalog::UnfilteredPage;
-use crate::service::task_queue::TaskFilter;
-pub use crate::service::WarehouseStatus;
-use crate::service::{
-    authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State, TabularIdentUuid,
-    Transaction,
-};
-use crate::{ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID};
 use iceberg_ext::catalog::rest::ErrorModel;
+use itertools::Itertools;
 use serde::Deserialize;
 use utoipa::ToSchema;
+use uuid::Uuid;
+
+use super::default_page_size;
+pub use crate::service::{
+    storage::{
+        AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
+        S3Profile, StorageCredential, StorageProfile,
+    },
+    WarehouseStatus,
+};
+use crate::{
+    api::{
+        iceberg::v1::{PageToken, PaginationQuery},
+        management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse},
+        ApiContext, Result,
+    },
+    catalog::UnfilteredPage,
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
+        event_publisher::EventMetadata,
+        secrets::SecretStore,
+        task_queue::TaskFilter,
+        Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
+        Transaction,
+    },
+    ProjectIdent, WarehouseIdent, DEFAULT_PROJECT_ID,
+};
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
@@ -310,7 +314,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<ListWarehousesResponse> {
         // ------------------- AuthZ -------------------
-        let project_id = require_project_id(request.project_id, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(request.project_id)?;
 
         let authorizer = context.v1_state.authz;
         authorizer
@@ -712,7 +716,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                         prefix: warehouse_id.0.into(),
                         num_events: num_tabulars,
                         sequence_number: i,
-                        trace_id: request_metadata.request_id,
+                        trace_id: request_metadata.request_id(),
                     },
                 )
                 .await;
@@ -926,25 +930,31 @@ mod test {
         assert_eq!(s3_profile.path_style_access, Some(true));
     }
 
-    use crate::api::iceberg::types::Prefix;
-    use crate::api::iceberg::v1::{DataAccess, DropParams, NamespaceParameters, ViewParameters};
-    use crate::catalog::test::{impl_pagination_tests, random_request_metadata};
-    use crate::catalog::CatalogServer;
-    use crate::service::authz::implementations::openfga::tests::ObjectHidingMock;
     use iceberg::TableIdent;
+    use itertools::Itertools;
     use sqlx::PgPool;
 
-    use crate::api::iceberg::v1::views::Service;
-    use crate::api::management::v1::warehouse::{
-        ListDeletedTabularsQuery, Service as _, TabularDeleteProfile,
+    use crate::{
+        api::{
+            iceberg::{
+                types::Prefix,
+                v1::{views::Service, DataAccess, DropParams, NamespaceParameters, ViewParameters},
+            },
+            management::v1::{
+                warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
+                ApiServer,
+            },
+            ApiContext,
+        },
+        catalog::{test::impl_pagination_tests, CatalogServer},
+        implementations::postgres::{PostgresCatalog, SecretsState},
+        request_metadata::RequestMetadata,
+        service::{
+            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
+            State, UserId,
+        },
+        WarehouseIdent,
     };
-    use crate::api::management::v1::ApiServer;
-    use crate::api::ApiContext;
-    use crate::implementations::postgres::{PostgresCatalog, SecretsState};
-    use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
-    use crate::service::{State, UserId};
-    use crate::WarehouseIdent;
-    use itertools::Itertools;
 
     async fn setup_pagination_test(
         pool: sqlx::PgPool,
@@ -967,7 +977,7 @@ mod test {
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -993,7 +1003,7 @@ mod test {
                     vended_credentials: true,
                     remote_signing: false,
                 },
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -1010,7 +1020,7 @@ mod test {
                     purge_requested: None,
                 },
                 ctx.clone(),
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -1049,7 +1059,7 @@ mod test {
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
-            Some(UserId::OIDC("test-user-id".to_string())),
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
         let ns = crate::catalog::test::create_ns(
@@ -1075,7 +1085,7 @@ mod test {
                     vended_credentials: true,
                     remote_signing: false,
                 },
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -1091,7 +1101,7 @@ mod test {
                     purge_requested: None,
                 },
                 ctx.clone(),
-                random_request_metadata(),
+                RequestMetadata::new_unauthenticated(),
             )
             .await
             .unwrap();
@@ -1106,7 +1116,7 @@ mod test {
                 page_token: None,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -1121,7 +1131,7 @@ mod test {
                 page_token: None,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -1136,7 +1146,7 @@ mod test {
                 page_token: all.next_page_token,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -1151,7 +1161,7 @@ mod test {
                 page_token: None,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -1176,7 +1186,7 @@ mod test {
                 page_token: first_six.next_page_token,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -1209,7 +1219,7 @@ mod test {
                 page_token: None,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
@@ -1235,7 +1245,7 @@ mod test {
                 page_token: page.next_page_token,
             },
             ctx.clone(),
-            random_request_metadata(),
+            RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();

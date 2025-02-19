@@ -1,23 +1,26 @@
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::time::SystemTime;
-use std::vec;
+use std::{collections::HashMap, str::FromStr, time::SystemTime, vec};
 
-use crate::api::iceberg::types::Prefix;
-use crate::api::{ApiContext, Result};
-use crate::api::{ErrorModel, IcebergErrorResponse, S3SignRequest, S3SignResponse};
-use crate::service::authz::{CatalogTableAction, CatalogWarehouseAction};
-use aws_sigv4::http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings};
-use aws_sigv4::sign::v4;
-use aws_sigv4::{self};
+use aws_sigv4::{
+    http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
+    sign::v4,
+    {self},
+};
 
-use super::super::CatalogServer;
-use super::error::SignError;
-use crate::catalog::require_warehouse_id;
-use crate::request_metadata::RequestMetadata;
-use crate::service::storage::{S3Location, S3Profile, StorageCredential};
-use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, ListFlags, State};
-use crate::service::{GetTableMetadataResponse, TableIdentUuid};
+use super::{super::CatalogServer, error::SignError};
+use crate::{
+    api::{
+        iceberg::types::Prefix, ApiContext, ErrorModel, IcebergErrorResponse, Result,
+        S3SignRequest, S3SignResponse,
+    },
+    catalog::require_warehouse_id,
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
+        secrets::SecretStore,
+        storage::{S3Location, S3Profile, StorageCredential},
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid,
+    },
+};
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
 const WRITE_METHODS: &[&str] = &["PUT", "POST", "DELETE"];
@@ -388,9 +391,10 @@ fn validate_uri(
 }
 
 pub(super) mod s3_utils {
+    use lazy_regex::regex;
+
     use super::{ErrorModel, Result};
     use crate::service::storage::S3Location;
-    use lazy_regex::regex;
 
     #[derive(Debug)]
     pub(super) struct ParsedS3Url {

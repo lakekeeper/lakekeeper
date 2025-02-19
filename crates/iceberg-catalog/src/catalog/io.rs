@@ -1,14 +1,14 @@
-use super::compression_codec::CompressionCodec;
-use crate::api::{ErrorModel, Result};
-use crate::retry::retry_fn;
-use crate::service::storage::path_utils;
-use futures::stream::BoxStream;
-use futures::StreamExt;
-use iceberg::io::FileIO;
-use iceberg::spec::TableMetadata;
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use iceberg_ext::configs::Location;
+use futures::{stream::BoxStream, StreamExt};
+use iceberg::{io::FileIO, spec::TableMetadata};
+use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
 use serde::Serialize;
+
+use super::compression_codec::CompressionCodec;
+use crate::{
+    api::{ErrorModel, Result},
+    retry::retry_fn,
+    service::storage::path_utils,
+};
 
 pub(crate) async fn write_metadata_file(
     metadata_location: &Location,

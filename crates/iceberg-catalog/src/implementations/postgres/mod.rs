@@ -11,21 +11,25 @@ pub mod task_queues;
 pub(crate) mod user;
 pub(crate) mod warehouse;
 
-use self::dbutils::DBErrorHandler;
-use crate::api::Result;
-use crate::config::{DynAppConfig, PgSslMode};
-use crate::service::health::{Health, HealthExt, HealthStatus};
-use crate::CONFIG;
+use std::{str::FromStr, sync::Arc};
+
 use anyhow::anyhow;
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{ConnectOptions, Executor, PgPool};
-use std::str::FromStr;
-use std::sync::Arc;
+pub use secrets::SecretsState;
+use sqlx::{
+    postgres::{PgConnectOptions, PgPoolOptions},
+    ConnectOptions, Executor, PgPool,
+};
+pub use tabular::DeletionKind;
 use tokio::sync::RwLock;
 
-pub use secrets::SecretsState;
-pub use tabular::DeletionKind;
+use self::dbutils::DBErrorHandler;
+use crate::{
+    api::Result,
+    config::{DynAppConfig, PgSslMode},
+    service::health::{Health, HealthExt, HealthStatus},
+    CONFIG,
+};
 
 /// # Errors
 /// Returns an error if the pool creation fails.

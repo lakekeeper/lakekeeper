@@ -1,18 +1,22 @@
-use crate::catalog::tables::TableMetadataDiffs;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::tabular::table::common::{
-    expire_metadata_log_entries, remove_snapshot_log_entries,
-};
-use crate::implementations::postgres::tabular::table::{
-    common, DbTableFormatVersion, TableUpdates, MAX_PARAMETERS,
-};
-use crate::service::TableCommit;
-use crate::{api, WarehouseIdent};
 use iceberg::spec::{FormatVersion, TableMetadata};
-use iceberg_ext::catalog::rest::ErrorModel;
-use iceberg_ext::configs::Location;
+use iceberg_ext::{catalog::rest::ErrorModel, configs::Location};
 use itertools::Itertools;
 use sqlx::{Postgres, Transaction};
+
+use crate::{
+    api,
+    catalog::tables::TableMetadataDiffs,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::table::{
+            common,
+            common::{expire_metadata_log_entries, remove_snapshot_log_entries},
+            DbTableFormatVersion, TableUpdates, MAX_PARAMETERS,
+        },
+    },
+    service::TableCommit,
+    WarehouseIdent,
+};
 
 pub(crate) async fn commit_table_transaction(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses

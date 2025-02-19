@@ -1,9 +1,9 @@
-use crate::api::iceberg::v1::{ApiContext, Result, TableParameters};
-use crate::request_metadata::RequestMetadata;
-
-use crate::service::{authz::Authorizer, secrets::SecretStore, Catalog, State};
-
 use super::CatalogServer;
+use crate::{
+    api::iceberg::v1::{ApiContext, Result, TableParameters},
+    request_metadata::RequestMetadata,
+    service::{authz::Authorizer, secrets::SecretStore, Catalog, State},
+};
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>

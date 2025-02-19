@@ -1,18 +1,20 @@
-use crate::api::management::v1::TabularType;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
-use crate::implementations::postgres::tabular::TabularType as DbTabularType;
-use crate::implementations::postgres::task_queues::{
-    pick_task, queue_task, record_failure, record_success,
-};
-use crate::implementations::postgres::DeletionKind;
-use crate::service::task_queue::tabular_expiration_queue::{
-    TabularExpirationInput, TabularExpirationTask,
-};
-use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
 use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::cancel_pending_tasks;
+use crate::{
+    api::management::v1::TabularType,
+    implementations::postgres::{
+        dbutils::DBErrorHandler,
+        tabular::TabularType as DbTabularType,
+        task_queues::{pick_task, queue_task, record_failure, record_success},
+        DeletionKind,
+    },
+    service::task_queue::{
+        tabular_expiration_queue::{TabularExpirationInput, TabularExpirationTask},
+        TaskFilter, TaskQueue, TaskQueueConfig,
+    },
+};
 
 super::impl_pg_task_queue!(TabularExpirationQueue);
 
@@ -172,11 +174,16 @@ impl TaskQueue for TabularExpirationQueue {
 
 #[cfg(test)]
 mod test {
-    use super::super::test::setup;
-    use crate::service::task_queue::tabular_expiration_queue::TabularExpirationInput;
-    use crate::service::task_queue::{TaskFilter, TaskQueue, TaskQueueConfig};
-    use crate::WarehouseIdent;
     use sqlx::PgPool;
+
+    use super::super::test::setup;
+    use crate::{
+        service::task_queue::{
+            tabular_expiration_queue::TabularExpirationInput, TaskFilter, TaskQueue,
+            TaskQueueConfig,
+        },
+        WarehouseIdent,
+    };
 
     #[sqlx::test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {

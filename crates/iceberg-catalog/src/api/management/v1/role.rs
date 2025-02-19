@@ -1,16 +1,21 @@
-use super::default_page_size;
-use crate::api::iceberg::types::PageToken;
-use crate::api::iceberg::v1::PaginationQuery;
-use crate::api::management::v1::ApiServer;
-use crate::api::ApiContext;
-use crate::request_metadata::RequestMetadata;
-use crate::service::authz::{Authorizer, CatalogProjectAction, CatalogRoleAction};
-use crate::service::{Catalog, Result, RoleId, SecretStore, State, Transaction};
-use crate::{ProjectIdent, DEFAULT_PROJECT_ID};
-use axum::response::IntoResponse;
-use axum::Json;
+use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
+
+use super::default_page_size;
+use crate::{
+    api::{
+        iceberg::{types::PageToken, v1::PaginationQuery},
+        management::v1::ApiServer,
+        ApiContext,
+    },
+    request_metadata::RequestMetadata,
+    service::{
+        authz::{Authorizer, CatalogProjectAction, CatalogRoleAction},
+        Catalog, Result, RoleId, SecretStore, State, Transaction,
+    },
+    ProjectIdent,
+};
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -146,7 +151,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .into());
         }
 
-        let project_id = require_project_id(request.project_id, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(request.project_id)?;
 
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
@@ -183,7 +188,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<ListRolesResponse> {
         // -------------------- VALIDATIONS --------------------
-        let project_id = require_project_id(query.project_id, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(query.project_id)?;
 
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
@@ -250,7 +255,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             mut search,
             project_id,
         } = request;
-        let project_id = require_project_id(project_id, &request_metadata)?;
+        let project_id = request_metadata.require_project_id(project_id)?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -338,21 +343,4 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .into())
         }
     }
-}
-
-pub(super) fn require_project_id(
-    specified_project_id: Option<ProjectIdent>,
-    request_metadata: &RequestMetadata,
-) -> Result<ProjectIdent> {
-    specified_project_id
-        .or(request_metadata.auth_details.project_id())
-        .or(*DEFAULT_PROJECT_ID)
-        .ok_or_else(|| {
-            ErrorModel::bad_request(
-                "Project ID is required to create a role".to_string(),
-                "MissingProjectId",
-                None,
-            )
-            .into()
-        })
 }

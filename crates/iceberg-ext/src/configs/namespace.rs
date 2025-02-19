@@ -1,8 +1,8 @@
-use super::{ConfigParseError, ConfigProperty, Location, NotCustomProp, ParseFromStr};
-use std::collections::HashMap;
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
-use super::impl_properties;
+use super::{
+    impl_properties, ConfigParseError, ConfigProperty, Location, NotCustomProp, ParseFromStr,
+};
 
 impl_properties!(NamespaceProperties, NamespaceProperty);
 

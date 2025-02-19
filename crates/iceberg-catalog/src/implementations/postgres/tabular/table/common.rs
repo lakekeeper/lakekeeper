@@ -1,14 +1,14 @@
-use crate::api;
-use crate::implementations::postgres::dbutils::DBErrorHandler;
+use std::{collections::HashMap, ops::Range};
+
 use iceberg::spec::{
     MetadataLog, PartitionSpecRef, PartitionStatisticsFile, SchemaRef, SnapshotLog, SnapshotRef,
     SortOrderRef, StatisticsFile, TableMetadata,
 };
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::{PgConnection, Postgres, Transaction};
-use std::collections::HashMap;
-use std::ops::Range;
 use uuid::Uuid;
+
+use crate::{api, implementations::postgres::dbutils::DBErrorHandler};
 
 pub(super) async fn remove_schemas(
     table_id: Uuid,
