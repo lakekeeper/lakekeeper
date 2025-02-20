@@ -1,10 +1,11 @@
-use crate::service::authz::implementations::FgaType;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use openfga_rs::{
     tonic::{self, metadata::errors::InvalidMetadataValue, Code},
     CheckRequest, ReadRequest, ReadRequestTupleKey, WriteRequest,
 };
+
+use crate::service::authz::implementations::FgaType;
 
 pub type OpenFGAResult<T> = Result<T, OpenFGAError>;
 
