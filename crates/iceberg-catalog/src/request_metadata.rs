@@ -145,7 +145,7 @@ impl RequestMetadata {
 
     #[must_use]
     pub fn s3_signer_uri_for_warehouse(&self, warehouse_id: WarehouseIdent) -> String {
-        format!("{}/s3/signer/{}", self.base_url(), warehouse_id)
+        format!("{}/v1/{warehouse_id}", self.base_uri_catalog())
     }
 
     #[must_use]
