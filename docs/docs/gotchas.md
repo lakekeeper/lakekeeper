@@ -33,3 +33,14 @@ catalog:
     # assuming that the catalog is reachable at https://lakekeeper.example.com
     ICEBERG_REST__BASE_URI: "https://lakekeeper.example.com"
 ```
+
+
+## I'm using Postgres <15 and the Lakekeeper database migrations fail with syntax error
+
+```
+Caused by:
+0: error returned from database: syntax error at or near "NULLS"
+1: syntax error at or near "NULLS"
+```
+
+Lakekeeper is currently only compatible with Postgres >= 15 since we rely on `NULLS not distinct` which was added with PG 15.
