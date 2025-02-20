@@ -6,7 +6,7 @@ Lakekeeper does not always return 404s for missing objects. If you are getting 4
 
 ## I'm using Helm and the UI seems to hang forever
 
-Both the catalog, as well as the UI create links based on `catalog.config.ICEBERG_REST__BASE_URI`. You'll have to set it in your Helm values.yaml to a URL that your clients can reach.
+Check out [our routing guide](./configuration.md#routing-and-base-url), both the catalog and UI create links pointing at the Lakekeeper instance. We use some heuristics by default and also offer a configuration escape hatch (`catalog.config.ICEBERG_REST__BASE_URI`).
 
 ### Examples
 
