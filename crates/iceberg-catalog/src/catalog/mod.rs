@@ -53,16 +53,15 @@ pub struct CatalogServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
 
 fn require_warehouse_id(prefix: Option<Prefix>) -> Result<WarehouseIdent> {
     prefix
-        .ok_or(
-            ErrorModel::builder()
-                .code(http::StatusCode::BAD_REQUEST.into())
-                .message(
-                    "No prefix specified. The warehouse-id must be provided as prefix in the URL."
-                        .to_string(),
-                )
-                .r#type("NoPrefixProvided".to_string())
-                .build(),
-        )?
+        .ok_or_else(|| {
+            tracing::debug!("No prefix specified.");
+            ErrorModel::bad_request(
+                "No prefix specified. The warehouse-id must be provided as prefix in the URL."
+                    .to_string(),
+                "NoPrefixProvided",
+                None,
+            )
+        })?
         .try_into()
 }
 
