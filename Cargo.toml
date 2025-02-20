@@ -14,7 +14,7 @@ rust-version = "1.80.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-async-nats = "0.38.0"
+async-nats = "0.39.0"
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",

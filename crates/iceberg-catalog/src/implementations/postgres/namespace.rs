@@ -234,13 +234,25 @@ pub(crate) async fn create_namespace(
         sqlx::Error::Database(db_error) => {
             if db_error.is_unique_violation() {
                 tracing::debug!("Namespace already exists: {db_error:?}");
-                ErrorModel::conflict("Namespace already exists", "NamespaceAlreadyExists", None)
+                ErrorModel::conflict(
+                    "Namespace already exists",
+                    "NamespaceAlreadyExists",
+                    Some(Box::new(db_error)),
+                )
             } else if db_error.is_foreign_key_violation() {
                 tracing::debug!("Namespace foreign key violation: {db_error:?}");
-                ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None)
+                ErrorModel::not_found(
+                    "Warehouse not found",
+                    "WarehouseNotFound",
+                    Some(Box::new(db_error)),
+                )
             } else {
                 tracing::error!("Internal error creating namespace: {db_error:?}");
-                ErrorModel::internal("Error creating namespace", "NamespaceCreateError", None)
+                ErrorModel::internal(
+                    "Error creating namespace",
+                    "NamespaceCreateError",
+                    Some(Box::new(db_error)),
+                )
             }
         }
         e @ sqlx::Error::RowNotFound => {
