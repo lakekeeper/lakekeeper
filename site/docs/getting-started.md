@@ -4,6 +4,8 @@ There are multiple ways to deploy Lakekeeper. Our [self-contained examples](#opt
 
 If you have your own Storage (e.g. S3) available, you can deploy Lakekeeper using [docker compose](#option-2-docker-compose), deploy on [Kubernetes](#option-3-kubernetes), deploy the pre-build [Binary](#option-4-binary) directly or [compile Lakekeeper yourself](#option-5-build-from-sources).
 
+Lakekeeper is currently only compatible with Postgres >= 15.
+
 ## Deployment
 
 ### Option 1: 🐳 Examples
