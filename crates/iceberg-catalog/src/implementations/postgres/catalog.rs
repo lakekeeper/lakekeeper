@@ -44,6 +44,7 @@ use crate::{
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
     },
+    request_metadata::RequestMetadata,
     service::{
         authn::UserId, storage::StorageProfile, task_queue::TaskId, Catalog,
         CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
@@ -195,9 +196,9 @@ impl Catalog for super::PostgresCatalog {
     async fn get_config_for_warehouse(
         warehouse_id: WarehouseIdent,
         catalog_state: CatalogState,
-        host: Option<&str>,
+        request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>> {
-        get_config_for_warehouse(warehouse_id, catalog_state, host).await
+        get_config_for_warehouse(warehouse_id, catalog_state, request_metadata).await
     }
 
     async fn list_namespaces<'a>(

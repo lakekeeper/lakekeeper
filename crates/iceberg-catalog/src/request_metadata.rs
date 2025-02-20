@@ -5,10 +5,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::HeaderMap;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
-use crate::{service::authn::Actor, ProjectIdent, DEFAULT_PROJECT_ID};
+use crate::{service::authn::Actor, ProjectIdent, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
 
 pub const PROJECT_ID_HEADER: &str = "x-project-ident";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
@@ -23,7 +24,7 @@ pub struct RequestMetadata {
     request_id: Uuid,
     project_id: Option<ProjectIdent>,
     authentication: Option<Authentication>,
-    host: Option<String>,
+    base_url: String,
     actor: Actor,
 }
 
@@ -58,7 +59,7 @@ impl RequestMetadata {
             request_id: Uuid::now_v7(),
             project_id: None,
             authentication: None,
-            host: Some("localhost".to_string()),
+            base_url: "http://localhost:8181".to_string(),
             actor: Actor::Anonymous,
         }
     }
@@ -83,7 +84,7 @@ impl RequestMetadata {
                     .principal_type(None)
                     .build(),
             ),
-            host: Some("localhost".to_string()),
+            base_url: "http://localhost:8181".to_string(),
             actor: Actor::Principal(user_id),
             project_id: None,
         }
@@ -134,11 +135,27 @@ impl RequestMetadata {
 
     /// Get the host that the request was made to.
     ///
-    /// Contains the value of the `x-forwarded-for` header if present, otherwise the `host` header.
-    /// If either contained invalid utf-8 data, it will be `None`.
+    /// Contains the value of `CONFIG.base_uri` if configered, else the
+    /// (`x-forward-proto`|https)://`x-forwarded-for`:`x-forwarded-port` headers if present,
+    /// otherwise the `host` header.
     #[must_use]
-    pub fn host(&self) -> Option<&str> {
-        self.host.as_deref()
+    pub fn base_url(&self) -> &str {
+        self.base_url.as_str().trim_end_matches('/')
+    }
+
+    #[must_use]
+    pub fn s3_signer_uri_for_warehouse(&self, warehouse_id: WarehouseIdent) -> String {
+        format!("{}/s3/signer/{}", self.base_url(), warehouse_id)
+    }
+
+    #[must_use]
+    pub fn base_uri_catalog(&self) -> String {
+        format!("{}/catalog", self.base_url())
+    }
+
+    #[must_use]
+    pub fn base_uri_management(&self) -> String {
+        format!("{}/management", self.base_url())
     }
 }
 
@@ -164,7 +181,14 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         })
         .unwrap_or(Uuid::now_v7());
 
-    let host = determine_host(&headers);
+    let Some(host) = determine_base_uri(&headers) else {
+        return IcebergErrorResponse::from(ErrorModel::bad_request(
+            "base_uri is not set and neither x-forwarded-for nor host header are set. Either send the appropriate headers or configure the base_uri according to the documentation.".to_string(),
+            "NoHostHeader",
+            None,
+        ))
+        .into_response();
+    };
 
     let project_id = headers
         .get(PROJECT_ID_HEADER)
@@ -178,14 +202,18 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
-        host,
+        base_url: host,
         actor: Actor::Anonymous,
         project_id,
     });
     next.run(request).await
 }
 
-fn determine_host(headers: &HeaderMap) -> Option<String> {
+fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
+    if let Some(uri) = CONFIG.base_uri.as_ref() {
+        return Some(uri.to_string());
+    }
+
     let x_forwarded_for = headers
         .get(X_FORWARDED_FOR_HEADER)
         .and_then(|hv| hv.to_str().ok());
@@ -237,8 +265,71 @@ mod test {
     use http::{header::HeaderValue, HeaderMap};
 
     use crate::request_metadata::{
-        determine_host, X_FORWARDED_FOR_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PROTO_HEADER,
+        determine_base_uri, X_FORWARDED_FOR_HEADER, X_FORWARDED_PORT_HEADER,
+        X_FORWARDED_PROTO_HEADER,
     };
+
+    #[test]
+    fn test_determine_host_without_host_header_with_config_provided_base_uri() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
+            let host = determine_base_uri(&HeaderMap::new());
+            assert_eq!(host, Some("https://localhost:8181/a/b/".to_string()));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
+            let host = determine_base_uri(&HeaderMap::new());
+            assert_eq!(host, Some("https://localhost:8181/a/b/".to_string()));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_determine_host_with_host_header_with_config_provided_base_uri() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
+            let mut headers = HeaderMap::new();
+            headers.insert(http::header::HOST, HeaderValue::from_static("example.com"));
+            let host = determine_base_uri(&headers);
+            assert_eq!(host, Some("https://localhost:8181/a/b/".to_string()));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
+            let mut headers = HeaderMap::new();
+            headers.insert(http::header::HOST, HeaderValue::from_static("example.com"));
+            let host = determine_base_uri(&headers);
+            assert_eq!(host, Some("https://localhost:8181/a/b/".to_string()));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_determine_host_with_x_forwarded_for_with_config_provided_base_uri() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                X_FORWARDED_FOR_HEADER,
+                HeaderValue::from_static("example.com"),
+            );
+            let host = determine_base_uri(&headers);
+            assert_eq!(host, Some("https://localhost:8181/a/b/".to_string()));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                X_FORWARDED_FOR_HEADER,
+                HeaderValue::from_static("example.com"),
+            );
+            let host = determine_base_uri(&headers);
+            assert_eq!(host, Some("https://localhost:8181/a/b/".to_string()));
+            Ok(())
+        });
+    }
 
     #[test]
     fn test_determine_host_with_x_forwarded_complete() {
@@ -250,7 +341,7 @@ mod test {
         headers.insert(X_FORWARDED_PROTO_HEADER, HeaderValue::from_static("https"));
         headers.insert(X_FORWARDED_PORT_HEADER, HeaderValue::from_static("8080"));
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com:8080".to_string()));
     }
 
@@ -263,7 +354,7 @@ mod test {
         );
         headers.insert(X_FORWARDED_PROTO_HEADER, HeaderValue::from_static("https"));
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com".to_string()));
     }
 
@@ -276,7 +367,7 @@ mod test {
         );
         headers.insert("x-forwarded-port", HeaderValue::from_static("8080"));
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com:8080".to_string()));
     }
 
@@ -288,7 +379,7 @@ mod test {
             HeaderValue::from_static("example.com"),
         );
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com".to_string()));
     }
 
@@ -297,7 +388,7 @@ mod test {
         let mut headers = HeaderMap::new();
         headers.insert(http::header::HOST, HeaderValue::from_static("example.com"));
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("http://example.com".to_string()));
     }
 
@@ -309,14 +400,14 @@ mod test {
             HeaderValue::from_static("https://example.com"),
         );
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com".to_string()));
     }
 
     #[test]
     fn test_determine_host_empty_headers() {
         let headers = HeaderMap::new();
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, None);
     }
 
@@ -329,7 +420,7 @@ mod test {
             HeaderValue::from_bytes(&[0xFF]).unwrap(),
         );
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, None);
     }
 
@@ -346,7 +437,7 @@ mod test {
             HeaderValue::from_static("host.example.com"),
         );
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://forwarded.example.com".to_string()));
     }
 
@@ -358,7 +449,7 @@ mod test {
             HeaderValue::from_static("example.com:8080"),
         );
 
-        let result = determine_host(&headers);
+        let result = determine_base_uri(&headers);
         assert_eq!(result, Some("http://example.com:8080".to_string()));
     }
 }

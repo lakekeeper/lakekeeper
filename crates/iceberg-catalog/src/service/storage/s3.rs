@@ -17,11 +17,12 @@ use crate::{
         iceberg::{supported_endpoints, v1::DataAccess},
         CatalogConfig,
     },
+    request_metadata::RequestMetadata,
     service::storage::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
         StoragePermissions, TableConfig,
     },
-    WarehouseIdent, CONFIG,
+    WarehouseIdent,
 };
 
 static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
@@ -247,7 +248,7 @@ impl S3Profile {
     pub fn generate_catalog_config(
         &self,
         warehouse_id: WarehouseIdent,
-        host: Option<&str>,
+        request_metadata: &RequestMetadata,
     ) -> CatalogConfig {
         CatalogConfig {
             // ToDo: s3.delete-enabled?
@@ -256,7 +257,9 @@ impl S3Profile {
             defaults: HashMap::from_iter([("s3.delete-enabled".to_string(), "false".to_string())]),
             overrides: HashMap::from_iter(vec![(
                 configs::table::s3::SignerUri::KEY.to_string(),
-                CONFIG.s3_signer_uri_for_warehouse(warehouse_id, host),
+                request_metadata
+                    .s3_signer_uri_for_warehouse(warehouse_id)
+                    .to_string(),
             )]),
             endpoints: supported_endpoints(),
         }

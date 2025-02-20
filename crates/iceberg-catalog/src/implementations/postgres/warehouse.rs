@@ -5,6 +5,7 @@ use sqlx::{types::Json, Error};
 use super::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, CatalogConfig, ErrorModel, Result},
+    request_metadata::RequestMetadata,
     service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
     ProjectIdent, SecretIdent, WarehouseIdent,
 };
@@ -72,7 +73,7 @@ pub(super) async fn set_warehouse_deletion_profile<
 pub(super) async fn get_config_for_warehouse(
     warehouse_id: WarehouseIdent,
     catalog_state: CatalogState,
-    host: Option<&str>,
+    request_metadata: &RequestMetadata,
 ) -> Result<Option<CatalogConfig>> {
     let storage_profile = sqlx::query_scalar!(
         r#"
@@ -88,7 +89,7 @@ pub(super) async fn get_config_for_warehouse(
     .await
     .map_err(map_select_warehouse_err)?;
 
-    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id, host)))
+    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id, request_metadata)))
 }
 
 pub(crate) async fn create_warehouse(
