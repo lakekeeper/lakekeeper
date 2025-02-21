@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     s3_region: Optional[str] = None
     s3_path_style_access: Optional[str] = None
     s3_sts_mode: Optional[str] = None
-    s3_allow_alternate_protocol: Optional[bool] = None
+    s3_allow_alternative_protocols: Optional[bool] = None
     azure_client_id: Optional[Secret] = None
     azure_client_secret: Optional[Secret] = None
     azure_tenant_id: Optional[Secret] = None
@@ -124,8 +124,8 @@ def storage_config(request) -> dict:
             pytest.skip("LAKEKEEPER_TEST__S3_REGION is not set")
 
         extra_config = {}
-        if settings.s3_allow_alternate_protocol:
-            extra_config["allow-alternate-protocol"] = True
+        if settings.s3_allow_alternative_protocols:
+            extra_config["allow-alternative-protocols"] = True
 
         return {
             "storage-profile": {
