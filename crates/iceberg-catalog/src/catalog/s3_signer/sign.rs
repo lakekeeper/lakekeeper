@@ -311,7 +311,7 @@ fn require_table_id(table_id: Option<String>) -> Result<TableIdentUuid> {
                 .build()
                 .into(),
         )
-        .and_then(|table_id| TableIdentUuid::from_str(&table_id).map_err(Into::into))
+        .and_then(|table_id| TableIdentUuid::from_str(&table_id))
 }
 
 fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
