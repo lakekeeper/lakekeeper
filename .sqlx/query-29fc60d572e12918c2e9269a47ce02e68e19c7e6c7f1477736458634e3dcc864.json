@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO warehouse_statistics (number_of_views, number_of_tables, warehouse_id, timestamp)\n                VALUES ($1, $2, $3, $4)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "29fc60d572e12918c2e9269a47ce02e68e19c7e6c7f1477736458634e3dcc864"
+}

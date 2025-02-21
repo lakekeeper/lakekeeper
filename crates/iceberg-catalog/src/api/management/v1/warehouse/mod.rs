@@ -3,7 +3,7 @@ mod undrop;
 use futures::FutureExt;
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::default_page_size;
@@ -17,7 +17,10 @@ pub use crate::service::{
 use crate::{
     api::{
         iceberg::v1::{PageToken, PaginationQuery},
-        management::v1::{ApiServer, DeletedTabularResponse, ListDeletedTabularsResponse},
+        management::v1::{
+            ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
+            ListDeletedTabularsResponse,
+        },
         ApiContext, Result,
     },
     catalog::UnfilteredPage,
@@ -227,6 +230,33 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
     }
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WarehouseStatistics {
+    /// Timestamp of when these statistics are valid until
+    ///
+    /// We lazily create a new statistics entry every hour, in between hours, the existing entry
+    /// is being updated. If there's a change at `created_at` + 1 hour, a new entry is created. If
+    /// there's no change, no new entry is created.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Number of tables in the warehouse.
+    pub number_of_tables: i64, // silly but necessary due to sqlx wanting i64, not usize
+    /// Number of views in the warehouse.
+    pub number_of_views: i64,
+    /// Timestamp of when these statistics were last updated
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct WarehouseStatisticsResponse {
+    /// ID of the warehouse for which the stats were collected.
+    pub warehouse_ident: uuid::Uuid,
+    /// Ordered list of warehouse statistics.
+    pub stats: Vec<WarehouseStatistics>,
+    /// Next page token
+    pub next_page_token: Option<String>,
+}
+
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
@@ -372,6 +402,31 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let warehouses = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
         transaction.commit().await?;
         Ok(warehouses.into())
+    }
+
+    async fn get_warehouse_statistics(
+        warehouse_id: WarehouseIdent,
+        query: GetWarehouseStatisticsQuery,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<WarehouseStatisticsResponse> {
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanGetMetadata,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        C::get_warehouse_stats(
+            warehouse_id,
+            query.to_pagination_query(),
+            context.v1_state.catalog.clone(),
+        )
+        .await
     }
 
     async fn delete_warehouse(
