@@ -1,7 +1,6 @@
 use http::StatusCode;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use openfga_rs::{
-    authentication::CredentialRefreshError,
     tonic::{self, metadata::errors::InvalidMetadataValue, Code},
     CheckRequest, ReadRequest, ReadRequestTupleKey, WriteRequest,
 };
@@ -15,7 +14,7 @@ pub enum OpenFGAError {
     #[error("Authorization Model ID failed: {reason}")]
     AuthorizationModelIdFailed { reason: String },
     #[error("Client Credential refresh failed")]
-    ClientCredentialFailed(#[from] CredentialRefreshError),
+    ClientCredentialFailed(#[from] middle::Error),
     #[error("Connection to OpenFGA failed")]
     ConnectionFailed(#[from] tonic::transport::Error),
     #[error("Internal Authorization Error")]

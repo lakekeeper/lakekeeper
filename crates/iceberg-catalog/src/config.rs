@@ -286,7 +286,7 @@ pub enum OpenFGAAuth {
         client_id: String,
         #[redact]
         client_secret: String,
-        token_endpoint: String,
+        token_endpoint: Url,
     },
     #[redact(all)]
     ApiKey(String),
@@ -524,7 +524,7 @@ struct OpenFGAConfigSerde {
     /// Client secret
     client_secret: Option<String>,
     /// Token Endpoint to use when exchanging client credentials for an access token.
-    token_endpoint: Option<String>,
+    token_endpoint: Option<Url>,
 }
 
 fn default_openfga_store_name() -> String {
@@ -764,7 +764,10 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT", "token_endpoint");
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT",
+                "https://example.com/token",
+            );
             let config = get_config();
             let authz_config = config.openfga.unwrap();
             assert_eq!(config.authz_backend, AuthZBackend::OpenFGA);
@@ -775,7 +778,7 @@ mod test {
                 OpenFGAAuth::ClientCredentials {
                     client_id: "client_id".to_string(),
                     client_secret: "client_secret".to_string(),
-                    token_endpoint: "token_endpoint".to_string()
+                    token_endpoint: "https://example.com/token".parse().unwrap()
                 }
             );
             Ok(())
