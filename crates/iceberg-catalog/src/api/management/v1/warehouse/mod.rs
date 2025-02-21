@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-
 use super::default_page_size;
 pub use crate::service::{
     storage::{
