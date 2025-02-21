@@ -337,7 +337,6 @@ where
 {
     let page_size = pagination_query
         .page_size
-        .map(i64::from)
         .map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
 
     let token = pagination_query
