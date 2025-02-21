@@ -59,6 +59,7 @@ kube = { workspace = true }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
 limes = { workspace = true }
+middle = { workspace = true }
 openfga-rs = { workspace = true, optional = false }
 paste = { workspace = true }
 percent-encoding = { workspace = true }

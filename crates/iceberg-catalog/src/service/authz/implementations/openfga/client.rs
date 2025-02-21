@@ -1,14 +1,13 @@
 //! Get `OpenFGA` clients
 
 use std::{
-    collections::HashMap,
     sync::Arc,
     task::{Context, Poll},
 };
 
-use http::{HeaderMap, Request};
+use http::Request;
+use middle::{BasicClientCredentialAuthorizer, BearerTokenAuthorizer};
 use openfga_rs::{
-    authentication::{ClientCredentials, RefreshConfiguration},
     open_fga_service_client::OpenFgaServiceClient,
     tonic::{
         body::BoxBody,
@@ -42,27 +41,17 @@ pub(crate) async fn new_client_from_config(
             token_endpoint,
         } => Some(tower::util::Either::Left(
             openfga_rs::tonic::service::interceptor(
-                openfga_rs::authentication::ClientCredentialInterceptor::new(
-                    ClientCredentials {
-                        client_id: client_id.clone(),
-                        client_secret: client_secret.clone(),
-                        token_endpoint: token_endpoint.clone(),
-                        extra_headers: HeaderMap::default(),
-                        extra_oauth_params: HashMap::default(),
-                    },
-                    RefreshConfiguration {
-                        max_retry: 10,
-                        retry_interval: std::time::Duration::from_millis(5),
-                    },
-                ),
+                BasicClientCredentialAuthorizer::basic_builder(
+                    client_id,
+                    client_secret,
+                    token_endpoint.clone(),
+                )
+                .build()
+                .await?,
             ),
         )),
         OpenFGAAuth::ApiKey(k) => Some(tower::util::Either::Right(
-            openfga_rs::tonic::service::interceptor(
-                openfga_rs::authentication::BearerTokenInterceptor::new(k.as_str()).expect(
-                    "BearerTokenInterceptor::new failed. This should not happen as the key is a valid ASCII string",
-                ),
-            ),
+            openfga_rs::tonic::service::interceptor(BearerTokenAuthorizer::new(k.as_str())?),
         )),
     };
 
@@ -117,11 +106,11 @@ pub(crate) type ClientConnection = ClientService<
         tower::util::Either<
             openfga_rs::tonic::service::interceptor::InterceptedService<
                 Channel,
-                openfga_rs::authentication::ClientCredentialInterceptor,
+                BasicClientCredentialAuthorizer,
             >,
             openfga_rs::tonic::service::interceptor::InterceptedService<
                 Channel,
-                openfga_rs::authentication::BearerTokenInterceptor,
+                BearerTokenAuthorizer,
             >,
         >,
         Channel,

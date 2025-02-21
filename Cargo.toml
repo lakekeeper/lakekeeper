@@ -53,7 +53,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2585f4f", features = [
     "storage-all",
 ] }
-openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "08cb6a4" }
+openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "2623173bab4f9c59b70f599dbc80bd4fe344e1ed" }
 typed-builder = "^0.20.0"
 strum_macros = "^0.26"
 async-trait = "0.1.83"
@@ -130,3 +130,4 @@ similar = "2.6.0"
 assert-json-diff = "2.0.2"
 maplit = "1.0.2"
 limes = { version = "0.1.2", features = ["kubernetes", "axum", "rustls-tls"] }
+middle = { version = "0.2", features = ["tonic"] }
