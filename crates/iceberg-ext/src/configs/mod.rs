@@ -38,10 +38,11 @@ pub trait ConfigProperty {
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error("Failed to parse value '{value}' to '{typ}'.")]
+#[error("Failed to parse value '{value}' to '{typ}'. {reasoning}")]
 pub struct ParseError {
     value: String,
     typ: String,
+    reasoning: String,
 }
 
 impl ParseError {
@@ -50,17 +51,19 @@ impl ParseError {
         ConfigParseError {
             value: self.value,
             typ: self.typ,
+            reasoning: self.reasoning,
             key: key.to_string(),
         }
     }
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error("Failed to parse config '{key}' with value '{value}' to '{typ}'")]
+#[error("Failed to parse config '{key}' with value '{value}' to '{typ}'. {reasoning}")]
 pub struct ConfigParseError {
     value: String,
     typ: String,
     key: String,
+    reasoning: String,
 }
 
 impl ConfigParseError {
@@ -96,6 +99,7 @@ impl ParseFromStr for bool {
             value => Err(ParseError {
                 value: value.to_string(),
                 typ: "bool".to_string(),
+                reasoning: String::new(),
             }),
         }
     }
@@ -106,6 +110,7 @@ impl ParseFromStr for url::Url {
         value.parse().map_err(|_| ParseError {
             value: value.to_string(),
             typ: "Url".to_string(),
+            reasoning: String::new(),
         })
     }
 }

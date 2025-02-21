@@ -1,10 +1,18 @@
 use std::{collections::HashSet, ops::Deref};
 
-use sqlx::{types::Json, Error};
+use sqlx::{types::Json, Error, PgPool};
 
 use super::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
-    api::{management::v1::warehouse::TabularDeleteProfile, CatalogConfig, ErrorModel, Result},
+    api::{
+        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        management::v1::warehouse::{
+            TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse,
+        },
+        CatalogConfig, ErrorModel, Result,
+    },
+    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    request_metadata::RequestMetadata,
     service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
     ProjectIdent, SecretIdent, WarehouseIdent,
 };
@@ -72,6 +80,7 @@ pub(super) async fn set_warehouse_deletion_profile<
 pub(super) async fn get_config_for_warehouse(
     warehouse_id: WarehouseIdent,
     catalog_state: CatalogState,
+    request_metadata: &RequestMetadata,
 ) -> Result<Option<CatalogConfig>> {
     let storage_profile = sqlx::query_scalar!(
         r#"
@@ -87,7 +96,7 @@ pub(super) async fn get_config_for_warehouse(
     .await
     .map_err(map_select_warehouse_err)?;
 
-    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id)))
+    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id, request_metadata)))
 }
 
 pub(crate) async fn create_warehouse(
@@ -112,11 +121,22 @@ pub(crate) async fn create_warehouse(
     let prof = DbTabularDeleteProfile::from(tabular_delete_profile);
 
     let warehouse_id = sqlx::query_scalar!(
-        r#"
-        INSERT INTO warehouse (warehouse_name, project_id, storage_profile, storage_secret_id, "status", tabular_expiration_seconds, tabular_delete_mode)
-        VALUES ($1, $2, $3, $4, 'active', $5, $6)
-        RETURNING warehouse_id
-        "#,
+        r#"WITH
+            whi AS (INSERT INTO warehouse (
+                                   warehouse_name,
+                                   project_id,
+                                   storage_profile,
+                                   storage_secret_id,
+                                   status,
+                                   tabular_expiration_seconds,
+                                   tabular_delete_mode)
+                                VALUES ($1, $2, $3, $4, 'active', $5, $6)
+                                RETURNING warehouse_id),
+            whs AS (INSERT INTO warehouse_statistics (number_of_views,
+                                                      number_of_tables,
+                                                      warehouse_id)
+                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))
+            SELECT warehouse_id FROM whi"#,
         warehouse_name,
         *project_id,
         storage_profile_ser,
@@ -129,9 +149,14 @@ pub(crate) async fn create_warehouse(
     .map_err(|e| match &e {
         sqlx::Error::Database(db_err) => match db_err.constraint() {
             // ToDo: Get constraint name from const
-            Some("unique_warehouse_name_in_project") => ErrorModel::conflict("Warehouse with this name already exists in the project.",
-                "WarehouseNameAlreadyExists", Some(Box::new(e))),
-            Some("warehouse_project_id_fk") => ErrorModel::not_found("Project not found", "ProjectNotFound", Some(Box::new(e))),
+            Some("unique_warehouse_name_in_project") => ErrorModel::conflict(
+                "Warehouse with this name already exists in the project.",
+                "WarehouseNameAlreadyExists",
+                Some(Box::new(e)),
+            ),
+            Some("warehouse_project_id_fk") => {
+                ErrorModel::not_found("Project not found", "ProjectNotFound", Some(Box::new(e)))
+            }
             _ => e.into_error_model("Error creating Warehouse"),
         },
         _ => e.into_error_model("Error creating Warehouse"),
@@ -556,12 +581,76 @@ impl From<TabularDeleteProfile> for DbTabularDeleteProfile {
     }
 }
 
+pub(crate) async fn get_warehouse_stats(
+    conn: PgPool,
+    warehouse_ident: WarehouseIdent,
+    PaginationQuery {
+        page_size,
+        page_token,
+    }: PaginationQuery,
+) -> crate::api::Result<WarehouseStatisticsResponse> {
+    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::try_from)
+        .transpose()?;
+
+    let (token_ts, _): (_, Option<String>) = token
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
+    let stats = sqlx::query!(
+        r#"
+        SELECT number_of_views, number_of_tables, created_at, updated_at, timestamp
+        FROM warehouse_statistics
+        WHERE warehouse_id = $1
+        AND (timestamp < $2 OR $2 IS NULL)
+        ORDER BY timestamp DESC
+        LIMIT $3
+        "#,
+        warehouse_ident.0,
+        token_ts,
+        page_size
+    )
+    .fetch_all(&conn)
+    .await
+    .map_err(|e| {
+        tracing::error!(error=?e, "Error fetching warehouse stats");
+        e.into_error_model("failed to get stats")
+    })?;
+
+    let next_page_token = stats.last().map(|s| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: s.timestamp,
+            id: String::new(),
+        })
+        .to_string()
+    });
+
+    let stats = stats
+        .into_iter()
+        .map(|s| WarehouseStatistics {
+            number_of_tables: s.number_of_tables,
+            number_of_views: s.number_of_views,
+            timestamp: s.timestamp,
+            updated_at: s.updated_at.unwrap_or(s.created_at),
+        })
+        .collect();
+    Ok(WarehouseStatisticsResponse {
+        warehouse_ident: *warehouse_ident,
+        stats,
+        next_page_token,
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use http::StatusCode;
 
     use super::*;
     use crate::{
+        api::iceberg::types::PageToken,
         implementations::postgres::{PostgresCatalog, PostgresTransaction},
         service::{
             storage::{S3Flavor, S3Profile},
@@ -839,5 +928,103 @@ pub(crate) mod test {
                 .unwrap_err();
         assert_eq!(err.error.code, StatusCode::CONFLICT);
         t.commit().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_warehouse_statistics_pagination(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectIdent::from(uuid::Uuid::new_v4());
+        let warehouse_id =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        for i in 0..10 {
+            sqlx::query!(
+                r#"
+                INSERT INTO warehouse_statistics (number_of_views, number_of_tables, warehouse_id, timestamp)
+                VALUES ($1, $2, $3, $4)
+                "#,
+                i,
+                i,
+                warehouse_id.0,
+                chrono::Utc::now() + chrono::Duration::hours(i)
+            )
+            .execute(&mut **t.transaction())
+            .await
+            .unwrap();
+        }
+        t.commit().await.unwrap();
+
+        let stats = PostgresCatalog::get_warehouse_stats(
+            warehouse_id,
+            PaginationQuery {
+                page_size: None,
+                page_token: PageToken::NotSpecified,
+            },
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.stats.len(), 11);
+
+        let stats = PostgresCatalog::get_warehouse_stats(
+            warehouse_id,
+            PaginationQuery {
+                page_size: Some(3),
+                page_token: PageToken::NotSpecified,
+            },
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.stats.len(), 3);
+        assert!(dbg!(&stats.next_page_token).is_some());
+
+        let stats = PostgresCatalog::get_warehouse_stats(
+            warehouse_id,
+            PaginationQuery {
+                page_size: Some(5),
+                page_token: stats.next_page_token.into(),
+            },
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.stats.len(), 5);
+        assert!(stats.next_page_token.is_some());
+
+        let stats = PostgresCatalog::get_warehouse_stats(
+            warehouse_id,
+            PaginationQuery {
+                page_size: Some(5),
+                page_token: stats.next_page_token.into(),
+            },
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.stats.len(), 3);
+        assert!(stats.next_page_token.is_some());
+
+        // last page is empty
+        let stats = PostgresCatalog::get_warehouse_stats(
+            warehouse_id,
+            PaginationQuery {
+                page_size: Some(5),
+                page_token: stats.next_page_token.into(),
+            },
+            state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.stats.len(), 0);
+        assert!(stats.next_page_token.is_none());
     }
 }

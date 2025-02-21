@@ -155,6 +155,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             properties,
         } = &request;
 
+        tracing::debug!("Creating namespace: {:?}", namespace);
+
         validate_namespace_ident(namespace)?;
 
         properties
@@ -166,12 +168,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .reserved_namespaces
             .contains(&namespace.as_ref()[0].to_lowercase())
         {
-            return Err(ErrorModel::builder()
-                .code(StatusCode::BAD_REQUEST.into())
-                .message("Namespace is reserved for internal use.".to_owned())
-                .r#type("ReservedNamespace".to_owned())
-                .build()
-                .into());
+            tracing::debug!("Denying reserved namespace: '{}'", &namespace.as_ref()[0]);
+            return Err(ErrorModel::bad_request(
+                "Namespace is reserved for internal use.",
+                "ReservedNamespace",
+                None,
+            )
+            .into());
         }
 
         // ------------------- AUTHZ -------------------

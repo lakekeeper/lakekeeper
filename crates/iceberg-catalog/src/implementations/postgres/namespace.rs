@@ -221,12 +221,11 @@ pub(crate) async fn create_namespace(
         *namespace_id,
         &*namespace,
         serde_json::to_value(properties.clone()).map_err(|e| {
-            ErrorModel::builder()
-                .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-                .message("Error serializing namespace properties".to_string())
-                .r#type("NamespacePropertiesSerializationError".to_string())
-                .source(Some(Box::new(e)))
-                .build()
+            ErrorModel::internal(
+                "Error serializing namespace properties",
+                "NamespacePropertiesSerializationError",
+                Some(Box::new(e)),
+            )
         })?
     )
     .fetch_one(&mut **transaction)
@@ -234,32 +233,40 @@ pub(crate) async fn create_namespace(
     .map_err(|e| match e {
         sqlx::Error::Database(db_error) => {
             if db_error.is_unique_violation() {
-                ErrorModel::builder()
-                    .code(StatusCode::CONFLICT.into())
-                    .message("Namespace already exists".to_string())
-                    .r#type("NamespaceAlreadyExists".to_string())
-                    .build()
+                tracing::debug!("Namespace already exists: {db_error:?}");
+                ErrorModel::conflict(
+                    "Namespace already exists",
+                    "NamespaceAlreadyExists",
+                    Some(Box::new(db_error)),
+                )
             } else if db_error.is_foreign_key_violation() {
-                ErrorModel::builder()
-                    .code(StatusCode::NOT_FOUND.into())
-                    .message("Warehouse not found".to_string())
-                    .r#type("WarehouseNotFound".to_string())
-                    .build()
+                tracing::debug!("Namespace foreign key violation: {db_error:?}");
+                ErrorModel::not_found(
+                    "Warehouse not found",
+                    "WarehouseNotFound",
+                    Some(Box::new(db_error)),
+                )
             } else {
-                ErrorModel::builder()
-                    .code(StatusCode::INTERNAL_SERVER_ERROR.into())
-                    .message("Error creating namespace".to_string())
-                    .r#type("NamespaceCreateError".to_string())
-                    .source(Some(Box::new(db_error)))
-                    .build()
+                tracing::error!("Internal error creating namespace: {db_error:?}");
+                ErrorModel::internal(
+                    "Error creating namespace",
+                    "NamespaceCreateError",
+                    Some(Box::new(db_error)),
+                )
             }
         }
-        e @ sqlx::Error::RowNotFound => ErrorModel::not_found(
-            "Warehouse not found",
-            "WarehouseNotFound",
-            Some(Box::new(e)),
-        ),
-        _ => e.into_error_model("Error creating Namespace"),
+        e @ sqlx::Error::RowNotFound => {
+            tracing::debug!("Warehouse not found: {e:?}");
+            ErrorModel::not_found(
+                "Warehouse not found",
+                "WarehouseNotFound",
+                Some(Box::new(e)),
+            )
+        }
+        _ => {
+            tracing::error!("Internal error creating namespace: {e:?}");
+            e.into_error_model("Error creating Namespace")
+        }
     })?;
 
     // If inner is empty, return None

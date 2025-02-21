@@ -24,10 +24,11 @@ use crate::{
         management::v1::{
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
-            warehouse::TabularDeleteProfile,
+            warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
     catalog::tables::TableMetadataDiffs,
+    request_metadata::RequestMetadata,
     service::{
         authn::UserId,
         health::HealthExt,
@@ -234,15 +235,17 @@ where
     async fn get_config_for_warehouse(
         warehouse_id: WarehouseIdent,
         catalog_state: Self::State,
+        request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>>;
 
     /// Wrapper around get_config_for_warehouse that returns
     /// not found error if the warehouse does not exist.
     async fn require_config_for_warehouse(
         warehouse_id: WarehouseIdent,
+        request_metadata: &RequestMetadata,
         catalog_state: Self::State,
     ) -> Result<CatalogConfig> {
-        Self::get_config_for_warehouse(warehouse_id, catalog_state)
+        Self::get_config_for_warehouse(warehouse_id, catalog_state, request_metadata)
             .await?
             .ok_or(
                 ErrorModel::not_found(
@@ -545,6 +548,12 @@ where
             .into(),
         )
     }
+
+    async fn get_warehouse_stats(
+        warehouse_id: WarehouseIdent,
+        pagination_query: PaginationQuery,
+        state: Self::State,
+    ) -> Result<WarehouseStatisticsResponse>;
 
     /// Delete a warehouse.
     async fn delete_warehouse<'a>(

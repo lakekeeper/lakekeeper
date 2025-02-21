@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH\n            whi AS (INSERT INTO warehouse (\n                                   warehouse_name,\n                                   project_id,\n                                   storage_profile,\n                                   storage_secret_id,\n                                   status,\n                                   tabular_expiration_seconds,\n                                   tabular_delete_mode)\n                                VALUES ($1, $2, $3, $4, 'active', $5, $6)\n                                RETURNING warehouse_id),\n            whs AS (INSERT INTO warehouse_statistics (number_of_views,\n                                                      number_of_tables,\n                                                      warehouse_id)\n                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))\n            SELECT warehouse_id FROM whi",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Uuid",
+        "Int8",
+        {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ca442849c981769299d8929126778eaa97d68c823a998ae40afa920017f7cb79"
+}

@@ -229,10 +229,15 @@ where
     D: Deserializer<'de>,
 {
     let buf = String::deserialize(deserializer)?;
-
-    Ok(Duration::from_secs(
-        u64::from_str(&buf).map_err(serde::de::Error::custom)?,
-    ))
+    Ok(if buf.ends_with("ms") {
+        Duration::from_millis(
+            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
+        )
+    } else if buf.ends_with('s') {
+        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
+    } else {
+        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
+    })
 }
 
 pub(crate) fn std_duration_to_seconds<S>(
@@ -242,7 +247,7 @@ pub(crate) fn std_duration_to_seconds<S>(
 where
     S: serde::Serializer,
 {
-    duration.as_secs().to_string().serialize(serializer)
+    format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
 impl Default for TaskQueueConfig {

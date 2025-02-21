@@ -5,7 +5,7 @@ info:
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  version: 0.5.2
+  version: 0.6.2
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -1606,6 +1606,64 @@ paths:
       responses:
         '200':
           description: Warehouse renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/statistics:
+    get:
+      tags:
+      - warehouse
+      summary: Get warehouse statistics
+      description: |-
+        Get statistics about the warehouse, currently table and view counts over time.
+
+        We lazily create a new statistics entry every hour, in between hours, the existing entry is
+        being updated. If there's a change at created_at + 1 hour, a new entry is created.
+        If there's been no change, no new entry is created, meaning there may be gaps.
+
+        Example:
+        - 00:16:32: warehouse created:
+            - timestamp: 01:00:00, created_at: 00:16:32, updated_at: null, 0 tables, 0 views
+        - 00:30:00: table created:
+            - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:30:00, 1 table, 0 views
+        - 00:45:00: view created:
+            - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view
+        - 01:00:36: table deleted:
+            - timestamp: 02:00:00, created_at: 01:00:36, updated_at: null, 0 tables, 1 view
+            - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view
+      operationId: get_warehouse_statistics
+      parameters:
+      - name: page_token
+        in: query
+        description: Next page token
+        required: false
+        schema:
+          type: string
+      - name: page_size
+        in: query
+        description: Signals an upper bound of the number of results that a client will receive.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int64
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Warehouse statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WarehouseStatisticsResponse'
         4XX:
           description: ''
           content:
@@ -3770,6 +3828,55 @@ components:
       - select
       - create
       - modify
+    WarehouseStatistics:
+      type: object
+      required:
+      - timestamp
+      - number_of_tables
+      - number_of_views
+      - updated_at
+      properties:
+        number_of_tables:
+          type: integer
+          format: int64
+          description: Number of tables in the warehouse.
+        number_of_views:
+          type: integer
+          format: int64
+          description: Number of views in the warehouse.
+        timestamp:
+          type: string
+          format: date-time
+          description: |-
+            Timestamp of when these statistics are valid until
+
+            We lazily create a new statistics entry every hour, in between hours, the existing entry
+            is being updated. If there's a change at `created_at` + 1 hour, a new entry is created. If
+            there's no change, no new entry is created.
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp of when these statistics were last updated
+    WarehouseStatisticsResponse:
+      type: object
+      required:
+      - warehouse-ident
+      - stats
+      properties:
+        next-page-token:
+          type:
+          - string
+          - 'null'
+          description: Next page token
+        stats:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarehouseStatistics'
+          description: Ordered list of warehouse statistics.
+        warehouse-ident:
+          type: string
+          format: uuid
+          description: ID of the warehouse for which the stats were collected.
     WarehouseStatus:
       type: string
       description: Status of a warehouse

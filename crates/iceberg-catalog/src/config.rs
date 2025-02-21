@@ -49,19 +49,21 @@ fn get_config() -> DynAppConfig {
         .expect("Valid Configuration");
 
     // Ensure base_uri has a trailing slash
-    let base_uri_path = config.base_uri.path().to_string();
-    config
-        .base_uri
-        .set_path(&format!("{}/", base_uri_path.trim_end_matches('/')));
+    if let Some(base_uri) = config.base_uri.as_mut() {
+        let base_uri_path = base_uri.path().to_string();
+        base_uri.set_path(&format!("{}/", base_uri_path.trim_end_matches('/')));
+    }
 
     config
         .reserved_namespaces
         .extend(DEFAULT_RESERVED_NAMESPACES.into_iter().map(str::to_string));
 
     // Fail early if the base_uri is not a valid URL
-    config.s3_signer_uri_for_warehouse(WarehouseIdent::from(uuid::Uuid::new_v4()));
-    config.base_uri_catalog();
-    config.base_uri_management();
+    if let Some(uri) = &config.base_uri {
+        uri.join("catalog").expect("Valid URL");
+        uri.join("management").expect("Valid URL");
+    }
+
     if config.secret_backend == SecretBackend::Postgres
         && config.pg_encryption_key == DEFAULT_ENCRYPTION_KEY
     {
@@ -78,7 +80,7 @@ pub struct DynAppConfig {
     /// Base URL for this REST Catalog.
     /// This is used as the "uri" and "s3.signer.url"
     /// while generating the Catalog Config
-    pub base_uri: url::Url,
+    pub base_uri: Option<url::Url>,
     /// Port under which we serve metrics
     pub metrics_port: u16,
     /// Port to listen on.
@@ -156,7 +158,7 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub openid_additional_issuers: Option<Vec<String>>,
-    /// A scopes that must be present in provided tokens
+    /// A scope that must be present in provided tokens
     pub openid_scope: Option<String>,
     pub enable_kubernetes_authentication: bool,
     /// Claim to use in provided JWT tokens as the subject.
@@ -286,7 +288,7 @@ pub enum OpenFGAAuth {
         client_id: String,
         #[redact]
         client_secret: String,
-        token_endpoint: String,
+        token_endpoint: Url,
     },
     #[redact(all)]
     ApiKey(String),
@@ -344,7 +346,7 @@ pub struct KV2Config {
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
-            base_uri: "https://localhost:8181".parse().expect("Valid URL"),
+            base_uri: None,
             metrics_port: 9000,
             enable_default_project: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -397,20 +399,6 @@ impl Default for DynAppConfig {
 }
 
 impl DynAppConfig {
-    pub fn s3_signer_uri_for_warehouse(&self, warehouse_id: WarehouseIdent) -> url::Url {
-        self.base_uri
-            .join(&format!("catalog/v1/{warehouse_id}"))
-            .expect("Valid URL")
-    }
-
-    pub fn base_uri_catalog(&self) -> url::Url {
-        self.base_uri.join("catalog").expect("Valid URL")
-    }
-
-    pub fn base_uri_management(&self) -> url::Url {
-        self.base_uri.join("management").expect("Valid URL")
-    }
-
     pub fn warehouse_prefix(&self, warehouse_id: WarehouseIdent) -> String {
         self.prefix_template
             .replace("{warehouse_id}", warehouse_id.to_string().as_str())
@@ -425,7 +413,7 @@ impl DynAppConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub enum PgSslMode {
     Disable,
     Allow,
@@ -461,6 +449,16 @@ impl FromStr for PgSslMode {
             "verifyfull" => Ok(Self::VerifyFull),
             _ => Err(anyhow!("PgSslMode not supported: '{}'", s)),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PgSslMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        PgSslMode::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -524,7 +522,7 @@ struct OpenFGAConfigSerde {
     /// Client secret
     client_secret: Option<String>,
     /// Token Endpoint to use when exchanging client credentials for an access token.
-    token_endpoint: Option<String>,
+    token_endpoint: Option<Url>,
 }
 
 fn default_openfga_store_name() -> String {
@@ -618,32 +616,44 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_pg_ssl_mode_case_insensitive() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DISABLED");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DisaBled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_base_uri_trailing_slash_stripped() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
             let config = get_config();
-            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
             assert_eq!(
-                config.base_uri_management().to_string(),
-                "https://localhost:8181/a/b/management"
-            );
-            assert_eq!(
-                config.base_uri_catalog().to_string(),
-                "https://localhost:8181/a/b/catalog"
+                config.base_uri.as_ref().unwrap().to_string(),
+                "https://localhost:8181/a/b/"
             );
             Ok(())
         });
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
             let config = get_config();
-            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
             assert_eq!(
-                config.base_uri_management().to_string(),
-                "https://localhost:8181/a/b/management"
-            );
-            assert_eq!(
-                config.base_uri_catalog().to_string(),
-                "https://localhost:8181/a/b/catalog"
+                config.base_uri.as_ref().unwrap().to_string(),
+                "https://localhost:8181/a/b/"
             );
             Ok(())
         });
@@ -713,6 +723,48 @@ mod test {
     }
 
     #[test]
+    fn test_task_queue_config_millis() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5ms");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            let config = get_config();
+            assert_eq!(
+                config.queue_config.poll_interval,
+                std::time::Duration::from_millis(5)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_task_queue_config_seconds() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5s");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            let config = get_config();
+            assert_eq!(
+                config.queue_config.poll_interval,
+                std::time::Duration::from_secs(5)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_task_queue_config_legacy_seconds() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "\"5\"");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            let config = get_config();
+            assert_eq!(
+                config.queue_config.poll_interval,
+                std::time::Duration::from_secs(5)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_openfga_config_no_auth() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
@@ -764,7 +816,10 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
-            jail.set_env("LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT", "token_endpoint");
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT",
+                "https://example.com/token",
+            );
             let config = get_config();
             let authz_config = config.openfga.unwrap();
             assert_eq!(config.authz_backend, AuthZBackend::OpenFGA);
@@ -775,7 +830,7 @@ mod test {
                 OpenFGAAuth::ClientCredentials {
                     client_id: "client_id".to_string(),
                     client_secret: "client_secret".to_string(),
-                    token_endpoint: "token_endpoint".to_string()
+                    token_endpoint: "https://example.com/token".parse().unwrap()
                 }
             );
             Ok(())

@@ -35,7 +35,7 @@ aws-smithy-http = "0.60.11"
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
-google-cloud-auth = { version = "0.17.0", features = [
+google-cloud-auth = { package = "gcloud-auth", version = "1.0.0", features = [
     "rustls-tls",
 ], default-features = false }
 figment = { version = "0.10.19", features = ["env"] }
@@ -50,16 +50,16 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "92065e6", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2585f4f", features = [
     "storage-all",
 ] }
-openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "08cb6a4" }
+openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "2623173bab4f9c59b70f599dbc80bd4fe344e1ed" }
 typed-builder = "^0.20.0"
-strum_macros = "^0.26"
+strum_macros = "^0.27.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
-axum-extra = { version = "0.11.0" }
+axum-extra = { version = "0.10.0" }
 axum-macros = { version = "0.5.0" }
 itertools = "0.14.0"
 mockall = "0.13.0"
@@ -83,7 +83,7 @@ kube = { version = "0.98", default-features = false, features = [
 ] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 percent-encoding = "2.3.1"
-strum = { version = "^0.26", features = ["derive"] }
+strum = { version = "^0.27.0", features = ["derive"] }
 sqlx = { version = "^0.8.2", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -130,3 +130,4 @@ similar = "2.6.0"
 assert-json-diff = "2.0.2"
 maplit = "1.0.2"
 limes = { version = "0.1.2", features = ["kubernetes", "axum", "rustls-tls"] }
+middle = { version = "0.2", features = ["tonic"] }

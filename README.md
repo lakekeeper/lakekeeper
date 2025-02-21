@@ -85,7 +85,7 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 
 | Backend  | Status  | Comment |
 |----------|:-------:|---------|
-| Postgres | ![done] |         |
+| Postgres | ![done] | \>=15   |
 | MongoDB  | ![open] |         |
 
 ### Supported Secret Stores

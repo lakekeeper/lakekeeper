@@ -64,7 +64,6 @@ pub struct IcebergErrorResponse {
 }
 
 /// JSON error payload returned in a response with further details on the error
-
 #[derive(Default, Debug, TypedBuilder, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ErrorModel {
     /// Human-readable error message

@@ -176,10 +176,7 @@ impl From<openfga_rs::AuthorizationModel> for AuthorizationModel {
             conditions,
         } = value;
         AuthorizationModel {
-            type_definitions: type_definitions
-                .into_iter()
-                .map(std::convert::Into::into)
-                .collect(),
+            type_definitions: type_definitions.into_iter().collect(),
             schema_version,
             conditions: Some(conditions).filter(|v: &HashMap<String, Condition>| !v.is_empty()),
         }

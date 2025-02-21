@@ -161,15 +161,25 @@ impl std::fmt::Display for Location {
 
 impl ParseFromStr for Location {
     fn parse_value(value: &str) -> Result<Self, ParseError> {
+        if value.trim_end_matches('/').ends_with(' ') {
+            return Err(ParseError {
+                value: value.to_string(),
+                typ: "Url".to_string(),
+                reasoning: "Trailing whitespaces are forbidden".to_string(),
+            });
+        }
+
         let location = url::Url::parse(value).map_err(|_e| ParseError {
             value: value.to_string(),
             typ: "Url".to_string(),
+            reasoning: String::new(),
         })?;
 
         if location.cannot_be_a_base() {
             return Err(ParseError {
                 value: value.to_string(),
                 typ: "Url with base".to_string(),
+                reasoning: String::new(),
             });
         }
 
@@ -177,6 +187,7 @@ impl ParseFromStr for Location {
             return Err(ParseError {
                 value: value.to_string(),
                 typ: "Url without fragment".to_string(),
+                reasoning: String::new(),
             });
         }
 
@@ -184,6 +195,7 @@ impl ParseFromStr for Location {
             return Err(ParseError {
                 value: value.to_string(),
                 typ: "Url without query".to_string(),
+                reasoning: String::new(),
             });
         }
 
@@ -202,6 +214,19 @@ impl FromStr for Location {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_location_with_whitespace() {
+        let location = <Location as ConfigProperty>::parse_value("s3://bucket/foo /bar").unwrap();
+        assert_eq!(location.as_str(), "s3://bucket/foo%20/bar");
+    }
+
+    #[test]
+    fn test_location_with_trailing_whitespace() {
+        let location = <Location as ConfigProperty>::parse_value("s3://bucket/foo/bar ")
+            .expect_err("Trailing whitespaces are forbidden.");
+        assert_eq!(location.reasoning, "Trailing whitespaces are forbidden");
+    }
 
     #[test]
     fn test_is_sublocation_of() {

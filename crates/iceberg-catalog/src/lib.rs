@@ -16,7 +16,7 @@ pub mod implementations;
 
 mod request_metadata;
 
-pub use request_metadata::PROJECT_ID_HEADER;
+pub use request_metadata::{PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};
 
 pub mod api;
 
@@ -25,6 +25,9 @@ pub mod metrics;
 mod retry;
 #[cfg(feature = "router")]
 pub(crate) mod tracing;
+
+#[cfg(test)]
+pub mod tests;
 
 #[cfg(test)]
 pub mod test {
