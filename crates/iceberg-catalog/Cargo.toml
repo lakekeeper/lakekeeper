@@ -63,7 +63,7 @@ middle = { workspace = true }
 openfga-rs = { workspace = true, optional = false }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
-rand = "0.8.5"
+rand = "0.9.0"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }

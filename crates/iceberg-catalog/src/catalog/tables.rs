@@ -1783,7 +1783,7 @@ pub(crate) fn create_table_request_into_table_metadata(
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use std::{collections::HashMap, str::FromStr};
 
     use http::StatusCode;
@@ -1874,7 +1874,7 @@ mod test {
         assert!(count.is_none());
     }
 
-    fn create_request(table_name: Option<String>) -> CreateTableRequest {
+    pub(crate) fn create_request(table_name: Option<String>) -> CreateTableRequest {
         CreateTableRequest {
             name: table_name.unwrap_or("my_table".to_string()),
             location: None,

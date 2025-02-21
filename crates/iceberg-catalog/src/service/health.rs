@@ -18,7 +18,7 @@ pub trait HealthExt: Send + Sync + 'static {
         tokio::task::spawn(async move {
             loop {
                 self.update_health().await;
-                let jitter = { rand::thread_rng().next_u64().min(jitter_millis) };
+                let jitter = { rand::rng().next_u64().min(jitter_millis) };
                 tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)).await;
             }
         })

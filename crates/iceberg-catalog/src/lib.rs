@@ -27,6 +27,9 @@ mod retry;
 pub(crate) mod tracing;
 
 #[cfg(test)]
+pub mod tests;
+
+#[cfg(test)]
 pub mod test {
     use std::{future::Future, sync::LazyLock};
 

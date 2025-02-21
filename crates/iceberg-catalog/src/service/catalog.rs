@@ -24,7 +24,7 @@ use crate::{
         management::v1::{
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
-            warehouse::TabularDeleteProfile,
+            warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
     catalog::tables::TableMetadataDiffs,
@@ -536,6 +536,12 @@ where
             .into(),
         )
     }
+
+    async fn get_warehouse_stats(
+        warehouse_id: WarehouseIdent,
+        pagination_query: PaginationQuery,
+        state: Self::State,
+    ) -> Result<WarehouseStatisticsResponse>;
 
     /// Delete a warehouse.
     async fn delete_warehouse<'a>(
