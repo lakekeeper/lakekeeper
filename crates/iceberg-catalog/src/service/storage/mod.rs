@@ -23,6 +23,7 @@ use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
 use crate::{
     api::{iceberg::v1::DataAccess, CatalogConfig},
     catalog::{compression_codec::CompressionCodec, io::list_location},
+    request_metadata::RequestMetadata,
     retry::retry_fn,
     service::tabular_idents::TabularIdentUuid,
     WarehouseIdent,
@@ -78,9 +79,15 @@ pub struct TableConfig {
 
 impl StorageProfile {
     #[must_use]
-    pub fn generate_catalog_config(&self, warehouse_id: WarehouseIdent) -> CatalogConfig {
+    pub fn generate_catalog_config(
+        &self,
+        warehouse_id: WarehouseIdent,
+        request_metadata: &RequestMetadata,
+    ) -> CatalogConfig {
         match self {
-            StorageProfile::S3(profile) => profile.generate_catalog_config(warehouse_id),
+            StorageProfile::S3(profile) => {
+                profile.generate_catalog_config(warehouse_id, request_metadata)
+            }
             #[cfg(test)]
             StorageProfile::Test(_) => {
                 use std::collections::HashMap;

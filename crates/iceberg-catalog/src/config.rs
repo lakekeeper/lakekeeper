@@ -49,18 +49,21 @@ fn get_config() -> DynAppConfig {
         .expect("Valid Configuration");
 
     // Ensure base_uri has a trailing slash
-    let base_uri_path = config.base_uri.path().to_string();
-    config
-        .base_uri
-        .set_path(&format!("{}/", base_uri_path.trim_end_matches('/')));
+    if let Some(base_uri) = config.base_uri.as_mut() {
+        let base_uri_path = base_uri.path().to_string();
+        base_uri.set_path(&format!("{}/", base_uri_path.trim_end_matches('/')));
+    }
 
     config
         .reserved_namespaces
         .extend(DEFAULT_RESERVED_NAMESPACES.into_iter().map(str::to_string));
 
     // Fail early if the base_uri is not a valid URL
-    config.s3_signer_uri_for_warehouse(WarehouseIdent::from(uuid::Uuid::new_v4()));
-    config.base_uri_catalog();
+    if let Some(uri) = &config.base_uri {
+        uri.join("catalog").expect("Valid URL");
+        uri.join("management").expect("Valid URL");
+    }
+
     if config.secret_backend == SecretBackend::Postgres
         && config.pg_encryption_key == DEFAULT_ENCRYPTION_KEY
     {
@@ -77,7 +80,7 @@ pub struct DynAppConfig {
     /// Base URL for this REST Catalog.
     /// This is used as the "uri" and "s3.signer.url"
     /// while generating the Catalog Config
-    pub base_uri: url::Url,
+    pub base_uri: Option<url::Url>,
     /// Port under which we serve metrics
     pub metrics_port: u16,
     /// Port to listen on.
@@ -343,7 +346,7 @@ pub struct KV2Config {
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
-            base_uri: "https://localhost:8181".parse().expect("Valid URL"),
+            base_uri: None,
             metrics_port: 9000,
             enable_default_project: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -396,16 +399,6 @@ impl Default for DynAppConfig {
 }
 
 impl DynAppConfig {
-    pub fn s3_signer_uri_for_warehouse(&self, warehouse_id: WarehouseIdent) -> url::Url {
-        self.base_uri
-            .join(&format!("catalog/v1/{warehouse_id}"))
-            .expect("Valid URL")
-    }
-
-    pub fn base_uri_catalog(&self) -> url::Url {
-        self.base_uri.join("catalog").expect("Valid URL")
-    }
-
     pub fn warehouse_prefix(&self, warehouse_id: WarehouseIdent) -> String {
         self.prefix_template
             .replace("{warehouse_id}", warehouse_id.to_string().as_str())
@@ -649,20 +642,18 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b/");
             let config = get_config();
-            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
             assert_eq!(
-                config.base_uri_catalog().to_string(),
-                "https://localhost:8181/a/b/catalog"
+                config.base_uri.as_ref().unwrap().to_string(),
+                "https://localhost:8181/a/b/"
             );
             Ok(())
         });
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181/a/b");
             let config = get_config();
-            assert_eq!(config.base_uri.to_string(), "https://localhost:8181/a/b/");
             assert_eq!(
-                config.base_uri_catalog().to_string(),
-                "https://localhost:8181/a/b/catalog"
+                config.base_uri.as_ref().unwrap().to_string(),
+                "https://localhost:8181/a/b/"
             );
             Ok(())
         });

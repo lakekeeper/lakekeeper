@@ -77,7 +77,6 @@ services:
   server:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
     environment:
-      - ICEBERG_REST__BASE_URI=http://server:8181
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
       - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres

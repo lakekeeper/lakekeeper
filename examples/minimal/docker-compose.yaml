@@ -18,11 +18,9 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
-      - LAKEKEEPER__BASE_URI=http://server:8181
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
-      - LAKEKEEPER__UI__LAKEKEEPER_URL=http://localhost:8181
       - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
     command: [ "serve" ]
     healthcheck:

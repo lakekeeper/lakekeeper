@@ -2970,7 +2970,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tryhard",
- "typed-builder 0.20.0",
  "url",
  "urlencoding",
  "utoipa",
@@ -3421,7 +3420,7 @@ dependencies = [
 [[package]]
 name = "lakekeeper-console"
 version = "0.1.0"
-source = "git+https://github.com/lakekeeper/console?rev=972aa07#972aa07bb4b2e305be3fea25e927e2526a505458"
+source = "git+https://github.com/lakekeeper/console?rev=81a6afe#81a6afee72cc1c19f74675266f7990f18f3f98bf"
 dependencies = [
  "derivative",
  "fs_extra",

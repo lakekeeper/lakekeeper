@@ -2,19 +2,23 @@
 
 Lakekeeper is configured via environment variables. Settings listed in this page are shared between all projects and warehouses. Previous to Lakekeeper Version `0.5.0` please prefix all environment variables with `ICEBERG_REST__` instead of `LAKEKEEPER__`.
 
-For most deployments, we recommend to set at least the following variables: `LAKEKEEPER__BASE_URI`, `LAKEKEEPER__PG_DATABASE_URL_READ`, `LAKEKEEPER__PG_DATABASE_URL_WRITE`, `LAKEKEEPER__PG_ENCRYPTION_KEY`.
+For most deployments, we recommend to set at least the following variables: `LAKEKEEPER__PG_DATABASE_URL_READ`, `LAKEKEEPER__PG_DATABASE_URL_WRITE`, `LAKEKEEPER__PG_ENCRYPTION_KEY`.
+
+## Routing and Base-URL
+
+Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By default, these links are generated using the `x-forwarded-for`, `x-forwarded-proto` and `x-forwarded-port` headers, if these are not present, the `host` header is used. If these heuristics are not working for you, you may set the `LAKEKEEPER_BASE_URI` environment variable to the base-URL where Lakekeeper is externally reachable. This may be necessary if Lakekeeper runs behind a reverse proxy or load balancer, and you cannot set the headers accordingly. In general, we recommend relying on the headers.
 
 ### General
 
-| Variable                                         | Example                                | Description |
-|--------------------------------------------------|----------------------------------------|-----|
-| <nobr>`LAKEKEEPER__BASE_URI`</nobr>              | <nobr>`https://example.com:8181`<nobr> | Base URL where the catalog is externally reachable. Default: `https://localhost:8181` |
+| Variable                                         | Example                                | Description                                                                                                                                                                                                                                                               |
+|--------------------------------------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| <nobr>`LAKEKEEPER__BASE_URI`</nobr>              | <nobr>`https://example.com:8181`<nobr> | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url).                                                                                                                                          |
 | <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr> | `true`                                 | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
-| `LAKEKEEPER__RESERVED_NAMESPACES`                | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
-| `LAKEKEEPER__METRICS_PORT`                       | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
-| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port the Lakekeeper listens on. Default: `8181` |
-| `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
-| `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS. |
+| `LAKEKEEPER__RESERVED_NAMESPACES`                | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface                                                                                                                                                                                                         |
+| `LAKEKEEPER__METRICS_PORT`                       | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000`                                                                                                                                                                                                  |
+| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port the Lakekeeper listens on. Default: `8181`                                                                                                                                                                                                                           |
+| `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`]                                                                                 |
+| `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS.                                                                                                                                                                                                                       |
 
 
 ### Persistence Store
