@@ -1,10 +1,11 @@
 use std::str::FromStr;
 
 use axum::{
+    extract::MatchedPath,
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use http::HeaderMap;
+use http::{HeaderMap, Method};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
@@ -26,6 +27,8 @@ pub struct RequestMetadata {
     authentication: Option<Authentication>,
     base_url: String,
     actor: Actor,
+    matched_path: Option<MatchedPath>,
+    request_method: Method,
 }
 
 impl RequestMetadata {
@@ -52,6 +55,20 @@ impl RequestMetadata {
         }
     }
 
+    #[must_use]
+    pub fn preferred_project_id(&self) -> Option<ProjectIdent> {
+        self.project_id.or(*DEFAULT_PROJECT_ID)
+    }
+
+    #[must_use]
+    pub(crate) fn matched_path(&self) -> Option<&MatchedPath> {
+        self.matched_path.as_ref()
+    }
+
+    pub(crate) fn request_method(&self) -> &Method {
+        &self.request_method
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn new_unauthenticated() -> Self {
@@ -61,12 +78,9 @@ impl RequestMetadata {
             authentication: None,
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Anonymous,
+            matched_path: None,
+            request_method: Method::default(),
         }
-    }
-
-    #[must_use]
-    pub fn preferred_project_id(&self) -> Option<ProjectIdent> {
-        self.project_id.or(*DEFAULT_PROJECT_ID)
     }
 
     #[cfg(test)]
@@ -86,6 +100,8 @@ impl RequestMetadata {
             ),
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Principal(user_id),
+            matched_path: None,
+            request_method: Method::default(),
             project_id: None,
         }
     }
@@ -199,12 +215,18 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         Ok(ident) => ident,
         Err(err) => return err.into_response(),
     };
+
+    let matched_path = request.extensions().get::<MatchedPath>().cloned();
+    let request_method = request.method().clone();
+
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
         base_url: host,
         actor: Actor::Anonymous,
         project_id,
+        matched_path,
+        request_method,
     });
     next.run(request).await
 }

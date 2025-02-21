@@ -203,33 +203,10 @@ pub mod v1 {
 }
 
 pub(crate) fn supported_endpoints() -> Vec<String> {
-    vec![
-        "GET /v1/config".into(),
-        "GET /v1/{prefix}/namespaces".into(),
-        "POST /v1/{prefix}/namespaces".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/properties".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into(),
-        "POST /v1/{prefix}/tables/rename".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/register".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics".into(),
-        "POST /v1/{prefix}/tables/rename".into(),
-        "POST /v1/{prefix}/transactions/commit".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/views".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/views".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "POST /v1/{prefix}/views/rename".into(),
-    ]
+    crate::api::endpoints::Endpoints::catalog()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 #[cfg(test)]
