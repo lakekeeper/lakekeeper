@@ -77,7 +77,7 @@ pub struct S3Profile {
     /// Tables with `s3a` paths are not accessible outside the Java ecosystem.
     #[serde(default)]
     #[builder(default, setter(strip_option))]
-    allow_alternative_protocols: Option<bool>,
+    pub allow_alternative_protocols: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]

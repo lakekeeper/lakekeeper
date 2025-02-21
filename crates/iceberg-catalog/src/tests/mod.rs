@@ -78,6 +78,7 @@ pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
         sts_role_arn: None,
         flavor: S3Flavor::S3Compat,
         sts_enabled: true,
+        allow_alternative_protocols: None,
     }
     .into();
 

@@ -930,7 +930,7 @@ pub(crate) mod test {
     #[sqlx::test]
     async fn test_warehouse_statistics_pagination(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = ProjectIdent::from(uuid::Uuid::new_v4());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
         let warehouse_id =
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
 
