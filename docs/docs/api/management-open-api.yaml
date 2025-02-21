@@ -411,7 +411,7 @@ paths:
         '204':
           description: Permissions updated successfully
   /management/v1/permissions/role/{role_id}/access:
-    post:
+    get:
       tags:
       - permissions
       summary: Get my access to the default project
@@ -424,12 +424,6 @@ paths:
         schema:
           type: string
           format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateRoleAssignmentsRequest'
-        required: true
       responses:
         '200':
           description: ''

@@ -293,13 +293,12 @@ struct SetManagedAccessRequest {
 
 /// Get my access to the default project
 #[utoipa::path(
-    post,
+    get,
     tag = "permissions",
     path = "/management/v1/permissions/role/{role_id}/access",
     params(
         ("role_id" = Uuid, Path, description = "Role ID"),
     ),
-    request_body = UpdateRoleAssignmentsRequest,
     responses(
             (status = 200, body = GetRoleAccessResponse),
     )
