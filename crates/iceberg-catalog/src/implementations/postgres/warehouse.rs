@@ -4,7 +4,14 @@ use sqlx::{types::Json, Error, PgPool};
 
 use super::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
-    api::{management::v1::warehouse::TabularDeleteProfile, CatalogConfig, ErrorModel, Result},
+    api::{
+        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        management::v1::warehouse::{
+            TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse,
+        },
+        CatalogConfig, ErrorModel, Result,
+    },
+    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     request_metadata::RequestMetadata,
     service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
     ProjectIdent, SecretIdent, WarehouseIdent,
