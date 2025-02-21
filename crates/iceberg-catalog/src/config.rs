@@ -158,7 +158,7 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub openid_additional_issuers: Option<Vec<String>>,
-    /// A scopes that must be present in provided tokens
+    /// A scope that must be present in provided tokens
     pub openid_scope: Option<String>,
     pub enable_kubernetes_authentication: bool,
     /// Claim to use in provided JWT tokens as the subject.
@@ -413,7 +413,7 @@ impl DynAppConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub enum PgSslMode {
     Disable,
     Allow,
@@ -449,6 +449,16 @@ impl FromStr for PgSslMode {
             "verifyfull" => Ok(Self::VerifyFull),
             _ => Err(anyhow!("PgSslMode not supported: '{}'", s)),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PgSslMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        PgSslMode::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -604,6 +614,28 @@ where
 mod test {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn test_pg_ssl_mode_case_insensitive() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DISABLED");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DisaBled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+    }
 
     #[test]
     fn test_base_uri_trailing_slash_stripped() {
