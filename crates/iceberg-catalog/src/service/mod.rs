@@ -19,8 +19,8 @@ pub use catalog::{
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
     ListNamespacesResponse, LoadTableResponse, NamespaceIdent, Result, StartupValidationData,
-    TableCommit, TableCreation, TableIdent, Transaction, UpdateNamespacePropertiesRequest,
-    UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
+    TableCommit, TableCreation, TableIdent, Transaction, UndropTabularResponse,
+    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
 };
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 use http::StatusCode;

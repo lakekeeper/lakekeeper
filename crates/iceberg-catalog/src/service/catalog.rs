@@ -28,6 +28,7 @@ use crate::{
         },
     },
     catalog::tables::TableMetadataDiffs,
+    request_metadata::RequestMetadata,
     service::{
         authn::UserId,
         health::HealthExt,
@@ -160,6 +161,14 @@ pub enum CreateOrUpdateUserResponse {
     Updated(User),
 }
 
+#[derive(Debug, Clone)]
+pub struct UndropTabularResponse {
+    pub table_ident: TableIdentUuid,
+    pub task_id: TaskId,
+    pub name: String,
+    pub namespace: NamespaceIdent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupValidationData {
     /// Catalog is not bootstrapped
@@ -226,15 +235,17 @@ where
     async fn get_config_for_warehouse(
         warehouse_id: WarehouseIdent,
         catalog_state: Self::State,
+        request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>>;
 
     /// Wrapper around get_config_for_warehouse that returns
     /// not found error if the warehouse does not exist.
     async fn require_config_for_warehouse(
         warehouse_id: WarehouseIdent,
+        request_metadata: &RequestMetadata,
         catalog_state: Self::State,
     ) -> Result<CatalogConfig> {
-        Self::get_config_for_warehouse(warehouse_id, catalog_state)
+        Self::get_config_for_warehouse(warehouse_id, catalog_state, request_metadata)
             .await?
             .ok_or(
                 ErrorModel::not_found(
@@ -385,8 +396,9 @@ where
     /// Returns the task id of the expiration task associated with the soft-deletion.
     async fn undrop_tabulars(
         table_id: &[TableIdentUuid],
+        warehouse_id: WarehouseIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<TaskId>>;
+    ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
         table_id: TabularIdentUuid,

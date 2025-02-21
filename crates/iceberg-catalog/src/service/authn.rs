@@ -46,8 +46,7 @@ pub struct UserId(Subject);
 
 /// Use a limes [`Authenticator`] to Authenticate a request.
 ///
-/// Run this middleware after running [`create_request_metadata_with_trace_and_project_fn`](crate::request_metadata::create_request_metadata_with_trace_and_project_fn),
-/// to support external trace ids.
+/// This middleware needs to run after [`create_request_metadata_with_trace_and_project_fn`](crate::request_metadata::create_request_metadata_with_trace_and_project_fn).
 pub(crate) async fn auth_middleware_fn<T: Authenticator, A: Authorizer>(
     State(state): State<AuthMiddlewareState<T, A>>,
     authorization: Option<TypedHeader<Authorization<Bearer>>>,

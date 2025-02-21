@@ -45,15 +45,15 @@ use crate::{
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::get_warehouse_stats,
     },
+    request_metadata::RequestMetadata,
     service::{
-        authn::UserId, storage::StorageProfile, task_queue::TaskId, Catalog,
-        CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
-        CreateTableResponse, DeletionDetails, GetNamespaceResponse, GetProjectResponse,
-        GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
-        LoadTableResponse, NamespaceIdent, NamespaceIdentUuid, ProjectIdent, Result, RoleId,
-        StartupValidationData, TableCommit, TableCreation, TableIdent, TableIdentUuid,
-        TabularIdentOwned, TabularIdentUuid, Transaction, ViewIdentUuid, WarehouseIdent,
-        WarehouseStatus,
+        authn::UserId, storage::StorageProfile, Catalog, CreateNamespaceRequest,
+        CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails,
+        GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
+        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid,
+        ProjectIdent, Result, RoleId, StartupValidationData, TableCommit, TableCreation,
+        TableIdent, TableIdentUuid, TabularIdentOwned, TabularIdentUuid, Transaction,
+        UndropTabularResponse, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -196,8 +196,9 @@ impl Catalog for super::PostgresCatalog {
     async fn get_config_for_warehouse(
         warehouse_id: WarehouseIdent,
         catalog_state: CatalogState,
+        request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>> {
-        get_config_for_warehouse(warehouse_id, catalog_state).await
+        get_config_for_warehouse(warehouse_id, catalog_state, request_metadata).await
     }
 
     async fn list_namespaces<'a>(
@@ -358,9 +359,15 @@ impl Catalog for super::PostgresCatalog {
 
     async fn undrop_tabulars(
         tabular_ids: &[TableIdentUuid],
+        warehouse_id: WarehouseIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<TaskId>> {
-        clear_tabular_deleted_at(&tabular_ids.iter().map(|i| **i).collect_vec(), transaction).await
+    ) -> Result<Vec<UndropTabularResponse>> {
+        clear_tabular_deleted_at(
+            &tabular_ids.iter().map(|i| **i).collect_vec(),
+            warehouse_id,
+            transaction,
+        )
+        .await
     }
 
     async fn mark_tabular_as_deleted(

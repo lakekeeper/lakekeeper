@@ -19,7 +19,8 @@ use crate::{
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
         task_queue::TaskId, DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent,
-        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid,
+        TableIdentUuid, TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid,
+        UndropTabularResponse,
     },
     WarehouseIdent,
 };
@@ -576,58 +577,63 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 
 pub(crate) async fn clear_tabular_deleted_at(
     tabular_ids: &[Uuid],
+    warehouse_id: WarehouseIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Vec<TaskId>> {
-    let deleted = sqlx::query!(
-        r#"
-        UPDATE tabular t
-        SET deleted_at = NULL
-        WHERE t.tabular_id = any($1)
-        "#,
-        tabular_ids
+) -> Result<Vec<UndropTabularResponse>> {
+    let undrop_tabular_informations = sqlx::query!(
+        r#"WITH validation AS (
+                SELECT NOT EXISTS (
+                    SELECT 1 FROM unnest($1::uuid[]) AS id
+                    WHERE id NOT IN (SELECT tabular_id FROM tabular)
+                ) AS all_found
+            )
+            UPDATE tabular
+            SET deleted_at = NULL
+            FROM tabular t JOIN namespace n ON t.namespace_id = n.namespace_id
+            JOIN tabular_expirations te ON t.tabular_id = te.tabular_id
+            WHERE tabular.namespace_id = n.namespace_id
+                AND n.warehouse_id = $2
+                AND tabular.tabular_id = ANY($1::uuid[])
+            RETURNING
+                tabular.name,
+                tabular.tabular_id,
+                te.task_id,
+                n.namespace_name,
+                (SELECT all_found FROM validation) as "all_found!";"#,
+        tabular_ids,
+        *warehouse_id,
     )
-    .execute(&mut **transaction)
+    .fetch_all(&mut **transaction)
     .await
     .map_err(|e| {
         tracing::warn!("Error marking tabular as undeleted: {}", e);
         e.into_error_model("Error marking tabular as undeleted")
     })?;
-    if deleted.rows_affected() != tabular_ids.len() as u64 {
-        return Err(ErrorModel::internal(
-            "Mismatch between deleted_at entries in tabular to-be-deleted tabulars.",
-            "InternalDatabaseError",
+
+    if undrop_tabular_informations
+        .first()
+        .is_some_and(|r| !r.all_found)
+    {
+        return Err(ErrorModel::forbidden(
+            "Not allowed to undrop at least one specified tabular.",
+            "NotAuthorized",
             None,
         )
         .into());
     }
 
-    let task_id = sqlx::query!(
-        r#"
-        SELECT task_id FROM tabular_expirations
-        WHERE tabular_id = any($1)
-        "#,
-        tabular_ids
-    )
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|e| {
-        tracing::warn!("Error fetching task IDs for tabulars: {}", e);
-        e.into_error_model("Error fetching task IDs for tabulars")
-    })?;
-
-    if task_id.len() != tabular_ids.len() {
-        return Err(ErrorModel::internal(
-            "Mismatch between task IDs in tabular_expirations and to-be-deleted tabulars.",
-            "InternalDatabaseError",
-            None,
-        )
-        .into());
-    }
-
-    Ok(task_id
+    let undrop_tabular_informations = undrop_tabular_informations
         .into_iter()
-        .map(|task_id| TaskId::from(task_id.task_id))
-        .collect::<Vec<TaskId>>())
+        .map(|undrop_tabular_information| UndropTabularResponse {
+            table_ident: TableIdentUuid::from(undrop_tabular_information.tabular_id),
+            task_id: TaskId::from(undrop_tabular_information.task_id),
+            name: undrop_tabular_information.name,
+            namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
+                .unwrap_or(NamespaceIdent::new("unknown".into())),
+        })
+        .collect::<Vec<UndropTabularResponse>>();
+
+    Ok(undrop_tabular_informations)
 }
 
 pub(crate) async fn mark_tabular_as_deleted(

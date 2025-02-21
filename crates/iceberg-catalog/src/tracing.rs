@@ -6,6 +6,8 @@ use tower_http::{
 use tracing::{Level, Span};
 use uuid::Uuid;
 
+use crate::X_REQUEST_ID_HEADER;
+
 /// A `MakeSpan` implementation that attaches the `request_id` to the span.
 #[derive(Debug, Clone)]
 pub(crate) struct RestMakeSpan {
@@ -38,7 +40,7 @@ impl<B> MakeSpan<B> for RestMakeSpan {
                         version = ?request.version(),
                         request_id = %request
                                     .headers()
-                                    .get("x-request-id")
+                                    .get(X_REQUEST_ID_HEADER)
                                     .and_then(|v| v.to_str().ok())
                                     .unwrap_or("MISSING-REQUEST-ID")
                     )

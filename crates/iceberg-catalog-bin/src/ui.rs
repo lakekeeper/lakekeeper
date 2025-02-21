@@ -34,13 +34,9 @@ const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
         .unwrap_or(default_config.idp_post_logout_redirect_path),
         enable_authentication: CONFIG.openid_provider_uri.is_some(),
         enable_permissions: CONFIG.authz_backend == AuthZBackend::OpenFGA,
-        app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL").unwrap_or(
-            CONFIG
-                .base_uri
-                .to_string()
-                .trim_end_matches('/')
-                .to_string(),
-        ),
+        app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
+            .ok()
+            .or(CONFIG.base_uri.as_ref().map(ToString::to_string)),
     }
 });
 
