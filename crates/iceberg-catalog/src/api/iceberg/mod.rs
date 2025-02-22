@@ -209,6 +209,7 @@ pub(crate) fn supported_endpoints() -> Vec<String> {
         "POST /v1/{prefix}/namespaces".into(),
         "GET /v1/{prefix}/namespaces/{namespace}".into(),
         "DELETE /v1/{prefix}/namespaces/{namespace}".into(),
+        "HEAD /v1/{prefix}/namespaces/{namespace}".into(),
         "POST /v1/{prefix}/namespaces/{namespace}/properties".into(),
         "GET /v1/{prefix}/namespaces/{namespace}/tables".into(),
         "POST /v1/{prefix}/namespaces/{namespace}/tables".into(),
