@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.0](https://github.com/lakekeeper/lakekeeper/compare/v0.6.2...v0.7.0) (2025-02-24)
+
+
+### Features
+
+* Add Opt-In to S3 Variant prefixes (s3a, s3n) ([#821](https://github.com/lakekeeper/lakekeeper/issues/821)) ([b85b724](https://github.com/lakekeeper/lakekeeper/commit/b85b7245376cedb18d5131e24cff671d18045dff))
+* collect warehouse statistics ([#811](https://github.com/lakekeeper/lakekeeper/issues/811)) ([063066c](https://github.com/lakekeeper/lakekeeper/commit/063066ca9561e3ab01b7599c79a5ae76828f8ef1))
+* emit CloudEvent on undropTabulars [#572](https://github.com/lakekeeper/lakekeeper/issues/572) ([#803](https://github.com/lakekeeper/lakekeeper/issues/803)) ([9dd431a](https://github.com/lakekeeper/lakekeeper/commit/9dd431ab9713e425e848337adaeb464ddda87321))
+* Migrate Authentication to Limes, Support Unlimited Authenticators, Customizable Authentication ([b72852d](https://github.com/lakekeeper/lakekeeper/commit/b72852de125a23691f75a291ecdf3c452b8e1c14))
+* **tasks:** add unit to poll interval config ([#829](https://github.com/lakekeeper/lakekeeper/issues/829)) ([c0edafa](https://github.com/lakekeeper/lakekeeper/commit/c0edafa403f28cf578a7db81fd6ada36774cd749))
+* use x-forwarded-for/host headers to generate links ([#834](https://github.com/lakekeeper/lakekeeper/issues/834)) ([89c0f8a](https://github.com/lakekeeper/lakekeeper/commit/89c0f8adacc2dc26b30d400563aeed716b5bdf62))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate rand to 0.9.0 ([#785](https://github.com/lakekeeper/lakekeeper/issues/785)) ([b9952de](https://github.com/lakekeeper/lakekeeper/commit/b9952decd4ecbf959452170b89a5127e4d57cfb9))
+* HEAD Namespace missing in supported endpoints ([#847](https://github.com/lakekeeper/lakekeeper/issues/847)) ([f3e43fe](https://github.com/lakekeeper/lakekeeper/commit/f3e43fe206f32402316daf546130ef197a52ca03))
+* parsing of pg sslmode should be case-insensitive ([#802](https://github.com/lakekeeper/lakekeeper/issues/802)) ([1e3d001](https://github.com/lakekeeper/lakekeeper/commit/1e3d00177f952d0431ddcdb516d4f8e1e1413149))
+* **s3:** set path style access in s3 file_io ([#796](https://github.com/lakekeeper/lakekeeper/issues/796)) ([33e690f](https://github.com/lakekeeper/lakekeeper/commit/33e690f77737ce3f7def54d4913164161aa60505))
+
+
+### Miscellaneous Chores
+
+* release 0.7.0 ([491940b](https://github.com/lakekeeper/lakekeeper/commit/491940b864dbf564f711adfa58be03f45f06f9e3))
+
 ## [0.6.2](https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2) (2025-01-30)
 
 

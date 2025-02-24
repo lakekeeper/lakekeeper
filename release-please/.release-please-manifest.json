@@ -1,5 +1,5 @@
 {
-    "crates/iceberg-catalog": "0.6.2",
-    "crates/iceberg-catalog-bin": "0.6.2",
-    "crates/iceberg-ext": "0.6.2"
+    "crates/iceberg-catalog": "0.7.0",
+    "crates/iceberg-catalog-bin": "0.7.0",
+    "crates/iceberg-ext": "0.7.0"
 }

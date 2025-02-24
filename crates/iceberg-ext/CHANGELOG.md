@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/lakekeeper/lakekeeper/compare/v0.6.2...v0.7.0) (2025-02-24)
+
+
+### Features
+
+* Add Opt-In to S3 Variant prefixes (s3a, s3n) ([#821](https://github.com/lakekeeper/lakekeeper/issues/821)) ([b85b724](https://github.com/lakekeeper/lakekeeper/commit/b85b7245376cedb18d5131e24cff671d18045dff))
+
+
+### Bug Fixes
+
+* parsing of pg sslmode should be case-insensitive ([#802](https://github.com/lakekeeper/lakekeeper/issues/802)) ([1e3d001](https://github.com/lakekeeper/lakekeeper/commit/1e3d00177f952d0431ddcdb516d4f8e1e1413149))
+* trailing whitespaces in locations now fail instead of disappearing ([#830](https://github.com/lakekeeper/lakekeeper/issues/830)) ([0452e5e](https://github.com/lakekeeper/lakekeeper/commit/0452e5efba41af7674f2ba8f96fc30f9de5882ab))
+
+
+### Miscellaneous Chores
+
+* release 0.7.0 ([491940b](https://github.com/lakekeeper/lakekeeper/commit/491940b864dbf564f711adfa58be03f45f06f9e3))
+
 ## [0.6.2](https://github.com/lakekeeper/lakekeeper/compare/v0.6.1...v0.6.2) (2025-01-30)
 
 
