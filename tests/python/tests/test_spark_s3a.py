@@ -150,7 +150,7 @@ def test_disable_alternative_protocols(
     storage_config = copy.deepcopy(storage_config)
     storage_config["storage-profile"]["allow-alternative-protocols"] = False
     response = requests.post(
-        server.warehouse_url + f"{warehouse.warehouse_id}/storage",
+        server.warehouse_url + f"/{warehouse.warehouse_id}/storage",
         json=storage_config,
         headers={"Authorization": f"Bearer {server.access_token}"},
     )
