@@ -4,6 +4,7 @@ pub mod management;
 #[cfg(feature = "router")]
 pub mod router;
 
+pub use crate::request_metadata::{RequestMetadata, PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};
 pub use iceberg_ext::catalog::rest::*;
 
 // Used only to group required traits for a State

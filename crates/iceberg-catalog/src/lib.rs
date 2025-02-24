@@ -14,11 +14,8 @@ pub use service::{ProjectId, SecretIdent, WarehouseIdent};
 
 pub mod implementations;
 
-mod request_metadata;
-
-pub use request_metadata::{PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};
-
 pub mod api;
+mod request_metadata;
 
 #[cfg(feature = "router")]
 pub mod metrics;
