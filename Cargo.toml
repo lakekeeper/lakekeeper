@@ -129,5 +129,5 @@ pretty_assertions = "~1.4"
 similar = "2.6.0"
 assert-json-diff = "2.0.2"
 maplit = "1.0.2"
-limes = { version = "0.1.2", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { version = "0.1.3", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.2", features = ["tonic"] }
