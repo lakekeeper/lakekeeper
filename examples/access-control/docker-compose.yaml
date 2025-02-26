@@ -49,7 +49,10 @@ services:
       - LAKEKEEPER__OPENID_AUDIENCE=lakekeeper
       - LAKEKEEPER__UI__OPENID_CLIENT_ID=lakekeeper
       - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
-      - RUST_LOG=info
+      - LAKEKEEPER__OPENFGA__CLIENT_ID=openfga
+      - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
+      - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
+      - RUST_LOG=info,iceberg-catalog=trace,middle=trace
     command: [ "serve" ]
     healthcheck:
       test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
@@ -93,7 +96,10 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__AUTHZ_BACKEND=openfga
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
-      - RUST_LOG=info
+      - LAKEKEEPER__OPENFGA__CLIENT_ID=openfga
+      - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
+      - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
+      - RUST_LOG=info,iceberg-catalog=info,middle=trace
     restart: "no"
     entrypoint: [ "/home/nonroot/iceberg-catalog", "migrate" ]
     depends_on:
@@ -179,6 +185,11 @@ services:
       - OPENFGA_DATASTORE_URI=postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
       - OPENFGA_DATASTORE_MAX_OPEN_CONNS=50
       - OPENFGA_PLAYGROUND_ENABLED=false
+      - OPENFGA_AUTHN_METHOD=oidc
+      - OPENFGA_AUTHN_OIDC_ISSUER=http://keycloak:8080/realms/iceberg
+      - OPENFGA_AUTHN_OIDC_ISSUER_ALIASES=http://localhost:30080/realms/iceberg
+      - OPENFGA_AUTHN_OIDC_AUDIENCE=openfga
+      - OPENFGA_HTTP_TLS_ENABLED=false
     networks:
       iceberg_net:
     healthcheck:

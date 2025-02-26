@@ -289,6 +289,7 @@ pub enum OpenFGAAuth {
         #[redact]
         client_secret: String,
         token_endpoint: Url,
+        scope: Option<String>,
     },
     #[redact(all)]
     ApiKey(String),
@@ -521,6 +522,8 @@ struct OpenFGAConfigSerde {
     #[redact]
     /// Client secret
     client_secret: Option<String>,
+    /// Scope for the client credentials
+    scope: Option<String>,
     /// Token Endpoint to use when exchanging client credentials for an access token.
     token_endpoint: Option<Url>,
 }
@@ -536,6 +539,7 @@ where
     let Some(OpenFGAConfigSerde {
         client_id,
         client_secret,
+        scope,
         token_endpoint,
         api_key,
         endpoint,
@@ -560,6 +564,7 @@ where
             client_id,
             client_secret,
             token_endpoint,
+            scope,
         }
     } else {
         api_key.map_or(OpenFGAAuth::Anonymous, OpenFGAAuth::ApiKey)
@@ -584,25 +589,28 @@ where
         return None::<OpenFGAConfigSerde>.serialize(serializer);
     };
 
-    let (client_id, client_secret, token_endpoint, api_key) = match &value.auth {
+    let (client_id, client_secret, token_endpoint, scope, api_key) = match &value.auth {
         OpenFGAAuth::ClientCredentials {
             client_id,
             client_secret,
             token_endpoint,
+            scope,
         } => (
             Some(client_id),
             Some(client_secret),
             Some(token_endpoint),
+            scope.clone(),
             None,
         ),
-        OpenFGAAuth::ApiKey(api_key) => (None, None, None, Some(api_key.clone())),
-        OpenFGAAuth::Anonymous => (None, None, None, None),
+        OpenFGAAuth::ApiKey(api_key) => (None, None, None, None, Some(api_key.clone())),
+        OpenFGAAuth::Anonymous => (None, None, None, None, None),
     };
 
     OpenFGAConfigSerde {
         client_id: client_id.cloned(),
         client_secret: client_secret.cloned(),
         token_endpoint: token_endpoint.cloned(),
+        scope,
         api_key,
         endpoint: value.endpoint.clone(),
         store_name: value.store_name.clone(),
@@ -830,7 +838,35 @@ mod test {
                 OpenFGAAuth::ClientCredentials {
                     client_id: "client_id".to_string(),
                     client_secret: "client_secret".to_string(),
-                    token_endpoint: "https://example.com/token".parse().unwrap()
+                    token_endpoint: "https://example.com/token".parse().unwrap(),
+                    scope: None
+                }
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openfga_client_credentials_with_scope() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__SCOPE", "openfga");
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENFGA__TOKEN_ENDPOINT",
+                "https://example.com/token",
+            );
+            let config = get_config();
+            let authz_config = config.openfga.unwrap();
+
+            assert_eq!(
+                authz_config.auth,
+                OpenFGAAuth::ClientCredentials {
+                    client_id: "client_id".to_string(),
+                    client_secret: "client_secret".to_string(),
+                    token_endpoint: "https://example.com/token".parse().unwrap(),
+                    scope: Some("openfga".to_string())
                 }
             );
             Ok(())

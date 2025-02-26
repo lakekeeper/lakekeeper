@@ -34,25 +34,37 @@ pub(crate) async fn new_client_from_config(
     let endpoint = AUTH_CONFIG.endpoint.clone();
 
     let either_or_option = match &AUTH_CONFIG.auth {
-        OpenFGAAuth::Anonymous => None,
+        OpenFGAAuth::Anonymous => {
+            tracing::info!("Building OpenFGA Client without Authorization.");
+            None
+        }
         OpenFGAAuth::ClientCredentials {
             client_id,
             client_secret,
             token_endpoint,
+            scope,
         } => Some(tower::util::Either::Left(
-            openfga_rs::tonic::service::interceptor(
-                BasicClientCredentialAuthorizer::basic_builder(
+            openfga_rs::tonic::service::interceptor({
+                tracing::info!("Building OpenFGA Client with Client Credential Authorization. Token Endpoint: {token_endpoint}, Client ID: {client_id}");
+                let builder = BasicClientCredentialAuthorizer::basic_builder(
                     client_id,
                     client_secret,
                     token_endpoint.clone(),
-                )
+                );
+                if let Some(scope) = scope {
+                    tracing::info!("Adding scope to OpenFGA client: {scope}");
+                    builder.add_scopes(&scope.split(' ').collect::<Vec<_>>())
+                } else {
+                    builder
+                }
                 .build()
-                .await?,
-            ),
+                .await?
+            }),
         )),
-        OpenFGAAuth::ApiKey(k) => Some(tower::util::Either::Right(
-            openfga_rs::tonic::service::interceptor(BearerTokenAuthorizer::new(k.as_str())?),
-        )),
+        OpenFGAAuth::ApiKey(k) => Some(tower::util::Either::Right({
+            tracing::info!("Building OpenFGA Client with API Key Authorization.");
+            openfga_rs::tonic::service::interceptor(BearerTokenAuthorizer::new(k.as_str())?)
+        })),
     };
 
     let auth_layer = tower::util::option_layer(either_or_option);

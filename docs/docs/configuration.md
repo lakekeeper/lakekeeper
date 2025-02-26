@@ -10,15 +10,15 @@ Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By defaul
 
 ### General
 
-| Variable                                         | Example                                | Description                                                                                                                                                                                                                                                               |
-|--------------------------------------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| <nobr>`LAKEKEEPER__BASE_URI`</nobr>              | <nobr>`https://example.com:8181`<nobr> | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url).                                                                                                                                          |
+| Variable                                         | Example                                | Description |
+|--------------------------------------------------|----------------------------------------|-----|
+| <nobr>`LAKEKEEPER__BASE_URI`</nobr>              | <nobr>`https://example.com:8181`<nobr> | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url). |
 | <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr> | `true`                                 | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
-| `LAKEKEEPER__RESERVED_NAMESPACES`                | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface                                                                                                                                                                                                         |
-| `LAKEKEEPER__METRICS_PORT`                       | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000`                                                                                                                                                                                                  |
-| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port the Lakekeeper listens on. Default: `8181`                                                                                                                                                                                                                           |
-| `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`]                                                                                 |
-| `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS.                                                                                                                                                                                                                       |
+| `LAKEKEEPER__RESERVED_NAMESPACES`                | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
+| `LAKEKEEPER__METRICS_PORT`                       | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
+| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port the Lakekeeper listens on. Default: `8181` |
+| `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
+| `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS. |
 
 
 ### Persistence Store
@@ -61,10 +61,10 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                                  | Example                   | Description                                                                                                                                                                                                          |
-|-------------------------------------------|---------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5                         | Number of retries before a task is considered failed  Default: 5                                                                                                                                                     |
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`       | 3600                      | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600                                                                                                          |
+| Variable                                  | Example                   | Description |
+|-------------------------------------------|---------------------------|------|
+| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5                         | Number of retries before a task is considered failed  Default: 5 |
+| `LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`       | 3600                      | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600 |
 | `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL` | 3600ms/30s/30(deprecated) | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
 
 ### Nats
@@ -124,6 +124,7 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr> | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
 | `LAKEKEEPER__OPENFGA__CLIENT_SECRET`          | `abcd`                                                                     | Client Secret for the Client ID. |
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`         | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER_TEST__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
 
 
 ### UI
