@@ -297,6 +297,7 @@ impl StorageProfile {
             || self.default_tabular_location(&ns_location, table_id.into()),
             std::borrow::ToOwned::to_owned,
         );
+        tracing::debug!("Validating direct read/write access to {test_location}");
         // Validate direct read/write access
         self.validate_read_write(&file_io, &test_location, false)
             .await?;
@@ -311,6 +312,8 @@ impl StorageProfile {
         };
 
         if test_vended_credentials {
+            tracing::debug!("Validating vended credentials access to: {test_location}");
+
             let tbl_config = self
                 .generate_table_config(
                     &DataAccess {
@@ -324,18 +327,30 @@ impl StorageProfile {
                 .await?;
             match &self {
                 StorageProfile::S3(_) => {
+                    tracing::debug!("Getting s3 file io from table config for vended credentials.");
                     let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
+
+                    tracing::debug!(
+                        "Validating read/write access to: {test_location} using vended credentials"
+                    );
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
                 StorageProfile::Adls(_) => {
+                    tracing::debug!(
+                        "Validating adls vended credentials access to: {test_location}"
+                    );
                     az::validate_vended_credentials(&tbl_config.config, &test_location, self)
                         .await?;
                 }
                 #[cfg(test)]
                 StorageProfile::Test(_) => {}
                 StorageProfile::Gcs(_) => {
+                    tracing::debug!(
+                        "Getting gcs file io from table config for vended credentials."
+                    );
                     let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
+                    tracing::debug!("Validating gcs vended credentials access to: {test_location}");
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
@@ -420,17 +435,26 @@ impl StorageProfile {
             file_io,
         )
         .await
-        .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
+        .map_err(|e| {
+            tracing::info!("Error while writing file: {e:?}");
+            ValidationError::IoOperationFailed(e, Box::new(self.clone()))
+        })?;
 
         // Test read
         let _ = crate::catalog::io::read_file(file_io, &test_file_write)
             .await
-            .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
+            .map_err(|e| {
+                tracing::info!("Error while reading file: {e:?}");
+                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
+            })?;
 
         // Test delete
         crate::catalog::io::delete_file(file_io, &test_file_write)
             .await
-            .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
+            .map_err(|e| {
+                tracing::info!("Error while deleting file: {e:?}");
+                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
+            })?;
 
         tracing::debug!(
             "Successfully wrote, read and deleted file at: {}",
