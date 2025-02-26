@@ -3761,9 +3761,9 @@ dependencies = [
 
 [[package]]
 name = "middle"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2cddda048433d0daff25d8c5319cdca3ec31ac9c60dddd04d6dd93aca90377b"
+checksum = "c5ccd29fb6897e961cec68ceebe5b8db287cc191e0019532777ffa5b0b6a7424"
 dependencies = [
  "http 1.2.0",
  "oauth2 5.0.0",
