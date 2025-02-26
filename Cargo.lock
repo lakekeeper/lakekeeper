@@ -3761,9 +3761,9 @@ dependencies = [
 
 [[package]]
 name = "middle"
-version = "0.3.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5ccd29fb6897e961cec68ceebe5b8db287cc191e0019532777ffa5b0b6a7424"
+checksum = "628698746c0e592cb44d77cf7ac2d218ac6e35cd05c5643320b2c1f1f7e93dfd"
 dependencies = [
  "http 1.2.0",
  "oauth2 5.0.0",
@@ -7007,9 +7007,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.14.0"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93d59ca99a559661b96bf898d8fce28ed87935fd2bea9f05983c1464dd6c71b1"
+checksum = "e0f540e3240398cce6128b64ba83fdbdd86129c16a3aa1a3a252efd66eb3d587"
 dependencies = [
  "getrandom 0.3.1",
  "serde",
