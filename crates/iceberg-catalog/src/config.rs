@@ -161,6 +161,12 @@ pub struct DynAppConfig {
     /// A scope that must be present in provided tokens
     pub openid_scope: Option<String>,
     pub enable_kubernetes_authentication: bool,
+    /// Audience expected in provided JWT tokens.
+    #[serde(
+        deserialize_with = "deserialize_audience",
+        serialize_with = "serialize_audience"
+    )]
+    pub kubernetes_authentication_audience: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens as the subject.
     pub openid_subject_claim: Option<String>,
 
@@ -384,6 +390,7 @@ impl Default for DynAppConfig {
             openid_additional_issuers: None,
             openid_scope: None,
             enable_kubernetes_authentication: false,
+            kubernetes_authentication_audience: None,
             openid_subject_claim: None,
             listen_port: 8181,
             health_check_frequency_seconds: 10,

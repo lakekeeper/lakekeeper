@@ -103,14 +103,15 @@ Typical values for `LAKEKEEPER__OPENID_PROVIDER_URI` are:
 
 Please check the [Authentication Guide](./authentication.md) for more details.
 
-| Variable                                       | Example                                      | Description |
-|------------------------------------------------|----------------------------------------------|-----|
-| <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr> | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                  | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
-| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`        | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
-| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
-| `LAKEKEEPER__OPENID_SCOPE`                     | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
-| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`             | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
+| Variable                                         | Example                                      | Description |
+|--------------------------------------------------|----------------------------------------------|-----|
+| <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>   | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. |
+| `LAKEKEEPER__OPENID_AUDIENCE`                    | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
+| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`          | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
+| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`   | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| `LAKEKEEPER__OPENID_SCOPE`                       | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
+| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`               | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
 
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.

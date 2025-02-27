@@ -161,7 +161,10 @@ async fn serve_with_authn<A: Authorizer>(
         Some(
             limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
                 Some(K8S_IDP_ID),
-                vec![], // All audiences accepted
+                CONFIG
+                    .kubernetes_authentication_audience
+                    .clone()
+                    .unwrap_or_default(),
             )
             .await
             .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))
@@ -220,8 +223,8 @@ async fn serve_with_authn<A: Authorizer>(
     match (authn_k8s, authn_oidc) {
         (Some(k8s), Some(oidc)) => {
             let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
-                .add_authenticator(k8s)
                 .add_authenticator(oidc)
+                .add_authenticator(k8s)
                 .build();
             serve_inner(
                 authorizer,
