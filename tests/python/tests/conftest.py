@@ -562,9 +562,15 @@ def trino(warehouse: Warehouse, storage_config, trino_token):
             "fs.native-s3.enabled" = 'true'
         """
     elif storage_config["storage-profile"]["type"] == "adls":
-        extra_config = """
+        # Azure currently without vended creds :/ https://github.com/trinodb/trino/issues/23238
+        extra_config = f"""
             ,
-            "fs.native-azure.enabled" = 'true'
+            "fs.native-azure.enabled" = 'true',
+            "azure.auth-type" = 'OAUTH',
+            "azure.oauth.client-id" = '{settings.azure_client_id}',
+            "azure.oauth.secret" = '{settings.azure_client_secret}',
+            "azure.oauth.tenant-id" = '{settings.azure_tenant_id}',
+            "azure.oauth.endpoint" = 'https://login.microsoftonline.com/{settings.azure_tenant_id}/v2.0'
         """
     else:
         raise ValueError(
