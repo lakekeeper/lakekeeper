@@ -8,6 +8,7 @@ nav:
   - API:
       - Catalog: api/catalog.md
       - Management: api/management.md
+  - Query Engines: engines.md
   - User Guide:
       - bootstrap.md
       - storage.md
@@ -20,4 +21,3 @@ nav:
   - Contribute:
       - developer-guide.md
       - customize.md
-
