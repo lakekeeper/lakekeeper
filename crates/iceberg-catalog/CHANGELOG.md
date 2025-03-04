@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.3](https://github.com/lakekeeper/lakekeeper/compare/v0.7.2...v0.7.3) (2025-03-04)
+
+
+### Features
+
+* add EnumString to Catalog{resource}Action ([efeb311](https://github.com/lakekeeper/lakekeeper/commit/efeb311180d31d463cd8f0f5ca3dc6e882f02fec))
+
+
+### Miscellaneous Chores
+
+* release 0.7.3 ([630ee3a](https://github.com/lakekeeper/lakekeeper/commit/630ee3adc67533e499e8d656fdb1ba49900b87b3))
+
 ## [0.7.2](https://github.com/lakekeeper/lakekeeper/compare/v0.7.1...v0.7.2) (2025-02-27)
 
 
