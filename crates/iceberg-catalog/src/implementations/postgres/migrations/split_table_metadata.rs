@@ -26,7 +26,7 @@ impl MigrationHook for SplitTableMetadataHook {
 async fn split_table_metadata(
     transaction: &mut sqlx::Transaction<'_, Postgres>,
 ) -> api::Result<()> {
-    let num_projects: i32 = sqlx::query_scalar("SELECT COUNT(*) as count FROM project")
+    let num_projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project")
         .fetch_one(&mut **transaction)
         .await
         .map_err(|e| {
