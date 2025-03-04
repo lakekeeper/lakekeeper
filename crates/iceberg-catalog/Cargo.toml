@@ -105,3 +105,4 @@ serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-test = "0.2.5"
