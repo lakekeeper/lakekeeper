@@ -11,7 +11,7 @@
       {
         "ordinal": 1,
         "name": "project_id",
-        "type_info": "Uuid"
+        "type_info": "Text"
       },
       {
         "ordinal": 2,

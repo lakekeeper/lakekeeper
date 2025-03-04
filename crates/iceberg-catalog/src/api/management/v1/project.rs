@@ -38,11 +38,6 @@ pub struct GetProjectResponse {
 pub struct RenameProjectRequest {
     /// New name for the project.
     pub new_name: String,
-    /// Optional project ID.
-    /// Deprecated: Please use the `x-project-id` header instead.
-    #[serde(default)]
-    #[schema(value_type = Option::<String>)]
-    pub project_id: Option<ProjectId>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

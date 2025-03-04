@@ -1984,7 +1984,7 @@ components:
           - 'null'
           description: |-
             Project ID in which the role is created.
-            Deprecated: Please use the x-project-id header instead.
+            Deprecated: Please use the `x-project-id` header instead.
     CreateUserRequest:
       type: object
       properties:
@@ -2729,13 +2729,6 @@ components:
         new-name:
           type: string
           description: New name for the project.
-        project-id:
-          type:
-          - string
-          - 'null'
-          description: |-
-            Optional project ID.
-            Deprecated: Please use the `x-project-id` header instead.
     RenameWarehouseRequest:
       type: object
       required:
@@ -2911,10 +2904,8 @@ components:
           - string
           - 'null'
           description: |-
-            Deprecated: Please use the `x-project-id`` header instead.
+            Deprecated: Please use the `x-project-id` header instead.
             Project ID in which the role is created.
-            Only required if the project ID cannot be inferred from the
-            users token and no default project is set.
         search:
           type: string
           description: |-

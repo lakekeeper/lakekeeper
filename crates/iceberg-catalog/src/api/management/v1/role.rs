@@ -26,7 +26,7 @@ pub struct CreateRoleRequest {
     #[serde(default)]
     pub description: Option<String>,
     /// Project ID in which the role is created.
-    /// Deprecated: Please use the x-project-id header instead.
+    /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
     #[schema(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
@@ -87,8 +87,6 @@ pub struct SearchRoleRequest {
     pub search: String,
     /// Deprecated: Please use the `x-project-id` header instead.
     /// Project ID in which the role is created.
-    /// Only required if the project ID cannot be inferred from the
-    /// users token and no default project is set.
     #[serde(default)]
     #[schema(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
