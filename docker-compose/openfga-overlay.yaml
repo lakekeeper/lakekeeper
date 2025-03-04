@@ -15,7 +15,7 @@ services:
     depends_on:
       openfga-migrate:
         condition: service_completed_successfully
-    image: &openfga-image openfga/openfga:v1.6
+    image: &openfga-image openfga/openfga:v1.8
     container_name: openfga
     command: run
     environment: &openfga-environment
