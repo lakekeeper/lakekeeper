@@ -295,7 +295,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectId,
+        project_id: &ProjectId,
         action: &CatalogProjectAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
@@ -411,11 +411,11 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_project(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectId,
+        project_id: &ProjectId,
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(&project_id, ConsistencyPreference::MinimizeLatency)
+        self.require_no_relations(project_id, ConsistencyPreference::MinimizeLatency)
             .await?;
         let server = OPENFGA_SERVER.clone();
         let this_id = project_id.to_openfga();
@@ -458,7 +458,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        parent_project_id: ProjectId,
+        parent_project_id: &ProjectId,
     ) -> Result<()> {
         let actor = metadata.actor();
 

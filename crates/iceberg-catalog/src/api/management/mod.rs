@@ -554,7 +554,7 @@ pub mod v1 {
         get,
         tag = "project",
         path = "/management/v1/project/{project_id}",
-        params(("project_id" = Uuid,)),
+        params(("project_id" = String,)),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -592,7 +592,7 @@ pub mod v1 {
         delete,
         tag = "project",
         path = "/management/v1/project/{project_id}",
-        params(("project_id" = Uuid,)),
+        params(("project_id" = String,)),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -631,7 +631,7 @@ pub mod v1 {
         post,
         tag = "project",
         path = "/management/v1/project/{project_id}/rename",
-        params(("project_id" = Uuid,)),
+        params(("project_id" = String,)),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),

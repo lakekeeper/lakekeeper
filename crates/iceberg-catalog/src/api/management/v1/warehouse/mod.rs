@@ -73,8 +73,8 @@ pub struct CreateWarehouseRequest {
     /// within a project and may not contain "/"
     pub warehouse_name: String,
     /// Project ID in which to create the warehouse.
-    /// If no default project is set for this server, this field is required.
-    #[schema(value_type=Option<uuid::Uuid>)]
+    /// Deprecated: Please use the `x-project-id` header instead.
+    #[schema(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
     /// Storage profile to use for the warehouse.
     pub storage_profile: StorageProfile,
@@ -168,9 +168,9 @@ pub struct ListWarehousesRequest {
     #[param(nullable = false, required = false)]
     pub warehouse_status: Option<Vec<WarehouseStatus>>,
     /// The project ID to list warehouses for.
-    /// Setting a warehouse is required.
+    /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[param(value_type=Option::<uuid::Uuid>)]
+    #[param(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
 }
 
@@ -201,8 +201,9 @@ pub struct GetWarehouseResponse {
     pub id: uuid::Uuid,
     /// Name of the warehouse.
     pub name: String,
-    /// Project ID in which the warehouse is created.
-    pub project_id: uuid::Uuid,
+    /// Project ID in which the warehouse was created.
+    #[schema(value_type=String)]
+    pub project_id: ProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
     /// Delete profile used for the warehouse.
@@ -282,20 +283,21 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id = project_id
-            .or(*DEFAULT_PROJECT_ID)
-            .ok_or(ErrorModel::bad_request(
-                "project_id must be specified",
-                "CreateWarehouseProjectIdMissing",
-                None,
-            ))?;
+        let project_id =
+            project_id
+                .or(DEFAULT_PROJECT_ID.clone())
+                .ok_or(ErrorModel::bad_request(
+                    "project_id must be specified",
+                    "CreateWarehouseProjectIdMissing",
+                    None,
+                ))?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
+                &project_id,
                 &CatalogProjectAction::CanCreateWarehouse,
             )
             .await?;
@@ -322,7 +324,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         let warehouse_id = C::create_warehouse(
             warehouse_name,
-            project_id,
+            &project_id,
             storage_profile,
             delete_profile,
             secret_id,
@@ -330,7 +332,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         )
         .await?;
         authorizer
-            .create_warehouse(&request_metadata, warehouse_id, project_id)
+            .create_warehouse(&request_metadata, warehouse_id, &project_id)
             .await?;
 
         transaction.commit().await?;
@@ -350,7 +352,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
+                &project_id,
                 &CatalogProjectAction::CanListWarehouses,
             )
             .await?;
@@ -359,7 +361,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
 
         let warehouses =
-            C::list_warehouses(project_id, request.warehouse_status, trx.transaction()).await?;
+            C::list_warehouses(&project_id, request.warehouse_status, trx.transaction()).await?;
         trx.commit().await?;
 
         let warehouses = futures::future::try_join_all(warehouses.iter().map(|w| {
@@ -915,7 +917,7 @@ impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
         Self {
             id: warehouse.id.to_uuid(),
             name: warehouse.name,
-            project_id: *warehouse.project_id,
+            project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,

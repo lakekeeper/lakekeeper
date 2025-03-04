@@ -51,7 +51,7 @@ async fn split_table_metadata(
     for project in projects {
         tracing::info!("Migrating tables for project {}", project.project_id);
         let warehouses = list_warehouses(
-            project.project_id,
+            &project.project_id,
             Some(vec![WarehouseStatus::Active, WarehouseStatus::Inactive]),
             &mut **transaction,
         )
