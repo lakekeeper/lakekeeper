@@ -26,9 +26,9 @@ pub struct CreateRoleRequest {
     #[serde(default)]
     pub description: Option<String>,
     /// Project ID in which the role is created.
-    /// Only required if the project ID cannot be inferred and no default project is set.
+    /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[schema(value_type=uuid::Uuid)]
+    #[schema(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
 }
 
@@ -43,7 +43,7 @@ pub struct Role {
     /// Description of the role
     pub description: Option<String>,
     /// Project ID in which the role is created.
-    #[schema(value_type=uuid::Uuid)]
+    #[schema(value_type=String)]
     pub project_id: ProjectId,
     /// Timestamp when the role was created
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -85,12 +85,10 @@ pub struct SearchRoleRequest {
     /// Search string for fuzzy search.
     /// Length is truncated to 64 characters.
     pub search: String,
-    /// Deprecated: Please use the x-project-id header instead.
+    /// Deprecated: Please use the `x-project-id` header instead.
     /// Project ID in which the role is created.
-    /// Only required if the project ID cannot be inferred from the
-    /// users token and no default project is set.
     #[serde(default)]
-    #[schema(value_type=Option<uuid::Uuid>)]
+    #[schema(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
 }
 
@@ -108,10 +106,9 @@ pub struct ListRolesQuery {
     #[serde(default = "default_page_size")]
     pub page_size: i64,
     /// Project ID from which roles should be listed
-    /// Only required if the project ID cannot be inferred from the
-    /// users token and no default project is set.
+    /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[param(value_type=uuid::Uuid)]
+    #[param(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
 }
 
@@ -160,7 +157,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
+                &project_id,
                 &CatalogProjectAction::CanCreateRole,
             )
             .await?;
@@ -171,7 +168,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let user = C::create_role(
             role_id,
-            project_id,
+            &project_id,
             &request.name,
             description.as_deref(),
             t.transaction(),
@@ -190,14 +187,14 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         request_metadata: RequestMetadata,
     ) -> Result<ListRolesResponse> {
         // -------------------- VALIDATIONS --------------------
-        let project_id = request_metadata.require_project_id(query.project_id)?;
+        let project_id = request_metadata.require_project_id(query.project_id.clone())?;
 
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
+                &project_id,
                 &CatalogProjectAction::CanListRoles,
             )
             .await?;
@@ -264,7 +261,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
+                &project_id,
                 &CatalogProjectAction::CanSearchRoles,
             )
             .await?;

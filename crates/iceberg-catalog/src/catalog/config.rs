@@ -37,13 +37,13 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
             authorizer
                 .require_project_action(
                     &request_metadata,
-                    project_id,
+                    &project_id,
                     &CatalogProjectAction::CanListWarehouses,
                 )
                 .await?;
             C::require_warehouse_by_name(
                 &warehouse_from_arg,
-                project_id,
+                &project_id,
                 api_context.v1_state.catalog.clone(),
             )
             .await?

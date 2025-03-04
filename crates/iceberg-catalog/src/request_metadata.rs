@@ -66,7 +66,7 @@ impl RequestMetadata {
 
     #[must_use]
     pub fn preferred_project_id(&self) -> Option<ProjectId> {
-        self.project_id.or(*DEFAULT_PROJECT_ID)
+        self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
     #[cfg(test)]

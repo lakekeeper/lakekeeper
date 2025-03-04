@@ -11,12 +11,12 @@
       {
         "ordinal": 1,
         "name": "project_id",
-        "type_info": "Uuid"
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
