@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use axum::Router;
 use strum::EnumIter;
+use strum_macros::EnumString;
 
 use super::{
     health::HealthExt, Actor, Catalog, NamespaceIdentUuid, ProjectId, RoleId, SecretStore, State,
@@ -16,7 +17,7 @@ pub use implementations::allow_all::AllowAllAuthorizer;
 
 use crate::{api::ApiContext, service::authn::UserId};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogUserAction {
     /// Can get all details of the user given its id
@@ -27,7 +28,7 @@ pub enum CatalogUserAction {
     CanDelete,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogServerAction {
     /// Can create items inside the server (can create Warehouses).
@@ -42,7 +43,7 @@ pub enum CatalogServerAction {
     CanProvisionUsers,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogProjectAction {
     CanCreateWarehouse,
@@ -56,7 +57,7 @@ pub enum CatalogProjectAction {
     CanSearchRoles,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogRoleAction {
     CanDelete,
@@ -64,7 +65,7 @@ pub enum CatalogRoleAction {
     CanRead,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogWarehouseAction {
     CanCreateNamespace,
@@ -83,7 +84,7 @@ pub enum CatalogWarehouseAction {
     CanModifySoftDeletion,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogNamespaceAction {
     CanCreateTable,
@@ -97,7 +98,7 @@ pub enum CatalogNamespaceAction {
     CanListNamespaces,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
     CanDrop,
@@ -110,7 +111,7 @@ pub enum CatalogTableAction {
     CanUndrop,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
     CanDrop,
@@ -557,12 +558,72 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
-    fn test_namespace_action() {
+    fn test_catalog_resource_action() {
+        // server action
+        assert_eq!(
+            CatalogServerAction::CanCreateProject.to_string(),
+            "can_create_project"
+        );
+        assert_eq!(
+            CatalogServerAction::from_str("can_create_project").unwrap(),
+            CatalogServerAction::CanCreateProject
+        );
+        // user action
+        assert_eq!(CatalogUserAction::CanDelete.to_string(), "can_delete");
+        assert_eq!(
+            CatalogUserAction::from_str("can_delete").unwrap(),
+            CatalogUserAction::CanDelete
+        );
+        // role action
+        assert_eq!(CatalogRoleAction::CanUpdate.to_string(), "can_update");
+        assert_eq!(
+            CatalogRoleAction::from_str("can_update").unwrap(),
+            CatalogRoleAction::CanUpdate
+        );
+        // project action
+        assert_eq!(
+            CatalogProjectAction::CanCreateWarehouse.to_string(),
+            "can_create_warehouse"
+        );
+        assert_eq!(
+            CatalogProjectAction::from_str("can_create_warehouse").unwrap(),
+            CatalogProjectAction::CanCreateWarehouse
+        );
+        // warehouse action
+        assert_eq!(
+            CatalogWarehouseAction::CanCreateNamespace.to_string(),
+            "can_create_namespace"
+        );
+        assert_eq!(
+            CatalogWarehouseAction::from_str("can_create_namespace").unwrap(),
+            CatalogWarehouseAction::CanCreateNamespace
+        );
+        // namespace action
         assert_eq!(
             CatalogNamespaceAction::CanCreateTable.to_string(),
             "can_create_table"
+        );
+        assert_eq!(
+            CatalogNamespaceAction::from_str("can_create_table").unwrap(),
+            CatalogNamespaceAction::CanCreateTable
+        );
+        // table action
+        assert_eq!(CatalogTableAction::CanCommit.to_string(), "can_commit");
+        assert_eq!(
+            CatalogTableAction::from_str("can_commit").unwrap(),
+            CatalogTableAction::CanCommit
+        );
+        // view action
+        assert_eq!(
+            CatalogViewAction::CanGetMetadata.to_string(),
+            "can_get_metadata"
+        );
+        assert_eq!(
+            CatalogViewAction::from_str("can_get_metadata").unwrap(),
+            CatalogViewAction::CanGetMetadata
         );
     }
 }
