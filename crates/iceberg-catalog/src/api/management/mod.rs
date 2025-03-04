@@ -587,7 +587,7 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Delete the default project
+    /// Delete a project by ID
     #[utoipa::path(
         delete,
         tag = "project",
