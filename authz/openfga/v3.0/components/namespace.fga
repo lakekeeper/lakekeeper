@@ -1,0 +1,42 @@
+module lakekeeper-namespace
+
+type namespace
+  relations
+    # ------------------ Relation Hierarchies ------------------
+    define parent: [namespace, warehouse]
+    define child: [namespace, table, view]
+
+    # ------------------ Special roles ------------------
+    define ownership: [user, role#assignee]
+    define managed_access: [user:*, role:*]
+    define managed_access_inheritance: managed_access or managed_access_inheritance from parent
+
+    # ------------------ Assignable Privileges ------------------
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    define describe: [user, role#assignee] or ownership or select or create or describe from parent
+    define select: [user, role#assignee] or ownership or modify or select from parent
+    define create: [user, role#assignee] or ownership or create from parent
+    define modify: [user, role#assignee] or ownership or modify from parent
+
+    # ------------------ Actions ------------------
+    define can_create_table: create
+    define can_create_view: create
+    define can_create_namespace: create
+    define can_delete: modify
+    define can_update_properties: modify
+    define can_get_metadata: describe or can_get_metadata from child
+    define can_list_tables: can_get_metadata
+    define can_list_views: can_get_metadata
+    define can_list_namespaces: can_get_metadata
+    define can_include_in_list: can_get_metadata
+    define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_change_ownership
+    # GRANT Permissions
+    define can_grant_create: manage_grants or (create and pass_grants)
+    define can_grant_describe: manage_grants or (describe and pass_grants)
+    define can_grant_modify: manage_grants or (modify and pass_grants)
+    define can_grant_select: manage_grants or (select and pass_grants)
+    define can_grant_pass_grants: manage_grants
+    define can_grant_manage_grants: manage_grants
+    define can_change_ownership: manage_grants
+    define can_set_managed_access: manage_grants
