@@ -53,7 +53,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2585f4f", features = [
     "storage-all",
 ] }
-openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "2623173bab4f9c59b70f599dbc80bd4fe344e1ed" }
+openfga-client = { version = "0.2", features = ["auth-middle"] }
 typed-builder = "^0.20.0"
 strum_macros = "^0.27.0"
 async-trait = "0.1.83"

@@ -94,7 +94,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_server_action(&request_metadata, &CatalogServerAction::CanCreateProject)
+            .require_server_action(&request_metadata, CatalogServerAction::CanCreateProject)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -127,7 +127,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanRename,
+                CatalogProjectAction::CanRename,
             )
             .await?;
 
@@ -152,7 +152,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanGetMetadata,
+                CatalogProjectAction::CanGetMetadata,
             )
             .await?;
 
@@ -186,7 +186,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 project_id,
-                &CatalogProjectAction::CanDelete,
+                CatalogProjectAction::CanDelete,
             )
             .await?;
 

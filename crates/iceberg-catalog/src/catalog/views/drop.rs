@@ -40,14 +40,14 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // Can't fail before authz
 
     let view_id: ViewIdentUuid = authorizer
-        .require_view_action(&request_metadata, view_id, &CatalogViewAction::CanDrop)
+        .require_view_action(&request_metadata, view_id, CatalogViewAction::CanDrop)
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
