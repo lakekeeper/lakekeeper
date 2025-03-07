@@ -1,0 +1,36 @@
+name: kafka_build_aarch64_musl_test
+
+on:
+  push:
+    branches:
+      - "ga/kafka"
+  workflow_dispatch:
+
+jobs:
+  build-binary:
+    name: Build Binary
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Build docker image
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/build-lakekeeper:latest \
+            -f docker-build/build-with-alpine3.21.Dockerfile .
+
+      - name: Build
+        run: |
+          docker run \
+          --mount type=bind,src=.,target=/build \
+          localhost/build-lakekeeper:latest \
+          cargo build --release --all-features --locked --target aarch64-unknown-linux-musl
+
+      - name: Show target
+        run: ls -R target

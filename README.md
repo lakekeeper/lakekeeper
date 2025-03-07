@@ -91,7 +91,7 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 ### Supported Secret Stores
 
 | Backend         | Status  | Comment       |
-|-----------------|:-------:|---------------|
+| --------------- | :-----: | ------------- |
 | Postgres        | ![done] |               |
 | kv2 (hcp-vault) | ![done] | userpass auth |
 
