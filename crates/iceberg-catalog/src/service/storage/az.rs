@@ -112,7 +112,7 @@ impl AdlsProfile {
         CatalogConfig {
             defaults: HashMap::default(),
             overrides: HashMap::default(),
-            endpoints: supported_endpoints(),
+            endpoints: supported_endpoints().to_vec(),
         }
     }
 

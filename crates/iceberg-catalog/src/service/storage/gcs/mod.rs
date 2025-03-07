@@ -144,7 +144,7 @@ impl GcsProfile {
         CatalogConfig {
             defaults: HashMap::with_capacity(0),
             overrides: HashMap::with_capacity(0),
-            endpoints: supported_endpoints(),
+            endpoints: supported_endpoints().to_vec(),
         }
     }
 
