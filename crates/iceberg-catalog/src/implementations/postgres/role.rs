@@ -19,7 +19,7 @@ struct RoleRow {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    pub project_id: ProjectId,
+    pub project_id: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -39,7 +39,7 @@ impl From<RoleRow> for Role {
             id: RoleId::new(id),
             name,
             description,
-            project_id,
+            project_id: ProjectId::from_db_unchecked(project_id),
             created_at,
             updated_at,
         }
@@ -48,7 +48,7 @@ impl From<RoleRow> for Role {
 
 pub(crate) async fn create_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     role_id: RoleId,
-    project_id: ProjectId,
+    project_id: &ProjectId,
     role_name: &str,
     description: Option<&str>,
     connection: E,
@@ -63,7 +63,7 @@ pub(crate) async fn create_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         uuid::Uuid::from(role_id),
         role_name,
         description,
-        uuid::Uuid::from(project_id)
+        project_id
     )
     .fetch_one(connection)
     .await
@@ -195,7 +195,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         LIMIT $9
         "#,
         filter_project_id.is_none(),
-        uuid::Uuid::from(filter_project_id.unwrap_or_default()),
+        &filter_project_id.unwrap_or_default(),
         filter_role_id.is_none(),
         filter_role_id
             .unwrap_or_default()
@@ -260,14 +260,14 @@ mod test {
     #[sqlx::test]
     async fn test_create_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = uuid::Uuid::now_v7().into();
+        let project_id = ProjectId::default();
         let role_id = RoleId::default();
         let role_name = "Role 1";
 
         // Yield 404 on project not found
         let err = create_role(
             role_id,
-            project_id,
+            &project_id,
             role_name,
             Some("Role 1 description"),
             &state.write_pool(),
@@ -280,7 +280,7 @@ mod test {
             .await
             .unwrap();
         PostgresCatalog::create_project(
-            project_id,
+            &project_id,
             format!("Project {project_id}"),
             t.transaction(),
         )
@@ -291,7 +291,7 @@ mod test {
 
         let role = create_role(
             role_id,
-            project_id,
+            &project_id,
             role_name,
             Some("Role 1 description"),
             &state.write_pool(),
@@ -307,7 +307,7 @@ mod test {
         let new_role_id = RoleId::default();
         let err = create_role(
             new_role_id,
-            project_id,
+            &project_id,
             role_name.to_lowercase().as_str(),
             Some("Role 1 description"),
             &state.write_pool(),
@@ -320,7 +320,7 @@ mod test {
     #[sqlx::test]
     async fn test_rename_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = Uuid::now_v7().into();
+        let project_id = ProjectId::default();
         let role_id = RoleId::default();
         let role_name = "Role 1";
 
@@ -328,7 +328,7 @@ mod test {
             .await
             .unwrap();
         PostgresCatalog::create_project(
-            project_id,
+            &project_id,
             format!("Project {project_id}"),
             t.transaction(),
         )
@@ -339,7 +339,7 @@ mod test {
 
         let role = create_role(
             role_id,
-            project_id,
+            &project_id,
             role_name,
             Some("Role 1 description"),
             &state.write_pool(),
@@ -365,7 +365,7 @@ mod test {
     #[sqlx::test]
     async fn test_rename_role_conflicts(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = Uuid::now_v7().into();
+        let project_id = ProjectId::default();
         let role_id = RoleId::default();
         let role_name = "Role 1";
         let role_name_2 = "Role 2";
@@ -374,7 +374,7 @@ mod test {
             .await
             .unwrap();
         PostgresCatalog::create_project(
-            project_id,
+            &project_id,
             format!("Project {project_id}"),
             t.transaction(),
         )
@@ -385,7 +385,7 @@ mod test {
 
         let _role = create_role(
             role_id,
-            project_id,
+            &project_id,
             role_name,
             Some("Role 1 description"),
             &state.write_pool(),
@@ -395,7 +395,7 @@ mod test {
 
         let role = create_role(
             RoleId::default(),
-            project_id,
+            &project_id,
             role_name_2,
             Some("Role 2 description"),
             &state.write_pool(),
@@ -421,8 +421,8 @@ mod test {
     #[sqlx::test]
     async fn test_list_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project1_id = Uuid::now_v7().into();
-        let project2_id = Uuid::now_v7().into();
+        let project1_id = ProjectId::default();
+        let project2_id = ProjectId::default();
 
         let role1_id = RoleId::default();
         let role2_id = RoleId::default();
@@ -432,7 +432,7 @@ mod test {
             .unwrap();
 
         PostgresCatalog::create_project(
-            project1_id,
+            &project1_id,
             format!("Project {project1_id}"),
             t.transaction(),
         )
@@ -440,7 +440,7 @@ mod test {
         .unwrap();
 
         PostgresCatalog::create_project(
-            project2_id,
+            &project2_id,
             format!("Project {project2_id}"),
             t.transaction(),
         )
@@ -451,7 +451,7 @@ mod test {
 
         create_role(
             role1_id,
-            project1_id,
+            &project1_id,
             "Role 1",
             Some("Role 1 description"),
             &state.write_pool(),
@@ -461,7 +461,7 @@ mod test {
 
         create_role(
             role2_id,
-            project2_id,
+            &project2_id,
             "Role 2",
             Some("Role 2 description"),
             &state.write_pool(),
@@ -538,14 +538,14 @@ mod test {
     #[sqlx::test]
     async fn test_paginate_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project1_id = Uuid::now_v7().into();
+        let project1_id = ProjectId::default();
 
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
 
         PostgresCatalog::create_project(
-            project1_id,
+            &project1_id,
             format!("Project {project1_id}"),
             t.transaction(),
         )
@@ -557,7 +557,7 @@ mod test {
         for i in 0..10 {
             create_role(
                 RoleId::default(),
-                project1_id,
+                &project1_id,
                 &format!("Role-{i}"),
                 Some(&format!("Role-{i} description")),
                 &state.write_pool(),
@@ -636,7 +636,7 @@ mod test {
     #[sqlx::test]
     async fn test_delete_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = Uuid::now_v7().into();
+        let project_id = ProjectId::default();
         let role_id = RoleId::default();
         let role_name = "Role 1";
 
@@ -644,7 +644,7 @@ mod test {
             .await
             .unwrap();
         PostgresCatalog::create_project(
-            project_id,
+            &project_id,
             format!("Project {project_id}"),
             t.transaction(),
         )
@@ -655,7 +655,7 @@ mod test {
 
         create_role(
             role_id,
-            project_id,
+            &project_id,
             role_name,
             Some("Role 1 description"),
             &state.write_pool(),
@@ -687,7 +687,7 @@ mod test {
     #[sqlx::test]
     async fn test_search_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = Uuid::now_v7().into();
+        let project_id = ProjectId::default();
         let role_id = RoleId::default();
         let role_name = "Role 1";
 
@@ -695,7 +695,7 @@ mod test {
             .await
             .unwrap();
         PostgresCatalog::create_project(
-            project_id,
+            &project_id,
             format!("Project {project_id}"),
             t.transaction(),
         )
@@ -706,7 +706,7 @@ mod test {
 
         create_role(
             role_id,
-            project_id,
+            &project_id,
             role_name,
             Some("Role 1 description"),
             &state.write_pool(),
