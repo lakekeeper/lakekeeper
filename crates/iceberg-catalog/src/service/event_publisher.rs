@@ -9,19 +9,19 @@ use crate::service::tabular_idents::TabularIdentUuid;
 
 #[derive(Debug, Clone)]
 pub struct CloudEventsPublisher {
-    tx: tokio::sync::mpsc::Sender<Message>,
+    tx: tokio::sync::mpsc::Sender<CloudEventsMessage>,
     timeout: tokio::time::Duration,
 }
 
 impl CloudEventsPublisher {
     #[must_use]
-    pub fn new(tx: tokio::sync::mpsc::Sender<Message>) -> Self {
+    pub fn new(tx: tokio::sync::mpsc::Sender<CloudEventsMessage>) -> Self {
         Self::new_with_timeout(tx, tokio::time::Duration::from_millis(50))
     }
 
     #[must_use]
     pub fn new_with_timeout(
-        tx: tokio::sync::mpsc::Sender<Message>,
+        tx: tokio::sync::mpsc::Sender<CloudEventsMessage>,
         timeout: tokio::time::Duration,
     ) -> Self {
         Self { tx, timeout }
@@ -39,7 +39,7 @@ impl CloudEventsPublisher {
     ) -> anyhow::Result<()> {
         self.tx
             .send_timeout(
-                Message::Event(Payload {
+                CloudEventsMessage::Event(Payload {
                     id,
                     typ: typ.to_string(),
                     data,
@@ -78,14 +78,14 @@ pub struct Payload {
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
-pub enum Message {
+pub enum CloudEventsMessage {
     Event(Payload),
     Shutdown,
 }
 
 #[derive(Debug)]
 pub struct CloudEventsPublisherBackgroundTask {
-    pub source: tokio::sync::mpsc::Receiver<Message>,
+    pub source: tokio::sync::mpsc::Receiver<CloudEventsMessage>,
     pub sinks: Vec<Arc<dyn CloudEventBackend + Sync + Send>>,
 }
 
@@ -93,7 +93,7 @@ impl CloudEventsPublisherBackgroundTask {
     /// # Errors
     /// Returns an error if the `Event` cannot be built from the data passed into this function
     pub async fn publish(mut self) -> anyhow::Result<()> {
-        while let Some(Message::Event(Payload {
+        while let Some(CloudEventsMessage::Event(Payload {
             id,
             typ,
             data,

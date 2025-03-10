@@ -10,6 +10,7 @@ use std::{
     path::PathBuf,
     str::FromStr,
     sync::LazyLock,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
@@ -199,6 +200,17 @@ pub struct DynAppConfig {
     )]
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
+    // ------------- Stats -------------
+    /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
+    ///
+    /// Accepts a string of format "{number}{ms|s}", e.g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "std_duration_to_seconds"
+    )]
+    pub endpoint_stat_flush_interval: Duration,
+
     // ------------- Internal -------------
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
@@ -227,6 +239,32 @@ where
     S: serde::Serializer,
 {
     duration.num_seconds().to_string().serialize(serializer)
+}
+
+pub(crate) fn seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let buf = String::deserialize(deserializer)?;
+    Ok(if buf.ends_with("ms") {
+        Duration::from_millis(
+            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
+        )
+    } else if buf.ends_with('s') {
+        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
+    } else {
+        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
+    })
+}
+
+pub(crate) fn std_duration_to_seconds<S>(
+    duration: &Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
 fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -401,6 +439,7 @@ impl Default for DynAppConfig {
             secret_backend: SecretBackend::Postgres,
             queue_config: TaskQueueConfig::default(),
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
+            endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
         }
     }
