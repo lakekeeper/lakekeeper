@@ -1,0 +1,522 @@
+{% extends "main.html" %} {% block tabs %} {{ super() }}
+<!--Lakekeeper documetation-->
+
+<!-- disable side bars for home page -->
+<style>
+  /* Hide main content for now */
+  .md-content {
+    display: none;
+  }
+
+  .md-main {
+    background-color: #172436;
+  }
+
+  /* Hide table of contents */
+  @media screen and (min-width: 60em) {
+    .md-sidebar--secondary {
+      display: none;
+    }
+  }
+
+  /* Hide navigation */
+  @media screen and (min-width: 76.25em) {
+    .md-sidebar--primary {
+      display: none;
+    }
+  }
+</style>
+
+<div class="cs_preloader cs_center cs_hero_shapes_1">
+  <div class="cs_preloader_in"></div>
+  <span>Loading</span>
+</div>
+
+<div id="homepage">
+  <!-- Start Hero Section -->
+  <section class="cs_hero cs_style_1 cs_center cs_shape_wrap cs_hero_shapes_1" id="home">
+    <div class="cs_shape cs_shape_position_2"></div>
+    <div class="container">
+      <div class="cs_hero_in wow fadeInLeft" data-wow-duration="1s" data-wow-delay="0.35s">
+        <h1 class="cs_hero_title">Lakekeeper</h1>
+        <p class="cs_hero_subtitle">
+          This is Lakekeeper: An Apache-Licensed, secure, fast and easy to use
+          Apache Iceberg REST Catalog written in Rust.
+        </p>
+        <div class="cs_hero_btns">
+          <a href="/getting-started/" class="cs_btn cs_style_1"><span>Get Started</span></a>
+          <a href="https://discord.gg/jkAGG8p93B" class="cs_btn cs_style_1 cs_type_1"><span>Join Our
+              Community</span></a>
+        </div>
+      </div>
+      <div class="cs_hero_thumb wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+        <img src="assets/img/hero_img_1.png" alt="" />
+      </div>
+    </div>
+  </section>
+  <!-- End Hero Section -->
+
+  <!-- Start Counter -->
+  <div class="cs_counter_area">
+    <div class="container wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
+      <div class="cs_counter_1_wrap">
+        <div class="cs_counter cs_style_1">
+          <div class="cs_counter_number cs_semibold">
+            <span data-count-to="600" class="odometer"></span>+
+          </div>
+          <p class="cs_counter_title mb-0">Commits</p>
+        </div>
+        <div class="cs_counter cs_style_1">
+          <div class="cs_counter_number cs_semibold">
+            <span data-count-to="450" class="odometer"></span>+
+          </div>450
+          <p class="cs_counter_title mb-0">Stars</p>
+        </div>
+        <div class="cs_counter cs_style_1">
+          <div class="cs_counter_number cs_semibold">
+            <span data-count-to="600" class="odometer"></span>+
+          </div>
+          <p class="cs_counter_title mb-0">Pull Requests</p>
+        </div>
+        <div class="cs_counter cs_style_1">
+          <div class="cs_counter_number cs_semibold">
+            <span data-count-to="25" class="odometer"></span>+
+          </div>
+          <p class="cs_counter_title mb-0">Forks</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- End Counter -->
+
+  <!-- Start Feature Section -->
+  <section class="cs_about cs_style_1 cs_shape_wrap cs_about_shapes_1 position-relative">
+    <div class="cs_height_100 cs_height_lg_70"></div>
+    <div class="container">
+      <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
+        <h2 class="cs_section_title mb-0">Our Features</h2>
+      </div>
+      <div class="cs_height_50 cs_height_lg_50"></div>
+      <div class="cs_iconbox_wrapper cs_style_1">
+        <!-- Feature 01: Warehouse in the Front -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/data-lake.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">01</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">
+                Warehouse in the Front, data lake in the back
+              </h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Iceberg achieves transactional consistency of data warehouses,
+                while enabling modular horizontal scaling of compute and storage
+                on data lakes.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 02: Centralized Data Governance -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/decentralized.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">02</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">
+                Centralized Data Governance + Decentralized Compute
+              </h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Manage data access policies centrally - without
+                duplication in compute engines.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 03: Open Data Governance -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.4s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/opendata.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">03</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Open Data Governance</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Lakekeeper connects to open external permission systems
+                like OpenFGA and can exposes permissions via Open Policy Agent (OPA).
+                This enables best-in-class integration with query engines like trino that support external permission
+                systems.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 04: OpenID Provider Integration -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/openid.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">04</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">OpenID Provider Integration</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Use your own identity provider for authentication.
+                Lakekeeper never generates (API)-tokens itself. You already have an IdP.
+                Lets use it!
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 05: Automatic Table Maintenance -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.6s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/automatic.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">05</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Automatic Table Maintenance</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Optimize query performance for all your data lake engines with
+                out-of-the-box automated compaction and maintenance strategies.
+                (Coming soon)
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 06: Ops Friendly -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.7s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/binary.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">06</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Easy to Use</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Single binary executable for all major platforms; no JVM or
+                Python env required. Native Kubernetes deployments with Helm
+                chart or k8s operator. UI and batteries included.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 07: Storage Access Management -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.8s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/storage-access.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">07</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Storage Access Management</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Lakekeeper secures access to your data for on-premise and cloud
+                deployments using Vended-Credentials and remote signing for S3.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 08: Monitoring -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.9s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/monitoring.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">08</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Change Events</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Lakekeeper can emit change events to Event Queues like Nats or Kafka
+                to keep stakeholders informed.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 08: Normalized DB Model -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.9s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/multi-tenant.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">09</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Normalized Database Model</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Lakekeeper uses a normalized relational Database model internally.
+                This allows us to add powerful new endpoints and statistics
+                in the future without file-system access!
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 9: High Available & Horizontally Scalable -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.1s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/scalable.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">10</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">
+                High Available & Horizontally Scalable
+              </h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                There is no local state - the catalog can be scaled horizontally
+                easily. Autoscaling in helm included.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 11: Extensible -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.2s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/extensible.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">11</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Extendable</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                See something that's missing? Build it! Lakekeeper is meant to
+                be extended through. And because Lakekeeper is written in Rust,
+                you can use powerful Rust traits to do so.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 12: Multi Engine -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.3s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/multi-engine.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">12</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Ecosystem first</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                We are not bound to a query engine vendor. We care about the whole ecosystem and interoperability.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <!-- End Feature Section -->
+
+  <!-- Start About Section -->
+  <section class="cs_history cs_style_1 cs_shape_wrap cs_history_shapes_1 position-relative" id="about">
+    <div class="cs_height_120 cs_height_lg_80"></div>
+    <div class="container">
+      <div class="cs_height_50 cs_height_lg_50"></div>
+      <div class="row cs_gap_y_30 align-items-center">
+        <div class="col-lg-6 wow fadeInLeft" data-wow-duration="1s" data-wow-delay="0.4s">
+          <div class="cs_hostory_thumbnail">
+            <img src="assets/img/history_left_1.png" alt="Image" />
+          </div>
+        </div>
+        <div class="col-lg-6 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
+          <div class="cs_history_content">
+            <div class="cs_section_heading cs_style_1">
+              <h2 class="cs_section_title mb-0">Rust Native</h2>
+            </div>
+            <p class="cs_history_subtitle">
+              Lakekeeper is written in Rust and based on `iceberg-rust`.
+              No unsafe Code - guaranteed!
+            </p>
+
+            <a href="https://github.com/lakekeeper/lakekeeper" class="cs_btn cs_style_1"><span>Checkout
+                The Code</span></a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <!-- End About Section -->
+
+  <!-- Start Roadmap Section -->
+  <section class="cs_shape_wrap cs_timeline_shapes_1 position-relative" id="roadmap">
+    <div class="cs_height_100 cs_height_lg_70"></div>
+    <div class="container">
+      <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
+        <h2 class="cs_section_title mb-0">Lakekeeper Announcements</h2>
+      </div>
+      <div class="cs_height_50 cs_height_lg_50"></div>
+      <div class="cs_timeline_wrapper position-relative">
+        <ul class="cs_timeline_list cs_mp0">
+          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
+            <h3 class="cs_timeline_heading">FEB 2025</h3>
+            <div class="cs_iconbox cs_style_2">
+              <div class="cs_iconbox_index cs_center">Meet</div>
+              <div class="cs_iconbox_header">
+                <h3 class="cs_iconbox_title mb-0">
+                  Iceberg Meetups are coming to Europe!
+                </h3>
+              </div>
+              <hr />
+              <p class="cs_iconbox_subtitle">
+                The first meetup will be
+                on April 2nd in Amsterdam at 17:00. Sign up and find more
+                details on the <a href="https://lu.ma/ewx2kuis">event page</a>.
+              </p>
+            </div>
+          </li>
+          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
+            <h3 class="cs_timeline_heading">FEB 2025</h3>
+            <div class="cs_iconbox cs_style_2">
+              <div class="cs_iconbox_index cs_center">0.7.0</div>
+              <div class="cs_iconbox_header">
+                <h3 class="cs_iconbox_title mb-0">Release 0.7.0</h3>
+              </div>
+              <hr />
+              <p class="cs_iconbox_subtitle">
+                Release 0.7.0 adds support for s3a and s3n Filesystems, improves reverse-proxy support and
+                introduces table and view statistics!
+              </p>
+            </div>
+          </li>
+          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
+            <h3 class="cs_timeline_heading">JAN 2025</h3>
+            <div class="cs_iconbox cs_style_2">
+              <div class="cs_iconbox_index cs_center">0.6.0</div>
+              <div class="cs_iconbox_header">
+                <h3 class="cs_iconbox_title mb-0">Release 0.6.0</h3>
+              </div>
+              <hr />
+              <p class="cs_iconbox_subtitle">
+                Release 0.6.0 focuses on security, introducing Lakekeeper's OPA
+                bridge for Trino integration, with a new "check" endpoint for
+                simpler permission queries. It also supports Iceberg versions
+                1.5 to 1.7, adds automatic file cleanup for managed tables, and
+                fixes ADLS cleanup issues.
+              </p>
+            </div>
+          </li>
+          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
+            <h3 class="cs_timeline_heading">DEC 2024</h3>
+            <div class="cs_iconbox cs_style_2">
+              <div class="cs_iconbox_index cs_center">0.5.0</div>
+              <div class="cs_iconbox_header">
+                <h3 class="cs_iconbox_title mb-0">Release 0.5.0</h3>
+              </div>
+              <hr />
+              <p class="cs_iconbox_subtitle">
+                Release 0.5.0 is the biggest yet, featuring a new UI, detailed
+                docs, and table-level access controls. It adds native support
+                for Kubernetes Service Accounts and improves integration with
+                external IdPs like EntraID and Keycloak.
+              </p>
+            </div>
+          </li>
+          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
+            <h3 class="cs_timeline_heading">APR 2024</h3>
+            <div class="cs_iconbox cs_style_2">
+              <div class="cs_iconbox_index cs_center">0.1.0</div>
+              <div class="cs_iconbox_header">
+                <h3 class="cs_iconbox_title mb-0">Initial Release</h3>
+              </div>
+              <hr />
+              <p class="cs_iconbox_subtitle">
+                A new Rust-native Apache Iceberg REST Catalog sees the light of day!
+              </p>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </section>
+  <!-- End Roadmap Section -->
+
+  <!-- Start Blog Section -->
+  <section class="cs_shape_wrap cs_blog_shapes_1 position-relative">
+    <div class="cs_height_120 cs_height_lg_80"></div>
+    <div class="container">
+      <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
+        <h2 class="cs_section_title mb-0">Learn More: Talks & Demos</h2>
+      </div>
+      <div class="cs_height_50 cs_height_lg_50"></div>
+      <div class="container">
+        <div class="row cs_gap_y_24">
+          <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+            <div class="cs_post cs_style_1">
+              <div class="cs_post_inner">
+                <a href="https://www.youtube.com/watch?v=p0nVQSolnuY" class="cs_post_thumbnail cs_zoom">
+                  <img src="assets/img/post_1.jpg" alt="Post Thumbnail" class="cs_zoom_in" />
+                </a>
+                <div class="cs_post_content">
+                  <div class="cs_post_meta_wrapper">
+                    <div class="cs_post_meta cs_semibold">14 Nov 2024</div>
+                    <div class="cs_post_meta_separator"></div>
+                    <div class="cs_post_meta cs_semibold">
+                      BY Christian Thiel
+                    </div>
+                  </div>
+                  <h3 class="cs_post_title cs_semibold mb-0">
+                    <a href="https://www.youtube.com/watch?v=p0nVQSolnuY">Lakekeeper: Rust based Iceberg Catalog</a>
+                  </h3>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cs_height_120 cs_height_lg_80"></div>
+  </section>
+  <!-- End Blog Section -->
+
+  <!-- Start Footer Section -->
+  <footer class="cs_footer cs_bg_filed cs_shape_wrap cs_footer_shapes_1">
+    <div class="container">
+      <div class="cs_cta cs_style_1 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+        <img src="assets/img/cta_img_1.png" alt="CTA Image" class="cs_cta_img" />
+        <div class="cs_cta_in">
+          <h2 class="cs_cta_title">Join our community for Updates and News</h2>
+
+          <a href="https://discord.gg/jkAGG8p93B" class="cs_btn cs_style_1"><span>Join Now</span></a>
+        </div>
+      </div>
+    </div>
+  </footer>
+  <!-- End Footer Section -->
+</div>
+{% endblock %}

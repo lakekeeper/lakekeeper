@@ -5,28 +5,11 @@ site_author: Lakekeeper Team
 edit_uri: blob/main/docs/
 
 theme:
+  custom_dir: overrides
   name: material
-  logo: assets/bear.svg
   palette:
-    # Palette toggle for automatic mode
-    - media: "(prefers-color-scheme)"
-      toggle:
-        icon: material/brightness-auto
-        name: Switch to light mode
-
-    # Palette toggle for light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-
-    # Palette toggle for dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      toggle:
-        icon: material/brightness-4
-        name: Switch to system preference
+    scheme: lakekeeper
+  logo: assets/bear.svg  
   locale: en
   highlightjs: true
   hljs_languages:
@@ -108,6 +91,7 @@ plugins:
 
 watch:
   - docs
+  - overrides
 
 extra:
   social:
@@ -117,4 +101,15 @@ extra:
       link: https://github.com/lakekeeper/lakekeeper
 
 extra_css:
-  - /assets/css/extra.css
+  - /assets/css/home.css
+  - /assets/css/bootstrap.min.css
+  - /assets/css/animate.css
+  - /assets/css/odometer.css
+  - /assets/css/fontawesome.min.css
+  - /assets/css/header.css
+
+extra_javascript:
+  - /assets/js/jquery-3.6.0.min.js
+  - /assets/js/main.js
+  - /assets/js/odometer.js
+  - /assets/js/wow.min.js
