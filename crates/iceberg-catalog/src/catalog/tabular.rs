@@ -49,7 +49,7 @@ macro_rules! list_entities {
                         authorizer.[<is_allowed_ $action>](
                             &request_metadata,
                             *n,
-                            &paste! { [<Catalog $entity Action>]::CanIncludeInList },
+                            paste! { [<Catalog $entity Action>]::CanIncludeInList },
                         )
                     }
                 }))
