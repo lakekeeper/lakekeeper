@@ -23,20 +23,22 @@
   color: white;
 }
 
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  clear: both;
-  color: var(--heading-color);
-  padding: 0;
-  margin: 0 0 20px 0;
-  font-weight: 600;
-  line-height: 1.2em;
-  font-family: var(--heading-font);
-}
 
 a {text-decoration: none !important;color: #32485c;}
 
+.md-source {
+  color: #32485c !important;
+  text-decoration: underline;
+}
+
+.md-header a {
+  color: #b1c4d9 !important;
+}
+
+.md-footer__link {
+  color: #b1c4d9 !important;
+}
+
+.md-header .md-tabs__item--active a {
+  color: #fff !important;
+}

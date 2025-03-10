@@ -73,6 +73,9 @@
   line-height: 1.2em;
   font-family: var(--heading-font);
 }
+
+
+
 h1 {
   font-size: 56px;
 }
@@ -1979,8 +1982,8 @@ hr {
 }
 .cs_hero.cs_style_1 .cs_hero_thumb {
   position: absolute;
-  right: 80px;
-  top: 52%;
+  right: -80px;
+  top: 30%;
   -webkit-transform: translateY(-50%);
   transform: translateY(-50%);
 }
@@ -2191,6 +2194,8 @@ hr {
   height: 60px;
   margin-bottom: 23px;
 }
+
+
 .cs_iconbox.cs_style_1.cs_type_1 .cs_iconbox_title {
   font-size: 20px;
   line-height: 1.7em;
@@ -2223,6 +2228,7 @@ hr {
 .cs_iconbox.cs_style_1 .cs_iconbox_title {
   font-size: 30px;
   margin-bottom: 18px;
+  font-family: var(--body-font) !important;
 }
 .cs_iconbox.cs_style_1:hover {
   background: var(--webkit-gradient);
@@ -2288,7 +2294,7 @@ hr {
 }
 .cs_iconbox.cs_style_2 .cs_iconbox_title {
   font-size: 20px;
-  font-family: var(--heading-font);
+  font-family: var(--body-font) !important;
   line-height: 1.3em;
 }
 .cs_post.cs_style_1 {
