@@ -365,17 +365,17 @@ impl S3Profile {
                     session_token,
                     expiration: _,
                     ..
-                } = if let (S3Flavor::S3Compat, Some(cred)) = (self.flavor, cred) {
-                    self.get_minio_sts_token(table_location, cred, storage_permissions)
-                        .await?
-                } else if let (Some(cred), Some(arn)) = (cred, self.sts_role_arn.as_ref()) {
+                } = if let (Some(cred), Some(arn)) = (cred, self.sts_role_arn.as_ref()) {
                     self.get_aws_sts_token(table_location, cred, arn, storage_permissions)
+                        .await?
+                } else if let (S3Flavor::S3Compat, Some(cred)) = (self.flavor, cred) {
+                    self.get_minio_sts_token(table_location, cred, storage_permissions)
                         .await?
                 } else {
                     // This error should never be returned since we validate this when creating the profile.
                     // We should consider using an enum instead of 3 independent fields.
                     return Err(TableConfigError::Misconfiguration(
-                        "STS either needs Flavor Minio and credentials OR Flavor aws, credentials and a sts role arn.".to_string(),
+                        "STS either needs Flavor s3-compat and credentials OR Flavor aws, credentials and a sts role arn.".to_string(),
                     ));
                 };
                 config.insert(&s3::AccessKeyId(access_key_id.clone()));
