@@ -732,7 +732,7 @@ dependencies = [
  "hex",
  "hmac",
  "http 0.2.12",
- "http 1.2.0",
+ "http 1.3.1",
  "once_cell",
  "percent-encoding",
  "sha2",
@@ -827,7 +827,7 @@ dependencies = [
  "aws-smithy-types",
  "bytes",
  "http 0.2.12",
- "http 1.2.0",
+ "http 1.3.1",
  "pin-project-lite",
  "tokio",
  "tracing",
@@ -845,7 +845,7 @@ dependencies = [
  "bytes-utils",
  "futures-core",
  "http 0.2.12",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 0.4.6",
  "http-body 1.0.1",
  "http-body-util",
@@ -893,7 +893,7 @@ dependencies = [
  "axum-core 0.4.5",
  "bytes",
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "itoa",
@@ -920,7 +920,7 @@ dependencies = [
  "bytes",
  "form_urlencoded",
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "hyper 1.4.1",
@@ -953,7 +953,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "mime",
@@ -972,7 +972,7 @@ checksum = "eab1b0df7cded837c40dacaa2e1c33aa17c84fc3356ae67b5645f1e83190753e"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "mime",
@@ -995,7 +995,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "headers",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "mime",
@@ -1015,7 +1015,7 @@ dependencies = [
  "axum 0.8.2",
  "bytes",
  "futures-core",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "matchit 0.8.4",
  "metrics",
@@ -2464,7 +2464,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.2.0",
+ "http 1.3.1",
  "indexmap 2.7.0",
  "slab",
  "tokio",
@@ -2531,7 +2531,7 @@ dependencies = [
  "base64 0.21.7",
  "bytes",
  "headers-core",
- "http 1.2.0",
+ "http 1.3.1",
  "httpdate",
  "mime",
  "sha1",
@@ -2543,7 +2543,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
 dependencies = [
- "http 1.2.0",
+ "http 1.3.1",
 ]
 
 [[package]]
@@ -2621,9 +2621,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.2.0"
+version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f16ca2af56261c99fba8bac40a10251ce8188205a4c448fbb745a2e4daa76fea"
+checksum = "f4a85d31aea989eead29a3aaf9e1115a180df8282431156e533de47660892565"
 dependencies = [
  "bytes",
  "fnv",
@@ -2648,7 +2648,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
 dependencies = [
  "bytes",
- "http 1.2.0",
+ "http 1.3.1",
 ]
 
 [[package]]
@@ -2659,7 +2659,7 @@ checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "pin-project-lite",
 ]
@@ -2730,7 +2730,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "h2 0.4.5",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "httparse",
  "httpdate",
@@ -2750,7 +2750,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "headers",
- "http 1.2.0",
+ "http 1.3.1",
  "hyper 1.4.1",
  "hyper-rustls 0.27.2",
  "hyper-util",
@@ -2784,7 +2784,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ee4be2c948921a1a5320b629c4193916ed787a7f7f293fd3f7f5a6c9de74155"
 dependencies = [
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "hyper 1.4.1",
  "hyper-util",
  "log",
@@ -2819,7 +2819,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "hyper 1.4.1",
  "pin-project-lite",
@@ -2933,7 +2933,7 @@ dependencies = [
  "fxhash",
  "gcloud-auth",
  "hostname",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body-util",
  "iceberg",
  "iceberg-ext",
@@ -3010,7 +3010,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "heck",
- "http 1.2.0",
+ "http 1.3.1",
  "iceberg",
  "lazy_static",
  "paste",
@@ -3377,7 +3377,7 @@ dependencies = [
  "either",
  "futures",
  "home",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "hyper 1.4.1",
@@ -3411,7 +3411,7 @@ checksum = "97aa830b288a178a90e784d1b0f1539f2d200d2188c7b4a3146d9dc983d596f3"
 dependencies = [
  "chrono",
  "form_urlencoded",
- "http 1.2.0",
+ "http 1.3.1",
  "k8s-openapi",
  "serde",
  "serde-value",
@@ -3766,7 +3766,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5ccd29fb6897e961cec68ceebe5b8db287cc191e0019532777ffa5b0b6a7424"
 dependencies = [
- "http 1.2.0",
+ "http 1.3.1",
  "oauth2 5.0.0",
  "reqwest",
  "thiserror 2.0.12",
@@ -4050,7 +4050,7 @@ dependencies = [
  "base64 0.21.7",
  "chrono",
  "getrandom 0.2.15",
- "http 1.2.0",
+ "http 1.3.1",
  "rand 0.8.5",
  "reqwest",
  "serde",
@@ -4091,7 +4091,7 @@ dependencies = [
  "flagset",
  "futures",
  "getrandom 0.2.15",
- "http 1.2.0",
+ "http 1.3.1",
  "log",
  "md-5",
  "once_cell",
@@ -5034,7 +5034,7 @@ dependencies = [
  "hex",
  "hmac",
  "home",
- "http 1.2.0",
+ "http 1.3.1",
  "jsonwebtoken",
  "log",
  "once_cell",
@@ -5062,7 +5062,7 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "hyper 1.4.1",
@@ -5261,7 +5261,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
- "http 1.2.0",
+ "http 1.3.1",
  "reqwest",
  "rustify_derive",
  "serde",
@@ -6481,7 +6481,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
- "http 1.2.0",
+ "http 1.3.1",
  "httparse",
  "rand 0.8.5",
  "ring",
@@ -6550,7 +6550,7 @@ dependencies = [
  "bytes",
  "flate2",
  "h2 0.4.5",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "hyper 1.4.1",
@@ -6635,7 +6635,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.2.0",
+ "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
  "mime",
@@ -7032,7 +7032,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "derive_builder 0.12.0",
- "http 1.2.0",
+ "http 1.3.1",
  "reqwest",
  "rustify",
  "rustify_derive",
