@@ -5,7 +5,7 @@ info:
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  version: 0.6.2
+  version: 0.7.2
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -897,7 +897,7 @@ paths:
     delete:
       tags:
       - project
-      summary: Delete the default project
+      summary: Delete a project by ID
       operationId: delete_project_by_id
       parameters:
       - name: project_id
