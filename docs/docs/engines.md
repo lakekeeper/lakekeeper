@@ -106,7 +106,7 @@ Basic setup in trino:
 
 ## <img src="/assets/spark.svg" width="40" background-color="red"> Spark
 
-The following docker compose examples are available for trino:
+The following docker compose examples are available for Spark:
 
 - [`Minimal`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal): No authentication
 - [`Access-Control`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control): Lakekeeper secured with OAuth2, single technical User for spark
