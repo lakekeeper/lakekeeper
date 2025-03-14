@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-14)
+
+
+### Bug Fixes
+
+* add log lines to determine if not found or action forbidden ([#895](https://github.com/lakekeeper/lakekeeper/issues/895)) ([66d1d05](https://github.com/lakekeeper/lakekeeper/commit/66d1d054953b7a688da832068b85440c8c02d91e))
+* **az:** relax sas token start time ([#898](https://github.com/lakekeeper/lakekeeper/issues/898)) ([45eb878](https://github.com/lakekeeper/lakekeeper/commit/45eb87821e4ea1bda73838d9f11e6ca1dce171a9))
+* forward sts role arn to s3-compatible storages when specified ([#889](https://github.com/lakekeeper/lakekeeper/issues/889)) ([bd4795a](https://github.com/lakekeeper/lakekeeper/commit/bd4795a9c3a871e8e4d60e42fe74a29a46c4c41c))
+
 ## [0.7.3](https://github.com/lakekeeper/lakekeeper/compare/v0.7.2...v0.7.3) (2025-03-04)
 
 
