@@ -116,16 +116,27 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
-| Variable                                      | Example                                                                    | Description |
-|-----------------------------------------------|----------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__AUTHZ_BACKEND`                   | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
-| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>  | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
-| `LAKEKEEPER__OPENFGA__STORE_NAME`             | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
-| `LAKEKEEPER__OPENFGA__API_KEY`                | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
+| Variable                                     | Example                                                                    | Description |
+|----------------------------------------------|----------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__AUTHZ_BACKEND`                  | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
+| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr> | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
+| `LAKEKEEPER__OPENFGA__STORE_NAME`            | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
+| `LAKEKEEPER__OPENFGA__API_KEY`               | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
 | <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr> | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
-| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`          | `abcd`                                                                     | Client Secret for the Client ID. |
-| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`         | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
-| `LAKEKEEPER_TEST__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
+| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`         | `abcd`                                                                     | Client Secret for the Client ID. |
+| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`        | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
+
+### S3 Signer
+
+Lakekeeper can sign S3 URLs to grant access to data files to clients. There are multiple ways S3 resources can be
+referenced via URL. Lakekeeper comes with out-of-the-box heuristics to detect which URL style is being used. Sometimes
+these heuristics will not work, or you may want to enforce a specific URL style. The following configuration options are
+available:
+
+| Variable                            | Example | Description                                                                                                                                                                                                             |
+|-------------------------------------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `LAKEKEEPER__S3_URL_STYLE_DETECTION | `AUTO`  | The URL style detection heuristic to use. One of `AUTO`, `PATH_STYLE`, `VIRTUAL_HOST`. Default: `AUTO`. When set to `AUTO`, Lakekeeper will first try to parse the URL as `VIRTUAL_HOST` and then attempt `PATH_STYLE`. |
 
 
 ### UI

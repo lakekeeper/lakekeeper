@@ -74,7 +74,7 @@ fn get_config() -> DynAppConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
+#[derive(Clone, Deserialize, Serialize, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
     /// Base URL for this REST Catalog.
@@ -199,6 +199,9 @@ pub struct DynAppConfig {
     )]
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
+    // ------------- S3 -------------
+    #[serde(default)]
+    pub s3_url_style_detection: S3UrlStyleDetectionMode,
     // ------------- Internal -------------
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
@@ -206,6 +209,21 @@ pub struct DynAppConfig {
     /// This ID must not be changed after start!
     #[serde(default = "uuid::Uuid::nil")]
     pub server_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum S3UrlStyleDetectionMode {
+    /// Use the path style for all requests.
+    #[serde(alias = "pathstyle", alias = "PATHSTYLE", alias = "PATH_STYLE")]
+    PathStyle,
+    /// Use the virtual host style for all requests.
+    #[serde(alias = "virtualhost", alias = "VIRTUALHOST", alias = "VIRTUAL_HOST")]
+    VirtualHost,
+    /// Automatically detect the style based on the request.
+    #[default]
+    #[serde(alias = "auto", alias = "AUTO")]
+    Auto,
 }
 
 pub(crate) fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
@@ -401,6 +419,7 @@ impl Default for DynAppConfig {
             secret_backend: SecretBackend::Postgres,
             queue_config: TaskQueueConfig::default(),
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
+            s3_url_style_detection: S3UrlStyleDetectionMode::default(),
             server_id: uuid::Uuid::nil(),
         }
     }
