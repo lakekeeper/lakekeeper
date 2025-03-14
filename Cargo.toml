@@ -77,7 +77,7 @@ http-body-util = "^0.1"
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
-kube = { version = "0.98", default-features = false, features = [
+kube = { version = "0.99", default-features = false, features = [
     "rustls-tls",
     "client",
 ] }
