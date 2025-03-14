@@ -26,7 +26,7 @@ use crate::{
         event_publisher::CloudEventsPublisher,
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
-        Catalog, SecretStore, State,
+        Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
 };
@@ -50,6 +50,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
+    pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -69,6 +70,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
             .field(
                 "metrics_layer",
                 &self.metrics_layer.as_ref().map(|_| "PrometheusMetricLayer"),
+            )
+            .field(
+                "endpoint_statistics_tracker_tx",
+                &self.endpoint_statistics_tracker_tx,
             )
             .finish()
     }
@@ -95,6 +100,7 @@ pub fn new_full_router<
         service_health_provider,
         cors_origins,
         metrics_layer,
+        endpoint_statistics_tracker_tx,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -142,6 +148,10 @@ pub fn new_full_router<
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            endpoint_statistics_tracker_tx,
+            crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
+        ))
         .layer(maybe_auth_layer)
         .route(
             "/health",

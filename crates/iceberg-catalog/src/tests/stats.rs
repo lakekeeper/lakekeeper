@@ -3,12 +3,10 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::{
-        management::v1::warehouse::{CreateWarehouseResponse, TabularDeleteProfile},
-        ApiContext,
-    },
+    api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
     implementations::postgres::{PostgresCatalog, SecretsState},
     service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig, State, UserId},
+    tests::TestWarehouseResponse,
 };
 
 mod test {
@@ -124,7 +122,7 @@ mod test {
 
 struct StatsSetup {
     ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
-    warehouse: CreateWarehouseResponse,
+    warehouse: TestWarehouseResponse,
     namespace_name: String,
 }
 

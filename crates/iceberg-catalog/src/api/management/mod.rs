@@ -42,6 +42,7 @@ pub mod v1 {
         api::{
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
+                project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::UndropTabularsRequest,
             },
@@ -89,6 +90,7 @@ pub mod v1 {
             delete_user,
             delete_warehouse,
             get_default_project,
+            get_endpoint_statistics,
             get_project_by_id,
             get_role,
             get_server_info,
@@ -902,6 +904,50 @@ pub mod v1 {
         .map(Json)
     }
 
+    /// Get endpoint call statistics
+    ///
+    /// Get endpoint call statistics for your project.
+    ///
+    /// We lazily create a new statistics entry every hour, in between hours, the existing entry
+    /// is being updated. If any endpoint is called in the following hour, there'll be an entry in
+    /// the `timestamps` field of the response for the following hour. If not, then there'll be no
+    /// entry.
+    ///
+    /// Example:
+    /// - 00:00:00-00:16:32: no activity
+    ///     - timestamps: []
+    /// - 00:16:32: warehouse created:
+    ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]
+    /// - 00:30:00: table created:
+    ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]
+    /// - 00:45:00: table created:
+    ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]
+    /// - 01:00:36: table deleted:
+    ///     - timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],
+    ///                                                   [{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]
+    #[utoipa::path(
+        get,
+        tag = "project",
+        path = "/management/v1/endpoint-statistics",
+        request_body = GetEndpointStatisticsRequest,
+        responses(
+            (status = 200, description = "Endpoint statistics", body = EndpointStatisticsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_endpoint_statistics<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(query): Json<GetEndpointStatisticsRequest>,
+    ) -> Result<Json<EndpointStatisticsResponse>> {
+        ApiServer::<C, A, S>::get_endpoint_statistics(api_context, query, metadata)
+            .await
+            .map(Json)
+    }
+
     /// List soft-deleted tabulars
     ///
     /// List all soft-deleted tabulars in the warehouse that are visible to you.
@@ -1022,6 +1068,7 @@ pub mod v1 {
                 // Server
                 .route("/info", get(get_server_info))
                 .route("/bootstrap", post(bootstrap))
+                .route("/endpoint-statistics", get(get_endpoint_statistics))
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(
@@ -1051,14 +1098,9 @@ pub mod v1 {
                 )
                 .route("/project/{project_id}/rename", post(rename_project_by_id))
                 // Create a new warehouse
-                .route("/warehouse", post(create_warehouse))
+                .route("/warehouse", post(create_warehouse).get(list_warehouses))
                 // List all projects
                 .route("/project-list", get(list_projects))
-                .route(
-                    "/warehouse",
-                    // List all warehouses within a project
-                    get(list_warehouses),
-                )
                 .route(
                     "/warehouse/{warehouse_id}",
                     get(get_warehouse).delete(delete_warehouse),
@@ -1097,6 +1139,10 @@ pub mod v1 {
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
+                    post(undrop_tabulars),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/deleted-tabulars/undrop",
                     post(undrop_tabulars),
                 )
                 .route(

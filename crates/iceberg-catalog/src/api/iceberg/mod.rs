@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 pub mod types;
 
 pub mod v1 {
@@ -202,35 +204,15 @@ pub mod v1 {
     }
 }
 
-pub(crate) fn supported_endpoints() -> Vec<String> {
-    vec![
-        "GET /v1/config".into(),
-        "GET /v1/{prefix}/namespaces".into(),
-        "POST /v1/{prefix}/namespaces".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/properties".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into(),
-        "POST /v1/{prefix}/tables/rename".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/register".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics".into(),
-        "POST /v1/{prefix}/tables/rename".into(),
-        "POST /v1/{prefix}/transactions/commit".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/views".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/views".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "POST /v1/{prefix}/views/rename".into(),
-    ]
+static SUPPORTED_ENDPOINTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    crate::api::endpoints::Endpoints::catalog()
+        .iter()
+        .map(|s| s.as_http_route().replace(" /catalog/", " /"))
+        .collect()
+});
+
+pub(crate) fn supported_endpoints() -> &'static [String] {
+    &SUPPORTED_ENDPOINTS
 }
 
 #[cfg(test)]
