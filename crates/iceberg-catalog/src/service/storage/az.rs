@@ -60,6 +60,9 @@ lazy_static::lazy_static! {
 
 static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
+const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
+
 impl AdlsProfile {
     /// Validate the Azure storage profile.
     ///
@@ -69,6 +72,16 @@ impl AdlsProfile {
     /// - Fails if the account name is invalid.
     /// - Fails if the endpoint suffix is invalid.
     pub(super) fn normalize(&mut self) -> Result<(), ValidationError> {
+        if let Some(sas_validity) = self.sas_token_validity_seconds {
+            // 7 days in seconds
+            if sas_validity > MAX_SAS_TOKEN_VALIDITY_SECONDS {
+                return Err(ValidationError::InvalidProfile {
+                    source: None,
+                    reason: "SAS token can be only valid up to a week.".to_string(),
+                    entity: "SasTokenValiditySeconds".to_string(),
+                });
+            }
+        }
         validate_filesystem_name(&self.filesystem)?;
         self.host = self.host.take().map(normalize_host).transpose()?.flatten();
         self.normalize_key_prefix()?;
@@ -252,9 +265,11 @@ impl AdlsProfile {
     ) -> Result<String, CredentialsError> {
         let client = blob_service_client(self.account_name.as_str(), cred);
 
-        let start = time::OffsetDateTime::now_utc();
-        let max_validity_seconds = i64::MAX;
-        let sas_token_validity_seconds = self.sas_token_validity_seconds.unwrap_or(3600);
+        // allow for some clock drift
+        let start = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
+        let max_validity_seconds = MAX_SAS_TOKEN_VALIDITY_SECONDS_I64;
+        // account for the 5 minutes offset from above
+        let sas_token_validity_seconds = self.sas_token_validity_seconds.unwrap_or(3600) + 300;
         let clamped_validity_seconds = i64::try_from(sas_token_validity_seconds)
             .unwrap_or(max_validity_seconds)
             .clamp(0, max_validity_seconds);
@@ -268,7 +283,7 @@ impl AdlsProfile {
                         reason: format!(
                             "SAS expiry overflow: Cannot issue a token valid for {clamped_validity_seconds} seconds",
                         )
-                        .to_string(),
+                            .to_string(),
                         source: None,
                     })?,
             )
