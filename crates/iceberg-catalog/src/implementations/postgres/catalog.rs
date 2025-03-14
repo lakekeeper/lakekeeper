@@ -50,10 +50,10 @@ use crate::{
         authn::UserId, storage::StorageProfile, Catalog, CreateNamespaceRequest,
         CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails,
         GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
-        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid,
-        ProjectId, Result, RoleId, StartupValidationData, TableCommit, TableCreation, TableIdent,
-        TableIdentUuid, TabularIdentOwned, TabularIdentUuid, Transaction, UndropTabularResponse,
-        ViewIdentUuid, WarehouseIdent, WarehouseStatus,
+        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceIdent,
+        NamespaceIdentUuid, ProjectId, Result, RoleId, StartupValidationData, TableCommit,
+        TableCreation, TableIdent, TableIdentUuid, TabularIdentOwned, TabularIdentUuid,
+        Transaction, UndropTabularResponse, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -237,9 +237,10 @@ impl Catalog for super::PostgresCatalog {
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
-        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
-        drop_namespace(warehouse_id, namespace_id, transaction).await
+        recursive: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<NamespaceDropInfo> {
+        drop_namespace(warehouse_id, namespace_id, recursive, transaction).await
     }
 
     async fn update_namespace_properties<'a>(

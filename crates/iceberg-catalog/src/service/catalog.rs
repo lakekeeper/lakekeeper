@@ -182,6 +182,13 @@ pub enum StartupValidationData {
     },
 }
 
+#[derive(Debug)]
+pub struct NamespaceDropInfo {
+    pub child_namespaces: Vec<NamespaceIdentUuid>,
+    pub child_tables: Vec<(TabularIdentUuid, String)>,
+    pub open_tasks: Vec<TaskId>,
+}
+
 #[async_trait::async_trait]
 pub trait Catalog
 where
@@ -292,8 +299,9 @@ where
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
+        recursive: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> Result<NamespaceDropInfo>;
 
     /// Update the properties of a namespace.
     ///

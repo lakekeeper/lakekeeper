@@ -3,6 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use chrono::Utc;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
+use itertools::{izip, Itertools};
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -10,10 +11,14 @@ use super::dbutils::DBErrorHandler;
 use crate::{
     api::iceberg::v1::{PaginatedMapping, MAX_PAGE_SIZE},
     catalog::namespace::MAX_NAMESPACE_DEPTH,
-    implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    implementations::postgres::{
+        pagination::{PaginateToken, V1PaginateToken},
+        tabular::TabularType,
+    },
     service::{
-        CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel, GetNamespaceResponse,
-        ListNamespacesQuery, NamespaceIdent, NamespaceIdentUuid, Result,
+        storage::join_location, task_queue::TaskId, CreateNamespaceRequest,
+        CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
+        NamespaceDropInfo, NamespaceIdent, NamespaceIdentUuid, Result, TabularIdentUuid,
     },
     WarehouseIdent,
 };
@@ -308,11 +313,13 @@ pub(crate) async fn namespace_to_id(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn drop_namespace(
     warehouse_id: WarehouseIdent,
     namespace_id: NamespaceIdentUuid,
+    recursive: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+) -> Result<NamespaceDropInfo> {
     // Return 404 not found if namespace does not exist
     let record = sqlx::query!(
         r#"
@@ -322,28 +329,46 @@ pub(crate) async fn drop_namespace(
             WHERE warehouse_id = $1 AND namespace_id = $2
         ),
         child_namespaces AS (
-            SELECT 1
+            SELECT n.protected, n.namespace_id
             FROM namespace n
             INNER JOIN namespace_name nn ON n.namespace_name[1:array_length(nn.namespace_name, 1)] = nn.namespace_name
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
         ),
+        tabulars AS (
+            SELECT ta.tabular_id, te.task_id, t.status as task_status, fs_location, fs_protocol, ta.typ, protected
+            FROM tabular ta
+                LEFT JOIN tabular_expirations te ON ta.tabular_id = te.tabular_id
+                LEFT JOIN task t on te.task_id = t.task_id
+            WHERE namespace_id = $2 OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+        ),
         deleted AS (
             DELETE FROM namespace
-            WHERE warehouse_id = $1 
-            AND namespace_id = $2
-            AND NOT EXISTS (SELECT 1 FROM child_namespaces)
+            WHERE warehouse_id = $1
+            -- If recursive is true, delete all child namespaces...
+            AND (namespace_id = $2 OR ($3 AND namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
+            -- ...but only if none are locked
+            AND ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR ($3 AND NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true)))
+            AND NOT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')
+            AND NOT EXISTS (SELECT 1 from tabulars) OR ($3 AND NOT EXISTS (SELECT 1 from tabulars WHERE protected = true))
             AND warehouse_id IN (
                 SELECT warehouse_id FROM warehouse WHERE status = 'active'
             )
             RETURNING *
         )
         SELECT 
-            count(*) AS deleted_count,
-            EXISTS (SELECT 1 FROM child_namespaces) AS has_child_namespaces
+            count(*) AS "deleted_count!",
+            (SELECT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')) AS "tabular_has_running_expiration!",
+            ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
+            ARRAY(SELECT tabular_id FROM tabulars) AS "child_tabulars!",
+            ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
+            ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
+            ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>",
+            ARRAY(SELECT task_id FROM tabulars) AS "child_tabular_task_id!: Vec<Option<Uuid>>"
         FROM deleted;
         "#,
         *warehouse_id,
-        *namespace_id
+        *namespace_id,
+        recursive
     )
     .fetch_one(&mut **transaction)
     .await
@@ -367,13 +392,30 @@ pub(crate) async fn drop_namespace(
         _ => e.into_error_model("Error deleting namespace".to_string()),
     })?;
 
-    if record.has_child_namespaces == Some(true) {
+    tracing::debug!(
+        "Deleted {deleted_count} namespaces",
+        deleted_count = record.deleted_count
+    );
+
+    if record.tabular_has_running_expiration {
+        return Err(
+            ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
+        );
+    }
+
+    if !record.child_namespaces.is_empty() && !recursive {
         return Err(
             ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
         );
     }
 
-    if record.deleted_count == Some(0) {
+    if !record.child_tabulars.is_empty() && !recursive {
+        return Err(
+            ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
+        );
+    }
+
+    if record.deleted_count == 0 {
         return Err(ErrorModel::internal(
             format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
             "NamespaceNotFound",
@@ -382,7 +424,34 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
-    Ok(())
+    Ok(NamespaceDropInfo {
+        child_namespaces: record
+            .child_namespaces
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        child_tables: izip!(
+            record.child_tabulars,
+            record.child_tabular_fs_protocol,
+            record.child_tabular_fs_location,
+            record.child_tabular_typ
+        )
+        .map(|(id, protocol, fs_location, typ)| {
+            (
+                match typ {
+                    TabularType::Table => TabularIdentUuid::Table(id),
+                    TabularType::View => TabularIdentUuid::View(id),
+                },
+                join_location(protocol.as_str(), fs_location.as_str()),
+            )
+        })
+        .collect_vec(),
+        open_tasks: record
+            .child_tabular_task_id
+            .into_iter()
+            .filter_map(|ti| ti.map(TaskId::from))
+            .collect(),
+    })
 }
 
 pub(crate) async fn update_namespace_properties(
@@ -427,8 +496,10 @@ pub(crate) mod tests {
         *,
     };
     use crate::{
+        api::iceberg::types::PageToken,
         implementations::postgres::{
-            tabular::table::tests::initialize_table, CatalogState, PostgresTransaction,
+            tabular::table::{load_tables, tests::initialize_table},
+            CatalogState, PostgresTransaction,
         },
         service::{Catalog as _, Transaction as _},
     };
@@ -561,9 +632,14 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        PostgresCatalog::drop_namespace(warehouse_id, namespace_id, transaction.transaction())
-            .await
-            .expect("Error dropping namespace");
+        PostgresCatalog::drop_namespace(
+            warehouse_id,
+            namespace_id,
+            false,
+            transaction.transaction(),
+        )
+        .await
+        .expect("Error dropping namespace");
     }
 
     #[sqlx::test]
@@ -685,11 +761,48 @@ pub(crate) mod tests {
                 .await
                 .unwrap()
                 .expect("Namespace not found");
-        let result = drop_namespace(warehouse_id, namespace_id, transaction.transaction())
+        let result = drop_namespace(warehouse_id, namespace_id, false, transaction.transaction())
             .await
             .unwrap_err();
 
         assert_eq!(result.error.code, StatusCode::CONFLICT);
+    }
+
+    #[sqlx::test]
+    async fn test_can_recursive_drop_nonempty_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let staged = false;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let namespace_id =
+            namespace_to_id(warehouse_id, &table.namespace, transaction.transaction())
+                .await
+                .unwrap()
+                .expect("Namespace not found");
+        drop_namespace(warehouse_id, namespace_id, true, transaction.transaction())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+        let tables = load_tables(
+            warehouse_id,
+            [table.table_id].into_iter(),
+            true,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(tables.len(), 0);
     }
 
     #[sqlx::test]
@@ -709,19 +822,61 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let result = drop_namespace(warehouse_id, response.0, transaction.transaction())
+        let result = drop_namespace(warehouse_id, response.0, false, transaction.transaction())
             .await
             .unwrap_err();
 
         assert_eq!(result.error.code, StatusCode::CONFLICT);
 
-        drop_namespace(warehouse_id, response2.0, transaction.transaction())
+        drop_namespace(warehouse_id, response2.0, false, transaction.transaction())
             .await
             .unwrap();
 
-        drop_namespace(warehouse_id, response.0, transaction.transaction())
+        drop_namespace(warehouse_id, response.0, false, transaction.transaction())
             .await
             .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_can_recursive_drop_namespace_with_sub_namespaces(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+
+        let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let namespace =
+            NamespaceIdent::from_vec(vec!["test".to_string(), "test2".to_string()]).unwrap();
+        let _ = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        drop_namespace(warehouse_id, response.0, true, transaction.transaction())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+        let ns = list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(100),
+                parent: None,
+                return_uuids: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(ns.len(), 0);
     }
 
     #[sqlx::test]
