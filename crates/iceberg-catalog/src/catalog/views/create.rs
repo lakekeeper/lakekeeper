@@ -128,7 +128,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     C::create_view(
         namespace_id,
         &view,
-        metadata.clone(),
+        metadata.metadata.clone(),
         &metadata_location,
         &view_location,
         t.transaction(),
@@ -140,8 +140,14 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
 
     let file_io = storage_profile.file_io(storage_secret.as_ref())?;
-    let compression_codec = CompressionCodec::try_from_metadata(&metadata)?;
-    write_metadata_file(&metadata_location, &metadata, compression_codec, &file_io).await?;
+    let compression_codec = CompressionCodec::try_from_metadata(&metadata.metadata)?;
+    write_metadata_file(
+        &metadata_location,
+        &metadata.metadata,
+        compression_codec,
+        &file_io,
+    )
+    .await?;
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
 
     // Generate the storage profile. This requires the storage secret
@@ -162,7 +168,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     authorizer
         .create_view(
             &request_metadata,
-            ViewIdentUuid::from(metadata.view_uuid),
+            ViewIdentUuid::from(metadata.metadata.uuid()),
             namespace_id,
         )
         .await?;
@@ -191,7 +197,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
     let load_view_result = LoadViewResult {
         metadata_location: metadata_location.to_string(),
-        metadata,
+        metadata: metadata.metadata,
         config: Some(config.config.into()),
     };
 

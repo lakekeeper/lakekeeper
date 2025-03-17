@@ -5,7 +5,7 @@ info:
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  version: 0.6.2
+  version: 0.7.3
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -1804,6 +1804,18 @@ components:
             enum:
             - client-credentials
           tenant-id:
+            type: string
+      - type: object
+        title: AzCredentialSharedAccessKey
+        required:
+        - key
+        - credential-type
+        properties:
+          credential-type:
+            type: string
+            enum:
+            - shared-access-key
+          key:
             type: string
     BootstrapRequest:
       type: object

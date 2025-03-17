@@ -213,6 +213,7 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
           AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
+          AZURE_STORAGE_SHARED_KEY: ${{ secrets.AZURE_STORAGE_SHARED_KEY }}
 
           TEST_AWS: ${{ secrets.TEST_AWS }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
