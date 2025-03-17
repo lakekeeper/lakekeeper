@@ -19,7 +19,7 @@ use crate::{
 
 pub(super) async fn get_warehouse_by_name(
     warehouse_name: &str,
-    project_id: ProjectId,
+    project_id: &ProjectId,
     catalog_state: CatalogState,
 ) -> Result<Option<WarehouseIdent>> {
     let warehouse_id = sqlx::query_scalar!(
@@ -31,7 +31,7 @@ pub(super) async fn get_warehouse_by_name(
             AND status = 'active'
             "#,
         warehouse_name.to_string(),
-        *project_id
+        project_id
     )
     .fetch_optional(&catalog_state.read_pool())
     .await
@@ -101,7 +101,7 @@ pub(super) async fn get_config_for_warehouse(
 
 pub(crate) async fn create_warehouse(
     warehouse_name: String,
-    project_id: ProjectId,
+    project_id: &ProjectId,
     storage_profile: StorageProfile,
     tabular_delete_profile: TabularDeleteProfile,
     storage_secret_id: Option<SecretIdent>,
@@ -138,7 +138,7 @@ pub(crate) async fn create_warehouse(
                      VALUES (0, 0, (SELECT warehouse_id FROM whi)))
             SELECT warehouse_id FROM whi"#,
         warehouse_name,
-        *project_id,
+        project_id,
         storage_profile_ser,
         storage_secret_id.map(|id| id.into_uuid()),
         num_secs,
@@ -166,7 +166,7 @@ pub(crate) async fn create_warehouse(
 }
 
 pub(crate) async fn rename_project(
-    project_id: ProjectId,
+    project_id: &ProjectId,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -175,7 +175,7 @@ pub(crate) async fn rename_project(
             SET project_name = $1
             WHERE project_id = $2",
         new_name,
-        *project_id
+        project_id
     )
     .execute(&mut **transaction)
     .await
@@ -190,7 +190,7 @@ pub(crate) async fn rename_project(
 }
 
 pub(crate) async fn create_project(
-    project_id: ProjectId,
+    project_id: &ProjectId,
     project_name: String,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -202,7 +202,7 @@ pub(crate) async fn create_project(
         RETURNING project_id
         "#,
         project_name,
-        *project_id
+        project_id
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -220,7 +220,7 @@ pub(crate) async fn create_project(
 }
 
 pub(crate) async fn get_project(
-    project_id: ProjectId,
+    project_id: &ProjectId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Option<GetProjectResponse>> {
     let project = sqlx::query!(
@@ -231,7 +231,7 @@ pub(crate) async fn get_project(
         FROM project
         WHERE project_id = $1
         "#,
-        *project_id
+        project_id
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -245,7 +245,7 @@ pub(crate) async fn get_project(
 
     if let Some(project) = project {
         Ok(Some(GetProjectResponse {
-            project_id: project.project_id.into(),
+            project_id: ProjectId::from_db_unchecked(project.project_id),
             name: project.project_name,
         }))
     } else {
@@ -254,28 +254,27 @@ pub(crate) async fn get_project(
 }
 
 pub(crate) async fn delete_project(
-    project_id: ProjectId,
+    project_id: &ProjectId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    let row_count =
-        sqlx::query_scalar!(r#"DELETE FROM project WHERE project_id = $1"#, *project_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|e| match &e {
-                sqlx::Error::Database(db_error) => {
-                    if db_error.is_foreign_key_violation() {
-                        ErrorModel::conflict(
-                            "Project is not empty",
-                            "ProjectNotEmpty",
-                            Some(Box::new(e)),
-                        )
-                    } else {
-                        e.into_error_model("Error deleting project")
-                    }
+    let row_count = sqlx::query_scalar!(r#"DELETE FROM project WHERE project_id = $1"#, project_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_error) => {
+                if db_error.is_foreign_key_violation() {
+                    ErrorModel::conflict(
+                        "Project is not empty",
+                        "ProjectNotEmpty",
+                        Some(Box::new(e)),
+                    )
+                } else {
+                    e.into_error_model("Error deleting project")
                 }
-                _ => e.into_error_model("Error deleting project"),
-            })?
-            .rows_affected();
+            }
+            _ => e.into_error_model("Error deleting project"),
+        })?
+        .rows_affected();
 
     if row_count == 0 {
         return Err(ErrorModel::not_found("Project not found", "ProjectNotFound", None).into());
@@ -289,7 +288,7 @@ pub(crate) async fn list_warehouses<
     'c: 'e,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
-    project_id: ProjectId,
+    project_id: &ProjectId,
     include_status: Option<Vec<WarehouseStatus>>,
     catalog_state: E,
 ) -> Result<Vec<GetWarehouseResponse>> {
@@ -320,7 +319,7 @@ pub(crate) async fn list_warehouses<
             WHERE project_id = $1
             AND status = ANY($2)
             "#,
-        *project_id,
+        project_id,
         include_status as Vec<WarehouseStatus>
     )
     .fetch_all(catalog_state)
@@ -348,7 +347,7 @@ pub(crate) async fn list_warehouses<
             Ok(GetWarehouseResponse {
                 id: warehouse.warehouse_id.into(),
                 name: warehouse.warehouse_name,
-                project_id,
+                project_id: project_id.clone(),
                 storage_profile: warehouse.storage_profile.deref().clone(),
                 storage_secret_id: warehouse.storage_secret_id.map(std::convert::Into::into),
                 status: warehouse.status,
@@ -400,7 +399,7 @@ pub(crate) async fn get_warehouse(
         Ok(Some(GetWarehouseResponse {
             id: warehouse_id,
             name: warehouse.warehouse_name,
-            project_id: ProjectId::from(warehouse.project_id),
+            project_id: ProjectId::from_db_unchecked(warehouse.project_id),
             storage_profile: warehouse.storage_profile.deref().clone(),
             storage_secret_id: warehouse.storage_secret_id.map(std::convert::Into::into),
             status: warehouse.status,
@@ -421,8 +420,8 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
         SELECT project_id, project_name FROM project WHERE project_id = ANY($1) or $2
         "#,
         project_ids
-            .map(|ids| ids.into_iter().map(|i| *i).collect::<Vec<_>>())
-            .unwrap_or_default() as Vec<uuid::Uuid>,
+            .map(|ids| ids.into_iter().map(|i| i.to_string()).collect::<Vec<_>>())
+            .unwrap_or_default() as Vec<String>,
         return_all
     )
     .fetch_all(connection)
@@ -432,7 +431,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     Ok(projects
         .into_iter()
         .map(|project| GetProjectResponse {
-            project_id: ProjectId::from(project.project_id),
+            project_id: ProjectId::from_db_unchecked(project.project_id),
             name: project.project_name,
         })
         .collect())
@@ -675,7 +674,7 @@ pub(crate) mod test {
 
         if create_project {
             PostgresCatalog::create_project(
-                project_id,
+                &project_id,
                 format!("Project {project_id}"),
                 t.transaction(),
             )
@@ -694,7 +693,7 @@ pub(crate) mod test {
 
         let warehouse_id = PostgresCatalog::create_warehouse(
             "test_warehouse".to_string(),
-            project_id,
+            &project_id,
             storage_profile,
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(5),
@@ -716,7 +715,7 @@ pub(crate) mod test {
 
         let fetched_warehouse_id = PostgresCatalog::get_warehouse_by_name(
             "test_warehouse",
-            ProjectId::from(uuid::Uuid::nil()),
+            &ProjectId::from(uuid::Uuid::nil()),
             state.clone(),
         )
         .await
@@ -766,7 +765,7 @@ pub(crate) mod test {
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
         let projects = PostgresCatalog::list_projects(
-            Some(HashSet::from_iter(vec![project_id_1])),
+            Some(HashSet::from_iter(vec![project_id_1.clone()])),
             trx.transaction(),
         )
         .await
@@ -788,7 +787,7 @@ pub(crate) mod test {
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let warehouses = PostgresCatalog::list_warehouses(project_id, None, trx.transaction())
+        let warehouses = PostgresCatalog::list_warehouses(&project_id, None, trx.transaction())
             .await
             .unwrap();
         trx.commit().await.unwrap();
@@ -829,7 +828,7 @@ pub(crate) mod test {
 
         // Assert active whs
         let warehouses = PostgresCatalog::list_warehouses(
-            project_id,
+            &project_id,
             Some(vec![WarehouseStatus::Active, WarehouseStatus::Inactive]),
             trx.transaction(),
         )
@@ -843,7 +842,7 @@ pub(crate) mod test {
         // Assert only active whs
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
-        let warehouses = PostgresCatalog::list_warehouses(project_id, None, trx.transaction())
+        let warehouses = PostgresCatalog::list_warehouses(&project_id, None, trx.transaction())
             .await
             .unwrap();
         trx.commit().await.unwrap();
@@ -884,7 +883,7 @@ pub(crate) mod test {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            PostgresCatalog::create_project(project_id, "old_name".to_string(), t.transaction())
+            PostgresCatalog::create_project(&project_id, "old_name".to_string(), t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -894,7 +893,7 @@ pub(crate) mod test {
             let mut t = PostgresTransaction::begin_write(state.clone())
                 .await
                 .unwrap();
-            PostgresCatalog::rename_project(project_id, "new_name", t.transaction())
+            PostgresCatalog::rename_project(&project_id, "new_name", t.transaction())
                 .await
                 .unwrap();
             t.commit().await.unwrap();
@@ -903,7 +902,7 @@ pub(crate) mod test {
         let mut read_transaction = PostgresTransaction::begin_read(state.clone())
             .await
             .unwrap();
-        let project = PostgresCatalog::get_project(project_id, read_transaction.transaction())
+        let project = PostgresCatalog::get_project(&project_id, read_transaction.transaction())
             .await
             .unwrap();
         assert_eq!(project.unwrap().name, "new_name");
@@ -916,11 +915,11 @@ pub(crate) mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        PostgresCatalog::create_project(project_id, "old_name".to_string(), t.transaction())
+        PostgresCatalog::create_project(&project_id, "old_name".to_string(), t.transaction())
             .await
             .unwrap();
         let err =
-            PostgresCatalog::create_project(project_id, "other_name".to_string(), t.transaction())
+            PostgresCatalog::create_project(&project_id, "other_name".to_string(), t.transaction())
                 .await
                 .unwrap_err();
         assert_eq!(err.error.code, StatusCode::CONFLICT);
