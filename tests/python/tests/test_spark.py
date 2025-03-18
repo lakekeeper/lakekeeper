@@ -12,8 +12,8 @@ import fsspec
 def test_create_namespace(spark, warehouse: conftest.Warehouse):
     spark.sql("CREATE NAMESPACE test_create_namespace_spark")
     assert (
-        "test_create_namespace_spark",
-    ) in warehouse.pyiceberg_catalog.list_namespaces()
+               "test_create_namespace_spark",
+           ) in warehouse.pyiceberg_catalog.list_namespaces()
 
 
 def test_list_namespaces(spark, warehouse: conftest.Warehouse):
@@ -173,9 +173,9 @@ def test_merge_into(spark):
 
 
 def test_drop_table(
-    spark,
-    warehouse: conftest.Warehouse,
-    io_fsspec: fsspec.AbstractFileSystem,
+        spark,
+        warehouse: conftest.Warehouse,
+        io_fsspec: fsspec.AbstractFileSystem,
 ):
     spark.sql("CREATE NAMESPACE test_drop_table")
     spark.sql(
@@ -195,10 +195,18 @@ def test_drop_table(
     with pytest.raises(Exception) as e:
         warehouse.pyiceberg_catalog.load_table(("test_drop_table", "my_table"))
     # Files should be deleted for managed tables
-    time.sleep(5)
+
     if table_location.startswith("s3") or table_location.startswith("abfs"):
-        io_fsspec.invalidate_cache()
-        assert io_fsspec.exists(table_location) is False
+        exists = True
+
+        for i in range(15):
+            io_fsspec.invalidate_cache()
+            time.sleep(1)
+            exists = io_fsspec.exists(table_location)
+            if not exists:
+                break
+
+        assert not exists, f"Table location {table_location} still exists after waiting for {i} seconds"
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
@@ -212,10 +220,10 @@ def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_co
         "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
     )
     assert (
-        spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table")
-        .toPandas()
-        .shape[0]
-        == 0
+            spark.sql("SELECT * FROM test_drop_table_purge_spark.my_table")
+            .toPandas()
+            .shape[0]
+            == 0
     )
 
     spark.sql("DROP TABLE test_drop_table_purge_spark.my_table PURGE;")
@@ -254,22 +262,22 @@ def test_drop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_con
 
 
 def drop_table_and_assert_that_table_is_gone(
-    dfs, drop_table_name, namespace, storage_config, warehouse
+        dfs, drop_table_name, namespace, storage_config, warehouse
 ):
     table_0 = warehouse.pyiceberg_catalog.load_table((namespace, drop_table_name))
     purge_uri = (
-        warehouse.server.catalog_url.strip("/")
-        + "/"
-        + "/".join(
-            [
-                "v1",
-                str(warehouse.warehouse_id),
-                "namespaces",
-                namespace,
-                "tables",
-                f"{drop_table_name}?purgeRequested=True",
-            ]
-        )
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            str(warehouse.warehouse_id),
+            "namespaces",
+            namespace,
+            "tables",
+            f"{drop_table_name}?purgeRequested=True",
+        ]
+    )
     )
     requests.delete(
         purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -305,18 +313,18 @@ def drop_table_and_assert_that_table_is_gone(
         table = warehouse.pyiceberg_catalog.load_table((namespace, table))
         assert table.scan().to_pandas().equals(df)
         purge_uri = (
-            warehouse.server.catalog_url.strip("/")
-            + "/"
-            + "/".join(
-                [
-                    "v1",
-                    str(warehouse.warehouse_id),
-                    "namespaces",
-                    namespace,
-                    "tables",
-                    f"my_table_{n}?purgeRequested=True",
-                ]
-            )
+                warehouse.server.catalog_url.strip("/")
+                + "/"
+                + "/".join(
+            [
+                "v1",
+                str(warehouse.warehouse_id),
+                "namespaces",
+                namespace,
+                "tables",
+                f"my_table_{n}?purgeRequested=True",
+            ]
+        )
         )
         requests.delete(
             purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -349,18 +357,18 @@ def test_undrop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_c
     table_0 = warehouse.pyiceberg_catalog.load_table((namespace, "my_table_0"))
 
     purge_uri = (
-        warehouse.server.catalog_url.strip("/")
-        + "/"
-        + "/".join(
-            [
-                "v1",
-                str(warehouse.warehouse_id),
-                "namespaces",
-                namespace,
-                "tables",
-                "my_table_0?purgeRequested=True",
-            ]
-        )
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            str(warehouse.warehouse_id),
+            "namespaces",
+            namespace,
+            "tables",
+            "my_table_0?purgeRequested=True",
+        ]
+    )
     )
     requests.delete(
         purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -381,17 +389,17 @@ def test_undrop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_c
 
 def undrop_table(table_0, warehouse):
     undrop_uri = (
-        warehouse.server.management_url.strip("/")
-        + "/"
-        + "/".join(
-            [
-                "v1",
-                "warehouse",
-                str(warehouse.warehouse_id),
-                "deleted_tabulars",
-                "undrop",
-            ]
-        )
+            warehouse.server.management_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            "warehouse",
+            str(warehouse.warehouse_id),
+            "deleted_tabulars",
+            "undrop",
+        ]
+    )
     )
     resp = requests.post(
         undrop_uri,
@@ -403,7 +411,7 @@ def undrop_table(table_0, warehouse):
 
 
 def test_undropped_table_can_be_purged_again_http(
-    spark, warehouse: conftest.Warehouse, storage_config
+        spark, warehouse: conftest.Warehouse, storage_config
 ):
     if storage_config["storage-profile"]["type"] == "adls":
         # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
@@ -430,18 +438,18 @@ def test_undropped_table_can_be_purged_again_http(
     table_0 = warehouse.pyiceberg_catalog.load_table((namespace, drop_table))
 
     purge_uri = (
-        warehouse.server.catalog_url.strip("/")
-        + "/"
-        + "/".join(
-            [
-                "v1",
-                str(warehouse.warehouse_id),
-                "namespaces",
-                namespace,
-                "tables",
-                f"{drop_table}?purgeRequested=True",
-            ]
-        )
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            str(warehouse.warehouse_id),
+            "namespaces",
+            namespace,
+            "tables",
+            f"{drop_table}?purgeRequested=True",
+        ]
+    )
     )
     requests.delete(
         purge_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
@@ -761,7 +769,7 @@ def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
 
 
 def test_cannot_create_table_at_same_location(
-    spark, namespace, warehouse: conftest.Warehouse
+        spark, namespace, warehouse: conftest.Warehouse
 ):
     # Create a table without a custom location to get the default location
     spark.sql(
@@ -803,7 +811,7 @@ def test_cannot_create_table_at_same_location(
 
 
 def test_cannot_create_table_at_sub_location(
-    spark, namespace, warehouse: conftest.Warehouse
+        spark, namespace, warehouse: conftest.Warehouse
 ):
     # Create a table without a custom location to get the default location
     spark.sql(
@@ -846,11 +854,11 @@ def test_cannot_create_table_at_sub_location(
 
 @pytest.mark.parametrize("enable_cleanup", [False, True])
 def test_old_metadata_files_are_deleted(
-    spark,
-    namespace,
-    warehouse: conftest.Warehouse,
-    enable_cleanup,
-    io_fsspec: fsspec.AbstractFileSystem,
+        spark,
+        namespace,
+        warehouse: conftest.Warehouse,
+        enable_cleanup,
+        io_fsspec: fsspec.AbstractFileSystem,
 ):
     if not enable_cleanup:
         tbl_name = "old_metadata_files_are_deleted_no_cleanup"
@@ -902,8 +910,8 @@ def test_old_metadata_files_are_deleted(
 
 
 def test_hierarchical_namespaces(
-    spark,
-    namespace: conftest.Namespace,
+        spark,
+        namespace: conftest.Namespace,
 ):
     nested_namespace = [namespace.spark_name, "nest1", "nest2", "nest3", "nest4"]
 
@@ -930,9 +938,9 @@ def test_hierarchical_namespaces(
 
 
 def test_register_table(
-    spark,
-    namespace,
-    warehouse: conftest.Warehouse,
+        spark,
+        namespace,
+        warehouse: conftest.Warehouse,
 ):
     spark.sql(
         f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT) USING iceberg"
@@ -945,18 +953,18 @@ def test_register_table(
 
     # Remove table from catalog
     delete_uri = (
-        warehouse.server.catalog_url.strip("/")
-        + "/"
-        + "/".join(
-            [
-                "v1",
-                str(warehouse.warehouse_id),
-                "namespaces",
-                namespace.url_name,
-                "tables",
-                f"my_table?purgeRequested=false",
-            ]
-        )
+            warehouse.server.catalog_url.strip("/")
+            + "/"
+            + "/".join(
+        [
+            "v1",
+            str(warehouse.warehouse_id),
+            "namespaces",
+            namespace.url_name,
+            "tables",
+            f"my_table?purgeRequested=false",
+        ]
+    )
     )
     requests.delete(
         delete_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
