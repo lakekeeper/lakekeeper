@@ -197,15 +197,16 @@ def test_drop_table(
     # Files should be deleted for managed tables
 
     if table_location.startswith("s3") or table_location.startswith("abfs"):
-        time.sleep(0.5)
         exists = True
+
         for i in range(15):
             io_fsspec.invalidate_cache()
+            time.sleep(1)
             exists = io_fsspec.exists(table_location)
             if not exists:
                 break
 
-        assert exists is False
+        assert not exists, f"Table location {table_location} still exists after waiting for {i} seconds"
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
