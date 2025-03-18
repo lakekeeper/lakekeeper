@@ -284,6 +284,7 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if a file cannot be written and deleted.
+    #[allow(clippy::too_many_lines)]
     pub async fn validate_access(
         &self,
         credential: Option<&StorageCredential>,
@@ -330,18 +331,21 @@ impl StorageProfile {
                 StorageProfile::S3(_) => {
                     tracing::debug!("Getting s3 file io from table config for vended credentials.");
                     let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
-
                     tracing::debug!(
                         "Validating read/write access to: {test_location} using vended credentials"
                     );
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
-                StorageProfile::Adls(_) => {
+                StorageProfile::Adls(p) => {
                     tracing::debug!(
                         "Validating adls vended credentials access to: {test_location}"
                     );
-                    az::validate_vended_credentials(&tbl_config.config, &test_location, self)
+                    let sts_file_io = az::get_file_io_from_table_config(
+                        &tbl_config.config,
+                        p.filesystem.to_string(),
+                    )?;
+                    self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
                 #[cfg(test)]
@@ -392,7 +396,7 @@ impl StorageProfile {
             }
         })
         .await??;
-        tracing::info!("checked location is empty");
+        tracing::debug!("checked location is empty");
         Ok(())
     }
 
@@ -778,6 +782,7 @@ mod tests {
     use needs_env_var::needs_env_var;
 
     use super::*;
+    use crate::catalog::io::{delete_file, read_file, write_metadata_file};
 
     #[test]
     fn test_split_location() {
@@ -922,30 +927,38 @@ mod tests {
         }
     }
 
-    // TODO: add vended azure test here once opendal supports sas
+    #[tokio::test]
+    #[needs_env_var::needs_env_var(TEST_AZURE = 1)]
+    async fn test_vended_az() {
+        for (cred, typ) in [
+            (az::test::azure_tests::client_creds(), "client-credentials"),
+            (az::test::azure_tests::shared_key(), "shared-key"),
+        ] {
+            let mut profile: StorageProfile = az::test::azure_tests::azure_profile().into();
+            eprintln!("testing {typ}");
+            test_profile(&cred.into(), &mut profile).await;
+        }
+    }
 
     #[tokio::test]
     #[needs_env_var::needs_env_var(TEST_GCS = 1)]
     async fn test_vended_gcs() {
         let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
-
-        {
-            let cred: StorageCredential = std::env::var("GCS_CREDENTIAL")
-                .map(|s| GcsCredential::ServiceAccountKey {
-                    key: serde_json::from_str::<GcsServiceKey>(&s).unwrap(),
-                })
-                .map_err(|_| ())
-                .expect("Missing cred")
-                .into();
-            let bucket = std::env::var("GCS_BUCKET").expect("Missing bucket");
-            let mut profile: StorageProfile = GcsProfile {
-                bucket,
-                key_prefix: key_prefix.clone(),
-            }
+        let cred: StorageCredential = std::env::var("GCS_CREDENTIAL")
+            .map(|s| GcsCredential::ServiceAccountKey {
+                key: serde_json::from_str::<GcsServiceKey>(&s).unwrap(),
+            })
+            .map_err(|_| ())
+            .expect("Missing cred")
             .into();
-
-            test_profile(&cred, &mut profile).await;
+        let bucket = std::env::var("GCS_BUCKET").expect("Missing bucket");
+        let mut profile: StorageProfile = GcsProfile {
+            bucket,
+            key_prefix: key_prefix.clone(),
         }
+        .into();
+
+        test_profile(&cred, &mut profile).await;
     }
 
     #[needs_env_var(TEST_AWS = 1)]
@@ -1004,9 +1017,9 @@ mod tests {
             .base_location()
             .expect("Failed to get base location");
         let mut table_location1 = base_location.clone();
-        table_location1.push("test");
+        table_location1.without_trailing_slash().push("test");
         let mut table_location2 = base_location.clone();
-        table_location2.push("test2");
+        table_location2.without_trailing_slash().push("test2");
 
         let config1 = profile
             .generate_table_config(
@@ -1034,8 +1047,17 @@ mod tests {
             .await
             .unwrap();
         let (downscoped1, downscoped2) = match profile {
-            StorageProfile::Test(_) | StorageProfile::Adls(_) => {
+            StorageProfile::Test(_) => {
                 unimplemented!("Not supported")
+            }
+            StorageProfile::Adls(p) => {
+                let downscoped1 =
+                    az::get_file_io_from_table_config(&config1.config, p.filesystem.to_string())
+                        .unwrap();
+                let downscoped2 =
+                    az::get_file_io_from_table_config(&config2.config, p.filesystem.to_string())
+                        .unwrap();
+                (downscoped1, downscoped2)
             }
             StorageProfile::S3(_) => {
                 let downscoped1 = s3::get_file_io_from_table_config(&config1.config).unwrap();
@@ -1052,71 +1074,51 @@ mod tests {
         let test_file1 = table_location1.cloning_push("test.txt");
         let test_file2 = table_location2.cloning_push("test.txt");
 
-        let output = downscoped1.new_output(test_file1.as_str()).unwrap();
-        output.write(b"test".to_vec().into()).await.unwrap();
-
-        let output2 = downscoped2.new_output(test_file2.as_str()).unwrap();
-        output2.write(b"test2".to_vec().into()).await.unwrap();
-
-        let input1 = downscoped1
-            .new_input(test_file1.as_str())
-            .unwrap()
-            .read()
+        write_metadata_file(&test_file1, "test", CompressionCodec::None, &downscoped1)
             .await
             .unwrap();
-        assert_eq!(input1.as_ref(), b"test");
-        let input2 = downscoped2
-            .new_input(test_file2.as_str())
-            .unwrap()
-            .read()
+
+        write_metadata_file(&test_file2, "test2", CompressionCodec::None, &downscoped2)
             .await
             .unwrap();
-        assert_eq!(input2.as_ref(), b"test2");
+
+        let input1 = read_file(&downscoped1, &test_file1).await.unwrap();
+        assert_eq!(input1.as_slice(), b"\"test\"");
+
+        let input2 = read_file(&downscoped2, &test_file2).await.unwrap();
+
+        assert_eq!(input2.as_slice(), b"\"test2\"");
 
         // cannot read across locations
-        let _ = downscoped1
-            .new_input(test_file2.as_str())
-            .unwrap()
-            .read()
-            .await
-            .unwrap_err();
-        let _ = downscoped2
-            .new_input(test_file1.as_str())
-            .unwrap()
-            .read()
-            .await
-            .unwrap_err();
+        let _ = read_file(&downscoped1, &test_file2).await.unwrap_err();
+        let _ = read_file(&downscoped2, &test_file1).await.unwrap_err();
 
         // cannot write across locations
-        let _ = downscoped1
-            .new_output(
-                table_location2
-                    .cloning_push("this-should-fail.txt")
-                    .as_str(),
-            )
-            .unwrap()
-            .write(b"this-fails".to_vec().into())
-            .await
-            .unwrap_err();
+        let _ = write_metadata_file(
+            &table_location2.cloning_push("this-should-fail.txt"),
+            "this-fails",
+            CompressionCodec::None,
+            &downscoped1,
+        )
+        .await
+        .unwrap_err();
 
-        let _ = downscoped2
-            .new_output(
-                table_location1
-                    .cloning_push("this-should-fail.txt")
-                    .as_str(),
-            )
-            .unwrap()
-            .write(b"this-fails".to_vec().into())
-            .await
-            .unwrap_err();
+        let _ = write_metadata_file(
+            &table_location1.cloning_push("this-should-fail.txt"),
+            "this-fails",
+            CompressionCodec::None,
+            &downscoped2,
+        )
+        .await
+        .unwrap_err();
 
         // cannot delete across locations
-        downscoped1.delete(test_file2.as_str()).await.unwrap_err();
-        downscoped2.delete(test_file1.as_str()).await.unwrap_err();
+        delete_file(&downscoped1, &test_file2).await.unwrap_err();
+        delete_file(&downscoped2, &test_file1).await.unwrap_err();
 
         // can delete in own locations
-        downscoped1.delete(test_file1.as_str()).await.unwrap();
-        downscoped2.delete(test_file2.as_str()).await.unwrap();
+        delete_file(&downscoped1, &test_file1).await.unwrap();
+        delete_file(&downscoped2, &test_file2).await.unwrap();
 
         // cleanup
         profile

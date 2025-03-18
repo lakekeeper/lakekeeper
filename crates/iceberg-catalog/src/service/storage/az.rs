@@ -7,11 +7,13 @@ use std::{
 use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
 use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
-    shared_access_signature::{service_sas::BlobSharedAccessSignature, SasToken},
+    shared_access_signature::{
+        service_sas::{BlobSharedAccessSignature, SasKey},
+        SasToken,
+    },
     StorageCredentials,
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use futures::StreamExt;
 use iceberg::io::AzdlsConfigKeys;
 use iceberg_ext::configs::{
     table::{custom, TableProperties},
@@ -19,6 +21,7 @@ use iceberg_ext::configs::{
 };
 use lazy_regex::regex;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use url::{Host, Url};
 use veil::Redact;
 
@@ -27,10 +30,9 @@ use crate::{
         iceberg::{supported_endpoints, v1::DataAccess},
         CatalogConfig, Result,
     },
-    catalog::io::IoError,
     service::storage::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
-        StoragePermissions, StorageProfile, StorageType, TableConfig,
+        StoragePermissions, StorageType, TableConfig,
     },
     WarehouseIdent,
 };
@@ -175,27 +177,41 @@ impl AdlsProfile {
         creds: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
-        let AzCredential::ClientCredentials {
-            client_id,
-            tenant_id,
-            client_secret,
-        } = creds;
         let http_client = STS_CLIENT.get_or_init(reqwest::Client::new).clone();
-        let token = azure_identity::ClientSecretCredential::new(
-            Arc::new(http_client),
-            self.authority_host
-                .clone()
-                .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
-            tenant_id.clone(),
-            client_id.clone(),
-            client_secret.clone(),
-        );
-        let cred = azure_storage::StorageCredentials::token_credential(Arc::new(token));
-        let mut creds = TableProperties::default();
+        let sas = match creds {
+            AzCredential::ClientCredentials {
+                client_id,
+                tenant_id,
+                client_secret,
+            } => {
+                let token = azure_identity::ClientSecretCredential::new(
+                    Arc::new(http_client),
+                    self.authority_host
+                        .clone()
+                        .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
+                    tenant_id.clone(),
+                    client_id.clone(),
+                    client_secret.clone(),
+                );
 
-        let sas = self
-            .get_sas_token(table_location, cred, permissions)
-            .await?;
+                self.sas_via_delegation_key(
+                    table_location,
+                    StorageCredentials::token_credential(Arc::new(token)),
+                    permissions,
+                )
+                .await?
+            }
+            AzCredential::SharedAccessKey { key } => self.sas(
+                table_location,
+                permissions,
+                OffsetDateTime::now_utc()
+                    .saturating_sub(time::Duration::minutes(5))
+                    .saturating_add(time::Duration::days(7)),
+                azure_core::auth::Secret::new(key.to_string()),
+            )?,
+        };
+
+        let mut creds = TableProperties::default();
 
         creds.insert(&custom::CustomConfig {
             key: self.iceberg_sas_property_key(),
@@ -246,18 +262,22 @@ impl AdlsProfile {
                         )
                         .with_prop(AzdlsConfigKeys::ClientId, client_id.to_string())
                         .with_prop(AzdlsConfigKeys::TenantId, tenant_id.to_string());
-                    if let Some(authority_host) = &self.authority_host {
-                        builder = builder
-                            .with_prop(AzdlsConfigKeys::AuthorityHost, authority_host.to_string());
-                    }
+                }
+
+                AzCredential::SharedAccessKey { key } => {
+                    builder = builder.with_prop(AzdlsConfigKeys::AccountKey, key.to_string());
                 }
             }
+        }
+
+        if let Some(authority_host) = &self.authority_host {
+            builder = builder.with_prop(AzdlsConfigKeys::AuthorityHost, authority_host.to_string());
         }
 
         Ok(builder.build()?)
     }
 
-    async fn get_sas_token(
+    async fn sas_via_delegation_key(
         &self,
         path: &Location,
         cred: StorageCredentials,
@@ -292,6 +312,19 @@ impl AdlsProfile {
                 reason: "Error getting azure user delegation key.".to_string(),
                 source: Some(Box::new(e)),
             })?;
+        let signed_expiry = delegation_key.user_deligation_key.signed_expiry;
+        let key = delegation_key.user_deligation_key.clone();
+
+        self.sas(path, permissions, signed_expiry, key)
+    }
+
+    fn sas(
+        &self,
+        path: &Location,
+        permissions: StoragePermissions,
+        signed_expiry: OffsetDateTime,
+        key: impl Into<SasKey>,
+    ) -> Result<String, CredentialsError> {
         let path = reduce_scheme_string(&path.to_string(), true);
         let rootless_path = path.trim_start_matches('/');
         let depth = rootless_path.split('/').count();
@@ -303,10 +336,10 @@ impl AdlsProfile {
         );
 
         let sas = BlobSharedAccessSignature::new(
-            delegation_key.user_deligation_key.clone(),
+            key,
             canonical_resource,
             permissions.into(),
-            delegation_key.user_deligation_key.signed_expiry,
+            signed_expiry,
             BlobSignedResource::Directory,
         )
         .signed_directory_depth(depth);
@@ -404,11 +437,6 @@ impl AdlsLocation {
             key,
             location,
         })
-    }
-
-    #[must_use]
-    fn iceberg_sas_property_key(&self) -> String {
-        iceberg_sas_property_key(&self.account_name, &self.endpoint_suffix)
     }
 
     #[must_use]
@@ -538,6 +566,12 @@ pub enum AzCredential {
         #[redact(partial)]
         client_secret: String,
     },
+    #[serde(rename_all = "kebab-case")]
+    #[schema(title = "AzCredentialSharedAccessKey")]
+    SharedAccessKey {
+        #[redact]
+        key: String,
+    },
 }
 
 impl From<StoragePermissions> for BlobSasPermissions {
@@ -575,6 +609,17 @@ fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String
     format!("adls.sas-token.{account_name}.{endpoint_suffix}")
 }
 
+pub(super) fn get_file_io_from_table_config(
+    config: &TableProperties,
+    file_system: String,
+) -> Result<iceberg::io::FileIO, FileIoError> {
+    Ok(iceberg::io::FileIOBuilder::new("azdls")
+        .with_client(STS_CLIENT.get_or_init(reqwest::Client::new).clone())
+        .with_props(config.inner())
+        .with_prop(AzdlsConfigKeys::Filesystem, file_system)
+        .build()?)
+}
+
 fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
     azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
         .transport(TransportOptions::new(Arc::new(
@@ -588,58 +633,6 @@ fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServ
             )),
         )
         .blob_service_client()
-}
-
-// This function should not use any information available in the profile, thus
-// we don't give it a `&self` reference. We just pass it in to attach in the error.
-pub(super) async fn validate_vended_credentials(
-    table_config: &TableProperties,
-    table_location: &Location,
-    profile_for_error: &StorageProfile,
-) -> Result<(), ValidationError> {
-    let table_location = AdlsLocation::try_from(table_location.clone())?;
-    let mut file_location = table_location.location.clone();
-    file_location.without_trailing_slash().push("test-file");
-
-    // TODO: replace with iceberg_rust's FileIO + opendal once sas is available
-    let cred = azure_storage::StorageCredentials::sas_token(
-        table_config
-            .get_custom_prop(&table_location.iceberg_sas_property_key())
-            .ok_or(CredentialsError::ShortTermCredential {
-                reason: "Couldn't find sas token in table config.".to_string(),
-                source: None,
-            })?,
-    )
-    .map_err(|e| CredentialsError::ShortTermCredential {
-        reason: "Error creating azure sas token.".to_string(),
-        source: Some(Box::new(e)),
-    })?;
-    let client = blob_service_client(&table_location.account_name, cred);
-
-    let container = client.container_client(table_location.filesystem.as_str());
-    let blob_client = container.blob_client(reduce_scheme_string(&file_location.to_string(), true));
-    blob_client
-        .put_block_blob("Lakekeeper IOTest")
-        .content_type("text/plain")
-        .await
-        .map_err(|e| {
-            ValidationError::IoOperationFailed(
-                IoError::FileWrite(Box::new(e)),
-                Box::new(profile_for_error.clone()),
-            )
-        })?;
-
-    let mut get = blob_client.get().into_stream();
-    while let Some(n) = get.next().await {
-        if let Err(e) = n {
-            return Err(ValidationError::IoOperationFailed(
-                IoError::FileRead(Box::new(e)),
-                Box::new(profile_for_error.clone()),
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 // https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
@@ -800,12 +793,21 @@ fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
 }
 
 #[cfg(test)]
-mod test {
+pub(super) mod test {
+    use std::str::FromStr;
+
     use needs_env_var::needs_env_var;
 
-    use super::*;
     use crate::service::{
-        storage::StorageLocations, tabular_idents::TabularIdentUuid, NamespaceIdentUuid,
+        storage::{
+            az::{
+                normalize_host, reduce_scheme_string, validate_account_name,
+                validate_filesystem_name, validate_path_segment, DEFAULT_AUTHORITY_HOST,
+            },
+            AdlsLocation, AdlsProfile, StorageLocations, StorageProfile,
+        },
+        tabular_idents::TabularIdentUuid,
+        NamespaceIdentUuid,
     };
 
     #[test]
@@ -819,43 +821,57 @@ mod test {
     }
 
     #[needs_env_var(TEST_AZURE = 1)]
-    mod azure_tests {
+    pub(crate) mod azure_tests {
         use crate::service::storage::{
             AdlsProfile, AzCredential, StorageCredential, StorageProfile,
         };
 
-        fn azure_profile() -> (AdlsProfile, AzCredential) {
+        pub(crate) fn azure_profile() -> AdlsProfile {
             let account_name = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").unwrap();
-            let client_id = std::env::var("AZURE_CLIENT_ID").unwrap();
-            let client_secret = std::env::var("AZURE_CLIENT_SECRET").unwrap();
-            let tenant_id = std::env::var("AZURE_TENANT_ID").unwrap();
             let filesystem = std::env::var("AZURE_STORAGE_FILESYSTEM").unwrap();
-            let key_prefix = vec!['b'; 512].into_iter().collect::<String>();
-            let prof = AdlsProfile {
+
+            let key_prefix = vec!['b'; 1].into_iter().collect::<String>();
+            AdlsProfile {
                 filesystem,
                 key_prefix: Some(key_prefix.to_string()),
                 account_name,
                 authority_host: None,
                 host: None,
                 sas_token_validity_seconds: None,
-            };
+            }
+        }
 
-            let cred = AzCredential::ClientCredentials {
+        pub(crate) fn client_creds() -> AzCredential {
+            let client_id = std::env::var("AZURE_CLIENT_ID").unwrap();
+            let client_secret = std::env::var("AZURE_CLIENT_SECRET").unwrap();
+            let tenant_id = std::env::var("AZURE_TENANT_ID").unwrap();
+
+            AzCredential::ClientCredentials {
                 client_id,
                 client_secret,
                 tenant_id,
-            };
+            }
+        }
 
-            (prof, cred)
+        pub(crate) fn shared_key() -> AzCredential {
+            let key = std::env::var("AZURE_STORAGE_SHARED_KEY").unwrap();
+            AzCredential::SharedAccessKey { key }
         }
 
         #[tokio::test]
         async fn test_can_validate() {
-            let (prof, cred) = azure_profile();
+            let prof = azure_profile();
             let mut prof: StorageProfile = prof.into();
-            let cred: StorageCredential = cred.into();
             prof.normalize().expect("failed to validate profile");
-            prof.validate_access(Some(&cred), None).await.unwrap();
+            for (cred, typ) in [
+                (client_creds(), "client-creds"),
+                (shared_key(), "shared-key"),
+            ] {
+                let cred: StorageCredential = cred.into();
+                prof.validate_access(Some(&cred), None)
+                    .await
+                    .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
+            }
         }
     }
 

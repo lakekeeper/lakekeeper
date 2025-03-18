@@ -50,7 +50,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2585f4f", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "47850413", features = [
     "storage-all",
 ] }
 openfga-client = { version = "0.2", features = ["auth-middle"] }
