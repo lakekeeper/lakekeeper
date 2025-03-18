@@ -1,10 +1,14 @@
-use std::{collections::HashMap, str::FromStr, time::SystemTime, vec};
+use std::{
+    cell::LazyCell, collections::HashMap, hash::RandomState, str::FromStr, sync::Arc,
+    time::SystemTime, vec,
+};
 
 use aws_sigv4::{
     http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
     sign::v4,
     {self},
 };
+use moka::future::OwnedKeyEntrySelector;
 
 use super::{super::CatalogServer, error::SignError};
 use crate::{
@@ -17,10 +21,10 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
         secrets::SecretStore,
-        storage::{S3Location, S3Profile, StorageCredential},
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid,
+        storage::{s3::S3UrlStyleDetectionMode, S3Location, S3Profile, StorageCredential},
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid, Transaction,
     },
-    CONFIG,
+    WarehouseIdent, CONFIG,
 };
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
@@ -60,7 +64,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // Include staged tables as this might be a commit
         let include_staged = true;
 
-        let parsed_url = s3_utils::parse_s3_url(&request_url, CONFIG.s3_url_style_detection)?;
+        let parsed_url = s3_utils::parse_s3_url(
+            &request_url,
+            s3_url_style_detection(&state, warehouse_id).await?,
+        )?;
 
         // Unfortunately there is currently no way to pass information about warehouse_id & table_id
         // to this function from a get_table or create_table process without exchanging the token.
@@ -179,6 +186,34 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         )
         .map_err(extend_err)
     }
+}
+
+async fn s3_url_style_detection<C: Catalog>(
+    state: C::State,
+    warehouse_id: WarehouseIdent,
+) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
+    let mut tx = C::Transaction::begin_read(state).await?;
+    let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
+        .try_get_with(warehouse_id, async {
+            Ok(C::require_warehouse(warehouse_id, tx.transaction())
+                .await
+                .map(|w| {
+                    w.storage_profile
+                        .try_into_s3()
+                        .map(|s| s.s3_url_detection_mode.unwrap_or_default())
+                        .map_err(|e| {
+                            IcebergErrorResponse::from(ErrorModel::bad_request(
+                                "Warehouse storage profile is not an S3 profile",
+                                "InvalidWarehouse",
+                                Some(Box::new(e)),
+                            ))
+                        })
+                })??)
+        })
+        .await
+        .map_err(|e: Arc<IcebergErrorResponse>| e.as_ref().to_owned())?;
+    tx.commit().await?;
+    Ok(t)
 }
 
 fn sign(
@@ -395,7 +430,7 @@ pub(super) mod s3_utils {
     use lazy_regex::regex;
 
     use super::{ErrorModel, Result};
-    use crate::{config::S3UrlStyleDetectionMode, service::storage::S3Location};
+    use crate::service::storage::{s3::S3UrlStyleDetectionMode, S3Location};
 
     #[derive(Debug)]
     pub(super) struct ParsedS3Url {
@@ -424,7 +459,7 @@ pub(super) mod s3_utils {
 
         match s3_url_style_detection {
             S3UrlStyleDetectionMode::VirtualHost => virtual_host_style(uri),
-            S3UrlStyleDetectionMode::PathStyle => path_style(uri),
+            S3UrlStyleDetectionMode::Path => path_style(uri),
             S3UrlStyleDetectionMode::Auto => {
                 if let Ok(parsed) = virtual_host_style(uri) {
                     return Ok(parsed);
@@ -509,10 +544,7 @@ pub(super) mod s3_utils {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        catalog::s3_signer::sign::s3_utils::parse_s3_url, config::S3UrlStyleDetectionMode,
-        service::storage::S3Flavor,
-    };
+    use crate::{catalog::s3_signer::sign::s3_utils::parse_s3_url, service::storage::S3Flavor};
 
     #[derive(Debug)]
     struct TC {
@@ -542,7 +574,7 @@ mod test {
     fn test_parse_s3_url_config_path_style() {
         let parsed = parse_s3_url(
             &url::Url::parse("https://not-a-bucket.s3.region.amazonaws.com/bucket/key").unwrap(),
-            S3UrlStyleDetectionMode::PathStyle,
+            S3UrlStyleDetectionMode::Path,
         )
         .unwrap();
         assert_eq!(parsed.location.bucket_name(), "bucket");

@@ -9,6 +9,7 @@ use iceberg_ext::configs::{
     ConfigProperty, Location,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use veil::Redact;
 
 use super::StorageType;
@@ -78,6 +79,36 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub allow_alternative_protocols: Option<bool>,
+    /// S3 URL style detection mode.
+    /// The URL style detection heuristic to use. One of `auto`, `path-style`, `virtual-host`.
+    /// Default: `auto`. When set to `auto`, Lakekeeper will first try to parse the URL as
+    /// `virtual-host` and then attempt `path-style`.
+    /// `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
+    /// assumes the bucket name is the first subdomain if it is preceding `.s3` or `.s3-`.
+    ///
+    /// Examples (bucket is foo in all cases):
+    ///
+    /// Virtual host:
+    ///   - https://foo.s3.endpoint.com/bar/a/key
+    ///   - https://foo.s3-eu-central-1.amazonaws.com/file
+    /// Path style:
+    ///   - https://s3.endpoint.com/foo/bar/a/key
+    ///   - https://s3.us-east-1.amazonaws.com/foo/file
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub s3_url_detection_mode: Option<S3UrlStyleDetectionMode>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum S3UrlStyleDetectionMode {
+    /// Use the path style for all requests.
+    Path,
+    /// Use the virtual host style for all requests.
+    VirtualHost,
+    /// Automatically detect the style based on the request.
+    #[default]
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]

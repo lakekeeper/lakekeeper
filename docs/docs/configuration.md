@@ -127,17 +127,6 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`        | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
 | `LAKEKEEPER__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
 
-### S3 Signer
-
-Lakekeeper can sign S3 URLs to grant access to data files to clients. There are multiple ways S3 resources can be
-referenced via URL. Lakekeeper comes with out-of-the-box heuristics to detect which URL style is being used. Sometimes
-these heuristics will not work, or you may want to enforce a specific URL style. The following configuration options are
-available:
-
-| Variable                            | Example | Description                                                                                                                                                                                                             |
-|-------------------------------------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LAKEKEEPER__S3_URL_STYLE_DETECTION | `AUTO`  | The URL style detection heuristic to use. One of `AUTO`, `PATH_STYLE`, `VIRTUAL_HOST`. Default: `AUTO`. When set to `AUTO`, Lakekeeper will first try to parse the URL as `VIRTUAL_HOST` and then attempt `PATH_STYLE`. |
-
 
 ### UI
 
