@@ -58,13 +58,13 @@ impl From<ErrorModel> for IcebergErrorResponse {
 }
 
 /// JSON wrapper for all error responses (non-2xx)
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct IcebergErrorResponse {
     pub error: ErrorModel,
 }
 
 /// JSON error payload returned in a response with further details on the error
-#[derive(Default, Clone, Debug, TypedBuilder, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Default, Debug, TypedBuilder, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ErrorModel {
     /// Human-readable error message
     #[builder(setter(into))]

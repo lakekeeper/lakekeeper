@@ -86,14 +86,15 @@ pub struct S3Profile {
     /// `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
     /// assumes the bucket name is the first subdomain if it is preceding `.s3` or `.s3-`.
     ///
-    /// Examples (bucket is foo in all cases):
+    /// Examples (bucket is foo in all cases)
     ///
     /// Virtual host:
-    ///   - https://foo.s3.endpoint.com/bar/a/key
-    ///   - https://foo.s3-eu-central-1.amazonaws.com/file
+    ///   - <https://foo.s3.endpoint.com/bar/a/key>
+    ///   - <https://foo.s3-eu-central-1.amazonaws.com/file>
+    ///
     /// Path style:
-    ///   - https://s3.endpoint.com/foo/bar/a/key
-    ///   - https://s3.us-east-1.amazonaws.com/foo/file
+    ///   - <https://s3.endpoint.com/foo/bar/a/key>
+    ///   - <https://s3.us-east-1.amazonaws.com/foo/file>
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub s3_url_detection_mode: Option<S3UrlStyleDetectionMode>,
@@ -286,6 +287,7 @@ impl S3Profile {
             sts_enabled: _,
             flavor: _,
             allow_alternative_protocols: _,
+            s3_url_detection_mode: _,
         } = self;
 
         // assume_role_arn is not supported currently
@@ -935,6 +937,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
+            s3_url_detection_mode: None,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -975,6 +978,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
+            s3_url_detection_mode: None,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1018,6 +1022,7 @@ pub(crate) mod test {
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
+                s3_url_detection_mode: None,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1081,6 +1086,7 @@ pub(crate) mod test {
                         flavor: S3Flavor::Aws,
                         sts_enabled: true,
                         allow_alternative_protocols: Some(false),
+                        s3_url_detection_mode: None,
                     }
                     .into();
 

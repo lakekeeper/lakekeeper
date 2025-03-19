@@ -1,14 +1,10 @@
-use std::{
-    cell::LazyCell, collections::HashMap, hash::RandomState, str::FromStr, sync::Arc,
-    time::SystemTime, vec,
-};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::SystemTime, vec};
 
 use aws_sigv4::{
     http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
     sign::v4,
     {self},
 };
-use moka::future::OwnedKeyEntrySelector;
 
 use super::{super::CatalogServer, error::SignError};
 use crate::{
@@ -24,7 +20,7 @@ use crate::{
         storage::{s3::S3UrlStyleDetectionMode, S3Location, S3Profile, StorageCredential},
         Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid, Transaction,
     },
-    WarehouseIdent, CONFIG,
+    WarehouseIdent,
 };
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
@@ -66,7 +62,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let parsed_url = s3_utils::parse_s3_url(
             &request_url,
-            s3_url_style_detection(&state, warehouse_id).await?,
+            s3_url_style_detection::<C>(state.v1_state.catalog.clone(), warehouse_id).await?,
         )?;
 
         // Unfortunately there is currently no way to pass information about warehouse_id & table_id
@@ -195,7 +191,8 @@ async fn s3_url_style_detection<C: Catalog>(
     let mut tx = C::Transaction::begin_read(state).await?;
     let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
         .try_get_with(warehouse_id, async {
-            Ok(C::require_warehouse(warehouse_id, tx.transaction())
+            tracing::trace!("No cache hit for {warehouse_id}");
+            C::require_warehouse(warehouse_id, tx.transaction())
                 .await
                 .map(|w| {
                     w.storage_profile
@@ -208,10 +205,20 @@ async fn s3_url_style_detection<C: Catalog>(
                                 Some(Box::new(e)),
                             ))
                         })
-                })??)
+                })?
         })
         .await
-        .map_err(|e: Arc<IcebergErrorResponse>| e.as_ref().to_owned())?;
+        .map_err(|e: Arc<IcebergErrorResponse>| {
+            tracing::debug!("Failed to get warehouse S3 URL style detection mode from cache due to error: '{e:?}'");
+            IcebergErrorResponse::from(ErrorModel::new(
+                e.error.message.as_str(),
+                e.error.r#type.as_str(),
+                e.error.code,
+                // moka Arcs errors, our errors have a non-clone backtrace, and we can't get it out
+                // so we don't forward the error here. We log it above tho.
+                None,
+            ))
+        })?;
     tx.commit().await?;
     Ok(t)
 }

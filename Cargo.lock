@@ -2994,6 +2994,7 @@ dependencies = [
  "lakekeeper-console",
  "limes",
  "mime_guess",
+ "moka",
  "reqwest",
  "tokio",
  "tower-http",
