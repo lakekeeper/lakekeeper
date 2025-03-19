@@ -17,6 +17,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  tests-pass:
+    name: all tests pass
+    runs-on: ubuntu-latest
+    needs:
+      - sqlx-check
+      - check-format
+      - clippy
+      - check-generated-openapi-matches
+      - test
+    steps:
+      - run: exit 0
   sqlx-check:
     runs-on: ubuntu-24.04
     steps:
@@ -79,7 +90,7 @@ jobs:
           TEST_KV2: 1
           TEST_MINIO: 1
 
-  check-generated-cotents-match:
+  check-generated-openapi-matches:
     runs-on: ubuntu-24.04
     steps:
       - run: sudo snap install --edge --classic just

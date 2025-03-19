@@ -1,5 +1,5 @@
-name: Custom Roles
-model_file: ./schema.fga
+name: Lakekeeper Core
+model_file: ./fga.mod
 tuples:
   # Hierarchies: server_1 -> project_1 -> (warehouse_1 (unmanaged), warehouse_2 (managed access))
   - user: server:server_1
@@ -122,7 +122,7 @@ tuples:
   - user: user:warehouse_2_owner
     relation: ownership
     object: warehouse:warehouse_2
-  # Roles (Owner on namespace_1_1)
+  # Roles (Owner on namespace_2_1)
   - user: user:namespace_2_1_owner
     relation: ownership
     object: namespace:namespace_2_1
@@ -918,6 +918,26 @@ tests:
           can_grant_manage_grants: false
           can_change_ownership: false
       - user: user:namespace_2_1_owner
+        object: namespace:namespace_2_1
+        assertions:
+          can_create_table: true
+          can_create_view: true
+          can_create_namespace: true
+          can_delete: true
+          can_update_properties: true
+          can_get_metadata: true
+          can_list_tables: true
+          can_list_views: true
+          can_list_namespaces: true
+          can_include_in_list: true
+          can_grant_create: false
+          can_grant_describe: false
+          can_grant_modify: false
+          can_grant_select: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_change_ownership: false
+      - user: role:namespace_2_1_owner#assignee
         object: namespace:namespace_2_1
         assertions:
           can_create_table: true

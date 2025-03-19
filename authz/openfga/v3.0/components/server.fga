@@ -1,0 +1,34 @@
+module lakekeeper-server
+
+type server
+  relations
+    # Relation Hierarchies
+    define project: [project]
+
+    # ------------------ Built-in Roles ------------------
+    # The server administrator is able to administrate the server and list all projects.
+    # In order to perform actions inside projects, the admin can assign himself
+    # as `project_admin` on each project. This action is visible in the audit log.
+    # The admin role is designed for human users.
+    define admin: [user, role#assignee]
+
+    # Operators are more powerful than administrators - they are the most powerful role in
+    # Lakekeeper. The operator role allows usage of all APIs inside the catalog. It is designed
+    # to be used by machines that provision resources inside Lakekeeper, i.e. a `KubernetesOperator`
+    define operator: [user, role#assignee]
+
+    # ------------------ Actions ------------------
+    define can_create_project: admin or operator
+
+    # Anyone can list projects, they are however filtered by can_include_in_list of the project.
+    # Only admin can list all projects.
+    define can_list_all_projects: admin or operator
+    define can_list_users: admin or operator
+    define can_provision_users: admin or operator
+    define can_update_users: admin or operator
+    define can_delete_users: admin or operator
+    define can_read_assignments: admin or operator
+
+    # GRANT Permissions
+    define can_grant_admin: admin or operator
+    define can_grant_operator: admin or operator

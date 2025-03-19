@@ -1,4 +1,6 @@
-use std::{collections::HashSet, fmt::Debug, sync::Arc};
+#![allow(clippy::ref_option)] // For lazy static
+
+use std::{collections::HashSet, fmt::Debug, str::FromStr, sync::Arc};
 
 use axum::Router;
 use openfga_client::{
@@ -6,6 +8,7 @@ use openfga_client::{
         CheckRequestTupleKey, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
         TupleKeyWithoutCondition,
     },
+    migration::AuthorizationModelVersion,
     tonic,
 };
 
@@ -68,6 +71,11 @@ const MAX_TUPLES_PER_WRITE: i32 = 100;
 lazy_static::lazy_static! {
     static ref AUTH_CONFIG: crate::config::OpenFGAConfig = {
         CONFIG.openfga.clone().expect("OpenFGAConfig not found")
+    };
+    static ref CONFIGURED_MODEL_VERSION: Option<AuthorizationModelVersion> = {
+        AUTH_CONFIG.authorization_model_version.as_ref().filter(|v| !v.is_empty()).map(|v| {
+            AuthorizationModelVersion::from_str(v).unwrap_or_else(|_| panic!("Failed to parse OpenFGA authorization model version from config. Got {v}, expected <major>.<minor>"))
+        })
     };
     pub(crate) static ref OPENFGA_SERVER: String = {
         format!("server:{}", CONFIG.server_id)
