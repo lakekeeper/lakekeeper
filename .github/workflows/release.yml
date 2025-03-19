@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - main
-      - 'manual-release-*'
+      - "manual-release-*"
   pull_request:
     paths:
-      - '.github/workflows/release.yml'
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 env:
@@ -33,6 +33,10 @@ jobs:
       minor: ${{ steps.release.outputs['crates/iceberg-catalog--minor'] }}
       patch: ${{ steps.release.outputs['crates/iceberg-catalog--patch'] }}
     steps:
+      - name: echo repository and branch
+        run: |
+          echo "Repository name: $GITHUB_REPOSITORY"
+          echo "Branch name: $GITHUB_REF"
       - uses: googleapis/release-please-action@v4
         id: release
         with:
