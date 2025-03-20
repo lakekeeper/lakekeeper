@@ -2953,6 +2953,7 @@ dependencies = [
  "maplit",
  "middle",
  "mockall",
+ "moka",
  "needs_env_var",
  "openfga-rs",
  "paste",
