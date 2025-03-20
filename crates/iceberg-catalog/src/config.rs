@@ -908,13 +908,26 @@ mod test {
     }
 
     #[test]
-    fn test_bind_ip_address_v6_all() {
+    fn test_bind_ip_address_v6_loopback() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::1");
             let config = get_config();
             assert_eq!(
                 config.bind_ip,
                 IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))
             );
             Ok(())
         });
