@@ -146,8 +146,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Serve { force_start }) => {
             print_info();
-            tracing::info!("Starting server on 0.0.0.0:{}...", CONFIG.listen_port);
-            let bind_addr = std::net::SocketAddr::from(([0, 0, 0, 0], CONFIG.listen_port));
+            tracing::info!(
+                "Starting server on {}:{}...",
+                CONFIG.bind_ip,
+                CONFIG.listen_port
+            );
+            let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
             if !force_start {
                 wait_for_db::wait_for_db(true, 0, 0, true).await?;
             }
