@@ -86,18 +86,18 @@ pub struct S3Profile {
     /// `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
     /// assumes the bucket name is the first subdomain if it is preceding `.s3` or `.s3-`.
     ///
-    /// Examples (bucket is foo in all cases)
+    /// Examples
     ///
     /// Virtual host:
-    ///   - <https://foo.s3.endpoint.com/bar/a/key>
-    ///   - <https://foo.s3-eu-central-1.amazonaws.com/file>
+    ///   - <https://bucket.s3.endpoint.com/bar/a/key>
+    ///   - <https://bucket.s3-eu-central-1.amazonaws.com/file>
     ///
     /// Path style:
-    ///   - <https://s3.endpoint.com/foo/bar/a/key>
-    ///   - <https://s3.us-east-1.amazonaws.com/foo/file>
+    ///   - <https://s3.endpoint.com/bucket/bar/a/key>
+    ///   - <https://s3.us-east-1.amazonaws.com/bucket/file>
     #[serde(default)]
-    #[builder(default, setter(strip_option))]
-    pub s3_url_detection_mode: Option<S3UrlStyleDetectionMode>,
+    #[builder(default)]
+    pub s3_url_detection_mode: S3UrlStyleDetectionMode,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
@@ -937,7 +937,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
-            s3_url_detection_mode: None,
+            s3_url_detection_mode: S3UrlStyleDetectionMode::Auto,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -978,7 +978,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
-            s3_url_detection_mode: None,
+            s3_url_detection_mode: S3UrlStyleDetectionMode::Auto,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1022,7 +1022,7 @@ pub(crate) mod test {
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
-                s3_url_detection_mode: None,
+                s3_url_detection_mode: crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1086,7 +1086,8 @@ pub(crate) mod test {
                         flavor: S3Flavor::Aws,
                         sts_enabled: true,
                         allow_alternative_protocols: Some(false),
-                        s3_url_detection_mode: None,
+                        s3_url_detection_mode:
+                            crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
                     }
                     .into();
 

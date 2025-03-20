@@ -188,16 +188,16 @@ async fn s3_url_style_detection<C: Catalog>(
     state: C::State,
     warehouse_id: WarehouseIdent,
 ) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
-    let mut tx = C::Transaction::begin_read(state).await?;
     let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
         .try_get_with(warehouse_id, async {
             tracing::trace!("No cache hit for {warehouse_id}");
-            C::require_warehouse(warehouse_id, tx.transaction())
+            let mut tx = C::Transaction::begin_read(state).await?;
+            let result = C::require_warehouse(warehouse_id, tx.transaction())
                 .await
                 .map(|w| {
                     w.storage_profile
                         .try_into_s3()
-                        .map(|s| s.s3_url_detection_mode.unwrap_or_default())
+                        .map(|s| s.s3_url_detection_mode)
                         .map_err(|e| {
                             IcebergErrorResponse::from(ErrorModel::bad_request(
                                 "Warehouse storage profile is not an S3 profile",
@@ -205,7 +205,9 @@ async fn s3_url_style_detection<C: Catalog>(
                                 Some(Box::new(e)),
                             ))
                         })
-                })?
+                })?;
+            tx.commit().await?;
+            result
         })
         .await
         .map_err(|e: Arc<IcebergErrorResponse>| {
@@ -219,7 +221,6 @@ async fn s3_url_style_detection<C: Catalog>(
                 None,
             ))
         })?;
-    tx.commit().await?;
     Ok(t)
 }
 
