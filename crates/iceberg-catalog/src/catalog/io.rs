@@ -106,7 +106,7 @@ pub(crate) async fn read_metadata_file(
 }
 
 pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = normalize_location(location);
+    let location = normalize_location(location.clone().with_trailing_slash());
 
     retry_fn(|| async {
         file_io
