@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin};
 
+use crate::CONFIG;
 use axum_prometheus::{
     metrics,
     metrics_exporter_prometheus::{Matcher, PrometheusBuilder},
@@ -29,7 +30,7 @@ pub fn get_axum_layer_and_install_recorder(
             ),
             utils::SECONDS_DURATION_BUCKETS,
         )?
-        .with_http_listener(([0, 0, 0, 0], metrics_port))
+        .with_http_listener((CONFIG.bind_ip, metrics_port))
         .build()?;
     let handle = recorder.handle();
     metrics::set_global_recorder(recorder)?;
