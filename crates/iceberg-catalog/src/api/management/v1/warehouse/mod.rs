@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::default_page_size;
+use super::{default_page_size, TabularType};
 pub use crate::service::{
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
@@ -27,10 +27,10 @@ use crate::{
     catalog::UnfilteredPage,
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
+        authz::{Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogWarehouseAction},
         event_publisher::EventMetadata,
         secrets::SecretStore,
-        task_queue::TaskFilter,
+        task_queue::{tabular_purge_queue::TabularPurgeInput, TaskFilter},
         Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
         Transaction,
     },
@@ -705,6 +705,85 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     tracing::warn!("Failed to delete old secret: {:?}", e.error);
                 })
                 .ok();
+        }
+
+        Ok(())
+    }
+
+    async fn recursive_namespace_delete(
+        warehouse_id: WarehouseIdent,
+        namespace_id: NamespaceIdentUuid,
+        force: bool,
+        purge: bool,
+        request_metadata: RequestMetadata,
+        context: ApiContext<State<A, C, S>>,
+    ) -> Result<()> {
+        // ------------------- AuthZ -------------------
+        context
+            .v1_state
+            .authz
+            .require_namespace_action(
+                &request_metadata,
+                Ok(Some(namespace_id)),
+                // TODO: is this the right action?
+                &CatalogNamespaceAction::CanDelete,
+            )
+            .await?;
+        let catalog = context.v1_state.catalog;
+        let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
+
+        let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
+
+        if matches!(
+            warehouse.tabular_delete_profile,
+            TabularDeleteProfile::Hard {}
+        ) || (force
+            && matches!(
+                warehouse.tabular_delete_profile,
+                TabularDeleteProfile::Soft { .. }
+            ))
+        {
+            let drop_info =
+                C::drop_namespace(warehouse_id, namespace_id, true, transaction.transaction())
+                    .await?;
+            // commit before starting the purge tasks so that we cannot end in the situation where
+            // data is deleted but the transaction is not committed, meaning dangling pointers.
+            transaction.commit().await?;
+
+            context
+                .v1_state
+                .queues
+                .cancel_tabular_expiration(TaskFilter::TaskIds(drop_info.open_tasks))
+                .await?;
+
+            if purge {
+                // cancel pending tasks
+
+                for (tabular_id, tabular_location) in drop_info.child_tables {
+                    let (tabular_id, tabular_type) = match tabular_id {
+                        TabularIdentUuid::Table(id) => (id, TabularType::Table),
+                        TabularIdentUuid::View(id) => (id, TabularType::View),
+                    };
+                    context
+                        .v1_state
+                        .queues
+                        .queue_tabular_purge(TabularPurgeInput {
+                            tabular_id,
+                            warehouse_ident: warehouse.id,
+                            tabular_type,
+                            parent_id: None,
+                            tabular_location,
+                        })
+                        .await?;
+                }
+            }
+        } else {
+            return Err(ErrorModel::bad_request(
+                "Cannot recursively delete namespace with soft-deletion without force flag",
+                "NamespaceDeleteNotAllowed",
+                None,
+            )
+            .into());
         }
 
         Ok(())

@@ -10,7 +10,7 @@ pub mod v1 {
     use axum::{
         extract::{Path, Query, State as AxumState},
         response::{IntoResponse, Response},
-        routing::{get, post},
+        routing::{delete, get, post},
         Extension, Json, Router,
     };
     use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
@@ -100,6 +100,7 @@ pub mod v1 {
             list_roles,
             list_user,
             list_warehouses,
+            recursive_namespace_delete,
             rename_default_project,
             rename_project_by_id,
             rename_warehouse,
@@ -837,6 +838,49 @@ pub mod v1 {
         .await
     }
 
+    #[derive(Serialize, Deserialize)]
+    struct RecursiveDeleteQuery {
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        purge: bool,
+    }
+
+    /// Recursively delete a namespace
+    ///
+    /// Delete a namespace and its contents. This means all tables, views, and namespaces under this
+    /// namespace will be deleted. The namespace itself will also be deleted. If the warehouse
+    /// containing the namespace is configured with a soft-deletion profile, the `force` flag has to
+    /// be provided. The deletion will not be a soft-deletion. Every table, view and namespace will
+    /// be gone as soon as this call returns. Depending on whether the `purge` flag was set to true,
+    /// the data will be queued for deletion too. Any pending `tabular_expiration` will be cancelled.
+    /// If there's a running `tabular_expiration`, this call will fail with a `409 Conflict` error.
+    #[utoipa::path(
+        delete,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}",
+        responses(
+            (status = 200, description = "Namespace successfully deleted"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn recursive_namespace_delete<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(RecursiveDeleteQuery { force, purge }): Query<RecursiveDeleteQuery>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::recursive_namespace_delete(
+            warehouse_id.into(),
+            namespace_id.into(),
+            force,
+            purge,
+            metadata,
+            api_context,
+        )
+        .await
+    }
+
     #[derive(Debug, Deserialize, Serialize, utoipa::IntoParams)]
     pub struct GetWarehouseStatisticsQuery {
         /// Next page token
@@ -1090,6 +1134,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/statistics",
                     get(get_warehouse_statistics),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/namespace/{namespace_id}",
+                    delete(recursive_namespace_delete),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars",

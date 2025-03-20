@@ -17,9 +17,10 @@ pub use catalog::{
     CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse, DeletionDetails,
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
-    ListNamespacesResponse, LoadTableResponse, NamespaceIdent, Result, StartupValidationData,
-    TableCommit, TableCreation, TableIdent, Transaction, UndropTabularResponse,
-    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse, ViewMetadataWithLocation,
+    ListNamespacesResponse, LoadTableResponse, NamespaceDropInfo, NamespaceIdent, Result,
+    StartupValidationData, TableCommit, TableCreation, TableIdent, Transaction,
+    UndropTabularResponse, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
+    ViewMetadataWithLocation,
 };
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
