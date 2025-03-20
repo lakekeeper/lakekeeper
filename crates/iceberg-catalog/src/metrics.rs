@@ -1,6 +1,5 @@
 use std::{future::Future, pin::Pin};
 
-use crate::CONFIG;
 use axum_prometheus::{
     metrics,
     metrics_exporter_prometheus::{Matcher, PrometheusBuilder},
@@ -8,6 +7,8 @@ use axum_prometheus::{
     AXUM_HTTP_REQUESTS_DURATION_SECONDS, PREFIXED_HTTP_REQUESTS_DURATION_SECONDS,
 };
 use futures::TryFutureExt;
+
+use crate::CONFIG;
 
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
