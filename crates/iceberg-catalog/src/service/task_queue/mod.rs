@@ -1,8 +1,8 @@
-use std::{fmt::Debug, ops::Deref, str::FromStr, time::Duration};
+use std::{fmt::Debug, ops::Deref, time::Duration};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -218,36 +218,10 @@ pub struct TaskQueueConfig {
     )]
     pub max_age: chrono::Duration,
     #[serde(
-        deserialize_with = "seconds_to_std_duration",
-        serialize_with = "std_duration_to_seconds"
+        deserialize_with = "crate::config::seconds_to_std_duration",
+        serialize_with = "crate::config::serialize_std_duration_as_ms"
     )]
     pub poll_interval: Duration,
-}
-
-pub(crate) fn seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
-    Ok(if buf.ends_with("ms") {
-        Duration::from_millis(
-            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
-        )
-    } else if buf.ends_with('s') {
-        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
-    } else {
-        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
-    })
-}
-
-pub(crate) fn std_duration_to_seconds<S>(
-    duration: &Duration,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
 impl Default for TaskQueueConfig {

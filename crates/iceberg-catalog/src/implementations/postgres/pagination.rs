@@ -1,8 +1,11 @@
-use std::fmt::Display;
+// TODO: lift this from DB module?
+
+use std::{fmt::Display, str::FromStr};
 
 use base64::Engine;
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
+use thiserror::Error;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PaginateToken<T> {
@@ -30,6 +33,35 @@ where
             "{}",
             base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(&token_string)
         )
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct RoundTrippableDuration(pub(crate) iso8601::Duration);
+
+#[derive(Debug, Error)]
+#[error("Failed to parse duration: {0}")]
+pub(super) struct DurationError(String);
+
+impl TryFrom<&str> for RoundTrippableDuration {
+    type Error = ErrorModel;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let duration = iso8601::Duration::from_str(value).map_err(|e| {
+            tracing::info!("Failed to parse duration: {e}");
+            ErrorModel::bad_request(
+                "Invalid duration".to_string(),
+                "DurationParseError".to_string(),
+                Some(Box::new(DurationError(e))),
+            )
+        })?;
+        Ok(Self(duration))
+    }
+}
+
+impl Display for RoundTrippableDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -91,6 +123,16 @@ fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) ->
 mod test {
     use super::*;
     use crate::service::ProjectId;
+
+    #[test]
+    fn test_roundtrip_duration() {
+        let duration =
+            RoundTrippableDuration(iso8601::Duration::from_str("P1Y2M3DT4H5M6S").unwrap());
+        let duration_str = duration.to_string();
+        let duration_after: RoundTrippableDuration =
+            RoundTrippableDuration::try_from(duration_str.as_str()).unwrap();
+        assert_eq!(duration, duration_after);
+    }
 
     #[test]
     fn test_paginate_token() {
