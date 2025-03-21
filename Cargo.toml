@@ -54,7 +54,7 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "7ca94
     "storage-all",
 ] }
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "2623173bab4f9c59b70f599dbc80bd4fe344e1ed" }
-typed-builder = "^0.20.0"
+typed-builder = "^0.21.0"
 strum_macros = "^0.27.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
