@@ -42,3 +42,17 @@ a {text-decoration: none !important;color: #32485c;}
 .md-header .md-tabs__item--active a {
   color: #fff !important;
 }
+
+.md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color:var(--web-wash) !important;
+}
+
+.md-nav__source {
+  background-color: var(--web-wash) !important;
+  
+}
+
+.md-source {
+	color: #fff !important;
+	text-decoration: underline;
+}
