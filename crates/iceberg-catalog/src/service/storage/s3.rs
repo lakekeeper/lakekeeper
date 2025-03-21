@@ -1018,9 +1018,30 @@ pub(crate) mod test {
     }
 
     #[needs_env_var(TEST_AWS = 1)]
-    mod aws {
+    pub(crate) mod aws {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
+
+        pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
+            let profile = S3Profile {
+                bucket: std::env::var("AWS_S3_BUCKET").unwrap(),
+                key_prefix: Some(uuid::Uuid::now_v7().to_string()),
+                assume_role_arn: None,
+                endpoint: None,
+                region: std::env::var("AWS_S3_REGION").unwrap(),
+                path_style_access: Some(true),
+                sts_role_arn: Some(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap()),
+                flavor: S3Flavor::Aws,
+                sts_enabled: true,
+                allow_alternative_protocols: Some(false),
+            };
+            let cred = S3Credential::AccessKey {
+                aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
+                aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+            };
+
+            (profile, cred)
+        }
 
         #[test]
         fn test_can_validate() {
@@ -1030,28 +1051,9 @@ pub(crate) mod test {
             // sqlx::test
             crate::test::test_block_on(
                 async {
-                    let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
-                    let region = std::env::var("AWS_S3_REGION").unwrap();
-                    let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
-                    let cred: StorageCredential = S3Credential::AccessKey {
-                        aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                        aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
-                    }
-                    .into();
-
-                    let mut profile: StorageProfile = S3Profile {
-                        bucket,
-                        key_prefix: Some("test_prefix".to_string()),
-                        assume_role_arn: None,
-                        endpoint: None,
-                        region,
-                        path_style_access: Some(true),
-                        sts_role_arn: Some(sts_role_arn),
-                        flavor: S3Flavor::Aws,
-                        sts_enabled: true,
-                        allow_alternative_protocols: Some(false),
-                    }
-                    .into();
+                    let (profile, cred) = get_storage_profile();
+                    let cred: StorageCredential = cred.into();
+                    let mut profile: StorageProfile = profile.into();
 
                     profile.normalize().unwrap();
                     profile.validate_access(Some(&cred), None).await.unwrap();
