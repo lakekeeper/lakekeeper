@@ -332,7 +332,7 @@ fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use needs_env_var::needs_env_var;
 
     use crate::service::storage::gcs::validate_bucket_name;
@@ -370,31 +370,34 @@ mod test {
     }
 
     #[needs_env_var(TEST_GCS = 1)]
-    mod cloud_tests {
+    pub(crate) mod cloud_tests {
+
         use crate::service::storage::{
             gcs::{GcsCredential, GcsProfile, GcsServiceKey},
             StorageCredential, StorageProfile,
         };
 
+        pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
+            let bucket = std::env::var("GCS_BUCKET").expect("Missing GCS_BUCKET");
+            let key = std::env::var("GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
+            let key: GcsServiceKey = serde_json::from_str(&key).unwrap();
+            let cred = GcsCredential::ServiceAccountKey { key };
+            let profile = GcsProfile {
+                bucket,
+                key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+            };
+            (profile, cred)
+        }
+
         #[tokio::test]
         async fn test_can_validate() {
-            let cred: StorageCredential = std::env::var("GCS_CREDENTIAL")
-                .map(|s| GcsCredential::ServiceAccountKey {
-                    key: serde_json::from_str::<GcsServiceKey>(&s).unwrap(),
-                })
-                .map_err(|_| ())
-                .expect("Missing cred")
-                .into();
+            let (profile, cred) = get_storage_profile();
+
+            let cred: StorageCredential = cred.into();
             let s = &serde_json::to_string(&cred).unwrap();
             serde_json::from_str::<StorageCredential>(s).expect("json roundtrip failed");
 
-            let bucket = std::env::var("GCS_BUCKET").expect("Missing bucket");
-
-            let mut profile: StorageProfile = GcsProfile {
-                bucket,
-                key_prefix: Some("test_prefix".to_string()),
-            }
-            .into();
+            let mut profile: StorageProfile = profile.into();
 
             profile.normalize().expect("Failed to normalize profile");
             profile.validate_access(Some(&cred), None).await.unwrap();
