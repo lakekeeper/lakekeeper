@@ -26,6 +26,8 @@ jobs:
             name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
             cross: false
             docker-build: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
 
     steps:
       - name: Checkout
