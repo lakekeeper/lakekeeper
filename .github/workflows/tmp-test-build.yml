@@ -1,6 +1,7 @@
 name: tmp test build
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -78,16 +79,3 @@ jobs:
           -w /build --mount type=bind,src=$(pwd),target=/build \
           localhost/build-lakekeeper:latest \ 
           cargo build --release --all-features --locked --target ${{ matrix.target }}
-
-      - name: Prepare artifacts [-nix]
-        if: matrix.os != 'windows-latest'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czvf ../../../${{ matrix.name }} iceberg-catalog
-          cd -
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bin-${{ matrix.name }}
-          path: ${{ matrix.name }}
