@@ -76,6 +76,6 @@ jobs:
         if: matrix.docker-build == true
         run: |
           docker run \
-          -w /build --mount type=bind,src=$(pwd),target=/build \
-          localhost/build-lakekeeper:latest \ 
-          cargo build --release --all-features --locked --target ${{ matrix.target }}
+            --mount type=bind,src=.,target=/build \
+            localhost/build-lakekeeper:latest \ 
+            cargo build --release --all-features --locked --target ${{ matrix.target }}
