@@ -72,25 +72,21 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
-            cross: true
             docker-build: false
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
-            cross: false
             docker-build: true
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
-            cross: false
             docker-build: true
 
           - target: aarch64-apple-darwin
             os: macos-14
             name: iceberg-catalog-aarch64-apple-darwin.tar.gz
-            cross: false
             docker-build: false
 
     #          - target: x86_64-pc-windows-msvc
@@ -122,19 +118,9 @@ jobs:
           target: ${{ matrix.target }}
           cache: false
 
-      - name: Install cross
-        if: matrix.cross == true
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
       - name: Build [Cargo]
-        if: matrix.cross == false && matrix.docker-build == false
+        if: matrix.docker-build == false
         run: cargo build --all-features --release --locked --target ${{ matrix.target }}
-
-      - name: Build [Cross]
-        if: matrix.cross == true && matrix.docker-build == false
-        run: cross build --all-features --release --locked --target ${{ matrix.target }}
 
       #      - name: Prepare artifacts [Windows]
       #        if: matrix.os == 'windows-latest'
@@ -151,15 +137,15 @@ jobs:
         if: matrix.docker-build == true
         run: |
           DOCKER_BUILDKIT=1 docker build -t localhost/build-lakekeeper:latest \
-            -f docker-build/build-with-alpine3.21.Dockerfile .
+            -f docker-build/build-with-alpine.Dockerfile .
 
       - name: Build [Docker Build]
         if: matrix.docker-build == true
         run: |
           docker run \
-          --mount type=bind,src=.,target=/build \
-          localhost/build-lakekeeper:latest \
-          cargo build --release --all-features --locked --target ${{ matrix.target }}
+            -w /build --mount type=bind,src=$(pwd),target=/build \
+            localhost/build-lakekeeper:latest \
+            cargo build --release --all-features --locked --target ${{ matrix.target }}
 
       - name: Prepare artifacts [-nix]
         if: matrix.os != 'windows-latest'
