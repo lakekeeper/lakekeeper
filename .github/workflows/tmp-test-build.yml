@@ -70,7 +70,7 @@ jobs:
         if: matrix.docker-build == true
         run: |
           DOCKER_BUILDKIT=1 docker build -t localhost/build-lakekeeper:latest \
-            -f docker-build/build-with-alpine3.21.Dockerfile .
+            -f docker-build/build-with-alpine.Dockerfile .
 
       - name: Build [Docker Build]
         if: matrix.docker-build == true
