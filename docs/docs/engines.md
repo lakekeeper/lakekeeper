@@ -22,6 +22,10 @@ The following docker compose examples are available for trino:
 - [`Access-Control`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control): Lakekeeper secured with OAuth2, single technical User for trino
 - [`Trino-OPA`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/trino-opa): Single trino instance secured by OAuth2 shared by multiple users. Lakekeeper Permissions for each individual user enforced by trino via the Open Policy Agent bridge.
 
+If [Soft-Deletion](./concepts.md#soft-deletion) is enabled in Lakekeeper, make sure to set `"iceberg.unique-table-location" = 'true'`, to ensure that tables can be recreated in new locations while their dropped counterparts are waiting for expiration.
+
+As Lakekeeper supports nesting of namespaces, we recommend to set `"iceberg.rest-catalog.nested-namespace-enabled" = 'true'`.
+
 Basic setup in trino:
 
 === "S3-Compatible"
@@ -36,6 +40,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
+        "iceberg.unique-table-location" = 'true',
         "s3.region" = '<AWS Region to use. For S3-compatible storage use a non-existent AWS region, such as local>',
         "fs.native-s3.enabled" = 'true'
         -- Required for some S3-compatible storages:
@@ -63,6 +68,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
+        "iceberg.unique-table-location" = 'true',
         "fs.native-azure.enabled" = 'true',
         "azure.auth-type" = 'OAUTH',
         "azure.oauth.client-id" = '<Client-ID for an Application with Storage Account access>',
@@ -92,6 +98,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.uri" = '<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>',
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
+        "iceberg.unique-table-location" = 'true',
         "fs.native-gcs.enabled" = 'true',
         "gcs.project-id" = '<Identifier for the project on Google Cloud Storage>',
         "gcs.json-key" = '<Your Google Cloud service account key in JSON format>',
