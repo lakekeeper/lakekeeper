@@ -1,6 +1,6 @@
 services:
   jupyter:
-    image: quay.io/jupyter/pyspark-notebook:2024-06-04
+    image: quay.io/jupyter/pyspark-notebook:2024-10-14
     depends_on:
       server:
         condition: service_healthy
