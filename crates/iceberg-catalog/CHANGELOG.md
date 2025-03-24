@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
+
+
+### Features
+
+* **az:** support azure shared keys ([#912](https://github.com/lakekeeper/lakekeeper/issues/912)) ([e85bd91](https://github.com/lakekeeper/lakekeeper/commit/e85bd91c5fc8b64feafc90d01a14cfc8c5233321))
+* configurable bind ip address ([#922](https://github.com/lakekeeper/lakekeeper/issues/922)) ([e545a26](https://github.com/lakekeeper/lakekeeper/commit/e545a26503af1458ded9c3875563340da91c165b))
+
+
+### Bug Fixes
+
+* add log lines to determine if not found or action forbidden ([#895](https://github.com/lakekeeper/lakekeeper/issues/895)) ([66d1d05](https://github.com/lakekeeper/lakekeeper/commit/66d1d054953b7a688da832068b85440c8c02d91e))
+* **az:** relax sas token start time ([#898](https://github.com/lakekeeper/lakekeeper/issues/898)) ([45eb878](https://github.com/lakekeeper/lakekeeper/commit/45eb87821e4ea1bda73838d9f11e6ca1dce171a9))
+* dropping S3 table does not accidentally delete sibling folders with same prefix anymore ([#923](https://github.com/lakekeeper/lakekeeper/issues/923)) ([39f60f4](https://github.com/lakekeeper/lakekeeper/commit/39f60f4282b26b350313cc9dad8f3292a2e4d1a1))
+* forward sts role arn to s3-compatible storages when specified ([#889](https://github.com/lakekeeper/lakekeeper/issues/889)) ([bd4795a](https://github.com/lakekeeper/lakekeeper/commit/bd4795a9c3a871e8e4d60e42fe74a29a46c4c41c))
+
+
+### Miscellaneous Chores
+
+* release 0.7.4 ([e51010a](https://github.com/lakekeeper/lakekeeper/commit/e51010a8d3ceefdad118d3424b81259ab02188b5))
+
 ## [0.7.3](https://github.com/lakekeeper/lakekeeper/compare/v0.7.2...v0.7.3) (2025-03-04)
 
 

@@ -793,7 +793,7 @@ fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
 }
 
 #[cfg(test)]
-pub(super) mod test {
+pub(crate) mod test {
     use std::str::FromStr;
 
     use needs_env_var::needs_env_var;
@@ -830,7 +830,7 @@ pub(super) mod test {
             let account_name = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").unwrap();
             let filesystem = std::env::var("AZURE_STORAGE_FILESYSTEM").unwrap();
 
-            let key_prefix = vec!['b'; 1].into_iter().collect::<String>();
+            let key_prefix = format!("test-{}", uuid::Uuid::now_v7());
             AdlsProfile {
                 filesystem,
                 key_prefix: Some(key_prefix.to_string()),

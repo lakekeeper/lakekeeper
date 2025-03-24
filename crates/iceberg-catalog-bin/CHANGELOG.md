@@ -2,6 +2,19 @@
 
 
 
+## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
+
+
+### Features
+
+* configurable bind ip address ([#922](https://github.com/lakekeeper/lakekeeper/issues/922)) ([e545a26](https://github.com/lakekeeper/lakekeeper/commit/e545a26503af1458ded9c3875563340da91c165b))
+* **ui:** ui Azure Shared Key Authentication([#918](https://github.com/lakekeeper/lakekeeper/issues/918)) ([71e7856](https://github.com/lakekeeper/lakekeeper/commit/71e7856cc97553a9dd98c77d8d9173949cc5dbcb))
+
+
+### Miscellaneous Chores
+
+* release 0.7.4 ([e51010a](https://github.com/lakekeeper/lakekeeper/commit/e51010a8d3ceefdad118d3424b81259ab02188b5))
+
 ## [0.7.3](https://github.com/lakekeeper/lakekeeper/compare/v0.7.2...v0.7.3) (2025-03-04)
 
 

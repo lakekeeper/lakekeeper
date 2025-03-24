@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import conftest
 import pandas as pd
@@ -733,6 +734,53 @@ def test_table_maintenance_optimize(spark, namespace, warehouse: conftest.Wareho
 
     assert len(number_files_begin) > 1
     assert len(number_files_end) == 1
+
+
+def test_drop_with_shared_prefix(spark, namespace, warehouse: conftest.Warehouse):
+    # Create a table without a custom location to get the default location
+    table_id = str(uuid.uuid4()).replace("-", "_")
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.{table_id} (my_ints INT) USING iceberg"
+    )
+    default_location = warehouse.pyiceberg_catalog.load_table(
+        (*namespace.name, str(table_id))
+    ).location()
+
+    # Replace element behind the last slash with "custom_location"
+    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+
+    # Create a table with a custom location
+    first_table_id = str(uuid.uuid4()).replace("-", "_")
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.{first_table_id} (my_ints INT) USING iceberg LOCATION '{custom_location}'"
+    )
+    # Write / read data
+    spark.sql(f"INSERT INTO {namespace.spark_name}.{first_table_id} VALUES (1), (2)")
+    pdf = spark.sql(f"SELECT * FROM {namespace.spark_name}.{first_table_id}").toPandas()
+    assert len(pdf) == 2
+
+    # Create a table which has a shared prefix with the first table
+    second_table_id = str(uuid.uuid4()).replace("-", "_")
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.{second_table_id} (my_ints INT) USING iceberg LOCATION '{custom_location}a'"
+    )
+    # Write / read data
+    spark.sql(f"INSERT INTO {namespace.spark_name}.{second_table_id} VALUES (1), (2)")
+    pdf = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.{second_table_id}"
+    ).toPandas()
+    assert len(pdf) == 2
+
+    spark.sql(f"DROP TABLE {namespace.spark_name}.{first_table_id}")
+
+    time.sleep(5)
+
+    # first table should be gone
+    with pytest.raises(Exception):
+        spark.sql(f"SELECT * FROM {namespace.spark_name}.{first_table_id}").toPandas()
+
+    # second table should still be there
+    spark.sql(f"SELECT * FROM {namespace.spark_name}.{second_table_id}").toPandas()
 
 
 def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
