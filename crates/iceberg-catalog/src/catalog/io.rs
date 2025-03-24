@@ -216,4 +216,118 @@ impl From<IoError> for IcebergErrorResponse {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use needs_env_var::needs_env_var;
+
+    use super::*;
+    use crate::service::storage::{StorageCredential, StorageProfile};
+
+    async fn test_remove_all(cred: StorageCredential, profile: StorageProfile) {
+        async fn list_simple(file_io: &FileIO, location: &Location) -> Option<Vec<String>> {
+            let list = list_location(file_io, location, Some(10)).await.unwrap();
+
+            list.collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .map(Result::unwrap)
+                .next()
+        }
+
+        let location = profile.base_location().unwrap();
+
+        let folder_1 = location.clone().push("folder").clone();
+        let file_1 = folder_1.clone().push("file1").clone();
+        let folder_2 = location.clone().push("folder-2").clone();
+        let file_2 = folder_2.clone().push("file2").clone();
+
+        let data_1 = serde_json::json!({"file": "1"});
+        let data_2 = serde_json::json!({"file": "2"});
+
+        let file_io = profile.file_io(Some(&cred)).unwrap();
+        write_metadata_file(&file_1, data_1, CompressionCodec::Gzip, &file_io)
+            .await
+            .unwrap();
+        write_metadata_file(&file_2, data_2, CompressionCodec::Gzip, &file_io)
+            .await
+            .unwrap();
+
+        // Test list - when we list folder 1, we should not see anything related to folder-2
+        let list_f1 = list_simple(&file_io, &folder_1).await.unwrap();
+        // Assert that one of the items contains file1
+        assert!(list_f1.iter().any(|entry| entry.contains("file1")));
+        // Assert that "folder-2" is nowhere in the list
+        assert!(!list_f1.iter().any(|entry| entry.contains("folder-2")));
+
+        // List full location - we should see both folders
+        let list = list_simple(&file_io, &location).await.unwrap();
+        assert!(list.iter().any(|entry| entry.contains("folder/file1")));
+        assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
+
+        // Remove folder 1 - file 2 should still be here:
+        remove_all(&file_io, &folder_1).await.unwrap();
+        assert!(read_file(&file_io, &file_2).await.is_ok());
+
+        let list = list_simple(&file_io, &location).await.unwrap();
+        // Assert that "folder/" / file1 is gone
+        assert!(!list.iter().any(|entry| entry.contains("file1")));
+        // and that "folder-2/" / file2 is still here
+        assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
+
+        // Listing location 1 should return an empty list
+        assert!(list_simple(&file_io, &folder_1).await.is_none());
+
+        // Cleanup
+        remove_all(&file_io, &folder_2).await.unwrap();
+    }
+
+    #[needs_env_var(TEST_AWS = 1)]
+    pub(crate) mod aws {
+        use super::*;
+        use crate::service::storage::{
+            s3::test::aws::get_storage_profile, StorageCredential, StorageProfile,
+        };
+
+        #[tokio::test]
+        async fn test_remove_all_s3() {
+            let (profile, cred) = get_storage_profile();
+            let cred: StorageCredential = cred.into();
+            let profile: StorageProfile = profile.into();
+
+            test_remove_all(cred, profile).await;
+        }
+    }
+
+    #[needs_env_var(TEST_AZURE = 1)]
+    pub(crate) mod az {
+        use super::*;
+        use crate::service::storage::{
+            az::test::azure_tests::{azure_profile, client_creds},
+            StorageCredential, StorageProfile,
+        };
+
+        #[tokio::test]
+        async fn test_remove_all_az() {
+            let cred: StorageCredential = client_creds().into();
+            let profile: StorageProfile = azure_profile().into();
+
+            test_remove_all(cred, profile).await;
+        }
+    }
+
+    #[needs_env_var(TEST_GCS = 1)]
+    pub(crate) mod gcs {
+        use super::*;
+        use crate::service::storage::{
+            gcs::test::cloud_tests::get_storage_profile, StorageCredential, StorageProfile,
+        };
+
+        #[tokio::test]
+        async fn test_remove_all_gcs() {
+            let (profile, cred) = get_storage_profile();
+            let cred: StorageCredential = cred.into();
+            let profile: StorageProfile = profile.into();
+
+            test_remove_all(cred, profile).await;
+        }
+    }
+}

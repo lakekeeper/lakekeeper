@@ -2,7 +2,7 @@
 
 pub(crate) mod az;
 mod error;
-mod gcs;
+pub(crate) mod gcs;
 pub(crate) mod s3;
 
 pub use az::{AdlsLocation, AdlsProfile, AzCredential};
