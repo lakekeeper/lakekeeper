@@ -1805,6 +1805,18 @@ components:
             - client-credentials
           tenant-id:
             type: string
+      - type: object
+        title: AzCredentialSharedAccessKey
+        required:
+        - key
+        - credential-type
+        properties:
+          credential-type:
+            type: string
+            enum:
+            - shared-access-key
+          key:
+            type: string
     BootstrapRequest:
       type: object
       required:

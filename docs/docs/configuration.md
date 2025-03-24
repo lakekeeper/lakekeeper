@@ -16,7 +16,8 @@ Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By defaul
 | <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr> | `true`                                 | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
 | `LAKEKEEPER__RESERVED_NAMESPACES`                | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
 | `LAKEKEEPER__METRICS_PORT`                       | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
-| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port the Lakekeeper listens on. Default: `8181` |
+| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port Lakekeeper listens on. Default: `8181` |
+| `LAKEKEEPER__BIND_IP`                            | `0.0.0.0`, `::1`, `::`                 | IP Address Lakekeeper binds to. Default: `0.0.0.0` (listen to all incoming IPv4 packages) |
 | `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
 | `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS. |
 

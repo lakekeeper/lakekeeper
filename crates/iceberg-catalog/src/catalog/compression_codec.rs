@@ -4,10 +4,11 @@ use std::{
 };
 
 use flate2::{write::GzEncoder, Compression};
-use iceberg::spec::view_properties::METADATA_COMPRESSION;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
 use super::{io::IoError, CommonMetadata};
+
+const METADATA_COMPRESSION: &str = "write.metadata.compression-codec";
 
 #[derive(thiserror::Error, Debug)]
 #[error("Unsupported compression codec: {0}")]
@@ -34,46 +35,35 @@ impl CompressionCodec {
     pub async fn compress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
         match self {
             CompressionCodec::None => Ok(payload),
-            CompressionCodec::Gzip => {
-                match tokio::task::spawn_blocking(move || {
-                    let mut compressed_metadata =
-                        GzEncoder::new(Vec::new(), Compression::default());
-                    compressed_metadata
-                        .write_all(&payload)
-                        .map_err(|e| IoError::FileCompression(Box::new(e)))?;
+            CompressionCodec::Gzip => tokio::task::spawn_blocking(move || {
+                let mut compressed_metadata = GzEncoder::new(Vec::new(), Compression::default());
+                compressed_metadata
+                    .write_all(&payload)
+                    .map_err(|e| IoError::FileCompression(Box::new(e)))?;
 
-                    compressed_metadata
-                        .finish()
-                        .map_err(|e| IoError::FileCompression(Box::new(e)))
-                })
-                .await
-                {
-                    Ok(result) => result,
-                    Err(e) => Err(IoError::FileCompression(Box::new(e))),
-                }
-            }
+                compressed_metadata
+                    .finish()
+                    .map_err(|e| IoError::FileCompression(Box::new(e)))
+            })
+            .await
+            .unwrap_or_else(|e| Err(IoError::FileCompression(Box::new(e)))),
         }
     }
 
     pub async fn decompress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
         match self {
             CompressionCodec::None => Ok(payload),
-            CompressionCodec::Gzip => {
-                match tokio::task::spawn_blocking(move || {
-                    let mut decompressed_metadata = Vec::new();
-                    let mut decoder = flate2::read::GzDecoder::new(payload.as_slice());
-                    decoder
-                        .read_to_end(&mut decompressed_metadata)
-                        .map_err(|e| IoError::FileCompression(Box::new(e)))?;
+            CompressionCodec::Gzip => tokio::task::spawn_blocking(move || {
+                let mut decompressed_metadata = Vec::new();
+                let mut decoder = flate2::read::GzDecoder::new(payload.as_slice());
+                decoder
+                    .read_to_end(&mut decompressed_metadata)
+                    .map_err(|e| IoError::FileCompression(Box::new(e)))?;
 
-                    Ok(decompressed_metadata)
-                })
-                .await
-                {
-                    Ok(result) => result,
-                    Err(e) => Err(IoError::FileDecompression(Box::new(e))),
-                }
-            }
+                Ok(decompressed_metadata)
+            })
+            .await
+            .unwrap_or_else(|e| Err(IoError::FileDecompression(Box::new(e)))),
         }
     }
 
