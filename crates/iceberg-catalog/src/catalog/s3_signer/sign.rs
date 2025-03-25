@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, time::SystemTime, vec};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::SystemTime, vec};
 
 use aws_sigv4::{
     http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
@@ -17,9 +17,10 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
         secrets::SecretStore,
-        storage::{S3Location, S3Profile, StorageCredential},
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid,
+        storage::{s3::S3UrlStyleDetectionMode, S3Location, S3Profile, StorageCredential},
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid, Transaction,
     },
+    WarehouseIdent,
 };
 
 const READ_METHODS: &[&str] = &["GET", "HEAD"];
@@ -59,7 +60,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // Include staged tables as this might be a commit
         let include_staged = true;
 
-        let parsed_url = s3_utils::parse_s3_url(&request_url)?;
+        let parsed_url = s3_utils::parse_s3_url(
+            &request_url,
+            s3_url_style_detection::<C>(state.v1_state.catalog.clone(), warehouse_id).await?,
+        )?;
 
         // Unfortunately there is currently no way to pass information about warehouse_id & table_id
         // to this function from a get_table or create_table process without exchanging the token.
@@ -178,6 +182,46 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         )
         .map_err(extend_err)
     }
+}
+
+async fn s3_url_style_detection<C: Catalog>(
+    state: C::State,
+    warehouse_id: WarehouseIdent,
+) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
+    let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
+        .try_get_with(warehouse_id, async {
+            tracing::trace!("No cache hit for {warehouse_id}");
+            let mut tx = C::Transaction::begin_read(state).await?;
+            let result = C::require_warehouse(warehouse_id, tx.transaction())
+                .await
+                .map(|w| {
+                    w.storage_profile
+                        .try_into_s3()
+                        .map(|s| s.s3_url_detection_mode)
+                        .map_err(|e| {
+                            IcebergErrorResponse::from(ErrorModel::bad_request(
+                                "Warehouse storage profile is not an S3 profile",
+                                "InvalidWarehouse",
+                                Some(Box::new(e)),
+                            ))
+                        })
+                })?;
+            tx.commit().await?;
+            result
+        })
+        .await
+        .map_err(|e: Arc<IcebergErrorResponse>| {
+            tracing::debug!("Failed to get warehouse S3 URL style detection mode from cache due to error: '{e:?}'");
+            IcebergErrorResponse::from(ErrorModel::new(
+                e.error.message.as_str(),
+                e.error.r#type.as_str(),
+                e.error.code,
+                // moka Arcs errors, our errors have a non-clone backtrace, and we can't get it out
+                // so we don't forward the error here. We log it above tho.
+                None,
+            ))
+        })?;
+    Ok(t)
 }
 
 fn sign(
@@ -394,7 +438,7 @@ pub(super) mod s3_utils {
     use lazy_regex::regex;
 
     use super::{ErrorModel, Result};
-    use crate::service::storage::S3Location;
+    use crate::service::storage::{s3::S3UrlStyleDetectionMode, S3Location};
 
     #[derive(Debug)]
     pub(super) struct ParsedS3Url {
@@ -407,21 +451,11 @@ pub(super) mod s3_utils {
         pub(super) port: u16,
     }
 
-    pub(super) fn parse_s3_url(uri: &url::Url) -> Result<ParsedS3Url> {
-        let re_host_pattern = regex!(r"^((.+)\.)?(s3[.-]([a-z0-9-]+)\..*)");
-
-        let err = |t: &str, m: &str| {
-            ErrorModel::builder()
-                .code(http::StatusCode::BAD_REQUEST.into())
-                .message(m.to_string())
-                .r#type(t.to_string())
-                .build()
-        };
-
-        let host = uri
-            .host()
-            .ok_or(err("UriNoHost", "URI to sign does not have a host"))?;
-
+    pub(super) fn parse_s3_url(
+        uri: &url::Url,
+        s3_url_style_detection: S3UrlStyleDetectionMode,
+    ) -> Result<ParsedS3Url> {
+        let err = |t: &str, m: &str| ErrorModel::bad_request(m, t, None);
         // Require https or http
         if !matches!(uri.scheme(), "https" | "http") {
             return Err(err(
@@ -431,13 +465,28 @@ pub(super) mod s3_utils {
             .into());
         }
 
-        let path_segments: Vec<String> = uri
-            .path_segments()
-            .map(|segments| segments.map(std::string::ToString::to_string).collect())
-            .ok_or(err(
-                "UriNoPath",
-                "URI to sign does not have a path. Expected a path to an object",
-            ))?;
+        match s3_url_style_detection {
+            S3UrlStyleDetectionMode::VirtualHost => virtual_host_style(uri),
+            S3UrlStyleDetectionMode::Path => path_style(uri),
+            S3UrlStyleDetectionMode::Auto => {
+                if let Ok(parsed) = virtual_host_style(uri) {
+                    return Ok(parsed);
+                }
+                if let Ok(parsed) = path_style(uri) {
+                    return Ok(parsed);
+                }
+                Err(err("UriNotS3", "URI does not match S3 host or path style").into())
+            }
+        }
+    }
+
+    fn virtual_host_style(uri: &url::Url) -> Result<ParsedS3Url> {
+        let re_host_pattern = regex!(r"^((.+)\.)?(s3[.-]([a-z0-9-]+)\..*)");
+
+        let host = uri.host().ok_or_else(|| {
+            ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
+        })?;
+        let path_segments = get_path_segments(uri)?;
 
         if let Some((Some(bucket), Some(used_endpoint))) =
             re_host_pattern.captures(&host.to_string()).map(|captures| {
@@ -454,28 +503,56 @@ pub(super) mod s3_utils {
                 endpoint: used_endpoint.to_string(),
                 port: uri.port_or_known_default().unwrap_or(443),
             })
-        } else if path_segments.len() >= 2 {
-            // Path Style Case
-            Ok(ParsedS3Url {
-                url: uri.clone(),
-                location: S3Location::new(
-                    path_segments[0].to_string(),
-                    path_segments[1..].to_vec(),
-                    None,
-                )?,
-                endpoint: host.to_string(),
-                port: uri.port_or_known_default().unwrap_or(443),
-            })
         } else {
-            Err(err("UriNotS3", "URI does not match S3 host or path style").into())
+            Err(
+                ErrorModel::bad_request("URI does not match S3 host style", "UriNotS3", None)
+                    .into(),
+            )
         }
+    }
+
+    fn path_style(uri: &url::Url) -> Result<ParsedS3Url> {
+        let path_segments = get_path_segments(uri)?;
+
+        if path_segments.len() < 2 {
+            return Err(ErrorModel::bad_request(
+                "Path style uri needs at least 2 path segments",
+                "UriNotS3",
+                None,
+            )
+            .into());
+        }
+
+        Ok(ParsedS3Url {
+            url: uri.clone(),
+            location: S3Location::new(
+                path_segments[0].to_string(),
+                path_segments[1..].to_vec(),
+                None,
+            )?,
+            endpoint: uri.host_str().unwrap().to_string(),
+            port: uri.port_or_known_default().unwrap_or(443),
+        })
+    }
+
+    fn get_path_segments(uri: &url::Url) -> Result<Vec<String>> {
+        uri.path_segments()
+            .map(|segments| segments.map(std::string::ToString::to_string).collect())
+            .ok_or_else(|| {
+                ErrorModel::bad_request(
+                    "URI to sign does not have a path. Expected a path to an object",
+                    "UriNoPath",
+                    None,
+                )
+                .into()
+            })
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::service::storage::S3Flavor;
+    use crate::{catalog::s3_signer::sign::s3_utils::parse_s3_url, service::storage::S3Flavor};
 
     #[derive(Debug)]
     struct TC {
@@ -490,7 +567,8 @@ mod test {
 
     fn run_validate_uri_test(test_case: &TC) {
         let request_uri = url::Url::parse(test_case.request_uri).unwrap();
-        let request_uri = s3_utils::parse_s3_url(&request_uri).unwrap();
+        let request_uri =
+            s3_utils::parse_s3_url(&request_uri, S3UrlStyleDetectionMode::Auto).unwrap();
         let table_location = test_case.table_location;
         let result = validate_uri(&request_uri, table_location);
         assert_eq!(
@@ -498,6 +576,26 @@ mod test {
             test_case.expected_outcome,
             "Test case: {test_case:?}",
         );
+    }
+
+    #[test]
+    fn test_parse_s3_url_config_path_style() {
+        let parsed = parse_s3_url(
+            &url::Url::parse("https://not-a-bucket.s3.region.amazonaws.com/bucket/key").unwrap(),
+            S3UrlStyleDetectionMode::Path,
+        )
+        .unwrap();
+        assert_eq!(parsed.location.bucket_name(), "bucket");
+    }
+
+    #[test]
+    fn test_parse_s3_url_config_virtual_style() {
+        let parsed = parse_s3_url(
+            &url::Url::parse("https://bucket.s3.region.amazonaws.com/key").unwrap(),
+            S3UrlStyleDetectionMode::VirtualHost,
+        )
+        .unwrap();
+        assert_eq!(parsed.location.bucket_name(), "bucket");
     }
 
     #[test]
@@ -575,7 +673,10 @@ mod test {
 
         for (uri, expected) in cases {
             let uri = url::Url::parse(uri).unwrap();
-            let result = s3_utils::parse_s3_url(&uri).unwrap().location.to_string();
+            let result = parse_s3_url(&uri, S3UrlStyleDetectionMode::Auto)
+                .unwrap_or_else(|_| panic!("Failed to parse {uri}"))
+                .location
+                .to_string();
             assert_eq!(result, expected);
         }
     }
@@ -700,8 +801,11 @@ mod test {
 
     #[test]
     fn test_uri_bucket_missing() {
-        let path = "https://s3.my-region.amazonaws.com/key";
-        s3_utils::parse_s3_url(&url::Url::parse(path).unwrap()).unwrap_err();
+        parse_s3_url(
+            &url::Url::parse("https://s3.my-region.amazonaws.com/key").unwrap(),
+            S3UrlStyleDetectionMode::Auto,
+        )
+        .unwrap_err();
     }
 
     #[test]

@@ -69,6 +69,7 @@ lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
 openfga-client = { workspace = true, optional = true }
+moka = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 rand = "0.9.0"

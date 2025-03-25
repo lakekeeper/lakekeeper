@@ -75,7 +75,7 @@ fn get_config() -> DynAppConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
+#[derive(Clone, Deserialize, Serialize, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
     /// Base URL for this REST Catalog.

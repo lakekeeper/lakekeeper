@@ -38,7 +38,8 @@ use crate::{
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
         storage::{
-            S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
+            s3::S3UrlStyleDetectionMode, S3Credential, S3Flavor, S3Profile, StorageCredential,
+            StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
         State, UserId,
@@ -79,6 +80,7 @@ pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
         flavor: S3Flavor::S3Compat,
         sts_enabled: true,
         allow_alternative_protocols: None,
+        s3_url_detection_mode: S3UrlStyleDetectionMode::Auto,
     }
     .into();
 

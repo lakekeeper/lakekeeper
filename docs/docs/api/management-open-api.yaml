@@ -2899,6 +2899,25 @@ components:
         region:
           type: string
           description: Region to use for S3 requests.
+        s3-url-detection-mode:
+          $ref: '#/components/schemas/S3UrlStyleDetectionMode'
+          description: |-
+            S3 URL style detection mode.
+            The URL style detection heuristic to use. One of `auto`, `path-style`, `virtual-host`.
+            Default: `auto`. When set to `auto`, Lakekeeper will first try to parse the URL as
+            `virtual-host` and then attempt `path-style`.
+            `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
+            assumes the bucket name is the first subdomain if it is preceding `.s3` or `.s3-`.
+
+            Examples
+
+            Virtual host:
+              - <https://bucket.s3.endpoint.com/bar/a/key>
+              - <https://bucket.s3-eu-central-1.amazonaws.com/file>
+
+            Path style:
+              - <https://s3.endpoint.com/bucket/bar/a/key>
+              - <https://s3.us-east-1.amazonaws.com/bucket/file>
         sts-enabled:
           type: boolean
         sts-role-arn:
@@ -2906,6 +2925,12 @@ components:
           - string
           - 'null'
           description: Optional role ARN to assume for sts vended-credentials
+    S3UrlStyleDetectionMode:
+      type: string
+      enum:
+      - path
+      - virtual_host
+      - auto
     SearchRoleRequest:
       type: object
       required:
