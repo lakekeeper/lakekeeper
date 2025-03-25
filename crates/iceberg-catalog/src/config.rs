@@ -945,10 +945,7 @@ mod test {
                 "true",
             );
             let config = get_config();
-            assert_eq!(
-                config.kubernetes_authentication_accept_legacy_serviceaccount,
-                true
-            );
+            assert!(config.kubernetes_authentication_accept_legacy_serviceaccount);
             Ok(())
         });
     }
