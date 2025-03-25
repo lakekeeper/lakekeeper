@@ -157,7 +157,7 @@ async fn serve_with_authn<A: Authorizer>(
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
-    let authn_k8s = if CONFIG.enable_kubernetes_authentication {
+    let authn_k8s_audience = if CONFIG.enable_kubernetes_authentication {
         Some(
             limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
                 Some(K8S_IDP_ID),
@@ -170,6 +170,27 @@ async fn serve_with_authn<A: Authorizer>(
             .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))
             .inspect(|v| tracing::info!("K8s authorizer created {:?}", v))?,
         )
+    } else {
+        tracing::info!("Running without Kubernetes authentication.");
+        None
+    };
+    let authn_k8s_legacy = if CONFIG.enable_kubernetes_authentication
+        && CONFIG.kubernetes_authentication_accept_legacy_serviceaccount
+    {
+        let mut authenticator =
+            limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
+                Some(K8S_IDP_ID),
+                vec![],
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))?;
+        authenticator.set_issuers(vec!["kubernetes/serviceaccount".to_string()]);
+        tracing::info!(
+            "K8s authorizer for legacy service account tokens created {:?}",
+            authenticator
+        );
+
+        Some(authenticator)
     } else {
         tracing::info!("Running without Kubernetes authentication.");
         None
@@ -214,17 +235,15 @@ async fn serve_with_authn<A: Authorizer>(
         None
     };
 
-    if authn_k8s.is_none() && authn_oidc.is_none() {
-        tracing::warn!("Authentication is disabled. This is not suitable for production!");
-    }
-
-    let authn_k8s = authn_k8s.map(AuthenticatorEnum::from);
+    let authn_k8s = authn_k8s_audience.map(AuthenticatorEnum::from);
+    let authn_k8s_legacy = authn_k8s_legacy.map(AuthenticatorEnum::from);
     let authn_oidc = authn_oidc.map(AuthenticatorEnum::from);
-    match (authn_k8s, authn_oidc) {
-        (Some(k8s), Some(oidc)) => {
+    match (authn_k8s, authn_oidc, authn_k8s_legacy) {
+        (Some(k8s), Some(oidc), Some(authn_k8s_legacy)) => {
             let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
                 .add_authenticator(oidc)
                 .add_authenticator(k8s)
+                .add_authenticator(authn_k8s_legacy)
                 .build();
             serve_inner(
                 authorizer,
@@ -237,7 +256,25 @@ async fn serve_with_authn<A: Authorizer>(
             )
             .await
         }
-        (Some(auth), None) | (None, Some(auth)) => {
+        (None, Some(auth1), Some(auth2))
+        | (Some(auth1), None, Some(auth2))
+        | (Some(auth1), Some(auth2), None) => {
+            let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
+                .add_authenticator(auth1)
+                .add_authenticator(auth2)
+                .build();
+            serve_inner(
+                authorizer,
+                Some(authenticator),
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await
+        }
+        (Some(auth), None, None) | (None, Some(auth), None) | (None, None, Some(auth)) => {
             serve_inner(
                 authorizer,
                 Some(auth),
@@ -249,7 +286,8 @@ async fn serve_with_authn<A: Authorizer>(
             )
             .await
         }
-        (None, None) => {
+        (None, None, None) => {
+            tracing::warn!("Authentication is disabled. This is not suitable for production!");
             serve_inner(
                 authorizer,
                 None::<AuthenticatorEnum>,
