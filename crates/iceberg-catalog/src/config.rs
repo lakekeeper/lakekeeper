@@ -171,6 +171,9 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
+    /// Accept legacy k8s token without audience and issuer
+    /// set to kubernetes/serviceaccount
+    pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
     /// Claim to use in provided JWT tokens as the subject.
     pub openid_subject_claim: Option<String>,
 
@@ -408,6 +411,7 @@ impl Default for DynAppConfig {
             openid_scope: None,
             enable_kubernetes_authentication: false,
             kubernetes_authentication_audience: None,
+            kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
@@ -955,6 +959,19 @@ mod test {
                 config.bind_ip,
                 IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_legacy_service_account_acceptance() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT",
+                "true",
+            );
+            let config = get_config();
+            assert!(config.kubernetes_authentication_accept_legacy_serviceaccount);
             Ok(())
         });
     }
