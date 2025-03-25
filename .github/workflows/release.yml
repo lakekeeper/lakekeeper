@@ -70,7 +70,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            os: ubuntu-22.04
             name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
             docker-build: false
 
@@ -117,6 +117,12 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache: false
+
+      - name: Setup node
+        if: matrix.docker-build == false
+        uses: actions/setup-node@v4
+        with:
+          node-version: 23
 
       - name: Build [Cargo]
         if: matrix.docker-build == false
