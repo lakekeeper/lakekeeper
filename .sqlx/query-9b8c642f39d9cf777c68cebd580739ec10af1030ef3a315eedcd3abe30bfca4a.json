@@ -21,7 +21,7 @@
       {
         "ordinal": 3,
         "name": "project_id",
-        "type_info": "Uuid"
+        "type_info": "Text"
       },
       {
         "ordinal": 4,
@@ -37,7 +37,7 @@
     "parameters": {
       "Left": [
         "Bool",
-        "Uuid",
+        "Text",
         "Bool",
         "UuidArray",
         "Bool",

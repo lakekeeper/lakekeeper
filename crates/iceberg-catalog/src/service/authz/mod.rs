@@ -216,7 +216,7 @@ where
     async fn is_allowed_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectId,
+        project_id: &ProjectId,
         action: CatalogProjectAction,
     ) -> Result<bool>;
 
@@ -280,8 +280,11 @@ where
 
     /// Hook that is called when a new project is created.
     /// This is used to set up the initial permissions for the project.
-    async fn create_project(&self, metadata: &RequestMetadata, project_id: ProjectId)
-        -> Result<()>;
+    async fn create_project(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: &ProjectId,
+    ) -> Result<()>;
 
     /// Hook that is called when a project is deleted.
     /// This is used to clean up permissions for the project.
@@ -294,7 +297,7 @@ where
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        parent_project_id: ProjectId,
+        parent_project_id: &ProjectId,
     ) -> Result<()>;
 
     /// Hook that is called when a warehouse is deleted.
@@ -424,7 +427,7 @@ where
     async fn require_project_action(
         &self,
         metadata: &RequestMetadata,
-        project_id: ProjectId,
+        project_id: &ProjectId,
         action: CatalogProjectAction,
     ) -> Result<()> {
         if self

@@ -61,7 +61,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
+        "Text",
         {
           "Custom": {
             "name": "warehouse_status[]",

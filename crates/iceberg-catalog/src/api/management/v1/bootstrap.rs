@@ -55,7 +55,7 @@ pub struct ServerInfo {
     /// ID of the server.
     pub server_id: uuid::Uuid,
     /// Default Project ID. Null if not set
-    #[schema(value_type = uuid::Uuid)]
+    #[schema(value_type = Option::<String>)]
     pub default_project_id: Option<ProjectId>,
     /// `AuthZ` backend in use.
     pub authz_backend: AuthZBackend,
@@ -133,7 +133,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         t.commit().await?;
 
         // If default project is specified, and the project does not exist, create it
-        if let Some(default_project_id) = *DEFAULT_PROJECT_ID {
+        if let Some(default_project_id) = DEFAULT_PROJECT_ID.as_ref() {
             let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
             let p = C::get_project(default_project_id, t.transaction()).await?;
             if p.is_none() {
@@ -179,7 +179,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             version,
             bootstrapped: server_data != StartupValidationData::NotBootstrapped,
             server_id: CONFIG.server_id,
-            default_project_id: *DEFAULT_PROJECT_ID,
+            default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
                 config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,

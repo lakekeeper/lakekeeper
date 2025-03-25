@@ -880,7 +880,6 @@ paths:
         required: true
         schema:
           type: string
-          format: uuid
       responses:
         '200':
           description: Project details
@@ -905,7 +904,6 @@ paths:
         required: true
         schema:
           type: string
-          format: uuid
       responses:
         '204':
           description: Project deleted successfully
@@ -927,7 +925,6 @@ paths:
         required: true
         schema:
           type: string
-          format: uuid
       requestBody:
         content:
           application/json:
@@ -979,12 +976,12 @@ paths:
         in: query
         description: |-
           Project ID from which roles should be listed
-          Only required if the project ID cannot be inferred from the
-          users token and no default project is set.
+          Deprecated: Please use the `x-project-id` header instead.
         required: false
         schema:
-          type: string
-          format: uuid
+          type:
+          - string
+          - 'null'
       responses:
         '200':
           description: List of roles
@@ -1333,13 +1330,12 @@ paths:
         in: query
         description: |-
           The project ID to list warehouses for.
-          Setting a warehouse is required.
+          Deprecated: Please use the `x-project-id` header instead.
         required: false
         schema:
           type:
           - string
           - 'null'
-          format: uuid
       responses:
         '200':
           description: List of warehouses
@@ -1967,7 +1963,6 @@ components:
           type:
           - string
           - 'null'
-          format: uuid
           description: |-
             Request a specific project ID - optional.
             If not provided, a new project ID will be generated (recommended).
@@ -1981,7 +1976,6 @@ components:
       properties:
         project-id:
           type: string
-          format: uuid
           description: ID of the created project.
     CreateRoleRequest:
       type: object
@@ -1997,11 +1991,12 @@ components:
           type: string
           description: Name of the role to create
         project-id:
-          type: string
-          format: uuid
+          type:
+          - string
+          - 'null'
           description: |-
             Project ID in which the role is created.
-            Only required if the project ID cannot be inferred and no default project is set.
+            Deprecated: Please use the `x-project-id` header instead.
     CreateUserRequest:
       type: object
       properties:
@@ -2053,10 +2048,9 @@ components:
           type:
           - string
           - 'null'
-          format: uuid
           description: |-
             Project ID in which to create the warehouse.
-            If no default project is set for this server, this field is required.
+            Deprecated: Please use the `x-project-id` header instead.
         storage-credential:
           oneOf:
           - type: 'null'
@@ -2293,7 +2287,6 @@ components:
       properties:
         project-id:
           type: string
-          format: uuid
           description: ID of the project.
         project-name:
           type: string
@@ -2417,8 +2410,7 @@ components:
           description: Name of the warehouse.
         project-id:
           type: string
-          format: uuid
-          description: Project ID in which the warehouse is created.
+          description: Project ID in which the warehouse was created.
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
@@ -2749,14 +2741,6 @@ components:
         new-name:
           type: string
           description: New name for the project.
-        project-id:
-          type:
-          - string
-          - 'null'
-          format: uuid
-          description: |-
-            Optional project ID.
-            Only required if the project ID cannot be inferred and no default project is set.
     RenameWarehouseRequest:
       type: object
       required:
@@ -2791,7 +2775,6 @@ components:
           description: Name of the role
         project-id:
           type: string
-          format: uuid
           description: Project ID in which the role is created.
         updated-at:
           type:
@@ -2932,12 +2915,9 @@ components:
           type:
           - string
           - 'null'
-          format: uuid
           description: |-
-            Deprecated: Please use the x-project-id header instead.
+            Deprecated: Please use the `x-project-id` header instead.
             Project ID in which the role is created.
-            Only required if the project ID cannot be inferred from the
-            users token and no default project is set.
         search:
           type: string
           description: |-
@@ -3037,7 +3017,6 @@ components:
       - version
       - bootstrapped
       - server-id
-      - default-project-id
       - authz-backend
       properties:
         authz-backend:
@@ -3047,8 +3026,9 @@ components:
           type: boolean
           description: Whether the catalog has been bootstrapped.
         default-project-id:
-          type: string
-          format: uuid
+          type:
+          - string
+          - 'null'
           description: Default Project ID. Null if not set
         server-id:
           type: string

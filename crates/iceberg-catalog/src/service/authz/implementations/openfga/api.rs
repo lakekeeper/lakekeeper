@@ -1651,6 +1651,7 @@ mod tests {
         }
 
         #[tokio::test]
+        #[tracing_test::traced_test]
         async fn test_get_relations() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
@@ -1686,6 +1687,7 @@ mod tests {
         }
 
         #[test]
+        #[tracing_test::traced_test]
         fn test_can_read_assignments_identical() {
             let role_assignment = RoleAction::ReadAssignments.to_openfga().to_string();
             assert_eq!(
