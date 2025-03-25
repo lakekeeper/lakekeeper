@@ -94,7 +94,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &namespace,
-            &CatalogNamespaceAction::CanListTables,
+            CatalogNamespaceAction::CanListTables,
             t.transaction(),
         )
         .await?;
@@ -153,7 +153,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &namespace,
-            &CatalogNamespaceAction::CanCreateTable,
+            CatalogNamespaceAction::CanCreateTable,
             t.transaction(),
         )
         .await?;
@@ -348,7 +348,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &namespace,
-            &CatalogNamespaceAction::CanCreateTable,
+            CatalogNamespaceAction::CanCreateTable,
             t.transaction(),
         )
         .await?;
@@ -653,7 +653,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::CanUse,
             )
             .await?;
 
@@ -675,7 +675,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await; // We can't fail before AuthZ
 
         let table_id = authorizer
-            .require_table_action(&request_metadata, table_id, &CatalogTableAction::CanDrop)
+            .require_table_action(&request_metadata, table_id, CatalogTableAction::CanDrop)
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -782,7 +782,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             warehouse_id,
             &table,
             list_flags,
-            &CatalogTableAction::CanGetMetadata,
+            CatalogTableAction::CanGetMetadata,
             t.transaction(),
         )
         .await?;
@@ -823,7 +823,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             warehouse_id,
             &source,
             list_flags,
-            &CatalogTableAction::CanRename,
+            CatalogTableAction::CanRename,
             t.transaction(),
         )
         .await?;
@@ -836,7 +836,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .require_namespace_action(
                 &request_metadata,
                 namespace_id,
-                &CatalogNamespaceAction::CanCreateTable,
+                CatalogNamespaceAction::CanCreateTable,
             )
             .await?;
 
@@ -909,7 +909,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
             .require_warehouse_action(
                 request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::CanUse,
             )
             .await?;
 
@@ -920,7 +920,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
             .require_table_action(
                 request_metadata,
                 table_id,
-                &CatalogTableAction::CanGetMetadata,
+                CatalogTableAction::CanGetMetadata,
             )
             .await
             .map_err(set_not_found_status_code)?;
@@ -929,12 +929,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
             authorizer.is_allowed_table_action(
                 request_metadata,
                 table_id.ident,
-                &CatalogTableAction::CanReadData,
+                CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
                 table_id.ident,
-                &CatalogTableAction::CanWriteData,
+                CatalogTableAction::CanWriteData,
             ),
         )?;
 
@@ -982,7 +982,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
 
@@ -1019,7 +1019,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             authorizer.require_table_action(
                 &request_metadata,
                 Ok(*table_id),
-                &CatalogTableAction::CanCommit,
+                CatalogTableAction::CanCommit,
             )
         })
         .collect::<Vec<_>>();
@@ -1241,11 +1241,11 @@ pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     warehouse_id: WarehouseIdent,
     table_ident: &TableIdent,
     list_flags: ListFlags,
-    action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
+    action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> Result<TableIdentUuid> {
     authorizer
-        .require_warehouse_action(metadata, warehouse_id, &CatalogWarehouseAction::CanUse)
+        .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
     let table_id = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
     authorizer
@@ -1821,10 +1821,7 @@ pub(crate) mod test {
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
         service::{
-            authz::{
-                implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-                AllowAllAuthorizer,
-            },
+            authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
             State, UserId,
         },
     };
@@ -2889,19 +2886,18 @@ pub(crate) mod test {
         n_tables: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
         let prof = crate::catalog::test::test_io_profile();
         let base_location = prof.base_location().unwrap();
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -2930,7 +2926,7 @@ pub(crate) mod test {
             .unwrap();
             for (start, end) in hidden_ranges.iter().copied() {
                 if i >= start && i < end {
-                    hiding_mock.hide(&format!("table:{}", tab.metadata.uuid()));
+                    authz.hide(&format!("table:{}", tab.metadata.uuid()));
                 }
             }
         }
@@ -2951,14 +2947,13 @@ pub(crate) mod test {
     async fn test_table_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -3091,7 +3086,7 @@ pub(crate) mod test {
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
-            hiding_mock.hide(&format!("table:{t}"));
+            authz.hide(&format!("table:{t}"));
         }
 
         let page = CatalogServer::list_tables(

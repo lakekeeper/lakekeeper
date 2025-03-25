@@ -185,7 +185,7 @@ jobs:
           vault write -address "${VAULT_ADDR}" auth/userpass/users/test password=test policies=app
 
       - name: Setup openfga
-        run: docker run -d -p 35081:8081 openfga/openfga:v1.6 run
+        run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
 
       - name: Test
         run: cargo nextest run --profile ci --all-targets --all-features --workspace

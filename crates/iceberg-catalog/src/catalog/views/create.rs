@@ -62,7 +62,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
@@ -71,7 +71,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .require_namespace_action(
             &request_metadata,
             namespace_id,
-            &CatalogNamespaceAction::CanCreateView,
+            CatalogNamespaceAction::CanCreateView,
         )
         .await?;
 

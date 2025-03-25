@@ -133,30 +133,39 @@ Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeepe
 When adding a new endpoint, you may need to extend the authorization model. Please check the [Authorization Docs](./authorization.md) for more information. For openfga, you'll have to perform the following steps:
 
 1. extend the respective enum in `crate::service::authz` by adding the new action, e.g. `crate::service::authz::CatalogViewAction::CanUndrop`
-2. add the relation to `crate::service::authz::implementations::openfga::relations`, e.g. add `ViewRelation::CanUndrop`
-3. add the mapping from the `implementations` type to the `service` type in `openfga::relations`, e.g. `CatalogViewAction::CanUndrop => ViewRelation::CanUndrop`
-4. create a new authz schema version by copying the latest existing one, e.g. `authz/openfga/v1/` to `authz/openfga/v2/`
-5. apply your changes, e.g. add `define can_undrop: modify` to the `view` type in `authz/openfga/v2/schema.fga`
-6. create a diff between the old and new schema via `diff -u authz/openfga/v1/schema.fga authz/openfga/v2/schema.fga > authz/openfga/v2/changed.diff` to help your reviewers
-7. regenerate `schema.json` via `./fga model transform --file authz/openfga/v2/schema.fga > authz/openfga/v2/schema.json` (download the `fga` binary from the [OpenFGA repo](https://github.com/openfga/cli/releases/))
-8. Head to `crate::service::authz::implementations::openfga::models.rs`, extend `CollaborationModels` with a field for your version, e.g., `v2` and then add your new model version on top of the file, like:
+1. add the relation to `crate::service::authz::implementations::openfga::relations`, e.g. add `ViewRelation::CanUndrop`
+1. add the mapping from the `implementations` type to the `service` type in `openfga::relations`, e.g. `CatalogViewAction::CanUndrop => ViewRelation::CanUndrop`
+1. create a new authz schema version by renaming the version for backward compatible changes, e.g. `authz/openfga/v2.1/` to `authz/openfga/v2.2/`. For non-backward compatible changes create a new major version folder.
+1. apply your changes, e.g. add `define can_undrop: modify` to the `view` type in `authz/openfga/v2.2/schema.fga`
+1. regenerate `schema.json` via `./fga model transform --file authz/openfga/v2.2/schema.fga > authz/openfga/v2.2/schema.json` (download the `fga` binary from the [OpenFGA repo](https://github.com/openfga/cli/releases/))
+1. Head to `crate::service::authz::implementations::openfga::migration.rs`, modify `ACTIVE_MODEL_VERSION` to the newer version. For backwards compatible changes, change the `add_model` section. For changes that require migrations, add an additional `add_model` section that includes the migration fn.
 ```rust
-const V2_MODEL: &str = include_str!("../../../../../../../authz/openfga/v2/schema.json");
+pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+    LazyLock::new(|| AuthorizationModelVersion::new(2, 1)); // <- Change this for every change in the model
 
-static MODEL: LazyLock<CollaborationModels> = LazyLock::new(|| CollaborationModels {
-    v1: serde_json::from_str(V1_MODEL).expect("Failed to parse OpenFGA model V1 as JSON"),
-    // this is your added model below
-    v2: serde_json::from_str(V2_MODEL).expect("Failed to parse OpenFGA model V2 as JSON"),
-});
-```
-9. set your model as the active model like: `const ACTIVE_MODEL: ModelVersion = ModelVersion::V2;`
-10. implement the migration in `crate::service::authz::implementations::openfga::migrations::migrate` like:
-```rust             
-match model_version {
-    ModelVersion::V1 => {
-    // no migration to be done, we start at v1
-    }
-    ModelVersion::V2 => v2::migrate(client, &store).await,
+fn get_model_manager(
+    client: &BasicOpenFgaServiceClient,
+    store_name: Option<String>,
+) -> openfga_client::migration::TupleModelManager<BasicAuthLayer> {
+    openfga_client::migration::TupleModelManager::new(
+        client.clone(),
+        &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
+        MODEL_PREFIX,
+    )
+    .add_model(
+        serde_json::from_str(include_str!(
+            // Change this for backward compatible changes.
+            // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
+            "../../../../../../../authz/openfga/v2.1/schema.json"
+        ))
+        // Change also the model version in this string:
+        .expect("Model v2.1 is a valid AuthorizationModel in JSON format."),
+        AuthorizationModelVersion::new(2, 1),
+        // For major version upgrades, this is where tuple migrations go.
+        None::<MigrationFn<_>>,
+        None::<MigrationFn<_>>,
+    )
 }
 ```
+
 
