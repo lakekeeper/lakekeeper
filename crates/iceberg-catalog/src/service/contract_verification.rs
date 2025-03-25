@@ -248,7 +248,7 @@ impl ContractVerification for ContractVerifiers {
                     tracing::info!(
                         "ContractVerifier '{}' blocked change on view '{}'",
                         checker.name(),
-                        current_metadata.view_uuid
+                        current_metadata.uuid()
                     );
                     return Ok(block_result);
                 }

@@ -25,4 +25,4 @@ You can also login to Keycloak using:
 * Username: admin
 * Password: admin
 
-The Keycloak Ream "iceberg" is pre-configured.
+The Keycloak Realm "iceberg" is pre-configured.

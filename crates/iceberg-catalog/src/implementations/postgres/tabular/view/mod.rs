@@ -68,10 +68,10 @@ pub(crate) async fn create_view(
     metadata: ViewMetadata,
     location: &Location,
 ) -> Result<()> {
-    if location.as_str() != metadata.location.as_str() {
+    if location.as_str() != metadata.location() {
         tracing::error!(
             "Location in ViewMetadata ('{}') does not match location ('{}') passed into create_view function, this is a bug.",
-            metadata.location.as_str(),
+            metadata.location(),
             location.as_str()
         );
         return Err(ErrorModel::internal(
@@ -79,12 +79,12 @@ pub(crate) async fn create_view(
             "InternalServerError",
             None,
         )
-        .append_details(vec![location.to_string(), metadata.location.to_string()])
+        .append_details(vec![location.to_string(), metadata.location().to_string()])
         .into());
     }
     let tabular_id = create_tabular(
         CreateTabular {
-            id: metadata.view_uuid,
+            id: metadata.uuid(),
             name,
             namespace_id: *namespace_id,
             typ: TabularType::View,
@@ -114,12 +114,12 @@ pub(crate) async fn create_view(
     })?;
 
     tracing::debug!("Inserted base view and tabular.");
-    for schema in metadata.schemas.values() {
+    for schema in metadata.schemas_iter() {
         let schema_id = create_view_schema(view_id, schema.clone(), transaction).await?;
         tracing::debug!("Inserted schema with id: '{}'", schema_id);
     }
 
-    for view_version in metadata.versions.values() {
+    for view_version in metadata.versions() {
         let ViewVersionResponse {
             version_id,
             view_id,
@@ -132,10 +132,10 @@ pub(crate) async fn create_view(
         );
     }
 
-    set_current_view_metadata_version(metadata.current_version_id, metadata.view_uuid, transaction)
+    set_current_view_metadata_version(metadata.current_version_id(), metadata.uuid(), transaction)
         .await?;
 
-    for history in &metadata.version_log {
+    for history in metadata.history() {
         insert_view_version_log(
             view_id,
             history.version_id(),
@@ -699,10 +699,11 @@ pub(crate) mod tests {
             .unwrap(),
             &mut tx,
             "myview",
-            ViewMetadataBuilder::new(request.clone())
+            ViewMetadataBuilder::new_from_metadata(request.clone())
                 .assign_uuid(Uuid::now_v7())
                 .build()
-                .unwrap(),
+                .unwrap()
+                .metadata,
             &"s3://my_bucket/my_table/metadata/bar".parse().unwrap(),
         )
         .await
@@ -734,12 +735,12 @@ pub(crate) mod tests {
     async fn drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(created_meta.view_uuid.into(), &mut tx)
+        super::drop_view(created_meta.uuid().into(), &mut tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
         load_view(
-            created_meta.view_uuid.into(),
+            created_meta.uuid().into(),
             false,
             &mut state.write_pool().acquire().await.unwrap(),
         )
@@ -751,16 +752,12 @@ pub(crate) mod tests {
     async fn soft_drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        mark_tabular_as_deleted(
-            TabularIdentUuid::View(created_meta.view_uuid),
-            None,
-            &mut tx,
-        )
-        .await
-        .unwrap();
+        mark_tabular_as_deleted(TabularIdentUuid::View(created_meta.uuid()), None, &mut tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         load_view(
-            created_meta.view_uuid.into(),
+            created_meta.uuid().into(),
             true,
             &mut state.write_pool().acquire().await.unwrap(),
         )
@@ -768,13 +765,13 @@ pub(crate) mod tests {
         .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        super::drop_view(created_meta.view_uuid.into(), &mut tx)
+        super::drop_view(created_meta.uuid().into(), &mut tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
 
         load_view(
-            created_meta.view_uuid.into(),
+            created_meta.uuid().into(),
             true,
             &mut state.write_pool().acquire().await.unwrap(),
         )
@@ -798,7 +795,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(
             exists,
-            Some(created_meta.view_uuid.into()),
+            Some(created_meta.uuid().into()),
             "view should exist"
         );
 

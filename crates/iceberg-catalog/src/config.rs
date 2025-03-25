@@ -6,6 +6,7 @@ use core::result::Result::Ok;
 use std::{
     collections::HashSet,
     convert::Infallible,
+    net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
     path::PathBuf,
     str::FromStr,
@@ -85,6 +86,9 @@ pub struct DynAppConfig {
     pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
+    /// Bind IP the server listens on.
+    /// Defaults to 0.0.0.0
+    pub bind_ip: IpAddr,
     /// If true (default), the NIL uuid is used as default project id.
     pub enable_default_project: bool,
     /// Template to obtain the "prefix" for a warehouse,
@@ -393,6 +397,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_audience: None,
             openid_subject_claim: None,
             listen_port: 8181,
+            bind_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,
             kv2: None,
@@ -627,6 +632,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::net::Ipv6Addr;
+
     #[allow(unused_imports)]
     use super::*;
 
@@ -875,6 +882,52 @@ mod test {
                     token_endpoint: "https://example.com/token".parse().unwrap(),
                     scope: Some("openfga".to_string())
                 }
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v4_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "0.0.0.0");
+            let config = get_config();
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v4_localhost() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "127.0.0.1");
+            let config = get_config();
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_loopback() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::1");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))
             );
             Ok(())
         });
