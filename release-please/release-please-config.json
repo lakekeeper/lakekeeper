@@ -31,8 +31,6 @@
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
     "include-component-in-tag": false,
-    "bootstrap-sha": "4a7322172779bf525866331e01269ee491f74fc4",
-    "last-release-sha": "4a7322172779bf525866331e01269ee491f74fc4",
     "extra-files": [
         {
             "type": "yaml",

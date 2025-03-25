@@ -1,5 +1,4 @@
-use http::StatusCode;
-use iceberg::spec::{AppendViewVersion, ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
+use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
 use uuid::Uuid;
 
@@ -96,7 +95,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         metadata_location: before_update_metadata_location,
         metadata: before_update_metadata,
     } = C::load_view(view_id, false, t.transaction()).await?;
-    let view_location = parse_view_location(&before_update_metadata.location)?;
+    let view_location = parse_view_location(before_update_metadata.location())?;
     let before_update_metadata_location = parse_view_location(&before_update_metadata_location)?;
 
     state
@@ -228,27 +227,27 @@ fn build_new_metadata(
     request: CommitViewRequest,
     before_update_metadata: ViewMetadata,
 ) -> Result<ViewMetadata> {
-    let previous_location = before_update_metadata.location.clone();
-    let mut m = ViewMetadataBuilder::new(before_update_metadata);
+    let previous_location = before_update_metadata.location().to_string();
+    let mut m = ViewMetadataBuilder::new_from_metadata(before_update_metadata);
 
     for upd in request.updates {
         m = match upd {
             ViewUpdate::AssignUuid { .. } => {
-                return Err(ErrorModel::builder()
-                    .code(StatusCode::BAD_REQUEST.into())
-                    .message("Assigning UUIDs is not supported".to_string())
-                    .r#type("AssignUuidNotSupported".to_string())
-                    .build()
-                    .into());
+                return Err(ErrorModel::bad_request(
+                    "Assigning UUIDs is not supported",
+                    "AssignUuidNotSupported",
+                    None,
+                )
+                .into());
             }
             ViewUpdate::SetLocation { location } => {
                 if previous_location != location {
-                    return Err(ErrorModel::builder()
-                        .code(StatusCode::BAD_REQUEST.into())
-                        .message("Setting location for views is not supported".to_string())
-                        .r#type("SetLocationNotSupported".to_string())
-                        .build()
-                        .into());
+                    return Err(ErrorModel::bad_request(
+                        "Setting location for views is not supported",
+                        "SetLocationNotSupported",
+                        None,
+                    )
+                    .into());
                 }
                 m
             }
@@ -259,50 +258,49 @@ fn build_new_metadata(
             ViewUpdate::AddSchema {
                 schema,
                 last_column_id: _,
-            } => m.add_schema(schema).map_err(|e| {
-                ErrorModel::builder()
-                    .code(StatusCode::BAD_REQUEST.into())
-                    .message(format!("Error adding schema: {e}"))
-                    .r#type("AddSchemaError".to_string())
-                    .build()
+            } => m.add_schema(schema),
+            ViewUpdate::SetProperties { updates } => m.set_properties(updates).map_err(|e| {
+                ErrorModel::bad_request(
+                    format!("Error setting properties: {e}"),
+                    "AddSchemaError",
+                    Some(Box::new(e)),
+                )
             })?,
-            ViewUpdate::SetProperties { updates } => m.set_properties(updates),
-            ViewUpdate::RemoveProperties { removals } => {
-                m.remove_properties(removals.iter().collect())
+            ViewUpdate::RemoveProperties { removals } => m.remove_properties(&removals),
+            ViewUpdate::AddViewVersion { view_version } => {
+                m.add_version(view_version).map_err(|e| {
+                    ErrorModel::bad_request(
+                        format!("Error appending view version: {e}"),
+                        "AppendViewVersionError".to_string(),
+                        Some(Box::new(e)),
+                    )
+                })?
             }
-            ViewUpdate::AddViewVersion { view_version } => m
-                .add_version(AppendViewVersion::Append(view_version.clone()))
-                .map_err(|e| {
-                    ErrorModel::builder()
-                        .code(StatusCode::BAD_REQUEST.into())
-                        .message(format!("Error appending view version: {e}"))
-                        .r#type("AppendViewVersionError".to_string())
-                        .build()
-                })?,
             ViewUpdate::SetCurrentViewVersion { view_version_id } => {
                 m.set_current_version_id(view_version_id).map_err(|e| {
-                    ErrorModel::builder()
-                        .code(StatusCode::BAD_REQUEST.into())
-                        .message(format!("Error setting current view version: {e}"))
-                        .r#type("SetCurrentViewVersionError".to_string())
-                        .build()
+                    ErrorModel::bad_request(
+                        "Error setting current view version: {e}",
+                        "SetCurrentViewVersionError",
+                        Some(Box::new(e)),
+                    )
                 })?
             }
         }
     }
 
     let requested_update_metadata = m.build().map_err(|e| {
-        ErrorModel::builder()
-            .code(StatusCode::BAD_REQUEST.into())
-            .message(format!("Error building metadata: {e}"))
-            .r#type("BuildMetadataError".to_string())
-            .build()
+        ErrorModel::bad_request(
+            format!("Error building metadata: {e}"),
+            "BuildMetadataError",
+            Some(Box::new(e)),
+        )
     })?;
-    Ok(requested_update_metadata)
+    Ok(requested_update_metadata.metadata)
 }
 
 #[cfg(test)]
 mod test {
+    use chrono::Utc;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CommitViewRequest;
     use maplit::hashmap;
@@ -332,7 +330,7 @@ mod test {
         .await
         .unwrap();
 
-        let rq: CommitViewRequest = spark_commit_update_request(Some(view.metadata.view_uuid));
+        let rq: CommitViewRequest = spark_commit_update_request(Some(view.metadata.uuid()));
 
         let res = super::commit_view(
             views::ViewParameters {
@@ -353,18 +351,18 @@ mod test {
         .await
         .unwrap();
 
-        assert_eq!(res.metadata.current_version_id, 2);
-        assert_eq!(res.metadata.schemas.len(), 3);
-        assert_eq!(res.metadata.versions.len(), 2);
-        let max_schema = res.metadata.schemas.keys().max();
+        assert_eq!(res.metadata.current_version_id(), 2);
+        assert_eq!(res.metadata.schemas_iter().len(), 3);
+        assert_eq!(res.metadata.versions().len(), 2);
+        let max_schema = res.metadata.schemas_iter().map(|s| s.schema_id()).max();
         assert_eq!(
-            res.metadata.current_version().schema_id,
-            *max_schema.unwrap()
+            res.metadata.current_version().schema_id(),
+            max_schema.unwrap()
         );
 
         assert_eq!(
-            res.metadata.properties,
-            hashmap! {
+            res.metadata.properties(),
+            &hashmap! {
                 "create_engine_version".to_string() => "Spark 3.5.1".to_string(),
                 "spark.query-column-names".to_string() => "id".to_string(),
             }
@@ -468,7 +466,7 @@ mod test {
       "view-version": {
         "version-id": 2,
         "schema-id": -1,
-        "timestamp-ms": 1_719_494_740_509_i64,
+        "timestamp-ms": Utc::now().timestamp_millis(),
         "summary": {
           "engine-name": "spark",
           "engine-version": "3.5.1",

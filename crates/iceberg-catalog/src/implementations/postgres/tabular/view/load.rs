@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use chrono::{DateTime, Utc};
 use iceberg::{
     spec::{
-        Schema, SqlViewRepresentation, ViewMetadata, ViewRepresentation, ViewRepresentations,
-        ViewVersion, ViewVersionId, ViewVersionLog,
+        Schema, SqlViewRepresentation, ViewMetadata, ViewMetadataParts, ViewRepresentation,
+        ViewRepresentations, ViewVersion, ViewVersionId, ViewVersionLog,
     },
     NamespaceIdent,
 };
@@ -72,7 +72,7 @@ pub(crate) async fn load_view(
     .await?;
     Ok(ViewMetadataWithLocation {
         metadata_location,
-        metadata: ViewMetadata {
+        metadata: ViewMetadata::try_from_parts(ViewMetadataParts {
             format_version: match view_format_version {
                 ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
             },
@@ -83,7 +83,12 @@ pub(crate) async fn load_view(
             version_log,
             schemas,
             properties,
-        },
+        })
+        .map_err(|e| {
+            let message = "Received invalid ViewMetadata from database";
+            tracing::error!("{}: '{e:?}'", message);
+            ErrorModel::internal(message, "InternalDatabaseError", Some(Box::new(e)))
+        })?,
     })
 }
 
@@ -228,14 +233,13 @@ async fn prepare_versions(
     ) {
         let namespace_name =
             get_namespace_ident_with_empty_support(conn, version_default_ns).await?;
-        let reps = izip!(typs, dialects, sqls)
+        let reps: Vec<ViewRepresentation> = izip!(typs, dialects, sqls)
             .map(|(typ, dialect, sql)| match typ {
                 ViewRepresentationType::Sql => {
                     ViewRepresentation::Sql(SqlViewRepresentation { sql, dialect })
                 }
             })
             .collect();
-        let reps = ViewRepresentations::new(reps);
 
         let builder = ViewVersion::builder()
             .with_timestamp_ms(timestamp.timestamp_millis())
@@ -244,7 +248,18 @@ async fn prepare_versions(
             .with_default_catalog(version_default_cat)
             .with_schema_id(schema_id)
             .with_summary(version_meta_summary.0)
-            .with_representations(reps)
+            .with_representations(
+                ViewRepresentations::builder()
+                    .add_all_representations(reps)
+                    .build()
+                    .map_err(|e| {
+                        ErrorModel::internal(
+                            "Failed to build view representations",
+                            "InternalDatabaseError",
+                            Some(Box::new(e)),
+                        )
+                    })?,
+            )
             .build();
 
         versions.insert(version_id, Arc::new(builder));
