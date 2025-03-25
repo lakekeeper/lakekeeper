@@ -80,9 +80,50 @@ Lakekeeper can publish change events to Nats (Kafka is coming soon). The followi
 | `LAKEKEEPER__NATS_PASSWORD`                | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
 | <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing nats credentials |
 | `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | Nats token to use for authentication |
+
+### Kafka
+
+Lakekeeper uses [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) to enable publishing events to Kafka.
+
+The following features of rust-rdkafka are enabled:
+
+- tokio
+- ztstd
+- gssapi-vendored
+- curl-static
+- ssl-vendored
+- libz-static
+
+This means that all features of [librdkafka](https://github.com/confluentinc/librdkafka) are usable. All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
+
+To publish events to Kafka, set the following environment variables:
+
+| Variable                        | Example                                                                   | Description                                                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LAKEKEEPER__KAFKA_TOPIC`       | `lakekeeper`                                                              | The topic to which events are published                                                                                                                                                 |
+| `LAKEKEEPER__KAFKA_CONFIG`      | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
+| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below                                      |
+
+#### Notes
+
+`LAKEKEEPER__KAFKA_CONFIG` and `LAKEKEEPER__KAFKA_CONFIG_FILE` are mutually exclusive and the values are not merged, if both variables are set. In case that both are set, `LAKEKEEPER__KAFKA_CONFIG` is used.
+
+A `LAKEKEEPER__KAFKA_CONFIG_FILE` could look like this:
+
+```
+{
+  "bootstrap.servers"="host1:port,host2:port",
+  "security.protocol"="SASL_SSL",
+  "sasl.mechanisms"="PLAIN",
+}
+```
+
+Checking configuration parameters is deferred to `rdkafka`
+
 ### Logging Cloudevents
 
 Cloudevents can also be logged, if you do not have Nats up and running. This feature can be enabled by setting
+Cloudevents can also be logged, if you do not have Nats or Kafka up and running. This feature can be enabled by setting
 
 `LAKEKEEPER__LOG_CLOUDEVENTS=true`
 

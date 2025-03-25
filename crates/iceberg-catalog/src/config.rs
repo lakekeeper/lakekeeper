@@ -1,5 +1,4 @@
 //! Contains Configuration of the service Module
-
 #![allow(clippy::ref_option)]
 
 use core::result::Result::Ok;
@@ -20,7 +19,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{service::task_queue::TaskQueueConfig, ProjectId, WarehouseIdent};
+use crate::{
+    service::{event_publisher::kafka::KafkaConfig, task_queue::TaskQueueConfig},
+    ProjectId, WarehouseIdent,
+};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -40,9 +42,14 @@ fn get_config() -> DynAppConfig {
     #[cfg(test)]
     let prefixes = &["LAKEKEEPER_TEST__"];
 
+    let file_keys = &["kafka_config"];
+
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        config = config.merge(figment::providers::Env::prefixed(prefix).split("__"));
+        let env = figment::providers::Env::prefixed(prefix).split("__");
+        config = config
+            .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
+            .merge(env);
     }
 
     let mut config = config
@@ -143,6 +150,10 @@ pub struct DynAppConfig {
     pub nats_password: Option<String>,
     #[redact]
     pub nats_token: Option<String>,
+
+    // ------------- KAFKA CLOUDEVENTS -------------
+    pub kafka_topic: Option<String>,
+    pub kafka_config: Option<KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -388,6 +399,8 @@ impl Default for DynAppConfig {
             nats_user: None,
             nats_password: None,
             nats_token: None,
+            kafka_config: None,
+            kafka_topic: None,
             log_cloudevents: None,
             openid_provider_uri: None,
             openid_audience: None,

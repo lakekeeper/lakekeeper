@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - 'manual-release-*'
+      - "manual-release-*"
   pull_request:
   workflow_dispatch:
 
@@ -23,9 +23,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Cargo sqlx-check
         run: |
-          sudo apt-get install libpq-dev -y
-          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres --force
-          cargo sqlx prepare --check --workspace -- --all-features 
+          export DEBIAN_FRONTEND=noninteractive 
+          sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
+          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
+          cargo sqlx prepare --check --workspace -- --all-features
 
   check-format:
     runs-on: ubuntu-24.04
@@ -37,7 +38,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          toolchain:  ${{ env.RUST_TOOLCHAIN }},nightly
+          toolchain: ${{ env.RUST_TOOLCHAIN }},nightly
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
@@ -50,7 +51,8 @@ jobs:
   clippy:
     runs-on: ubuntu-24.04
     steps:
-      - run: sudo snap install --edge --classic just
+      - run: |
+          sudo snap install --edge --classic just
 
       - uses: actions/checkout@v4
 
@@ -58,7 +60,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
-          toolchain:  ${{ env.RUST_TOOLCHAIN }}
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
           TEST_OPENFGA: 1
@@ -82,13 +84,14 @@ jobs:
   check-generated-cotents-match:
     runs-on: ubuntu-24.04
     steps:
-      - run: sudo snap install --edge --classic just
+      - run: |
+          sudo snap install --edge --classic just
       - uses: actions/checkout@v4
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
-          toolchain:  ${{ env.RUST_TOOLCHAIN }}
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
       - name: Regenerate management openapi
@@ -154,15 +157,16 @@ jobs:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        run: cargo install --force cargo-nextest 
+        run: cargo install --force cargo-nextest
 
       - name: Setup cargo nextest
         run: cargo install cargo-nextest
 
       - name: Migrate database
         run: |
-          sudo apt-get install libpq-dev -y
-          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres --force
+          export DEBIAN_FRONTEND=noninteractive 
+          sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
+          cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           cd crates/iceberg-catalog
           sqlx database create
           sqlx migrate run
@@ -177,7 +181,7 @@ jobs:
           gpg --no-default-keyring --keyring /usr/share/keyrings/hashicorp-archive-keyring.gpg --fingerprint
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
           sudo apt update && sudo apt install vault
-          
+
           vault login -address "${VAULT_ADDR}" myroot
           vault auth  enable -address "${VAULT_ADDR}"  userpass
           echo "path \"secret/*\" { capabilities = [\"create\", \"read\", \"update\", \"delete\", \"list\"] }" > /tmp/app.hcl
