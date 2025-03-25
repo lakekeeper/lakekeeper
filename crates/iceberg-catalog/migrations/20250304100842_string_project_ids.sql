@@ -49,3 +49,6 @@ ALTER TABLE role
 -- Step 10: Recreate indexes
 CREATE UNIQUE INDEX unique_role_name_in_project ON role (project_id, (lower(name)));
 CREATE INDEX role_project_id_idx ON role (project_id);
+
+-- Step 11: Drop column table_migrated from tabulars
+ALTER TABLE tabular DROP COLUMN table_migrated;

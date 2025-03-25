@@ -611,7 +611,6 @@ impl Catalog for super::PostgresCatalog {
             &mut **transaction,
             None,
             pagination_query,
-            false,
         )
         .await
     }

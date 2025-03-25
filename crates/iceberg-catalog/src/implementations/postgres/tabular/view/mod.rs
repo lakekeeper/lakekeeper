@@ -438,7 +438,6 @@ where
         transaction,
         Some(TabularType::View),
         paginate_query,
-        false,
     )
     .await?;
     let views = page.map::<ViewIdentUuid, TableIdent>(

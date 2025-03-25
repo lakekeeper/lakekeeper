@@ -159,14 +159,9 @@ impl ProjectId {
         {
             Ok(Self(id))
         } else {
-            Err(ErrorModel::builder()
-                .code(StatusCode::BAD_REQUEST.into())
-                .message(format!(
-                    "Project IDs may only contain alphanumeric characters, hyphens and underscores. Got: `{id}`",
-                ))
-                .r#type("MalformedProjectID".to_string())
-                .build()
-                .into())
+            Err(ErrorModel::bad_request(format!(
+                "Project IDs may only contain alphanumeric characters, hyphens and underscores. Got: `{id}`",
+            ), "MalformedProjectID", None).into())
         }
     }
 

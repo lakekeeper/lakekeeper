@@ -146,7 +146,6 @@ where
         transaction,
         Some(TabularType::Table),
         pagination_query,
-        false,
     )
     .await?;
 
