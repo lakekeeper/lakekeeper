@@ -185,9 +185,6 @@ async fn handle_atomic_updates(
         snapshot_refs,
         properties,
     } = table_updates;
-    if !&diffs.removed_schemas.is_empty() {
-        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
-    }
     if !diffs.added_schemas.is_empty() {
         common::insert_schemas(
             diffs
@@ -206,13 +203,8 @@ async fn handle_atomic_updates(
         common::set_current_schema(schema_id, transaction, new_metadata.uuid()).await?;
     }
 
-    if !diffs.removed_partition_specs.is_empty() {
-        common::remove_partition_specs(
-            new_metadata.uuid(),
-            diffs.removed_partition_specs,
-            transaction,
-        )
-        .await?;
+    if !&diffs.removed_schemas.is_empty() {
+        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
     }
 
     if !diffs.added_partition_specs.is_empty() {
@@ -234,9 +226,13 @@ async fn handle_atomic_updates(
             .await?;
     }
 
-    if !diffs.removed_sort_orders.is_empty() {
-        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
-            .await?;
+    if !diffs.removed_partition_specs.is_empty() {
+        common::remove_partition_specs(
+            new_metadata.uuid(),
+            diffs.removed_partition_specs,
+            transaction,
+        )
+        .await?;
     }
 
     if !diffs.added_sort_orders.is_empty() {
@@ -257,9 +253,9 @@ async fn handle_atomic_updates(
         common::set_default_sort_order(default_sort_order_id, transaction, new_metadata.uuid())
             .await?;
     }
-
-    if !diffs.removed_snapshots.is_empty() {
-        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
+    if !diffs.removed_sort_orders.is_empty() {
+        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
+            .await?;
     }
 
     if !diffs.added_snapshots.is_empty() {
@@ -278,6 +274,10 @@ async fn handle_atomic_updates(
 
     if snapshot_refs {
         common::insert_snapshot_refs(new_metadata, transaction).await?;
+    }
+
+    if !diffs.removed_snapshots.is_empty() {
+        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
     }
 
     if diffs.head_of_snapshot_log_changed {
