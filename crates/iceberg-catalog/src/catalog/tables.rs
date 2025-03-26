@@ -1548,7 +1548,7 @@ pub(super) fn determine_tabular_location(
                 .map_err(|e| {
                     ErrorModel::internal(
                         "Failed to generate default namespace location",
-                        "InvalidDefaultNamespaceLocaiton",
+                        "InvalidDefaultNamespaceLocation",
                         Some(Box::new(e)),
                     )
                 })?,
