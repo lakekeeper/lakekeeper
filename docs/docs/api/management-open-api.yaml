@@ -104,6 +104,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/endpoint-statistics:
+    get:
+      tags:
+      - project
+      summary: Retrieve API Usage Statistics
+      description: |-
+        Returns detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
+        track frequency of operations, and analyze response codes.
+
+        ## Data Collection
+
+        The statistics include:
+        - Endpoint paths and HTTP methods
+        - Response status codes
+        - Call counts per endpoint
+        - Warehouse context (when applicable)
+        - Timestamps of activity
+
+        ## Time Aggregation
+
+        Statistics are aggregated hourly. Within each hour window:
+        - An initial entry is created on the first API call
+        - Subsequent calls update the existing hourly entry
+        - Each hour boundary creates a new aggregation bucket
+        - Hours with no API activity have no entries (gaps in data)
+
+        ## Response Format
+
+        The response includes timestamp buckets (in UTC) and corresponding endpoint metrics,
+        allowing for time-series analysis of API usage patterns.
+
+        Example:
+        - 00:00:00-00:16:32: no activity
+            - timestamps: []
+        - 00:16:32: warehouse created:
+            - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]
+        - 00:30:00: table created:
+            - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+                                                         {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]
+        - 00:45:00: table created:
+            - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+                                                         {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]
+        - 01:00:36: table deleted:
+            - timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+                                                         {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],
+                                                          [{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]
+      operationId: get_endpoint_statistics
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetEndpointStatisticsRequest'
+        required: true
+      responses:
+        '200':
+          description: Endpoint statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointStatisticsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/info:
     get:
       tags:
@@ -1547,7 +1613,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
+  /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop:
     post:
       tags:
       - warehouse
@@ -1574,6 +1640,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop:
+    post:
+      tags:
+      - warehouse
+      operationId: undrop_tabulars_deprecated
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UndropTabularsRequest'
+        required: true
+      responses:
+        '204':
+          description: Tabular undropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -2116,6 +2210,113 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    EndpointStatistic:
+      type: object
+      required:
+      - count
+      - http_route
+      - status_code
+      - created_at
+      properties:
+        count:
+          type: integer
+          format: int64
+          description: Number of requests to this endpoint for the current time-slice.
+        created_at:
+          type: string
+          format: date-time
+          description: |-
+            Timestamp at which the datapoint was created in the database.
+
+            This is the exact time at which the current endpoint-status-warehouse combination was called
+            for the first time in the current time-slice.
+        http_route:
+          type: string
+          description: |-
+            The route of the endpoint.
+
+            Format: `METHOD /path/to/endpoint`
+        status_code:
+          type: integer
+          format: int32
+          description: The status code of the response.
+          minimum: 0
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: |-
+            Timestamp at which the datapoint was last updated.
+
+            This is the exact time at which the current datapoint was last updated.
+        warehouse_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: |-
+            The ID of the warehouse that handled the request.
+
+            Only present for requests that could be associated with a warehouse. Some management
+            endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
+            will not have a `warehouse_id`.
+        warehouse_name:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The name of the warehouse that handled the request.
+
+            Only present for requests that could be associated with a warehouse. Some management
+            endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
+            will not have a `warehouse_id`
+    EndpointStatisticsResponse:
+      type: object
+      required:
+      - timestamps
+      - called_endpoints
+      - previous_page_token
+      - next_page_token
+      properties:
+        called_endpoints:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/EndpointStatistic'
+          description: |-
+            Array of arrays of statistics detailing each called endpoint for each `timestamp`.
+
+            See docs of `timestamps` for more details.
+        next_page_token:
+          type: string
+          description: |-
+            Token to get the next page of results.
+
+            Inverse of `previous_page_token`, see its documentation above.
+        previous_page_token:
+          type: string
+          description: |-
+            Token to get the previous page of results.
+
+            Endpoint statistics are not paginated through page-limits, we paginate them by stepping
+            through time. By default, the list-statistics endpoint will return all statistics for
+            `now()` - 1 day to `now()`. In the request, you can specify a `range_specifier` to set the end
+            date and step interval. The `previous_page_token` will then move to the neighboring window.
+            E.g. in the default case of `now()` and 1 day, it'd be `now()` - 2 days to `now()` - 1 day.
+        timestamps:
+          type: array
+          items:
+            type: string
+            format: date-time
+          description: |-
+            Array of timestamps indicating the time at which each entry in the `called_endpoints` array
+            is valid.
+
+            We lazily create a new statistics entry every hour, in between hours, the existing entry
+            is being updated. If any endpoint is called in the following hour, there'll be an entry in
+            `timestamps` for the following hour. If not, then there'll be no entry.
     ErrorModel:
       type: object
       description: JSON error payload returned in a response with further details on the error
@@ -2229,6 +2430,39 @@ components:
           type: string
         universe_domain:
           type: string
+    GetEndpointStatisticsRequest:
+      type: object
+      required:
+      - warehouse
+      properties:
+        range_specifier:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/TimeWindowSelector'
+            description: |-
+              Range specifier
+
+              Either for a explicit range or a page token to paginate through the results. See the docs of
+              `RangeSpecifier` for more details.
+        status_codes:
+          type:
+          - array
+          - 'null'
+          items:
+            type: integer
+            format: int32
+            minimum: 0
+          description: |-
+            Status code filter
+
+            Optional filter to only return statistics for requests with specific status codes.
+        warehouse:
+          $ref: '#/components/schemas/WarehouseFilter'
+          description: |-
+            Warehouse filter
+
+            Can return statistics for a specific warehouse, all warehouses or requests that could not be
+            associated to any warehouse.
     GetNamespaceAccessResponse:
       type: object
       required:
@@ -3433,6 +3667,43 @@ components:
       enum:
       - table
       - view
+    TimeWindowSelector:
+      oneOf:
+      - type: object
+        required:
+        - end
+        - interval
+        - type
+        properties:
+          end:
+            type: string
+            format: date-time
+            description: End timestamp of the time window
+          interval:
+            type: string
+            description: |-
+              Duration/span of the time window
+
+              The effective time range = `window_end` - `window_duration` to `end`
+          type:
+            type: string
+            enum:
+            - window
+      - type: object
+        required:
+        - token
+        - type
+        properties:
+          token:
+            type: string
+            description: |-
+              Opaque Token from previous response for paginating through time windows
+
+              Use the `next_page_token` or `previous_page_token` from a previous response
+          type:
+            type: string
+            enum:
+            - page-token
     UndropTabularsRequest:
       type: object
       required:
@@ -3837,6 +4108,43 @@ components:
               enum:
               - modify
         title: WarehouseAssignmentModify
+    WarehouseFilter:
+      oneOf:
+      - type: object
+        description: Filter for a specific warehouse
+        required:
+        - id
+        - type
+        properties:
+          id:
+            type: string
+            format: uuid
+          type:
+            type: string
+            enum:
+            - warehouse-id
+      - type: object
+        description: |-
+          Filter for requests that could not be associated with any warehouse, e.g. some management
+          endpoints
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - unmapped
+      - type: object
+        description: |-
+          Do not filter by warehouse and return all statistics for all warehouses and unmapped requests
+          for the current project.
+        required:
+        - type
+        properties:
+          type:
+            type: string
+            enum:
+            - all
     WarehouseRelation:
       type: string
       enum:

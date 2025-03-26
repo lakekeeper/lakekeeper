@@ -199,7 +199,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // /{prefix}/namespaces/{namespace}/tables/{table}
         .route(
-            "/{prefix}/namespaces/{namespace}/tables/{namespace}",
+            "/{prefix}/namespaces/{namespace}/tables/{table}",
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,

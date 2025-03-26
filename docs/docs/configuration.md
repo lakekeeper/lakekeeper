@@ -169,6 +169,13 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 
+### Endpoint Statistics
+
+Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
+
+| Variable                                   | Example | Description                                                                                               |
+|--------------------------------------------|---------|-----------------------------------------------------------------------------------------------------------|
+| `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
 
 ### SSL Dependencies
 

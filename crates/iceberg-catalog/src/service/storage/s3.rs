@@ -336,7 +336,7 @@ impl S3Profile {
                     .s3_signer_uri_for_warehouse(warehouse_id)
                     .to_string(),
             )]),
-            endpoints: supported_endpoints(),
+            endpoints: supported_endpoints().to_vec(),
         }
     }
 

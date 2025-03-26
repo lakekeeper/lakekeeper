@@ -42,6 +42,7 @@ pub mod v1 {
         api::{
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
+                project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::UndropTabularsRequest,
             },
@@ -89,6 +90,7 @@ pub mod v1 {
             delete_user,
             delete_warehouse,
             get_default_project,
+            get_endpoint_statistics,
             get_project_by_id,
             get_role,
             get_server_info,
@@ -106,6 +108,7 @@ pub mod v1 {
             search_role,
             search_user,
             undrop_tabulars,
+            undrop_tabulars_deprecated,
             update_role,
             update_storage_credential,
             update_storage_profile,
@@ -902,6 +905,68 @@ pub mod v1 {
         .map(Json)
     }
 
+    /// Retrieve API Usage Statistics
+    ///
+    /// Returns detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
+    /// track frequency of operations, and analyze response codes.
+    ///
+    /// ## Data Collection
+    ///
+    /// The statistics include:
+    /// - Endpoint paths and HTTP methods
+    /// - Response status codes
+    /// - Call counts per endpoint
+    /// - Warehouse context (when applicable)
+    /// - Timestamps of activity
+    ///
+    /// ## Time Aggregation
+    ///
+    /// Statistics are aggregated hourly. Within each hour window:
+    /// - An initial entry is created on the first API call
+    /// - Subsequent calls update the existing hourly entry
+    /// - Each hour boundary creates a new aggregation bucket
+    /// - Hours with no API activity have no entries (gaps in data)
+    ///
+    /// ## Response Format
+    ///
+    /// The response includes timestamp buckets (in UTC) and corresponding endpoint metrics,
+    /// allowing for time-series analysis of API usage patterns.
+    ///
+    /// Example:
+    /// - 00:00:00-00:16:32: no activity
+    ///     - timestamps: []
+    /// - 00:16:32: warehouse created:
+    ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]
+    /// - 00:30:00: table created:
+    ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]
+    /// - 00:45:00: table created:
+    ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]
+    /// - 01:00:36: table deleted:
+    ///     - timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
+    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],
+    ///                                                   [{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]
+    #[utoipa::path(
+        get,
+        tag = "project",
+        path = "/management/v1/endpoint-statistics",
+        request_body = GetEndpointStatisticsRequest,
+        responses(
+            (status = 200, description = "Endpoint statistics", body = EndpointStatisticsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_endpoint_statistics<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(query): Json<GetEndpointStatisticsRequest>,
+    ) -> Result<Json<EndpointStatisticsResponse>> {
+        ApiServer::<C, A, S>::get_endpoint_statistics(api_context, query, metadata)
+            .await
+            .map(Json)
+    }
+
     /// List soft-deleted tabulars
     ///
     /// List all soft-deleted tabulars in the warehouse that are visible to you.
@@ -935,6 +1000,32 @@ pub mod v1 {
         post,
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop",
+        responses(
+            (status = 204, description = "Tabular undropped successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    #[deprecated = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."]
+    async fn undrop_tabulars_deprecated<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UndropTabularsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::undrop_tabulars(
+            WarehouseIdent::from(warehouse_id),
+            metadata,
+            request,
+            api_context,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop",
         responses(
             (status = 204, description = "Tabular undropped successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1022,6 +1113,7 @@ pub mod v1 {
                 // Server
                 .route("/info", get(get_server_info))
                 .route("/bootstrap", post(bootstrap))
+                .route("/endpoint-statistics", get(get_endpoint_statistics))
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(
@@ -1051,14 +1143,9 @@ pub mod v1 {
                 )
                 .route("/project/{project_id}/rename", post(rename_project_by_id))
                 // Create a new warehouse
-                .route("/warehouse", post(create_warehouse))
+                .route("/warehouse", post(create_warehouse).get(list_warehouses))
                 // List all projects
                 .route("/project-list", get(list_projects))
-                .route(
-                    "/warehouse",
-                    // List all warehouses within a project
-                    get(list_warehouses),
-                )
                 .route(
                     "/warehouse/{warehouse_id}",
                     get(get_warehouse).delete(delete_warehouse),
@@ -1097,6 +1184,11 @@ pub mod v1 {
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted_tabulars/undrop",
+                    #[allow(deprecated)]
+                    post(undrop_tabulars_deprecated),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/deleted-tabulars/undrop",
                     post(undrop_tabulars),
                 )
                 .route(

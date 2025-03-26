@@ -30,12 +30,14 @@ use crate::{
     api::{
         iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::{
+            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
         },
     },
     implementations::postgres::{
+        endpoint_statistics::list::list_statistics,
         role::search_role,
         tabular::{
             clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
@@ -621,5 +623,22 @@ impl Catalog for super::PostgresCatalog {
         state: Self::State,
     ) -> Result<WarehouseStatisticsResponse> {
         get_warehouse_stats(state.read_pool(), warehouse_id, pagination_query).await
+    }
+
+    async fn get_endpoint_statistics(
+        project_id: ProjectId,
+        warehouse_id: WarehouseFilter,
+        range_specifier: TimeWindowSelector,
+        status_codes: Option<&[u16]>,
+        catalog_state: Self::State,
+    ) -> Result<EndpointStatisticsResponse> {
+        list_statistics(
+            project_id,
+            warehouse_id,
+            status_codes,
+            range_specifier,
+            &catalog_state.read_pool(),
+        )
+        .await
     }
 }

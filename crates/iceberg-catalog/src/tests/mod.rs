@@ -1,3 +1,4 @@
+mod endpoint_stats;
 mod stats;
 
 use std::sync::Arc;
@@ -20,9 +21,7 @@ use crate::{
         },
         management::v1::{
             bootstrap::{BootstrapRequest, Service as _},
-            warehouse::{
-                CreateWarehouseRequest, CreateWarehouseResponse, Service as _, TabularDeleteProfile,
-            },
+            warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
             ApiServer,
         },
         ApiContext,
@@ -44,7 +43,7 @@ use crate::{
         task_queue::{TaskQueueConfig, TaskQueues},
         State, UserId,
     },
-    CONFIG,
+    WarehouseIdent, CONFIG,
 };
 
 pub(crate) fn test_io_profile() -> StorageProfile {
@@ -164,6 +163,12 @@ pub(crate) async fn create_view<T: Authorizer>(
     .await
 }
 
+#[derive(Debug)]
+pub struct TestWarehouseResponse {
+    pub warehouse_id: WarehouseIdent,
+    pub warehouse_name: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn setup<T: Authorizer>(
     pool: PgPool,
@@ -175,7 +180,7 @@ pub(crate) async fn setup<T: Authorizer>(
     q_config: Option<TaskQueueConfig>,
 ) -> (
     ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    CreateWarehouseResponse,
+    TestWarehouseResponse,
 ) {
     let api_context = get_api_context(&pool, authorizer, q_config);
 
@@ -197,10 +202,10 @@ pub(crate) async fn setup<T: Authorizer>(
     )
     .await
     .unwrap();
-
+    let warehouse_name = format!("test-warehouse-{}", Uuid::now_v7());
     let warehouse = ApiServer::create_warehouse(
         CreateWarehouseRequest {
-            warehouse_name: format!("test-warehouse-{}", Uuid::now_v7()),
+            warehouse_name: warehouse_name.clone(),
             project_id: None,
             storage_profile,
             storage_credential,
@@ -212,7 +217,13 @@ pub(crate) async fn setup<T: Authorizer>(
     .await
     .unwrap();
 
-    (api_context, warehouse)
+    (
+        api_context,
+        TestWarehouseResponse {
+            warehouse_id: warehouse.warehouse_id,
+            warehouse_name,
+        },
+    )
 }
 
 pub(crate) fn get_api_context<T: Authorizer>(

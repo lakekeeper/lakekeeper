@@ -7,6 +7,7 @@ use iceberg_catalog::{
     api::router::{new_full_router, serve as service_serve, RouterArgs},
     implementations::{
         postgres::{
+            endpoint_statistics::PostgresStatisticsSink,
             task_queues::{TabularExpirationQueue, TabularPurgeQueue},
             CatalogState, PostgresCatalog, ReadWrite,
         },
@@ -18,13 +19,14 @@ use iceberg_catalog::{
             Authorizer,
         },
         contract_verification::ContractVerifiers,
+        endpoint_statistics::{EndpointStatisticsMessage, EndpointStatisticsTracker, FlushMode},
         event_publisher::{
-            CloudEventBackend, CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
-            NatsBackend, TracingPublisher,
+            CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
+            CloudEventsPublisherBackgroundTask, NatsBackend, TracingPublisher,
         },
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
-        Catalog, StartupValidationData,
+        Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
     SecretBackend, CONFIG,
 };
@@ -312,7 +314,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
-    let (tx, rx) = tokio::sync::mpsc::channel(1000);
+    let (cloud_events_tx, cloud_events_rx) = tokio::sync::mpsc::channel(1000);
 
     let mut cloud_event_sinks = vec![];
 
@@ -334,7 +336,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     }
 
     let x: CloudEventsPublisherBackgroundTask = CloudEventsPublisherBackgroundTask {
-        source: rx,
+        source: cloud_events_rx,
         sinks: cloud_event_sinks,
     };
 
@@ -347,17 +349,31 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
                 ))
             })?;
 
+    let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
+
+    let tracker = EndpointStatisticsTracker::new(
+        endpoint_statistics_rx,
+        vec![Arc::new(PostgresStatisticsSink::new(
+            catalog_state.write_pool(),
+        ))],
+        CONFIG.endpoint_stat_flush_interval,
+        FlushMode::Automatic,
+    );
+
+    let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
+
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
         queues: queues.clone(),
-        publisher: CloudEventsPublisher::new(tx.clone()),
+        publisher: CloudEventsPublisher::new(cloud_events_tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
+        endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
     })?;
 
     #[cfg(feature = "ui")]
@@ -384,6 +400,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
             Err(e) => tracing::error!("Publisher task failed: {e}"),
         };
     });
+    let stats_handle = tokio::task::spawn(tracker.run());
 
     tokio::select!(
         _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
@@ -392,9 +409,12 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     );
 
     tracing::debug!("Sending shutdown signal to event publisher.");
-    tx.send(Message::Shutdown).await?;
+    endpoint_statistics_tracker_tx
+        .send(EndpointStatisticsMessage::Shutdown)
+        .await?;
+    cloud_events_tx.send(CloudEventsMessage::Shutdown).await?;
     publisher_handle.await?;
-
+    stats_handle.await?;
     Ok(())
 }
 
