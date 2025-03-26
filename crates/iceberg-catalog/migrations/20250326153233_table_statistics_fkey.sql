@@ -1,17 +1,15 @@
-delete
-from partition_statistics
-where (snapshot_id, table_id) not in
-      (select snapshot_id, table_id from table_snapshot where table_id = partition_statistics.table_id);
-
+DELETE FROM partition_statistics ps
+WHERE (ps.table_id, ps.snapshot_id) NOT IN (
+    SELECT table_id, snapshot_id FROM snapshots
+);
 alter table partition_statistics
     add constraint partition_statistics_table_id_snapshot_id_fkey foreign key (table_id, snapshot_id)
         references table_snapshot (table_id, snapshot_id) on delete cascade;
 
-delete
-from table_statistics
-where (snapshot_id, table_id) not in
-      (select snapshot_id, table_id from table_snapshot where table_id = table_statistics.table_id);
-
+DELETE FROM table_statistics ts
+WHERE (ts.table_id, ts.snapshot_id) NOT IN (
+    SELECT table_id, snapshot_id FROM snapshots
+);
 alter table table_statistics
     add constraint table_statistics_table_id_snapshot_id_fkey foreign key (table_id, snapshot_id)
         references table_snapshot (table_id, snapshot_id) on delete cascade;
