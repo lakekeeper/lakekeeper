@@ -1,6 +1,4 @@
 import conftest
-import pandas as pd
-import pytest
 
 
 def test_create_namespace(trino, warehouse: conftest.Warehouse):
@@ -142,8 +140,8 @@ def tets_create_view(trino, warehouse: conftest.Warehouse):
     assert r == [("a",), ("b",)]
 
 
-def test_replace_view(trino, warehouse: conftest.Warehouse):
-    ns = "tets_replace_view"
+def test_replace_view(trino):
+    ns = "test_replace_view"
     cur = trino.cursor()
     cur.execute(f"CREATE SCHEMA {ns}")
     cur.execute(
@@ -152,9 +150,7 @@ def test_replace_view(trino, warehouse: conftest.Warehouse):
     cur.execute(
         f"CREATE OR REPLACE VIEW {ns}.my_view AS SELECT strings FROM {ns}.my_table"
     )
-    assert ("my_view",) in warehouse.pyiceberg_catalog.list_tables(
-        ns
-    )
+    assert ["my_view"] in cur.execute(f"SHOW TABLES IN {ns}").fetchall()
     # Insert data and query view
     cur.execute(
         f"INSERT INTO {ns}.my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')"
