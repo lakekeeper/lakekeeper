@@ -196,7 +196,7 @@ pub struct DropParams {
     pub purge_requested: Option<bool>,
 }
 
-fn deserialize_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+pub(crate) fn deserialize_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
 where
     D: Deserializer<'de>,
 {

@@ -494,7 +494,7 @@ pub(crate) async fn set_namespace_protected(
     protect: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    sqlx::query!(
+    let affected = sqlx::query!(
         r#"
         UPDATE namespace
         SET protected = $1
@@ -508,6 +508,10 @@ pub(crate) async fn set_namespace_protected(
     .execute(&mut **transaction)
     .await
     .map_err(|e| e.into_error_model("Error setting namespace protection".to_string()))?;
+
+    if affected.rows_affected() == 0 {
+        return Err(ErrorModel::not_found("Namespace not found", "NamespaceNotFound", None).into());
+    }
 
     Ok(())
 }

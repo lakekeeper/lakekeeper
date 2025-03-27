@@ -57,8 +57,9 @@ pub mod v1 {
         catalog::CatalogServer,
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
-            SecretStore, State, TabularIdentUuid,
+            authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse,
+            NamespaceIdentUuid, RoleId, SecretStore, State, TableIdentUuid, TabularIdentUuid,
+            ViewIdentUuid,
         },
         ProjectId, WarehouseIdent,
     };
@@ -859,6 +860,11 @@ pub mod v1 {
         purge: bool,
     }
 
+    #[derive(Deserialize, Debug)]
+    struct ProtectedQuery {
+        protected: bool,
+    }
+
     #[derive(Debug, Deserialize, Serialize, utoipa::IntoParams)]
     pub struct GetWarehouseStatisticsQuery {
         /// Next page token
@@ -1076,15 +1082,14 @@ pub mod v1 {
         )
     )]
     async fn set_table_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-        Path(warehouse_id): Path<uuid::Uuid>,
-        Path(table_id): Path<uuid::Uuid>,
-        Query(protected): Query<bool>,
+        Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<StatusCode> {
         CatalogServer::<C, A, S>::set_table_protection(
+            TableIdentUuid::from(table_id),
             warehouse_id.into(),
-            table_id.into(),
             protected,
             api_context,
             metadata,
@@ -1103,15 +1108,14 @@ pub mod v1 {
         )
     )]
     async fn set_view_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-        Path(warehouse_id): Path<uuid::Uuid>,
-        Path(table_id): Path<uuid::Uuid>,
-        Query(protected): Query<bool>,
+        Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<StatusCode> {
         CatalogServer::<C, A, S>::set_view_protection(
+            ViewIdentUuid::from(view_id),
             warehouse_id.into(),
-            table_id.into(),
             protected,
             api_context,
             metadata,
@@ -1130,15 +1134,14 @@ pub mod v1 {
         )
     )]
     async fn set_namespace_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-        Path(warehouse_id): Path<uuid::Uuid>,
-        Path(namespace_uid): Path<uuid::Uuid>,
-        Query(protected): Query<bool>,
+        Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<StatusCode> {
         CatalogServer::<C, A, S>::set_namespace_protected(
+            NamespaceIdentUuid::from(namespace_id),
             warehouse_id.into(),
-            namespace_uid.into(),
             protected,
             api_context,
             metadata,
@@ -1158,7 +1161,7 @@ pub mod v1 {
     )]
     async fn set_warehouse_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
-        Query(protected): Query<bool>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<StatusCode> {

@@ -445,7 +445,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await
             .map_err(set_not_found_status_code)?;
-
+        tracing::debug!(
+            "Setting protection status for namespace: {:?} to {protected}",
+            namespace_id
+        );
         C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
         t.commit().await?;
         Ok(())
