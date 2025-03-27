@@ -225,7 +225,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                 |Path((prefix, namespace)): Path<(Prefix, NamespaceIdentUrl)>,
                  Query(flags): Query<NamespaceDropFlags>,
                  State(api_context): State<ApiContext<S>>,
-                 Extension(metadata): Extension<RequestMetadata>| async {
+                 Extension(metadata): Extension<RequestMetadata>| async move {
                     I::drop_namespace(
                         NamespaceParameters {
                             prefix: Some(prefix),

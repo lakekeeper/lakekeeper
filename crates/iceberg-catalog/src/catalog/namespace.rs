@@ -336,7 +336,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
         let namespace_id = authorized_namespace_ident_to_id::<C, _>(
             authorizer.clone(),
             &request_metadata,
@@ -348,14 +348,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
         //  ------------------- BUSINESS LOGIC -------------------
-        if !flags.recursive {
-            C::drop_namespace(warehouse_id, namespace_id, false, t.transaction()).await?;
-            authorizer
-                .delete_namespace(&request_metadata, namespace_id)
-                .await?;
-            t.commit().await?;
-            Ok(())
-        } else {
+        if flags.recursive {
             try_recursive_drop(
                 flags,
                 state,
@@ -365,6 +358,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
             )
             .await
+        } else {
+            C::drop_namespace(warehouse_id, namespace_id, false, t.transaction()).await?;
+            authorizer
+                .delete_namespace(&request_metadata, namespace_id)
+                .await?;
+            t.commit().await?;
+            Ok(())
         }
     }
 

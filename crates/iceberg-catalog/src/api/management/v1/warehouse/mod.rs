@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::{default_page_size, TabularType};
+use super::default_page_size;
 pub use crate::service::{
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
@@ -17,7 +17,7 @@ pub use crate::service::{
 };
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceDropFlags, PageToken, PaginationQuery},
+        iceberg::v1::{PageToken, PaginationQuery},
         management::v1::{
             ApiServer, DeletedTabularResponse, GetWarehouseStatisticsQuery,
             ListDeletedTabularsResponse,
@@ -27,10 +27,10 @@ use crate::{
     catalog::UnfilteredPage,
     request_metadata::RequestMetadata,
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogWarehouseAction},
+        authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         event_publisher::EventMetadata,
         secrets::SecretStore,
-        task_queue::{tabular_purge_queue::TabularPurgeInput, TaskFilter},
+        task_queue::TaskFilter,
         Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
         Transaction,
     },

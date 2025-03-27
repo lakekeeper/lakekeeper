@@ -10,7 +10,7 @@ pub mod v1 {
     use axum::{
         extract::{Path, Query, State as AxumState},
         response::{IntoResponse, Response},
-        routing::{delete, get, post},
+        routing::{get, post},
         Extension, Json, Router,
     };
     use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
@@ -100,7 +100,6 @@ pub mod v1 {
             list_roles,
             list_user,
             list_warehouses,
-            recursive_namespace_delete,
             rename_default_project,
             rename_project_by_id,
             rename_warehouse,
@@ -1099,10 +1098,6 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/statistics",
                     get(get_warehouse_statistics),
-                )
-                .route(
-                    "/warehouse/{warehouse_id}/namespace/{namespace_id}",
-                    delete(recursive_namespace_delete),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/deleted-tabulars",
