@@ -894,6 +894,43 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let _ = commit_tables_internal(prefix, request, state, request_metadata).await?;
         Ok(())
     }
+
+    async fn set_table_protection(
+        table_id: TableIdentUuid,
+        warehouse_id: WarehouseIdent,
+        protected: bool,
+        state: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        // ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                &CatalogWarehouseAction::CanUse,
+            )
+            .await?;
+        authorizer
+            .require_table_action(
+                &request_metadata,
+                Ok(Some(table_id)),
+                &CatalogTableAction::CanCommit,
+            )
+            .await
+            .map_err(set_not_found_status_code)?;
+
+        C::set_tabular_protected(
+            TabularIdentUuid::Table(*table_id),
+            protected,
+            t.transaction(),
+        )
+        .await?;
+        t.commit().await?;
+        Ok(())
+    }
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
@@ -1810,8 +1847,8 @@ pub(crate) mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    tables::TablesService as _, DataAccess, ListTablesQuery, NamespaceParameters,
-                    TableParameters,
+                    tables::TablesService as _, DataAccess, DropParams, ListTablesQuery,
+                    NamespaceParameters, TableParameters,
                 },
             },
             management::v1::warehouse::TabularDeleteProfile,
@@ -1827,6 +1864,8 @@ pub(crate) mod test {
             },
             State, UserId,
         },
+        tests::random_request_metadata,
+        WarehouseIdent,
     };
 
     #[test]
@@ -3145,5 +3184,72 @@ pub(crate) mod test {
         for (idx, i) in (7..10).enumerate() {
             assert_eq!(next_page_items[idx], format!("tab-{i}"));
         }
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_protected_table(pool: PgPool) {
+        let (ctx, _, ns_params, _) = table_test_setup(pool).await;
+        let table_ident = TableIdent {
+            namespace: ns_params.namespace.clone(),
+            name: "tab-1".to_string(),
+        };
+        let tab = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some("tab-1".to_string())),
+            DataAccess::none(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::set_table_protection(
+            tab.metadata.uuid().into(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DropParams {
+                purge_requested: None,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect_err("Table was dropped which should not be possible");
+        assert_eq!(e.error.code, StatusCode::NOT_FOUND, "{e:?}");
+
+        CatalogServer::set_table_protection(
+            tab.metadata.uuid().into(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            false,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DropParams {
+                purge_requested: None,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
     }
 }

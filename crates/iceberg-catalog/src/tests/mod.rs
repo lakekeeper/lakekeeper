@@ -16,9 +16,9 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::{NamespaceDropFlags, Service as _},
+                namespace::{NamespaceDropFlags, NamespaceService as _},
                 tables::TablesService,
-                views::Service,
+                views::ViewService,
                 DataAccess, DropParams, NamespaceParameters, TableParameters,
             },
         },

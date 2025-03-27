@@ -35,6 +35,47 @@ pub(crate) enum TabularType {
     View,
 }
 
+pub(crate) async fn set_tabular_protected(
+    tabular_id: TabularIdentUuid,
+    protected: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    tracing::debug!(
+        "Setting tabular protection for {} ({}) to {}",
+        tabular_id,
+        tabular_id.typ_str(),
+        protected
+    );
+    let _ = sqlx::query!(
+        r#"
+        UPDATE tabular
+        SET protected = $2
+        WHERE tabular_id = $1
+        RETURNING tabular_id
+        "#,
+        *tabular_id,
+        protected
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            ErrorModel::not_found(
+                format!("{} not found", tabular_id.typ_str()),
+                "NoSuchTabularError".to_string(),
+                Some(Box::new(e)),
+            )
+        } else {
+            tracing::warn!("Error setting tabular as protected: {}", e);
+            e.into_error_model(format!(
+                "Error setting {} as protected",
+                tabular_id.typ_str()
+            ))
+        }
+    })?;
+    Ok(())
+}
+
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
     warehouse_id: WarehouseIdent,
     table: &TabularIdentBorrowed<'a>,
@@ -656,7 +697,7 @@ pub(crate) async fn mark_tabular_as_deleted(
         r#"
         UPDATE tabular
         SET deleted_at = $2
-        WHERE tabular_id = $1
+        WHERE tabular_id = $1 and not protected
         RETURNING tabular_id
         "#,
         *tabular_id,
@@ -667,7 +708,7 @@ pub(crate) async fn mark_tabular_as_deleted(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found", tabular_id.typ_str()),
+                format!("{} not found or protected", tabular_id.typ_str()),
                 "NoSuchTabularError".to_string(),
                 Some(Box::new(e)),
             )
@@ -688,6 +729,7 @@ pub(crate) async fn drop_tabular(
                 WHERE tabular_id = $1
                     AND typ = $2
                     AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+                    AND NOT protected
                RETURNING fs_location, fs_protocol"#,
         *tabular_id,
         TabularType::from(tabular_id) as _
@@ -697,7 +739,7 @@ pub(crate) async fn drop_tabular(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found", tabular_id.typ_str()),
+                format!("{} not found or protected", tabular_id.typ_str()),
                 "NoSuchTabularError".to_string(),
                 Some(Box::new(e)),
             )

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE tabular\n        SET deleted_at = $2\n        WHERE tabular_id = $1\n        RETURNING tabular_id\n        ",
+  "query": "\n        UPDATE tabular\n        SET deleted_at = $2\n        WHERE tabular_id = $1 and not protected\n        RETURNING tabular_id\n        ",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "b2d3f4d4cbe8c114dd8e424a408d2ec6a4f26efd629a31cdc37f4c467f884700"
+  "hash": "7ba06b0c554938bf886d2cd37255194ca250f843338f5c1bcfc33c24a15868d7"
 }

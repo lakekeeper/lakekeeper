@@ -993,7 +993,9 @@ mod test {
         api::{
             iceberg::{
                 types::Prefix,
-                v1::{views::Service, DataAccess, DropParams, NamespaceParameters, ViewParameters},
+                v1::{
+                    views::ViewService, DataAccess, DropParams, NamespaceParameters, ViewParameters,
+                },
             },
             management::v1::{
                 warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},

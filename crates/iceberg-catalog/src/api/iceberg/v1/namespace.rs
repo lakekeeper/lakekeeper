@@ -21,6 +21,8 @@ use crate::{
         ApiContext, Result,
     },
     request_metadata::RequestMetadata,
+    service::NamespaceIdentUuid,
+    WarehouseIdent,
 };
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug)]
@@ -31,7 +33,7 @@ pub struct NamespaceDropFlags {
 }
 
 #[async_trait]
-pub trait Service<S: crate::api::ThreadSafe>
+pub trait NamespaceService<S: crate::api::ThreadSafe>
 where
     Self: Send + Sync + 'static,
 {
@@ -85,6 +87,14 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<UpdateNamespacePropertiesResponse>;
+
+    async fn set_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        warehouse_id: WarehouseIdent,
+        protected: bool,
+        state: ApiContext<S>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,7 +169,7 @@ struct RecursiveDeleteQuery {
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
+pub fn router<I: NamespaceService<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
     Router::new()
         // List Namespaces
         .route(
@@ -356,7 +366,7 @@ mod tests {
     use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
     use super::{super::*, *};
-    use crate::request_metadata::RequestMetadata;
+    use crate::{request_metadata::RequestMetadata, service::NamespaceIdentUuid, WarehouseIdent};
 
     #[tokio::test]
     async fn test_namespace_params() {
@@ -372,7 +382,7 @@ mod tests {
 
         // ToDo: Use Mock instead for impl. I couldn't get mockall to work though.
         #[async_trait]
-        impl Service<ThisState> for TestService {
+        impl NamespaceService<ThisState> for TestService {
             async fn list_namespaces(
                 prefix: Option<Prefix>,
                 query: ListNamespacesQuery,
@@ -440,6 +450,16 @@ mod tests {
             ) -> Result<UpdateNamespacePropertiesResponse> {
                 panic!("Should not be called");
             }
+
+            async fn set_namespace_protected(
+                _namespace_id: NamespaceIdentUuid,
+                _warehouse_id: WarehouseIdent,
+                _protected: bool,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> Result<()> {
+                panic!("Should not be called");
+            }
         }
 
         let api_context = ApiContext {
@@ -479,7 +499,7 @@ mod tests {
         impl crate::api::ThreadSafe for ThisState {}
 
         #[async_trait]
-        impl Service<ThisState> for TestService {
+        impl NamespaceService<ThisState> for TestService {
             async fn list_namespaces(
                 _prefix: Option<Prefix>,
                 _query: ListNamespacesQuery,
@@ -543,6 +563,16 @@ mod tests {
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> Result<UpdateNamespacePropertiesResponse> {
+                panic!("Should not be called");
+            }
+
+            async fn set_namespace_protected(
+                _namespace_id: NamespaceIdentUuid,
+                _warehouse_id: WarehouseIdent,
+                _protected: bool,
+                _state: ApiContext<ThisState>,
+                _request_metadata: RequestMetadata,
+            ) -> Result<()> {
                 panic!("Should not be called");
             }
         }

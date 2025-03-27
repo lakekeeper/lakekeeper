@@ -38,9 +38,11 @@ use crate::{
     },
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
+        namespace::set_namespace_protected,
         role::search_role,
         tabular::{
             clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
+            set_tabular_protected,
             table::{commit_table_transaction, create_table, load_storage_profile},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
@@ -641,5 +643,21 @@ impl Catalog for super::PostgresCatalog {
             &catalog_state.read_pool(),
         )
         .await
+    }
+
+    async fn set_tabular_protected(
+        tabular_id: TabularIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        set_tabular_protected(tabular_id, protect, transaction).await
+    }
+
+    async fn set_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        set_namespace_protected(namespace_id, protect, transaction).await
     }
 }

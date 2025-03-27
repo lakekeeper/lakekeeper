@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE tabular\n        SET protected = $2\n        WHERE tabular_id = $1\n        RETURNING tabular_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d85004da3a5b9354f780a6f211a406ede3c3570c2de827705e961dcc82057bd1"
+}

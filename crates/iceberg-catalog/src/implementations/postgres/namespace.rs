@@ -323,15 +323,15 @@ pub(crate) async fn drop_namespace(
     // Return 404 not found if namespace does not exist
     let record = sqlx::query!(
         r#"
-        WITH namespace_name AS (
-            SELECT namespace_name
+        WITH namespace_info AS (
+            SELECT namespace_name, protected
             FROM namespace
             WHERE warehouse_id = $1 AND namespace_id = $2
         ),
         child_namespaces AS (
             SELECT n.protected, n.namespace_id
             FROM namespace n
-            INNER JOIN namespace_name nn ON n.namespace_name[1:array_length(nn.namespace_name, 1)] = nn.namespace_name
+            INNER JOIN namespace_info ni ON n.namespace_name[1:array_length(ni.namespace_name, 1)] = ni.namespace_name
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
         ),
         tabulars AS (
@@ -341,12 +341,20 @@ pub(crate) async fn drop_namespace(
                 LEFT JOIN task t on te.task_id = t.task_id
             WHERE namespace_id = $2 OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
         ),
+        deletion_info AS (
+            SELECT
+                (SELECT protected FROM namespace_info) AS is_protected,
+                EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS has_protected_namespaces,
+                EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS has_protected_tabulars,
+                EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running') AS has_running_tasks
+        ),
         deleted AS (
             DELETE FROM namespace
             WHERE warehouse_id = $1
             -- If recursive is true, delete all child namespaces...
             AND (namespace_id = $2 OR ($3 AND namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
             -- ...but only if none are locked
+            AND NOT protected
             AND ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR ($3 AND NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true)))
             AND NOT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')
             AND (NOT EXISTS (SELECT 1 from tabulars) OR ($3 AND NOT EXISTS (SELECT 1 from tabulars WHERE protected = true)))
@@ -355,53 +363,45 @@ pub(crate) async fn drop_namespace(
             )
             RETURNING *
         )
-        SELECT 
-            count(*) AS "deleted_count!",
-            (SELECT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')) AS "tabular_has_running_expiration!",
+        SELECT
+            di.has_protected_namespaces AS "has_protected_namespaces!",
+            di.has_protected_tabulars AS "has_protected_tabulars!",
+            di.has_running_tasks AS "has_running_tasks!",
+            di.is_protected AS "is_protected!",
+            (SELECT count(*) FROM deleted) AS "deleted_count!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT tabular_id FROM tabulars) AS "child_tabulars!",
             ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
             ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT task_id FROM tabulars) AS "child_tabular_task_id!: Vec<Option<Uuid>>"
-        FROM deleted;
+        FROM deletion_info di;
         "#,
         *warehouse_id,
         *namespace_id,
         recursive
     )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| match &e {
-        sqlx::Error::RowNotFound => ErrorModel::internal(
-            format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
-            "NamespaceNotFound",
-            None,
-        ),
-        sqlx::Error::Database(db_error) => {
-            if db_error.is_foreign_key_violation() {
-                ErrorModel::builder()
-                    .code(StatusCode::CONFLICT.into())
-                    .message("Namespace is not empty".to_string())
-                    .r#type("NamespaceNotEmpty".to_string())
-                    .build()
-            } else {
-                e.into_error_model("Error deleting namespace".to_string())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_error) => {
+                if db_error.is_foreign_key_violation() {
+                    ErrorModel::builder()
+                        .code(StatusCode::CONFLICT.into())
+                        .message("Namespace is not empty".to_string())
+                        .r#type("NamespaceNotEmpty".to_string())
+                        .build()
+                } else {
+                    e.into_error_model("Error deleting namespace".to_string())
+                }
             }
-        }
-        _ => e.into_error_model("Error deleting namespace".to_string()),
-    })?;
+            _ => e.into_error_model("Error deleting namespace".to_string()),
+        })?;
 
     tracing::debug!(
         "Deleted {deleted_count} namespaces",
         deleted_count = record.deleted_count
     );
-
-    if record.tabular_has_running_expiration {
-        return Err(
-            ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
-        );
-    }
 
     if !record.child_namespaces.is_empty() && !recursive {
         return Err(
@@ -413,6 +413,27 @@ pub(crate) async fn drop_namespace(
         return Err(
             ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
         );
+    }
+
+    if record.has_running_tasks {
+        return Err(
+            ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
+        );
+    }
+
+    if record.is_protected {
+        return Err(
+            ErrorModel::conflict("Namespace is protected", "NamespaceProtected", None).into(),
+        );
+    }
+
+    if record.has_protected_tabulars || record.has_protected_namespaces {
+        return Err(ErrorModel::conflict(
+            "Namespace has protected tabulars or namespaces",
+            "NamespaceNotEmpty",
+            None,
+        )
+        .into());
     }
 
     if record.deleted_count == 0 {
@@ -452,6 +473,29 @@ pub(crate) async fn drop_namespace(
             .filter_map(|ti| ti.map(TaskId::from))
             .collect(),
     })
+}
+
+pub(crate) async fn set_namespace_protected(
+    namespace_id: NamespaceIdentUuid,
+    protect: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    sqlx::query!(
+        r#"
+        UPDATE namespace
+        SET protected = $1
+        WHERE namespace_id = $2 AND warehouse_id IN (
+            SELECT warehouse_id FROM warehouse WHERE status = 'active'
+        )
+        "#,
+        protect,
+        *namespace_id
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| e.into_error_model("Error setting namespace protection".to_string()))?;
+
+    Ok(())
 }
 
 pub(crate) async fn update_namespace_properties(
@@ -925,5 +969,29 @@ pub(crate) mod tests {
 
         assert_eq!(response.error.code, StatusCode::CONFLICT);
         assert_eq!(response.error.r#type, "NamespaceAlreadyExists");
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_protected_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+
+        let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        PostgresCatalog::set_namespace_protected(response.0, true, transaction.transaction())
+            .await
+            .unwrap();
+
+        let result = drop_namespace(warehouse_id, response.0, false, transaction.transaction())
+            .await
+            .unwrap_err();
+
+        assert_eq!(result.error.code, StatusCode::CONFLICT);
     }
 }

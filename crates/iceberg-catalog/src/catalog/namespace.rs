@@ -38,7 +38,8 @@ pub(crate) const MANAGED_ACCESS_PROPERTY: &str = "managed_access";
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
-    crate::api::iceberg::v1::namespace::Service<State<A, C, S>> for CatalogServer<C, A, S>
+    crate::api::iceberg::v1::namespace::NamespaceService<State<A, C, S>>
+    for CatalogServer<C, A, S>
 {
     async fn list_namespaces(
         prefix: Option<Prefix>,
@@ -415,6 +416,34 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         t.commit().await?;
         Ok(r)
     }
+
+    async fn set_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        warehouse_id: WarehouseIdent,
+        protected: bool,
+        state: ApiContext<State<A, C, S>>,
+        metadata: RequestMetadata,
+    ) -> Result<()> {
+        //  ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz.clone();
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+
+        authorizer
+            .require_warehouse_action(&metadata, warehouse_id, &CatalogWarehouseAction::CanUse)
+            .await?;
+        authorizer
+            .require_namespace_action(
+                &metadata,
+                Ok(Some(namespace_id)),
+                &CatalogNamespaceAction::CanUpdateProperties,
+            )
+            .await
+            .map_err(set_not_found_status_code)?;
+
+        C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
+        t.commit().await?;
+        Ok(())
+    }
 }
 
 async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
@@ -687,7 +716,10 @@ mod tests {
         api::{
             iceberg::{
                 types::{PageToken, Prefix},
-                v1::namespace::Service,
+                v1::{
+                    namespace::{NamespaceDropFlags, NamespaceService},
+                    NamespaceParameters,
+                },
             },
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
@@ -698,8 +730,11 @@ mod tests {
         },
         request_metadata::RequestMetadata,
         service::{
-            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-            ListNamespacesQuery, State, Transaction, UserId,
+            authz::{
+                implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
+                AllowAllAuthorizer,
+            },
+            ListNamespacesQuery, NamespaceIdentUuid, State, Transaction, UserId,
         },
     };
 
@@ -766,6 +801,103 @@ mod tests {
         namespaces,
         |ns| ns.inner()[0].to_string()
     );
+
+    #[sqlx::test]
+    async fn cannot_drop_protected_namespace(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::test_io_profile();
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+        let ns = CatalogServer::create_namespace(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::new("ns".to_string()),
+                properties: None,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        let ns_id = NamespaceIdentUuid::from(
+            *CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(1),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+            .namespace_uuids
+            .unwrap()
+            .first()
+            .unwrap(),
+        );
+        CatalogServer::set_namespace_protected(
+            ns_id,
+            warehouse.warehouse_id,
+            true,
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::drop_namespace(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            },
+            NamespaceDropFlags {
+                recursive: false,
+                force: false,
+                purge: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(e.error.code, http::StatusCode::CONFLICT);
+
+        CatalogServer::set_namespace_protected(
+            ns_id,
+            warehouse.warehouse_id,
+            false,
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::drop_namespace(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            },
+            NamespaceDropFlags {
+                recursive: false,
+                force: false,
+                purge: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+    }
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {

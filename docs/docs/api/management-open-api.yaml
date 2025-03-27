@@ -1668,6 +1668,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
       deprecated: true
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
+    post:
+      tags:
+      - warehouse
+      operationId: set_namespace_protection
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: namespace_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Namespace protection set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/rename:
     post:
       tags:
@@ -1806,6 +1833,60 @@ paths:
       responses:
         '200':
           description: Storage credential updated successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
+    post:
+      tags:
+      - warehouse
+      operationId: set_table_protection
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: table_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Table protection set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
+    post:
+      tags:
+      - warehouse
+      operationId: set_view_protection
+      parameters:
+      - name: warehouse_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: view_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Table protection set successfully
         4XX:
           description: ''
           content:

@@ -697,6 +697,18 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TabularDetails>>;
+
+    async fn set_tabular_protected(
+        tabular_id: TabularIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    async fn set_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

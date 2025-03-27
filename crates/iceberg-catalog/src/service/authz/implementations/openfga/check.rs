@@ -524,7 +524,7 @@ mod tests {
         use super::super::{super::relations::*, *};
         use crate::{
             api::{
-                iceberg::v1::{namespace::Service, Prefix},
+                iceberg::v1::{namespace::NamespaceService, Prefix},
                 management::v1::{
                     role::{CreateRoleRequest, Service as RoleService},
                     warehouse::{CreateWarehouseResponse, TabularDeleteProfile},

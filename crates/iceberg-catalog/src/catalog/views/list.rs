@@ -84,7 +84,7 @@ mod test {
         api::{
             iceberg::{
                 types::{PageToken, Prefix},
-                v1::{views::Service, DataAccess, ListTablesQuery, NamespaceParameters},
+                v1::{views::ViewService, DataAccess, ListTablesQuery, NamespaceParameters},
             },
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,

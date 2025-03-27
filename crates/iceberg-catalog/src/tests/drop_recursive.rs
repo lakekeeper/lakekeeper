@@ -19,14 +19,17 @@ mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    namespace::{NamespaceDropFlags, Service},
+                    namespace::{NamespaceDropFlags, NamespaceService},
                     tables::TablesService,
+                    views::ViewService,
                     ListTablesQuery, NamespaceParameters,
                 },
             },
             management::v1::warehouse::TabularDeleteProfile,
+            RequestMetadata,
         },
         catalog::CatalogServer,
+        service::{ListNamespacesQuery, NamespaceIdentUuid, TableIdentUuid},
         tests::{create_ns, drop_recursive::setup_drop_test, random_request_metadata},
     };
 
@@ -249,6 +252,275 @@ mod test {
             .unwrap_err();
         assert_eq!(e.error.code, 404);
     }
+
+    #[sqlx::test]
+    async fn test_cannot_recursive_drop_namespace_with_protected_view(pool: PgPool) {
+        let setup = setup_drop_test(
+            pool,
+            1,
+            1,
+            1,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(10),
+            },
+        )
+        .await;
+        let ctx = setup.ctx;
+        let warehouse = setup.warehouse;
+        let prefix = warehouse.warehouse_id.to_string();
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new("ns0".to_string()),
+        };
+        let views = CatalogServer::list_views(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        CatalogServer::set_view_protection(
+            (*views.table_uuids.clone().unwrap().first().unwrap()).into(),
+            warehouse.warehouse_id,
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let e = super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 409, "{}", e.error);
+
+        CatalogServer::set_view_protection(
+            (*views.table_uuids.as_deref().unwrap().first().unwrap()).into(),
+            warehouse.warehouse_id,
+            false,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::namespace_exists(ns_params, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, 404);
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_recursive_drop_namespace_with_protected_namespace(pool: PgPool) {
+        let setup = setup_drop_test(
+            pool,
+            1,
+            1,
+            1,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(10),
+            },
+        )
+        .await;
+        let ctx = setup.ctx;
+        let warehouse = setup.warehouse;
+        let prefix = warehouse.warehouse_id.to_string();
+        let root_ns = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new("ns0".to_string()),
+        };
+
+        let _ = CatalogServer::create_namespace(
+            Some(Prefix(prefix.clone())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::from_vec(vec!["ns0".to_string(), "ns1".to_string()])
+                    .unwrap(),
+                properties: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let ns_id = NamespaceIdentUuid::from(
+            *CatalogServer::list_namespaces(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                ListNamespacesQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(1),
+                    parent: None,
+                    return_uuids: true,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap()
+            .namespace_uuids
+            .unwrap()
+            .first()
+            .unwrap(),
+        );
+
+        CatalogServer::set_namespace_protected(
+            ns_id,
+            warehouse.warehouse_id,
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let e = super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            root_ns.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 409, "{}", e.error);
+
+        CatalogServer::set_namespace_protected(
+            ns_id,
+            warehouse.warehouse_id,
+            false,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            root_ns.clone(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::namespace_exists(root_ns, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, 404);
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_recursive_drop_namespace_with_protected_table(pool: PgPool) {
+        let setup = setup_drop_test(
+            pool,
+            1,
+            1,
+            1,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(10),
+            },
+        )
+        .await;
+        let ctx = setup.ctx;
+        let warehouse = setup.warehouse;
+        let prefix = warehouse.warehouse_id.to_string();
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new("ns0".to_string()),
+        };
+        let tables = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                return_uuids: true,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::set_table_protection(
+            TableIdentUuid::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
+            warehouse.warehouse_id,
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let e = super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 409, "{}", e.error);
+
+        CatalogServer::set_table_protection(
+            TableIdentUuid::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
+            warehouse.warehouse_id,
+            false,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::namespace_exists(ns_params, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, 404);
+    }
 }
 
 struct DropSetup {
@@ -267,7 +539,7 @@ async fn setup_drop_test(
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
+                .with_default_directive(LevelFilter::DEBUG.into())
                 .from_env_lossy(),
         )
         .try_init()

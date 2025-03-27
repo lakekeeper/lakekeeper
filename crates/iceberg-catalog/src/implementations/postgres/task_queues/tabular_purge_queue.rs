@@ -137,7 +137,7 @@ impl TaskQueue for TabularPurgeQueue {
             tracing::debug!("Queued purge task: {:?}", q.task_id);
         }
 
-        let r = sqlx::query!(
+        sqlx::query!(
             r#"WITH input_rows AS (
     SELECT unnest($1::uuid[]) as task_ids,
            unnest($2::uuid[]) as tabular_ids,
