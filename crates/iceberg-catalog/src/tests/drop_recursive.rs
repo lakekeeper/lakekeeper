@@ -10,11 +10,16 @@ use crate::{
 };
 
 mod test {
-    use crate::api::iceberg::types::{PageToken, Prefix};
-    use crate::api::iceberg::v1::{ListTablesQuery, NamespaceParameters};
-    use crate::tests::drop_recursive::setup_drop_test;
     use iceberg::NamespaceIdent;
     use sqlx::PgPool;
+
+    use crate::{
+        api::iceberg::{
+            types::{PageToken, Prefix},
+            v1::{ListTablesQuery, NamespaceParameters},
+        },
+        tests::drop_recursive::setup_drop_test,
+    };
 
     #[sqlx::test]
     async fn test_recursive_drop_drops(pool: PgPool) {

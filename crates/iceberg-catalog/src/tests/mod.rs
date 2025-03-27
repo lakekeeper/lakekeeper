@@ -12,16 +12,15 @@ use iceberg_ext::catalog::rest::{
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::api::iceberg::v1::namespace::NamespaceDropFlags;
-use crate::api::iceberg::v1::ListTablesQuery;
-use crate::service::{Catalog, SecretStore};
 use crate::{
     api::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::Service as _, tables::TablesService, views::Service, DataAccess,
-                DropParams, NamespaceParameters, TableParameters,
+                namespace::{NamespaceDropFlags, Service as _},
+                tables::TablesService,
+                views::Service,
+                DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
@@ -46,7 +45,7 @@ use crate::{
             StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
-        State, UserId,
+        Catalog, SecretStore, State, UserId,
     },
     WarehouseIdent, CONFIG,
 };
