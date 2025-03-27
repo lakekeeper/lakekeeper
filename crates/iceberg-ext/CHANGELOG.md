@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.5](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.7.5) (2025-03-27)
+
+
+### Bug Fixes
+
+* Don't serialize empty storage credentials ([#931](https://github.com/lakekeeper/lakekeeper/issues/931)) ([37fbe83](https://github.com/lakekeeper/lakekeeper/commit/37fbe83e8b88761c3f403dd03b3d85c89cf69f10))
+
 ## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
 
 
