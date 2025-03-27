@@ -117,6 +117,7 @@ pub mod v1 {
             set_namespace_protection,
             set_table_protection,
             set_view_protection,
+            set_warehouse_protection,
             undrop_tabulars,
             undrop_tabulars_deprecated,
             update_role,
@@ -1146,6 +1147,31 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/protection",
+        responses(
+            (status = 204, description = "Warehouse protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn set_warehouse_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Query(protected): Query<bool>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::set_warehouse_protection(
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     #[derive(Debug, Serialize, utoipa::ToSchema)]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
@@ -1305,6 +1331,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
                     post(set_namespace_protection),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/protection",
+                    post(set_warehouse_protection),
                 )
                 .merge(authorizer.new_router())
         }

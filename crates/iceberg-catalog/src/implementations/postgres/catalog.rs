@@ -47,7 +47,7 @@ use crate::{
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
-        warehouse::get_warehouse_stats,
+        warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     request_metadata::RequestMetadata,
     service::{
@@ -659,5 +659,13 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         set_namespace_protected(namespace_id, protect, transaction).await
+    }
+
+    async fn set_warehouse_protected(
+        warehouse_id: WarehouseIdent,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 }

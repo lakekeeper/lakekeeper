@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE warehouse\n            SET protected = $1\n            WHERE warehouse_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "258923a473e915c9717c85b71067a601e726582cf4433347492259cbf056c060"
+}

@@ -442,7 +442,7 @@ pub(crate) async fn delete_warehouse(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     let row_count = sqlx::query_scalar!(
-        r#"DELETE FROM warehouse WHERE warehouse_id = $1"#,
+        r#"DELETE FROM warehouse WHERE warehouse_id = $1 AND not protected"#,
         *warehouse_id
     )
     .execute(&mut **transaction)
@@ -464,7 +464,12 @@ pub(crate) async fn delete_warehouse(
     .rows_affected();
 
     if row_count == 0 {
-        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
+        return Err(ErrorModel::not_found(
+            "Warehouse not found or protected",
+            "WarehouseNotFound",
+            None,
+        )
+        .into());
     }
 
     Ok(())
@@ -510,6 +515,30 @@ pub(crate) async fn set_warehouse_status(
     .execute(&mut **transaction)
     .await
     .map_err(|e| e.into_error_model("Error setting warehouse status"))?
+    .rows_affected();
+
+    if row_count == 0 {
+        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn set_warehouse_protection(
+    warehouse_id: WarehouseIdent,
+    protected: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    let row_count = sqlx::query!(
+        "UPDATE warehouse
+            SET protected = $1
+            WHERE warehouse_id = $2",
+        protected,
+        *warehouse_id
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| e.into_error_model("Error setting warehouse protection"))?
     .rows_affected();
 
     if row_count == 0 {
@@ -924,6 +953,32 @@ pub(crate) mod test {
                 .unwrap_err();
         assert_eq!(err.error.code, StatusCode::CONFLICT);
         t.commit().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_protected_warehouse(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let warehouse_id =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+        let mut trx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        set_warehouse_protection(warehouse_id, true, &mut trx.transaction())
+            .await
+            .unwrap();
+        let e = delete_warehouse(warehouse_id, &mut trx.transaction())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, StatusCode::NOT_FOUND);
+        set_warehouse_protection(warehouse_id, false, &mut trx.transaction())
+            .await
+            .unwrap();
+        delete_warehouse(warehouse_id, &mut trx.transaction())
+            .await
+            .unwrap();
+
+        trx.commit().await.unwrap();
     }
 
     #[sqlx::test]
