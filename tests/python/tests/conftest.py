@@ -113,8 +113,8 @@ def storage_config(request) -> dict:
             pytest.skip("LAKEKEEPER_TEST__S3_BUCKET is not set")
 
         if (
-            settings.s3_path_style_access is not None
-            and settings.s3_path_style_access != ""
+                settings.s3_path_style_access is not None
+                and settings.s3_path_style_access != ""
         ):
             path_style_access = string_to_bool(settings.s3_path_style_access)
         else:
@@ -150,8 +150,8 @@ def storage_config(request) -> dict:
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
 
         if (
-            settings.s3_path_style_access is not None
-            and settings.s3_path_style_access != ""
+                settings.s3_path_style_access is not None
+                and settings.s3_path_style_access != ""
         ):
             path_style_access = string_to_bool(settings.s3_path_style_access)
         else:
@@ -183,13 +183,13 @@ def storage_config(request) -> dict:
         }
     elif request.param["type"] == "azure":
         if (
-            settings.azure_storage_account_name is None
-            or settings.azure_storage_account_name == ""
+                settings.azure_storage_account_name is None
+                or settings.azure_storage_account_name == ""
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME is not set")
         if (
-            settings.azure_storage_filesystem is None
-            or settings.azure_storage_filesystem == ""
+                settings.azure_storage_filesystem is None
+                or settings.azure_storage_filesystem == ""
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM is not set")
 
@@ -283,7 +283,7 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-        self, name: str, project_id: uuid.UUID, storage_config: dict
+            self, name: str, project_id: uuid.UUID, storage_config: dict
     ) -> uuid.UUID:
         """Create a warehouse in this server"""
 
@@ -512,8 +512,8 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.token_endpoint}",
     }
     if (
-        storage_config["storage-profile"]["type"] == "s3"
-        and storage_config["storage-profile"]["sts-enabled"]
+            storage_config["storage-profile"]["type"] == "s3"
+            and storage_config["storage-profile"]["sts-enabled"]
     ):
         configuration[
             f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"
@@ -589,7 +589,8 @@ def trino(warehouse: Warehouse, storage_config, trino_token):
             "iceberg.rest-catalog.oauth2.scope" = '{settings.openid_scope}',
             "iceberg.rest-catalog.oauth2.server-uri" = '{settings.token_endpoint}',
             "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
-            "iceberg.rest-catalog.vended-credentials-enabled" = 'true'
+            "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
+            "iceberg.unique-table-location" = 'true'
             {extra_config}
         )
     """

@@ -1,5 +1,8 @@
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
-use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
+use iceberg_ext::{
+    catalog::{rest::ViewUpdate, ViewRequirement},
+    configs::Location,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -9,7 +12,7 @@ use crate::{
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::write_metadata_file,
+        io::{remove_all, write_metadata_file},
         require_warehouse_id,
         tables::{
             determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
@@ -95,7 +98,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         metadata_location: before_update_metadata_location,
         metadata: before_update_metadata,
     } = C::load_view(view_id, false, t.transaction()).await?;
-    let view_location = parse_view_location(before_update_metadata.location())?;
+    let before_update_view_location = parse_view_location(before_update_metadata.location())?;
     let before_update_metadata_location = parse_view_location(&before_update_metadata_location)?;
 
     state
@@ -108,14 +111,23 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     // serialize body before moving it
     let body = maybe_body_to_json(&request);
 
-    let requested_update_metadata = build_new_metadata(request, before_update_metadata)?;
+    let (requested_update_metadata, delete_old_location) = build_new_metadata(
+        request,
+        before_update_metadata,
+        &before_update_view_location,
+    )?;
 
+    let view_location = parse_view_location(requested_update_metadata.location())?;
     let metadata_location = storage_profile.default_metadata_location(
         &view_location,
         &CompressionCodec::try_from_properties(requested_update_metadata.properties())?,
         Uuid::now_v7(),
         extract_count_from_metadata_location(&before_update_metadata_location).map_or(0, |v| v + 1),
     );
+
+    if delete_old_location.is_some() {
+        storage_profile.require_allowed_location(&view_location)?;
+    }
 
     C::update_view_metadata(
         namespace_id,
@@ -168,6 +180,17 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         )
         .await?;
     t.commit().await?;
+
+    if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
+        // we discard the error since the operation went through and leaving a stale metadata file
+        // seems acceptable, returning errors here will simply prompt a retry which means another
+        // commit will be attempted that would still not clean this left-behind file up.
+        tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
+        let _ = remove_all(&file_io, before_update_view_location)
+            .await
+            .inspect(|()| tracing::trace!("Deleted old view location"))
+            .inspect_err(|e| tracing::error!("Failed to delete old view location: {e:?}"));
+    }
 
     let _ = state
         .v1_state
@@ -223,13 +246,17 @@ fn check_asserts(
     Ok(())
 }
 
+struct DeleteLocation<'c>(&'c Location);
+
 fn build_new_metadata(
     request: CommitViewRequest,
     before_update_metadata: ViewMetadata,
-) -> Result<ViewMetadata> {
+    before_location: &Location,
+) -> Result<(ViewMetadata, Option<DeleteLocation<'_>>)> {
     let previous_location = before_update_metadata.location().to_string();
-    let mut m = ViewMetadataBuilder::new_from_metadata(before_update_metadata);
 
+    let mut m = ViewMetadataBuilder::new_from_metadata(before_update_metadata);
+    let mut delete_old_location = None;
     for upd in request.updates {
         m = match upd {
             ViewUpdate::AssignUuid { .. } => {
@@ -241,15 +268,10 @@ fn build_new_metadata(
                 .into());
             }
             ViewUpdate::SetLocation { location } => {
-                if previous_location != location {
-                    return Err(ErrorModel::bad_request(
-                        "Setting location for views is not supported",
-                        "SetLocationNotSupported",
-                        None,
-                    )
-                    .into());
+                if location != previous_location {
+                    delete_old_location = Some(DeleteLocation(before_location));
                 }
-                m
+                m.set_location(location)
             }
 
             ViewUpdate::UpgradeFormatVersion { format_version } => match format_version {
@@ -295,7 +317,7 @@ fn build_new_metadata(
             Some(Box::new(e)),
         )
     })?;
-    Ok(requested_update_metadata.metadata)
+    Ok((requested_update_metadata.metadata, delete_old_location))
 }
 
 #[cfg(test)]
