@@ -50,6 +50,7 @@ nav:
       - Release Notes: about/release-notes.md
       - License: about/license.md
       - Code of Conduct: about/code-of-conduct.md
+      - Logos: about/logos.md
 
 markdown_extensions:
   - toc:

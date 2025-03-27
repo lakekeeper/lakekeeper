@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH ns_id AS (\n                SELECT namespace_id\n                FROM namespace\n                WHERE warehouse_id = $2 AND namespace_name = $3\n            )\n            UPDATE tabular ti\n            SET name = $1, namespace_id = ns_id.namespace_id\n            FROM ns_id\n            WHERE tabular_id = $4 AND typ = $5 AND metadata_location IS NOT NULL\n                AND ti.name = $6\n                AND ti.deleted_at IS NULL\n                AND ns_id.namespace_id IS NOT NULL\n                AND $2 IN (\n                    SELECT warehouse_id FROM warehouse WHERE status = 'active'\n                )\n            RETURNING tabular_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "TextArray",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7a7f0fd559a39693588da60cca2f7695a96022cb6fe5b2e54bb380b5861d5f13"
+}

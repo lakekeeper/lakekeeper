@@ -1,6 +1,8 @@
+use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 pub use crate::service::{
     storage::{
@@ -14,7 +16,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{
-            Authorizer, CatalogProjectAction, CatalogServerAction,
+            Authorizer, CatalogProjectAction, CatalogServerAction, CatalogWarehouseAction,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
         secrets::SecretStore,
@@ -226,6 +228,160 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 .collect(),
         })
     }
+
+    async fn get_endpoint_statistics(
+        context: ApiContext<State<A, C, S>>,
+        request: GetEndpointStatisticsRequest,
+        request_metadata: RequestMetadata,
+    ) -> Result<EndpointStatisticsResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+        let authorizer = context.v1_state.authz;
+
+        match request.warehouse {
+            WarehouseFilter::WarehouseId { id } => {
+                authorizer
+                    .require_warehouse_action(
+                        &request_metadata,
+                        id.into(),
+                        &CatalogWarehouseAction::CanGetMetadata,
+                    )
+                    .await?;
+            }
+            WarehouseFilter::All | WarehouseFilter::Unmapped => {
+                authorizer
+                    .require_project_action(
+                        &request_metadata,
+                        &project_id,
+                        &CatalogProjectAction::CanGetMetadata,
+                    )
+                    .await?;
+            }
+        }
+
+        C::get_endpoint_statistics(
+            project_id,
+            request.warehouse,
+            request
+                .range_specifier
+                .unwrap_or(TimeWindowSelector::Window {
+                    end: Utc::now(),
+                    interval: chrono::Duration::days(1),
+                }),
+            request.status_codes.as_deref(),
+            context.v1_state.catalog,
+        )
+        .await
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, ToSchema)]
+pub struct EndpointStatistic {
+    /// Number of requests to this endpoint for the current time-slice.
+    pub count: i64,
+    /// The route of the endpoint.
+    ///
+    /// Format: `METHOD /path/to/endpoint`
+    pub http_route: String,
+    /// The status code of the response.
+    pub status_code: u16,
+    /// The ID of the warehouse that handled the request.
+    ///
+    /// Only present for requests that could be associated with a warehouse. Some management
+    /// endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
+    /// will not have a `warehouse_id`.
+    pub warehouse_id: Option<Uuid>,
+    /// The name of the warehouse that handled the request.
+    ///
+    /// Only present for requests that could be associated with a warehouse. Some management
+    /// endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
+    /// will not have a `warehouse_id`
+    pub warehouse_name: Option<String>,
+    /// Timestamp at which the datapoint was created in the database.
+    ///
+    /// This is the exact time at which the current endpoint-status-warehouse combination was called
+    /// for the first time in the current time-slice.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Timestamp at which the datapoint was last updated.
+    ///
+    /// This is the exact time at which the current datapoint was last updated.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, ToSchema)]
+pub struct EndpointStatisticsResponse {
+    /// Array of timestamps indicating the time at which each entry in the `called_endpoints` array
+    /// is valid.
+    ///
+    /// We lazily create a new statistics entry every hour, in between hours, the existing entry
+    /// is being updated. If any endpoint is called in the following hour, there'll be an entry in
+    /// `timestamps` for the following hour. If not, then there'll be no entry.
+    pub timestamps: Vec<chrono::DateTime<chrono::Utc>>,
+    /// Array of arrays of statistics detailing each called endpoint for each `timestamp`.
+    ///
+    /// See docs of `timestamps` for more details.
+    pub called_endpoints: Vec<Vec<EndpointStatistic>>,
+    /// Token to get the previous page of results.
+    ///
+    /// Endpoint statistics are not paginated through page-limits, we paginate them by stepping
+    /// through time. By default, the list-statistics endpoint will return all statistics for
+    /// `now()` - 1 day to `now()`. In the request, you can specify a `range_specifier` to set the end
+    /// date and step interval. The `previous_page_token` will then move to the neighboring window.
+    /// E.g. in the default case of `now()` and 1 day, it'd be `now()` - 2 days to `now()` - 1 day.
+    pub previous_page_token: String,
+    /// Token to get the next page of results.
+    ///
+    /// Inverse of `previous_page_token`, see its documentation above.
+    pub next_page_token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum TimeWindowSelector {
+    Window {
+        /// End timestamp of the time window
+        end: chrono::DateTime<chrono::Utc>,
+        /// Duration/span of the time window
+        ///
+        /// The effective time range = `window_end` - `window_duration` to `end`
+        interval: chrono::Duration,
+    },
+    PageToken {
+        /// Opaque Token from previous response for paginating through time windows
+        ///
+        /// Use the `next_page_token` or `previous_page_token` from a previous response
+        token: String,
+    },
+}
+
+#[derive(Deserialize, ToSchema, Debug)]
+pub struct GetEndpointStatisticsRequest {
+    /// Warehouse filter
+    ///
+    /// Can return statistics for a specific warehouse, all warehouses or requests that could not be
+    /// associated to any warehouse.
+    pub warehouse: WarehouseFilter,
+    /// Status code filter
+    ///
+    /// Optional filter to only return statistics for requests with specific status codes.
+    pub status_codes: Option<Vec<u16>>,
+    /// Range specifier
+    ///
+    /// Either for a explicit range or a page token to paginate through the results. See the docs of
+    /// `RangeSpecifier` for more details.
+    pub range_specifier: Option<TimeWindowSelector>,
+}
+
+#[derive(Deserialize, Serialize, ToSchema, Debug)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum WarehouseFilter {
+    /// Filter for a specific warehouse
+    WarehouseId { id: Uuid },
+    /// Filter for requests that could not be associated with any warehouse, e.g. some management
+    /// endpoints
+    Unmapped,
+    /// Do not filter by warehouse and return all statistics for all warehouses and unmapped requests
+    /// for the current project.
+    All,
 }
 
 impl axum::response::IntoResponse for ListProjectsResponse {
@@ -253,4 +409,23 @@ fn validate_project_name(project_name: &str) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use uuid::Uuid;
+
+    use crate::api::management::v1::project::WarehouseFilter;
+
+    #[test]
+    fn test_deserialize_warehouse_filter() {
+        let js = serde_json::json!({"type": "warehouse-id","id": Uuid::new_v4().to_string()});
+        let _ = serde_json::from_value::<WarehouseFilter>(js).unwrap();
+
+        let js = serde_json::json!({"type": "unmapped"});
+        let _ = serde_json::from_value::<WarehouseFilter>(js).unwrap();
+
+        let js = serde_json::json!({"type": "all"});
+        let _ = serde_json::from_value::<WarehouseFilter>(js).unwrap();
+    }
 }

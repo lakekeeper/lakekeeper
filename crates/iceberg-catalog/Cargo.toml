@@ -52,6 +52,7 @@ http = { workspace = true }
 http-body-util = { version = "~0.1" }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
+iso8601 = { workspace = true }
 itertools = { workspace = true }
 jsonwebtoken = "9.3.0"
 jwks_client_rs = { workspace = true }
@@ -106,4 +107,6 @@ serde_urlencoded = "0.7.1"
 similar = { workspace = true }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tracing-test = "0.2.5"
+

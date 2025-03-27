@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT true as \"exists!\", project_id\n               FROM project\n               WHERE project_id = ANY($1::text[])",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "5bdeb64b6e903d29cb916d8503d7fab61f49359c1e0c79cfe1b380dfbe9e16b2"
+}

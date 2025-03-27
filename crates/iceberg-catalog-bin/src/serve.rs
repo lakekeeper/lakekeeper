@@ -7,6 +7,7 @@ use iceberg_catalog::{
     api::router::{new_full_router, serve as service_serve, RouterArgs},
     implementations::{
         postgres::{
+            endpoint_statistics::PostgresStatisticsSink,
             task_queues::{TabularExpirationQueue, TabularPurgeQueue},
             CatalogState, PostgresCatalog, ReadWrite,
         },
@@ -18,13 +19,14 @@ use iceberg_catalog::{
             Authorizer,
         },
         contract_verification::ContractVerifiers,
+        endpoint_statistics::{EndpointStatisticsMessage, EndpointStatisticsTracker, FlushMode},
         event_publisher::{
-            CloudEventBackend, CloudEventsPublisher, CloudEventsPublisherBackgroundTask, Message,
-            NatsBackend, TracingPublisher,
+            CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
+            CloudEventsPublisherBackgroundTask, NatsBackend, TracingPublisher,
         },
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
-        Catalog, StartupValidationData,
+        Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
     SecretBackend, CONFIG,
 };
@@ -157,7 +159,7 @@ async fn serve_with_authn<A: Authorizer>(
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
-    let authn_k8s = if CONFIG.enable_kubernetes_authentication {
+    let authn_k8s_audience = if CONFIG.enable_kubernetes_authentication {
         Some(
             limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
                 Some(K8S_IDP_ID),
@@ -170,6 +172,27 @@ async fn serve_with_authn<A: Authorizer>(
             .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))
             .inspect(|v| tracing::info!("K8s authorizer created {:?}", v))?,
         )
+    } else {
+        tracing::info!("Running without Kubernetes authentication.");
+        None
+    };
+    let authn_k8s_legacy = if CONFIG.enable_kubernetes_authentication
+        && CONFIG.kubernetes_authentication_accept_legacy_serviceaccount
+    {
+        let mut authenticator =
+            limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
+                Some(K8S_IDP_ID),
+                vec![],
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))?;
+        authenticator.set_issuers(vec!["kubernetes/serviceaccount".to_string()]);
+        tracing::info!(
+            "K8s authorizer for legacy service account tokens created {:?}",
+            authenticator
+        );
+
+        Some(authenticator)
     } else {
         tracing::info!("Running without Kubernetes authentication.");
         None
@@ -214,17 +237,15 @@ async fn serve_with_authn<A: Authorizer>(
         None
     };
 
-    if authn_k8s.is_none() && authn_oidc.is_none() {
-        tracing::warn!("Authentication is disabled. This is not suitable for production!");
-    }
-
-    let authn_k8s = authn_k8s.map(AuthenticatorEnum::from);
+    let authn_k8s = authn_k8s_audience.map(AuthenticatorEnum::from);
+    let authn_k8s_legacy = authn_k8s_legacy.map(AuthenticatorEnum::from);
     let authn_oidc = authn_oidc.map(AuthenticatorEnum::from);
-    match (authn_k8s, authn_oidc) {
-        (Some(k8s), Some(oidc)) => {
+    match (authn_k8s, authn_oidc, authn_k8s_legacy) {
+        (Some(k8s), Some(oidc), Some(authn_k8s_legacy)) => {
             let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
                 .add_authenticator(oidc)
                 .add_authenticator(k8s)
+                .add_authenticator(authn_k8s_legacy)
                 .build();
             serve_inner(
                 authorizer,
@@ -237,7 +258,25 @@ async fn serve_with_authn<A: Authorizer>(
             )
             .await
         }
-        (Some(auth), None) | (None, Some(auth)) => {
+        (None, Some(auth1), Some(auth2))
+        | (Some(auth1), None, Some(auth2))
+        | (Some(auth1), Some(auth2), None) => {
+            let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
+                .add_authenticator(auth1)
+                .add_authenticator(auth2)
+                .build();
+            serve_inner(
+                authorizer,
+                Some(authenticator),
+                catalog_state,
+                secrets_state,
+                queues,
+                health_provider,
+                listener,
+            )
+            .await
+        }
+        (Some(auth), None, None) | (None, Some(auth), None) | (None, None, Some(auth)) => {
             serve_inner(
                 authorizer,
                 Some(auth),
@@ -249,7 +288,8 @@ async fn serve_with_authn<A: Authorizer>(
             )
             .await
         }
-        (None, None) => {
+        (None, None, None) => {
+            tracing::warn!("Authentication is disabled. This is not suitable for production!");
             serve_inner(
                 authorizer,
                 None::<AuthenticatorEnum>,
@@ -274,7 +314,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
-    let (tx, rx) = tokio::sync::mpsc::channel(1000);
+    let (cloud_events_tx, cloud_events_rx) = tokio::sync::mpsc::channel(1000);
 
     let mut cloud_event_sinks = vec![];
 
@@ -296,7 +336,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     }
 
     let x: CloudEventsPublisherBackgroundTask = CloudEventsPublisherBackgroundTask {
-        source: rx,
+        source: cloud_events_rx,
         sinks: cloud_event_sinks,
     };
 
@@ -309,17 +349,31 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
                 ))
             })?;
 
+    let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
+
+    let tracker = EndpointStatisticsTracker::new(
+        endpoint_statistics_rx,
+        vec![Arc::new(PostgresStatisticsSink::new(
+            catalog_state.write_pool(),
+        ))],
+        CONFIG.endpoint_stat_flush_interval,
+        FlushMode::Automatic,
+    );
+
+    let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
+
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
         queues: queues.clone(),
-        publisher: CloudEventsPublisher::new(tx.clone()),
+        publisher: CloudEventsPublisher::new(cloud_events_tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
+        endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
     })?;
 
     #[cfg(feature = "ui")]
@@ -346,6 +400,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
             Err(e) => tracing::error!("Publisher task failed: {e}"),
         };
     });
+    let stats_handle = tokio::task::spawn(tracker.run());
 
     tokio::select!(
         _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
@@ -354,9 +409,12 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     );
 
     tracing::debug!("Sending shutdown signal to event publisher.");
-    tx.send(Message::Shutdown).await?;
+    endpoint_statistics_tracker_tx
+        .send(EndpointStatisticsMessage::Shutdown)
+        .await?;
+    cloud_events_tx.send(CloudEventsMessage::Shutdown).await?;
     publisher_handle.await?;
-
+    stats_handle.await?;
     Ok(())
 }
 

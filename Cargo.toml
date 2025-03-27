@@ -53,9 +53,9 @@ reqwest = { version = "^0.12", default-features = false, features = [
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "7ca94329", features = [
     "storage-all",
 ] }
+iso8601 = "0.6.2"
 openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "2623173bab4f9c59b70f599dbc80bd4fe344e1ed" }
 typed-builder = "^0.20.0"
-strum_macros = "^0.27.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
@@ -84,7 +84,8 @@ kube = { version = "0.98", default-features = false, features = [
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 moka = { version = "^0.12", features = ["sync"] }
 percent-encoding = "2.3.1"
-strum = { version = "^0.27.0", features = ["derive"] }
+strum = { version = "0.27.0", features = ["derive"] }
+strum_macros = "0.27.0"
 sqlx = { version = "^0.8.2", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -130,5 +131,5 @@ pretty_assertions = "~1.4"
 similar = "2.6.0"
 assert-json-diff = "2.0.2"
 maplit = "1.0.2"
-limes = { version = "0.1.4", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { version = "0.2.0", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }

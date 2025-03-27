@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 pub mod types;
 
 pub mod v1 {
@@ -204,35 +206,15 @@ pub mod v1 {
     }
 }
 
-pub(crate) fn supported_endpoints() -> Vec<String> {
-    vec![
-        "GET /v1/config".into(),
-        "GET /v1/{prefix}/namespaces".into(),
-        "POST /v1/{prefix}/namespaces".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/properties".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials".into(),
-        "POST /v1/{prefix}/tables/rename".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/register".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics".into(),
-        "POST /v1/{prefix}/tables/rename".into(),
-        "POST /v1/{prefix}/transactions/commit".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/views".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/views".into(),
-        "GET /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "POST /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}".into(),
-        "POST /v1/{prefix}/views/rename".into(),
-    ]
+static SUPPORTED_ENDPOINTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    crate::api::endpoints::Endpoints::catalog()
+        .iter()
+        .map(|s| s.as_http_route().replace(" /catalog/", " /"))
+        .collect()
+});
+
+pub(crate) fn supported_endpoints() -> &'static [String] {
+    &SUPPORTED_ENDPOINTS
 }
 
 #[cfg(test)]
@@ -240,6 +222,32 @@ mod test {
     use uuid::Uuid;
 
     use crate::api::iceberg::v1::PaginatedMapping;
+
+    #[test]
+    fn test_supported_endpoints() {
+        let openapi = include_str!("../../../../../docs/docs/api/rest-catalog-open-api.yaml");
+        let s: serde_json::Value = serde_yml::from_str(openapi).unwrap();
+        let paths = s["paths"].as_object().unwrap();
+        let unsupported = &[
+            "/v1/oauth/tokens",
+            "/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan",
+            "/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}",
+            "/v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks",
+        ];
+        paths
+            .into_iter()
+            .filter(|(path, _)| !unsupported.contains(&path.as_str()))
+            .for_each(|(path, vals)| {
+                let methods = vals.as_object().unwrap();
+                methods
+                    .keys()
+                    .filter(|m| *m != "parameters")
+                    .for_each(|method| {
+                        let route = format!("{} {}", method.to_uppercase(), path);
+                        assert!(super::supported_endpoints().contains(&route), "{route}");
+                    });
+            });
+    }
 
     #[test]
     fn iteration_with_page_token_is_in_insertion_order() {

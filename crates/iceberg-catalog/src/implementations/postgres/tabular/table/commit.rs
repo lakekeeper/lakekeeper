@@ -185,9 +185,7 @@ async fn handle_atomic_updates(
         snapshot_refs,
         properties,
     } = table_updates;
-    if !&diffs.removed_schemas.is_empty() {
-        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
-    }
+    // no dependencies
     if !diffs.added_schemas.is_empty() {
         common::insert_schemas(
             diffs
@@ -202,19 +200,12 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // must run after insert_schemas
     if let Some(schema_id) = diffs.new_current_schema_id {
         common::set_current_schema(schema_id, transaction, new_metadata.uuid()).await?;
     }
 
-    if !diffs.removed_partition_specs.is_empty() {
-        common::remove_partition_specs(
-            new_metadata.uuid(),
-            diffs.removed_partition_specs,
-            transaction,
-        )
-        .await?;
-    }
-
+    // No dependencies technically, could depend on columns in schema, so run after set_current_schema
     if !diffs.added_partition_specs.is_empty() {
         common::insert_partition_specs(
             diffs
@@ -229,16 +220,13 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_partition_specs
     if let Some(default_spec_id) = diffs.default_partition_spec_id {
         common::set_default_partition_spec(transaction, new_metadata.uuid(), default_spec_id)
             .await?;
     }
 
-    if !diffs.removed_sort_orders.is_empty() {
-        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
-            .await?;
-    }
-
+    // Should run after insert_schemas
     if !diffs.added_sort_orders.is_empty() {
         common::insert_sort_orders(
             diffs
@@ -253,15 +241,13 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_sort_orders
     if let Some(default_sort_order_id) = diffs.default_sort_order_id {
         common::set_default_sort_order(default_sort_order_id, transaction, new_metadata.uuid())
             .await?;
     }
 
-    if !diffs.removed_snapshots.is_empty() {
-        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
-    }
-
+    // Must run after insert_schemas
     if !diffs.added_snapshots.is_empty() {
         common::insert_snapshots(
             new_metadata.uuid(),
@@ -276,10 +262,12 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_snapshots
     if snapshot_refs {
         common::insert_snapshot_refs(new_metadata, transaction).await?;
     }
 
+    // Must run after insert_snapshots, technically not enforced
     if diffs.head_of_snapshot_log_changed {
         if let Some(snap) = new_metadata.history().last() {
             common::insert_snapshot_log([snap].into_iter(), transaction, new_metadata.uuid())
@@ -287,6 +275,7 @@ async fn handle_atomic_updates(
         }
     }
 
+    // no deps technically enforced
     if diffs.n_removed_snapshot_log > 0 {
         remove_snapshot_log_entries(
             diffs.n_removed_snapshot_log,
@@ -296,6 +285,7 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // no deps technically enforced
     if diffs.expired_metadata_logs > 0 {
         expire_metadata_log_entries(
             new_metadata.uuid(),
@@ -304,6 +294,7 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+    // no deps technically enforced
     if diffs.added_metadata_log > 0 {
         common::insert_metadata_log(
             new_metadata.uuid(),
@@ -319,6 +310,7 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_snapshots
     if !diffs.added_partition_stats.is_empty() {
         common::insert_partition_statistics(
             new_metadata.uuid(),
@@ -332,6 +324,7 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+    // Must run after insert_partition_statistics
     if !diffs.added_stats.is_empty() {
         common::insert_table_statistics(
             new_metadata.uuid(),
@@ -345,10 +338,12 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+    // Must run before remove_snapshots
     if !diffs.removed_stats.is_empty() {
         common::remove_table_statistics(new_metadata.uuid(), diffs.removed_stats, transaction)
             .await?;
     }
+    // Must run before remove_snapshots
     if !diffs.removed_partition_stats.is_empty() {
         common::remove_partition_statistics(
             new_metadata.uuid(),
@@ -356,6 +351,32 @@ async fn handle_atomic_updates(
             transaction,
         )
         .await?;
+    }
+
+    // Must run after insert_snapshots
+    if !diffs.removed_snapshots.is_empty() {
+        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
+    }
+
+    // Must run after set_default_partition_spec
+    if !diffs.removed_partition_specs.is_empty() {
+        common::remove_partition_specs(
+            new_metadata.uuid(),
+            diffs.removed_partition_specs,
+            transaction,
+        )
+        .await?;
+    }
+
+    // Must run after set_default_sort_order
+    if !diffs.removed_sort_orders.is_empty() {
+        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
+            .await?;
+    }
+
+    // Must run after remove_snapshots, and remove_partition_specs and remove_sort_orders
+    if !&diffs.removed_schemas.is_empty() {
+        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
     }
 
     if properties {

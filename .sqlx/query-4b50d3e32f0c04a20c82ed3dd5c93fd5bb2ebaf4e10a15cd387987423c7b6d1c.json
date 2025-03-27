@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count, timestamp)\n                        SELECT\n                            project_id,\n                            warehouse,\n                            uri,\n                            status_code,\n                            cnt,\n                            get_stats_date_default()\n                        FROM (\n                            SELECT\n                                unnest($1::text[]) as project_id,\n                                unnest($2::UUID[]) as warehouse,\n                                unnest($3::api_endpoints[]) as uri,\n                                unnest($4::INT[]) as status_code,\n                                unnest($5::BIGINT[]) as cnt\n                        ) t\n                        ON CONFLICT (project_id, warehouse_id, matched_path, status_code, timestamp)\n                            DO UPDATE SET count = endpoint_statistics.count + EXCLUDED.count",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "api_endpoints[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "api_endpoints",
+                  "kind": {
+                    "Enum": [
+                      "catalog-post-aws-s3-sign",
+                      "catalog-post-prefix-aws-s3-sign",
+                      "catalog-get-config",
+                      "catalog-get-namespaces",
+                      "catalog-post-namespaces",
+                      "catalog-get-namespace",
+                      "catalog-head-namespace",
+                      "catalog-post-namespace",
+                      "catalog-delete-namespace",
+                      "catalog-post-namespace-properties",
+                      "catalog-get-namespace-tables",
+                      "catalog-post-namespace-tables",
+                      "catalog-get-namespace-table",
+                      "catalog-post-namespace-table",
+                      "catalog-delete-namespace-table",
+                      "catalog-head-namespace-table",
+                      "catalog-get-namespace-table-credentials",
+                      "catalog-post-tables-rename",
+                      "catalog-post-namespace-register",
+                      "catalog-post-namespace-table-metrics",
+                      "catalog-post-transactions-commit",
+                      "catalog-post-namespace-views",
+                      "catalog-get-namespace-views",
+                      "catalog-get-namespace-view",
+                      "catalog-post-namespace-view",
+                      "catalog-delete-namespace-view",
+                      "catalog-head-namespace-view",
+                      "catalog-post-views-rename",
+                      "management-get-info",
+                      "management-post-bootstrap",
+                      "management-post-role",
+                      "management-get-role",
+                      "management-post-role-id",
+                      "management-get-role-id",
+                      "management-delete-role-id",
+                      "management-post-search-role",
+                      "management-get-whoami",
+                      "management-post-search-user",
+                      "management-post-user-id",
+                      "management-get-user-id",
+                      "management-delete-user-id",
+                      "management-post-user",
+                      "management-get-user",
+                      "management-post-project",
+                      "management-get-default-project",
+                      "management-delete-default-project",
+                      "management-post-rename-project",
+                      "management-get-project-id",
+                      "management-get-endpoint-statistics",
+                      "management-delete-project-id",
+                      "management-post-warehouse",
+                      "management-get-warehouse",
+                      "management-get-project-list",
+                      "management-get-warehouse-id",
+                      "management-delete-warehouse-id",
+                      "management-post-warehouse-rename",
+                      "management-post-warehouse-deactivate",
+                      "management-post-warehouse-activate",
+                      "management-post-warehouse-storage",
+                      "management-post-warehouse-storage-credential",
+                      "management-get-warehouse-statistics",
+                      "management-get-warehouse-deleted-tabulars",
+                      "management-post-warehouse-deleted-tabulars-undrop1",
+                      "management-post-warehouse-deleted-tabulars-undrop2",
+                      "management-post-warehouse-delete-profile",
+                      "management-get-permissions",
+                      "management-post-permissions",
+                      "management-head-permissions",
+                      "management-delete-permissions"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Int4Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4b50d3e32f0c04a20c82ed3dd5c93fd5bb2ebaf4e10a15cd387987423c7b6d1c"
+}

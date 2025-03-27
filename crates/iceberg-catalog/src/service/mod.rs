@@ -2,6 +2,7 @@ pub mod authn;
 pub mod authz;
 mod catalog;
 pub mod contract_verification;
+pub mod endpoint_statistics;
 pub mod event_publisher;
 pub mod health;
 pub mod secrets;
@@ -22,6 +23,7 @@ pub use catalog::{
     UndropTabularResponse, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
     ViewMetadataWithLocation,
 };
+pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
@@ -37,7 +39,6 @@ use crate::{
         task_queue::TaskQueues,
     },
 };
-
 // ---------------- State ----------------
 #[derive(Clone, Debug)]
 pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {

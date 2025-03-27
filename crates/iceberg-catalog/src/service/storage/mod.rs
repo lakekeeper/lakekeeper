@@ -96,7 +96,7 @@ impl StorageProfile {
                 CatalogConfig {
                     overrides: HashMap::default(),
                     defaults: HashMap::default(),
-                    endpoints: api::iceberg::supported_endpoints(),
+                    endpoints: api::iceberg::supported_endpoints().to_vec(),
                 }
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
