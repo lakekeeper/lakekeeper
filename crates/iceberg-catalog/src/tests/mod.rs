@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
-    CreateNamespaceRequest, CreateNamespaceResponse, ListTablesResponse, LoadTableResult,
-    LoadViewResult,
+    CreateNamespaceRequest, CreateNamespaceResponse, LoadTableResult, LoadViewResult,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -20,7 +19,7 @@ use crate::{
                 namespace::{NamespaceDropFlags, Service as _},
                 tables::TablesService,
                 views::Service,
-                DataAccess, DropParams, ListTablesQuery, NamespaceParameters, TableParameters,
+                DataAccess, DropParams, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
@@ -167,36 +166,6 @@ pub(crate) async fn create_view<T: Authorizer>(
     .await
 }
 
-pub(crate) async fn list_tables<A: Authorizer, C: Catalog, S: SecretStore>(
-    api_context: ApiContext<State<A, C, S>>,
-    namespace_parameters: NamespaceParameters,
-    query: ListTablesQuery,
-) -> ListTablesResponse {
-    CatalogServer::list_tables(
-        namespace_parameters,
-        query,
-        api_context,
-        random_request_metadata(),
-    )
-    .await
-    .unwrap();
-}
-
-pub(crate) async fn list_views<A: Authorizer, C: Catalog, S: SecretStore>(
-    api_context: ApiContext<State<A, C, S>>,
-    namespace_parameters: NamespaceParameters,
-    query: ListTablesQuery,
-) -> ListTablesResponse {
-    CatalogServer::list_views(
-        namespace_parameters,
-        query,
-        api_context,
-        random_request_metadata(),
-    )
-    .await
-    .unwrap();
-}
-
 pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
     api_context: ApiContext<State<A, C, S>>,
     flags: NamespaceDropFlags,
@@ -208,6 +177,7 @@ pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
         api_context,
         random_request_metadata(),
     )
+    .await
 }
 
 #[derive(Debug)]

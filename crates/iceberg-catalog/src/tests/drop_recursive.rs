@@ -11,46 +11,250 @@ use crate::{
 
 mod test {
     use iceberg::NamespaceIdent;
+    use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
 
     use crate::{
-        api::iceberg::{
-            types::{PageToken, Prefix},
-            v1::{ListTablesQuery, NamespaceParameters},
+        api::{
+            iceberg::{
+                types::{PageToken, Prefix},
+                v1::{
+                    namespace::{NamespaceDropFlags, Service},
+                    tables::TablesService,
+                    ListTablesQuery, NamespaceParameters,
+                },
+            },
+            management::v1::warehouse::TabularDeleteProfile,
         },
-        tests::drop_recursive::setup_drop_test,
+        catalog::CatalogServer,
+        tests::{create_ns, drop_recursive::setup_drop_test, random_request_metadata},
     };
 
     #[sqlx::test]
     async fn test_recursive_drop_drops(pool: PgPool) {
-        let setup = setup_drop_test(pool, 1, 1).await;
+        let setup = setup_drop_test(pool, 1, 1, 2, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
         let warehouse = setup.warehouse;
-        let ns_name = setup.namespace_name;
-        let tables = super::super::list_tables(
-            ctx.clone(),
-            NamespaceParameters {
-                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
-                namespace: NamespaceIdent::new(ns_name.clone()),
-            },
+        let ns_names = setup.namespace_names;
+        let ns1_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: NamespaceIdent::new(ns_names[0].clone()),
+        };
+        let tables = CatalogServer::list_tables(
+            ns1_params.clone(),
             ListTablesQuery {
                 page_token: PageToken::NotSpecified,
                 page_size: None,
                 return_uuids: false,
             },
+            ctx.clone(),
+            random_request_metadata(),
         )
-        .await;
+        .await
+        .unwrap();
+
         assert_eq!(tables.identifiers.len(), 1);
         assert_eq!(tables.identifiers[0].name, "tab0");
+
+        super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: false,
+                purge: true,
+                recursive: true,
+            },
+            ns1_params.clone(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::list_tables(
+            ns1_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                return_uuids: false,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 404);
+
+        let e = CatalogServer::namespace_exists(ns1_params, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, 404);
+
+        CatalogServer::namespace_exists(
+            NamespaceParameters {
+                prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+                namespace: NamespaceIdent::new(ns_names[1].clone()),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_recursive_drop_with_nested_ns(pool: PgPool) {
+        let setup = setup_drop_test(pool, 0, 0, 0, TabularDeleteProfile::Hard {}).await;
+        let ctx = setup.ctx;
+        let warehouse = setup.warehouse;
+        let prefix = warehouse.warehouse_id.to_string();
+        let ns1 = create_ns(ctx.clone(), prefix.clone(), "ns1".to_string()).await;
+
+        let ns2 = CatalogServer::create_namespace(
+            Some(Prefix(prefix.clone())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::from_vec(vec!["ns1".to_string(), "ns2".to_string()])
+                    .unwrap(),
+                properties: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let ns3 = CatalogServer::create_namespace(
+            Some(Prefix(prefix.clone())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::from_vec(vec![
+                    "ns1".to_string(),
+                    "ns2".to_string(),
+                    "ns3".to_string(),
+                ])
+                .unwrap(),
+                properties: None,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::namespace_exists(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns3.namespace.clone(),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: false,
+                purge: true,
+                recursive: true,
+            },
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns2.namespace.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::namespace_exists(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns3.namespace.clone(),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 404);
+
+        let e = CatalogServer::namespace_exists(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns2.namespace.clone(),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 404);
+
+        CatalogServer::namespace_exists(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: ns1.namespace.clone(),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_recursive_drop_with_soft_delete(pool: PgPool) {
+        let setup = setup_drop_test(
+            pool,
+            1,
+            1,
+            1,
+            TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(10),
+            },
+        )
+        .await;
+        let ctx = setup.ctx;
+        let warehouse = setup.warehouse;
+        let prefix = warehouse.warehouse_id.to_string();
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new("ns0".to_string()),
+        };
+
+        let e = super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: false,
+                purge: true,
+                recursive: true,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, 400);
+
+        super::super::drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: true,
+                purge: true,
+                recursive: true,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::namespace_exists(ns_params, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, 404);
     }
 }
-
-// TODO: test with multiple warehouses and projects
 
 struct DropSetup {
     ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
     warehouse: TestWarehouseResponse,
-    namespace_name: String,
+    namespace_names: Vec<String>,
 }
 
 async fn setup_drop_test(
@@ -58,6 +262,7 @@ async fn setup_drop_test(
     n_tabs: usize,
     n_views: usize,
     n_namespaces: usize,
+    delete_profile: TabularDeleteProfile,
 ) -> DropSetup {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -74,7 +279,7 @@ async fn setup_drop_test(
         prof,
         None,
         AllowAllAuthorizer,
-        TabularDeleteProfile::Hard {},
+        delete_profile,
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         Some(TaskQueueConfig {
             max_retries: 1,
@@ -83,6 +288,7 @@ async fn setup_drop_test(
         }),
     )
     .await;
+    let mut ns_names = Vec::new();
     for ns in 0..n_namespaces {
         let ns_name = format!("ns{ns}");
 
@@ -98,7 +304,7 @@ async fn setup_drop_test(
             let _ = crate::tests::create_table(
                 ctx.clone(),
                 &warehouse.warehouse_id.to_string(),
-                ns_name,
+                &ns_name,
                 &tab_name,
             )
             .await
@@ -110,18 +316,19 @@ async fn setup_drop_test(
             crate::tests::create_view(
                 ctx.clone(),
                 &warehouse.warehouse_id.to_string(),
-                ns_name,
+                &ns_name,
                 &view_name,
                 None,
             )
             .await
             .unwrap();
         }
+        ns_names.push(ns_name);
     }
 
     DropSetup {
         ctx,
         warehouse,
-        namespace_name: ns_name.to_string(),
+        namespace_names: ns_names,
     }
 }
