@@ -137,7 +137,7 @@ impl TaskQueue for TabularPurgeQueue {
             tracing::debug!("Queued purge task: {:?}", q.task_id);
         }
 
-        sqlx::query!(
+        let r = sqlx::query!(
             r#"WITH input_rows AS (
     SELECT unnest($1::uuid[]) as task_ids,
            unnest($2::uuid[]) as tabular_ids,
@@ -166,6 +166,10 @@ RETURNING task_id"#,
             tracing::error!("failed to queue tasks: {e:?}");
             e.into_error_model("failed queueing tasks")
         })?;
+        transaction.commit().await.map_err(|e| {
+            tracing::error!("failed to commit transaction: {e:?}");
+            e.into_error_model("failed to commit transaction")
+        })?;
         Ok(())
     }
 }
@@ -180,6 +184,7 @@ mod test {
     };
 
     #[sqlx::test]
+    #[tracing_test::traced_test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let config = TaskQueueConfig::default();
         let pg_queue = setup(pool, config);
