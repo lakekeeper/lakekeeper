@@ -1,3 +1,4 @@
+mod drop_recursive;
 mod endpoint_stats;
 mod stats;
 
@@ -5,11 +6,15 @@ use std::sync::Arc;
 
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
-    CreateNamespaceRequest, CreateNamespaceResponse, LoadTableResult, LoadViewResult,
+    CreateNamespaceRequest, CreateNamespaceResponse, ListTablesResponse, LoadTableResult,
+    LoadViewResult,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::api::iceberg::v1::namespace::NamespaceDropFlags;
+use crate::api::iceberg::v1::ListTablesQuery;
+use crate::service::{Catalog, SecretStore};
 use crate::{
     api::{
         iceberg::{
@@ -161,6 +166,49 @@ pub(crate) async fn create_view<T: Authorizer>(
         random_request_metadata(),
     )
     .await
+}
+
+pub(crate) async fn list_tables<A: Authorizer, C: Catalog, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    namespace_parameters: NamespaceParameters,
+    query: ListTablesQuery,
+) -> ListTablesResponse {
+    CatalogServer::list_tables(
+        namespace_parameters,
+        query,
+        api_context,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+}
+
+pub(crate) async fn list_views<A: Authorizer, C: Catalog, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    namespace_parameters: NamespaceParameters,
+    query: ListTablesQuery,
+) -> ListTablesResponse {
+    CatalogServer::list_views(
+        namespace_parameters,
+        query,
+        api_context,
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+}
+
+pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    flags: NamespaceDropFlags,
+    namespace_parameters: NamespaceParameters,
+) -> crate::api::Result<()> {
+    CatalogServer::drop_namespace(
+        namespace_parameters,
+        flags,
+        api_context,
+        random_request_metadata(),
+    )
 }
 
 #[derive(Debug)]
