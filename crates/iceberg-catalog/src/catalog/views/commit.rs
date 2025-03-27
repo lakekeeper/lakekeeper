@@ -125,6 +125,10 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         extract_count_from_metadata_location(&before_update_metadata_location).map_or(0, |v| v + 1),
     );
 
+    if delete_old_location.is_some() {
+        storage_profile.require_allowed_location(&view_location)?;
+    }
+
     C::update_view_metadata(
         namespace_id,
         view_id,
@@ -185,7 +189,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         let _ = remove_all(&file_io, before_update_view_location)
             .await
             .inspect(|()| tracing::trace!("Deleted old view location"))
-            .inspect_err(|e| tracing::error!("Failed to queue tabular purge: {:?}", e));
+            .inspect_err(|e| tracing::error!("Failed to delete old view location: {e:?}"));
     }
 
     let _ = state
