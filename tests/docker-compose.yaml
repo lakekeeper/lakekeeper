@@ -86,7 +86,7 @@ services:
       - ICEBERG_REST__NATS_PASSWORD=test
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
-      - RUST_LOG=info,axum=info,reqwest=info
+      - RUST_LOG=debug,iceberg-catalog=trace,iceberg-catalog-bin=trace,iceberg-ext=trace
     command: [ "serve" ]
     healthcheck:
       test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
