@@ -962,7 +962,7 @@ paths:
     delete:
       tags:
       - project
-      summary: Delete the default project
+      summary: Delete a project by ID
       operationId: delete_project_by_id
       parameters:
       - name: project_id

@@ -590,7 +590,7 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Delete the default project
+    /// Delete a project by ID
     #[utoipa::path(
         delete,
         tag = "project",
@@ -1129,14 +1129,14 @@ pub mod v1 {
                     get(get_user).put(update_user).delete(delete_user),
                 )
                 .route("/user", get(list_user).post(create_user))
-                // Create a new project
+                // Default project
                 .route(
-                    "/project",
-                    post(create_project)
-                        .get(get_default_project)
-                        .delete(delete_default_project),
+                    "/default-project",
+                    get(get_default_project).delete(delete_default_project),
                 )
-                .route("/project/rename", post(rename_default_project))
+                .route("/default-project/rename", post(rename_default_project))
+                // Create a new project
+                .route("/project", post(create_project))
                 .route(
                     "/project/{project_id}",
                     get(get_project_by_id).delete(delete_project_by_id),
