@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.8.0](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0) (2025-03-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* Move APIs affecting the default project to /default-project according to OpenAPI spec ([#878](https://github.com/lakekeeper/lakekeeper/issues/878))
+* Remove `project_id` from `RenameProjectRequest`. Use `/v1/project/{project_id}/rename` instead.
+* Change Project ID type from UUID to String (alphanumeric + hyphen + underscore)
+
+### Features
+
+* Add support for legacy Kubernetes tokens (no audience) ([#940](https://github.com/lakekeeper/lakekeeper/issues/940)) ([e7daf01](https://github.com/lakekeeper/lakekeeper/commit/e7daf010a74b53ac2c6fee0833e8ef1308c1d02a))
+* Change Project ID type from UUID to String (alphanumeric + hyphen + underscore) ([984381b](https://github.com/lakekeeper/lakekeeper/commit/984381b0925828c20eef6281e883f8226c2cad78))
+* Remove `project_id` from `RenameProjectRequest`. Use `/v1/project/{project_id}/rename` instead. ([984381b](https://github.com/lakekeeper/lakekeeper/commit/984381b0925828c20eef6281e883f8226c2cad78))
+* **s3:** make url-style detection configurable ([#905](https://github.com/lakekeeper/lakekeeper/issues/905)) ([69234fe](https://github.com/lakekeeper/lakekeeper/commit/69234fe4e340485af9bd52be13adb64de7dbd9f8))
+* **stats:** Endpoint call statistics ([#818](https://github.com/lakekeeper/lakekeeper/issues/818)) ([bf7bcde](https://github.com/lakekeeper/lakekeeper/commit/bf7bcde7e8b475e92a03dc92f53a2a9d1190293a))
+
+
+### Bug Fixes
+
+* error message if rename target namespace does not exist ([8b60142](https://github.com/lakekeeper/lakekeeper/commit/8b60142f7b365926a69d496d97cf14b184410d5a))
+* Move APIs affecting the default project to /default-project according to OpenAPI spec ([#878](https://github.com/lakekeeper/lakekeeper/issues/878)) ([fa4b26a](https://github.com/lakekeeper/lakekeeper/commit/fa4b26a0aeac7ba93995e5b24984321114b87a04))
+* table snapshot refs with add+remove+set-current ref in one transaction ([#945](https://github.com/lakekeeper/lakekeeper/issues/945)) ([94da715](https://github.com/lakekeeper/lakekeeper/commit/94da715ece3c69703c56fb3e6eebb408261b06aa))
+
 ## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
 
 
