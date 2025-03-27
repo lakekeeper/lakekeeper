@@ -27,8 +27,11 @@ use crate::{
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug)]
 pub struct NamespaceDropFlags {
+    #[serde(default)]
     pub force: bool,
+    #[serde(default)]
     pub purge: bool,
+    #[serde(default)]
     pub recursive: bool,
 }
 
