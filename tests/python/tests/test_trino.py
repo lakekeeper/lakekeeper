@@ -142,7 +142,7 @@ def tets_create_view(trino, warehouse: conftest.Warehouse):
     assert r == [("a",), ("b",)]
 
 
-def tets_replace_view(trino, warehouse: conftest.Warehouse):
+def test_replace_view(trino, warehouse: conftest.Warehouse):
     ns = "tets_replace_view"
     cur = trino.cursor()
     cur.execute(f"CREATE SCHEMA {ns}")
