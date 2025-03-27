@@ -52,12 +52,13 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authn::UserId, storage::StorageProfile, Catalog, CreateNamespaceRequest,
-        CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails,
+        CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse,
         GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
         ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceIdent,
-        NamespaceIdentUuid, ProjectId, Result, RoleId, StartupValidationData, TableCommit,
-        TableCreation, TableIdent, TableIdentUuid, TabularIdentOwned, TabularIdentUuid,
-        Transaction, UndropTabularResponse, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
+        NamespaceIdentUuid, NamespaceInfo, ProjectId, Result, RoleId, StartupValidationData,
+        TableCommit, TableCreation, TableIdent, TableIdentUuid, TableInfo, TabularIdentUuid,
+        TabularInfo, Transaction, UndropTabularResponse, ViewIdentUuid, WarehouseIdent,
+        WarehouseStatus,
     },
     SecretIdent,
 };
@@ -209,7 +210,7 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>> {
+    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceInfo>> {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
@@ -269,7 +270,7 @@ impl Catalog for super::PostgresCatalog {
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedMapping<TableIdentUuid, TableInfo>> {
         list_tables(
             warehouse_id,
             namespace,
@@ -551,7 +552,7 @@ impl Catalog for super::PostgresCatalog {
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>> {
         list_views(
             warehouse_id,
             namespace,
@@ -606,8 +607,7 @@ impl Catalog for super::PostgresCatalog {
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
-    {
+    ) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>> {
         list_tabulars(
             warehouse_id,
             None,

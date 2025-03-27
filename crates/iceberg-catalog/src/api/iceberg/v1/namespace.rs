@@ -295,6 +295,8 @@ pub struct ListNamespacesQuery {
     /// Default is false.
     #[serde(default)]
     pub return_uuids: bool,
+    #[serde(default)]
+    pub return_protection_status: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -485,6 +487,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn test_namespace_deserialization() {
         use tower::ServiceExt;
 

@@ -54,6 +54,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             page_size: _,
             parent,
             return_uuids,
+            return_protection_status,
         } = &query;
         parent.as_ref().map(validate_namespace_ident).transpose()?;
         let return_uuids = *return_uuids;
@@ -94,6 +95,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         page_token: page_token.into(),
                         parent,
                         return_uuids: true,
+                        return_protection_status: true,
                     };
 
                     // list_namespaces gives us a HashMap<Id, Ident> and a Vec<(Id, Token)>, in order
@@ -137,10 +139,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
         t.commit().await?;
-
+        let (namespaces, protection): (Vec<_>, Vec<_>) = idents
+            .into_iter()
+            .map(|n| (n.namespace_ident, n.protected))
+            .unzip();
         Ok(ListNamespacesResponse {
             next_page_token,
-            namespaces: idents,
+            namespaces,
+            protection_status: return_protection_status.then_some(protection),
             namespace_uuids: return_uuids.then_some(ids.into_iter().map(|s| *s).collect()),
         })
     }
@@ -833,6 +839,7 @@ mod tests {
                     page_size: Some(1),
                     parent: None,
                     return_uuids: true,
+                    return_protection_status: true,
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
@@ -937,6 +944,7 @@ mod tests {
                 page_size: Some(11),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -952,6 +960,7 @@ mod tests {
                 page_size: Some(10),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -967,6 +976,7 @@ mod tests {
                 page_size: Some(6),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -991,6 +1001,7 @@ mod tests {
                 page_size: Some(6),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -1019,6 +1030,7 @@ mod tests {
                 page_size: Some(5),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -1046,6 +1058,7 @@ mod tests {
                 page_size: Some(5),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),

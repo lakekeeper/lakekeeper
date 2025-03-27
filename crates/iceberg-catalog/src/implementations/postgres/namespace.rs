@@ -18,7 +18,8 @@ use crate::{
     service::{
         storage::join_location, task_queue::TaskId, CreateNamespaceRequest,
         CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
-        NamespaceDropInfo, NamespaceIdent, NamespaceIdentUuid, Result, TabularIdentUuid,
+        NamespaceDropInfo, NamespaceIdent, NamespaceIdentUuid, NamespaceInfo, Result,
+        TabularIdentUuid,
     },
     WarehouseIdent,
 };
@@ -78,9 +79,10 @@ pub(crate) async fn list_namespaces(
         page_size,
         parent,
         return_uuids: _,
+        return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>> {
+) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceInfo>> {
     let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
 
     // Treat empty parent as None
@@ -101,21 +103,23 @@ pub(crate) async fn list_namespaces(
         )
         .unzip();
 
-    let namespaces: Vec<(Uuid, Vec<String>, chrono::DateTime<Utc>)> = if let Some(parent) = parent {
-        // If it doesn't fit in a i32 it is way too large. Validation would have failed
-        // already in the catalog.
-        let parent_len: i32 = parent.len().try_into().unwrap_or(MAX_NAMESPACE_DEPTH + 1);
+    let namespaces: Vec<(Uuid, Vec<String>, chrono::DateTime<Utc>, bool)> =
+        if let Some(parent) = parent {
+            // If it doesn't fit in a i32 it is way too large. Validation would have failed
+            // already in the catalog.
+            let parent_len: i32 = parent.len().try_into().unwrap_or(MAX_NAMESPACE_DEPTH + 1);
 
-        // Namespace name field is an array.
-        // Get all namespaces where the "name" array has
-        // length(parent) + 1 elements, and the first length(parent)
-        // elements are equal to parent.
-        sqlx::query!(
-            r#"
+            // Namespace name field is an array.
+            // Get all namespaces where the "name" array has
+            // length(parent) + 1 elements, and the first length(parent)
+            // elements are equal to parent.
+            sqlx::query!(
+                r#"
             SELECT
                 n.namespace_id,
                 "namespace_name" as "namespace_name: Vec<String>",
-                n.created_at
+                n.created_at,
+                n.protected
             FROM namespace n
             INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
             WHERE n.warehouse_id = $1
@@ -127,26 +131,27 @@ pub(crate) async fn list_namespaces(
             ORDER BY n.created_at, n.namespace_id ASC
             LIMIT $6
             "#,
-            *warehouse_id,
-            parent_len,
-            &*parent,
-            token_ts,
-            token_id,
-            page_size
-        )
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
-        .into_iter()
-        .map(|r| (r.namespace_id, r.namespace_name, r.created_at))
-        .collect()
-    } else {
-        sqlx::query!(
-            r#"
+                *warehouse_id,
+                parent_len,
+                &*parent,
+                token_ts,
+                token_id,
+                page_size
+            )
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|e| e.into_error_model("Error fetching Namespace"))?
+            .into_iter()
+            .map(|r| (r.namespace_id, r.namespace_name, r.created_at, r.protected))
+            .collect()
+        } else {
+            sqlx::query!(
+                r#"
             SELECT
                 n.namespace_id,
                 "namespace_name" as "namespace_name: Vec<String>",
-                n.created_at
+                n.created_at,
+                n.protected
             FROM namespace n
             INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
             WHERE n.warehouse_id = $1
@@ -156,23 +161,23 @@ pub(crate) async fn list_namespaces(
             ORDER BY n.created_at, n.namespace_id ASC
             LIMIT $4
             "#,
-            *warehouse_id,
-            token_ts,
-            token_id,
-            page_size
-        )
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|e| e.into_error_model("Error fetching Namespace"))?
-        .into_iter()
-        .map(|r| (r.namespace_id, r.namespace_name, r.created_at))
-        .collect()
-    };
+                *warehouse_id,
+                token_ts,
+                token_id,
+                page_size
+            )
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|e| e.into_error_model("Error fetching Namespace"))?
+            .into_iter()
+            .map(|r| (r.namespace_id, r.namespace_name, r.created_at, r.protected))
+            .collect()
+        };
 
     // Convert Vec<Vec<String>> to Vec<NamespaceIdent>
-    let mut namespace_map: PaginatedMapping<NamespaceIdentUuid, NamespaceIdent> =
+    let mut namespace_map: PaginatedMapping<NamespaceIdentUuid, NamespaceInfo> =
         PaginatedMapping::with_capacity(namespaces.len());
-    for ns_result in namespaces.into_iter().map(|(id, n, ts)| {
+    for ns_result in namespaces.into_iter().map(|(id, n, ts, protected)| {
         NamespaceIdent::from_vec(n.clone())
             .map_err(|e| {
                 IcebergErrorResponse::from(ErrorModel::internal(
@@ -181,7 +186,16 @@ pub(crate) async fn list_namespaces(
                     Some(Box::new(e)),
                 ))
             })
-            .map(|n| (id.into(), n, ts))
+            .map(|n| {
+                (
+                    id.into(),
+                    NamespaceInfo {
+                        namespace_ident: n,
+                        protected,
+                    },
+                    ts,
+                )
+            })
     }) {
         let (id, ns, created_at) = ns_result?;
         namespace_map.insert(
@@ -633,6 +647,7 @@ pub(crate) mod tests {
                 page_size: None,
                 parent: None,
                 return_uuids: false,
+                return_protection_status: false,
             },
             transaction.transaction(),
         )
@@ -641,7 +656,13 @@ pub(crate) mod tests {
 
         assert_eq!(
             response.into_hashmap(),
-            HashMap::from_iter(vec![(namespace_id, namespace.clone())])
+            HashMap::from_iter(vec![(
+                namespace_id,
+                NamespaceInfo {
+                    namespace_ident: namespace.clone(),
+                    protected: false
+                }
+            )])
         );
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
@@ -726,6 +747,7 @@ pub(crate) mod tests {
                 page_size: Some(1),
                 parent: None,
                 return_uuids: false,
+                return_protection_status: false,
             },
             t.transaction(),
         )
@@ -735,7 +757,13 @@ pub(crate) mod tests {
         assert_eq!(namespaces.len(), 1);
         assert_eq!(
             namespaces.into_hashmap(),
-            HashMap::from_iter(vec![(response1.0, response1.1.namespace)])
+            HashMap::from_iter(vec![(
+                response1.0,
+                NamespaceInfo {
+                    namespace_ident: response1.1.namespace,
+                    protected: false
+                }
+            )])
         );
 
         let mut t = PostgresTransaction::begin_read(state.clone())
@@ -752,6 +780,7 @@ pub(crate) mod tests {
                 page_size: Some(2),
                 parent: None,
                 return_uuids: false,
+                return_protection_status: false,
             },
             t.transaction(),
         )
@@ -763,8 +792,20 @@ pub(crate) mod tests {
         assert_eq!(
             namespaces.into_hashmap(),
             HashMap::from_iter(vec![
-                (response2.0, response2.1.namespace),
-                (response3.0, response3.1.namespace)
+                (
+                    response2.0,
+                    NamespaceInfo {
+                        namespace_ident: response2.1.namespace,
+                        protected: false
+                    }
+                ),
+                (
+                    response3.0,
+                    NamespaceInfo {
+                        namespace_ident: response3.1.namespace,
+                        protected: false,
+                    }
+                )
             ])
         );
 
@@ -779,6 +820,7 @@ pub(crate) mod tests {
                 page_size: Some(3),
                 parent: None,
                 return_uuids: false,
+                return_protection_status: false,
             },
             t.transaction(),
         )
@@ -913,6 +955,7 @@ pub(crate) mod tests {
                 page_size: Some(100),
                 parent: None,
                 return_uuids: true,
+                return_protection_status: false,
             },
             transaction.transaction(),
         )

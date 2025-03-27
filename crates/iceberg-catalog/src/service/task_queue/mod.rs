@@ -328,7 +328,7 @@ mod test {
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
             .await
             .unwrap();
-        let (_, _) = <PostgresCatalog as Catalog>::list_tabulars(
+        let _ = <PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
             None,
             ListFlags {
@@ -369,7 +369,7 @@ mod test {
             .await
             .unwrap();
 
-        let (_, del) = <PostgresCatalog as Catalog>::list_tabulars(
+        let del = <PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
             None,
             ListFlags {
@@ -383,7 +383,8 @@ mod test {
         .await
         .unwrap()
         .remove(&tab.table_id.into())
-        .unwrap();
+        .unwrap()
+        .deletion_details;
         del.unwrap();
         trx.commit().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1250)).await;

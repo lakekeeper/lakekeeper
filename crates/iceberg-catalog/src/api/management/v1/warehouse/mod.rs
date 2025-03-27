@@ -901,9 +901,9 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let tabulars = idents
             .into_iter()
             .zip(tabulars.into_iter())
-            .map(|(k, (ident, delete_opts))| {
-                let i = ident.into_inner();
-                let deleted = delete_opts.ok_or(ErrorModel::internal(
+            .map(|(k, info)| {
+                let i = info.table_ident.into_inner();
+                let deleted = info.deletion_details.ok_or(ErrorModel::internal(
                     "Expected delete options to be Some, but found None",
                     "InternalDatabaseError",
                     None,

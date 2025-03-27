@@ -964,17 +964,17 @@ pub(crate) mod test {
         let mut trx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
-        set_warehouse_protection(warehouse_id, true, &mut trx.transaction())
+        set_warehouse_protection(warehouse_id, true, trx.transaction())
             .await
             .unwrap();
-        let e = delete_warehouse(warehouse_id, &mut trx.transaction())
+        let e = delete_warehouse(warehouse_id, trx.transaction())
             .await
             .unwrap_err();
         assert_eq!(e.error.code, StatusCode::NOT_FOUND);
-        set_warehouse_protection(warehouse_id, false, &mut trx.transaction())
+        set_warehouse_protection(warehouse_id, false, trx.transaction())
             .await
             .unwrap();
-        delete_warehouse(warehouse_id, &mut trx.transaction())
+        delete_warehouse(warehouse_id, trx.transaction())
             .await
             .unwrap();
 

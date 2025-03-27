@@ -160,6 +160,13 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: returnProtectionStatus
+          in: query
+          description: If true, include the `protection-status` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListNamespacesResponse'
@@ -444,6 +451,13 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: returnProtectionStatus
+          in: query
+          description: If true, include the `protection-status` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListTablesResponse'
@@ -593,9 +607,19 @@ paths:
 
 
 
+
+
+
+
+
           file-scan-tasks that must be returned in the response
 
         - When "submitted" the planning operation has not completed; the client
+
+
+
+
+
 
 
 
@@ -661,6 +685,11 @@ paths:
         - Scan tasks for each plan task have been fetched using fetchScanTasks
 
         - A plan-id has produced a "failed" or "cancelled" status from
+
+
+
+
+
 
 
 
@@ -1207,6 +1236,13 @@ paths:
       parameters:
         - $ref: '#/components/parameters/page-token'
         - $ref: '#/components/parameters/page-size'
+        - name: returnProtectionStatus
+          in: query
+          description: If true, include the `protection-status` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListTablesResponse'
@@ -3317,6 +3353,12 @@ components:
           nullable: true
           items:
             type: string
+        protection-status:
+          type: array
+          uniqueItems: true
+          nullable: true
+          items:
+            type: boolean
     ListNamespacesResponse:
       type: object
       properties:
@@ -3333,6 +3375,12 @@ components:
           nullable: true
           items:
             type: string
+        protection-status:
+          type: array
+          uniqueItems: true
+          nullable: true
+          items:
+            type: boolean
     UpdateNamespacePropertiesResponse:
       type: object
       required:

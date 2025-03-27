@@ -117,11 +117,18 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
         t.commit().await?;
+        let mut idents = Vec::with_capacity(identifiers.len());
+        let mut protection_status = Vec::with_capacity(identifiers.len());
+        for ident in identifiers {
+            idents.push(ident.table_ident);
+            protection_status.push(ident.protected);
+        }
 
         Ok(ListTablesResponse {
             next_page_token,
-            identifiers,
+            identifiers: idents,
             table_uuids: return_uuids.then_some(table_uuids.into_iter().map(|u| *u).collect()),
+            protection_status: query.return_protection_status.then_some(protection_status),
         })
     }
 
@@ -3035,6 +3042,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(11),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3050,6 +3058,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(10),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3065,6 +3074,7 @@ pub(crate) mod test {
                 page_token: PageToken::Present(all.next_page_token.unwrap()),
                 page_size: Some(10),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3081,6 +3091,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3106,6 +3117,7 @@ pub(crate) mod test {
                 page_token: PageToken::Present(first_six.next_page_token.unwrap()),
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3139,6 +3151,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(5),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3165,6 +3178,7 @@ pub(crate) mod test {
                 page_token: PageToken::Present(page.next_page_token.unwrap()),
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),

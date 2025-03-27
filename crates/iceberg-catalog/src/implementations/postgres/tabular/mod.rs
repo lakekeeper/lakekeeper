@@ -21,7 +21,8 @@ use crate::{
         storage::{join_location, split_location},
         task_queue::TaskId,
         DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent, TableIdentUuid,
-        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, UndropTabularResponse,
+        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularInfo,
+        UndropTabularResponse,
     },
     WarehouseIdent,
 };
@@ -383,7 +384,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
+) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -416,7 +417,8 @@ where
             t.created_at,
             t.deleted_at,
             tt.suspend_until as "cleanup_at?",
-            tt.task_id as "cleanup_task_id?"
+            tt.task_id as "cleanup_task_id?",
+            t.protected
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -478,10 +480,11 @@ where
             TabularType::Table => {
                 tabulars.insert(
                     TabularIdentUuid::Table(table.tabular_id),
-                    (
-                        TabularIdentOwned::Table(TableIdent { namespace, name }),
+                    TabularInfo {
+                        table_ident: TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
-                    ),
+                        protected: table.protected,
+                    },
                     PaginateToken::V1(V1PaginateToken {
                         created_at: table.created_at,
                         id: table.tabular_id,
@@ -492,10 +495,11 @@ where
             TabularType::View => {
                 tabulars.insert(
                     TabularIdentUuid::View(table.tabular_id),
-                    (
-                        TabularIdentOwned::View(TableIdent { namespace, name }),
+                    TabularInfo {
+                        table_ident: TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
-                    ),
+                        protected: table.protected,
+                    },
                     PaginateToken::V1(V1PaginateToken {
                         created_at: table.created_at,
                         id: table.tabular_id,
