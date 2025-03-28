@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH delete_info as (\n               SELECT\n                   protected\n               FROM warehouse\n               WHERE warehouse_id = $1\n           ),\n           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND not protected)\n           SELECT protected FROM delete_info",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9f562950d326913ecfa2c6f87613162b34d171220ab9a01de5337bbd4af327ff"
+}

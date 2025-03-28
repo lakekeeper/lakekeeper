@@ -697,12 +697,20 @@ pub(crate) async fn mark_tabular_as_deleted(
     delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    let _ = sqlx::query!(
+    let r = sqlx::query!(
         r#"
-        UPDATE tabular
-        SET deleted_at = $2
-        WHERE tabular_id = $1 and not protected
-        RETURNING tabular_id
+        WITH update_info as (
+            SELECT protected
+            FROM tabular
+            WHERE tabular_id = $1
+        ), update as (
+            UPDATE tabular
+            SET deleted_at = $2
+            WHERE tabular_id = $1
+                AND NOT protected
+            RETURNING tabular_id
+        )
+        SELECT protected, (SELECT tabular_id from update) from update_info
         "#,
         *tabular_id,
         delete_date.unwrap_or(Utc::now())
@@ -712,7 +720,7 @@ pub(crate) async fn mark_tabular_as_deleted(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found or protected", tabular_id.typ_str()),
+                format!("{} not found", tabular_id.typ_str()),
                 "NoSuchTabularError".to_string(),
                 Some(Box::new(e)),
             )
@@ -721,6 +729,19 @@ pub(crate) async fn mark_tabular_as_deleted(
             e.into_error_model(format!("Error marking {} as deleted", tabular_id.typ_str()))
         }
     })?;
+
+    if r.protected {
+        return Err(ErrorModel::conflict(
+            format!(
+                "{} is protected and cannot be deleted",
+                tabular_id.typ_str()
+            ),
+            "ProtectedTabularError",
+            None,
+        )
+        .into());
+    }
+
     Ok(())
 }
 
@@ -729,12 +750,23 @@ pub(crate) async fn drop_tabular(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
-        r#"DELETE FROM tabular
-                WHERE tabular_id = $1
-                    AND typ = $2
-                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-                    AND NOT protected
-               RETURNING fs_location, fs_protocol"#,
+        r#"WITH delete_info as (
+               SELECT
+                   protected
+               FROM tabular
+               WHERE tabular_id = $1 AND typ = $2
+                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+           ),
+           deleted as (
+           DELETE FROM tabular
+               WHERE tabular_id = $1
+                   AND typ = $2
+                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+                   AND NOT protected
+              RETURNING fs_location, fs_protocol)
+              SELECT protected,
+                     (SELECT fs_protocol from deleted),
+                     (SELECT fs_location from deleted) from delete_info"#,
         *tabular_id,
         TabularType::from(tabular_id) as _
     )
@@ -743,8 +775,8 @@ pub(crate) async fn drop_tabular(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found or protected", tabular_id.typ_str()),
-                "NoSuchTabularError".to_string(),
+                format!("{} not found", tabular_id.typ_str()),
+                "NoSuchTabularError",
                 Some(Box::new(e)),
             )
         } else {
@@ -752,8 +784,26 @@ pub(crate) async fn drop_tabular(
             e.into_error_model(format!("Error dropping {}", tabular_id.typ_str()))
         }
     })?;
-
-    Ok(join_location(&location.fs_protocol, &location.fs_location))
+    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
+        Ok(join_location(&fs_protocol, &fs_location))
+    } else if location.protected {
+        Err(ErrorModel::conflict(
+            format!(
+                "{} is protected and cannot be dropped",
+                tabular_id.typ_str()
+            ),
+            "ProtectedTabularError",
+            None,
+        )
+        .into())
+    } else {
+        Err(ErrorModel::internal(
+            format!("{} has no location", tabular_id.typ_str()),
+            "InternalDatabaseError",
+            None,
+        )
+        .into())
+    }
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {

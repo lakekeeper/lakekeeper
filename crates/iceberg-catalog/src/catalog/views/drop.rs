@@ -211,8 +211,7 @@ mod test {
     }
 
     #[sqlx::test]
-    #[tracing_test::traced_test]
-    async fn test_cannot_protected_view(pool: PgPool) {
+    async fn test_cannot_drop_protected_view(pool: PgPool) {
         let (api_context, namespace, whi) = setup(pool, None).await;
 
         let view_name = "my-view";
@@ -266,7 +265,7 @@ mod test {
         .await
         .expect_err("Protected View should not be droppable");
 
-        assert_eq!(e.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(e.error.code, StatusCode::CONFLICT);
 
         set_protect_view(
             loaded_view.metadata.uuid().into(),

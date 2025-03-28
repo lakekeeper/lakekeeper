@@ -441,13 +441,25 @@ pub(crate) async fn delete_warehouse(
     warehouse_id: WarehouseIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    let row_count = sqlx::query_scalar!(
-        r#"DELETE FROM warehouse WHERE warehouse_id = $1 AND not protected"#,
+    let protected = sqlx::query_scalar!(
+        r#"WITH delete_info as (
+               SELECT
+                   protected
+               FROM warehouse
+               WHERE warehouse_id = $1
+           ),
+           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND not protected)
+           SELECT protected FROM delete_info"#,
         *warehouse_id
     )
-    .execute(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await
     .map_err(|e| match &e {
+        sqlx::Error::RowNotFound => ErrorModel::not_found(
+            format!("Warehouse '{warehouse_id}' not found"),
+            "WarehouseNotFound",
+            Some(Box::new(e)),
+        ),
         sqlx::Error::Database(db_error) => {
             if db_error.is_foreign_key_violation() {
                 ErrorModel::conflict(
@@ -460,16 +472,12 @@ pub(crate) async fn delete_warehouse(
             }
         }
         _ => e.into_error_model("Error deleting warehouse"),
-    })?
-    .rows_affected();
+    })?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found(
-            "Warehouse not found or protected",
-            "WarehouseNotFound",
-            None,
-        )
-        .into());
+    if protected {
+        return Err(
+            ErrorModel::conflict("Warehouse is protected", "WarehouseProtected", None).into(),
+        );
     }
 
     Ok(())
@@ -970,7 +978,7 @@ pub(crate) mod test {
         let e = delete_warehouse(warehouse_id, trx.transaction())
             .await
             .unwrap_err();
-        assert_eq!(e.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(e.error.code, StatusCode::CONFLICT);
         set_warehouse_protection(warehouse_id, false, trx.transaction())
             .await
             .unwrap();

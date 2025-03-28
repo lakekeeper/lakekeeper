@@ -3240,7 +3240,7 @@ pub(crate) mod test {
         )
         .await
         .expect_err("Table was dropped which should not be possible");
-        assert_eq!(e.error.code, StatusCode::NOT_FOUND, "{e:?}");
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
 
         CatalogServer::set_table_protection(
             tab.metadata.uuid().into(),
