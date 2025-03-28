@@ -40,7 +40,13 @@ pub mod v1 {
 
     use crate::{
         api::{
-            iceberg::{types::PageToken, v1::PaginationQuery},
+            iceberg::{
+                types::PageToken,
+                v1::{
+                    namespace::NamespaceService, tables::TablesService, views::ViewService,
+                    PaginationQuery,
+                },
+            },
             management::v1::{
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 user::{ListUsersQuery, ListUsersResponse},
@@ -48,10 +54,12 @@ pub mod v1 {
             },
             ApiContext, IcebergErrorResponse, Result,
         },
+        catalog::CatalogServer,
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse, RoleId,
-            SecretStore, State, TabularIdentUuid,
+            authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse,
+            NamespaceIdentUuid, RoleId, SecretStore, State, TableIdentUuid, TabularIdentUuid,
+            ViewIdentUuid,
         },
         ProjectId, WarehouseIdent,
     };
@@ -107,6 +115,10 @@ pub mod v1 {
             rename_warehouse,
             search_role,
             search_user,
+            set_namespace_protection,
+            set_table_protection,
+            set_view_protection,
+            set_warehouse_protection,
             undrop_tabulars,
             undrop_tabulars_deprecated,
             update_role,
@@ -840,6 +852,19 @@ pub mod v1 {
         .await
     }
 
+    #[derive(Serialize, Deserialize)]
+    struct RecursiveDeleteQuery {
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        purge: bool,
+    }
+
+    #[derive(Deserialize, Debug)]
+    struct ProtectedQuery {
+        protected: bool,
+    }
+
     #[derive(Debug, Deserialize, Serialize, utoipa::IntoParams)]
     pub struct GetWarehouseStatisticsQuery {
         /// Next page token
@@ -1047,6 +1072,109 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection",
+        responses(
+            (status = 204, description = "Table protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn set_table_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<StatusCode> {
+        CatalogServer::<C, A, S>::set_table_protection(
+            TableIdentUuid::from(table_id),
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection",
+        responses(
+            (status = 204, description = "Table protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn set_view_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<StatusCode> {
+        CatalogServer::<C, A, S>::set_view_protection(
+            ViewIdentUuid::from(view_id),
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
+        responses(
+            (status = 204, description = "Namespace protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn set_namespace_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<StatusCode> {
+        CatalogServer::<C, A, S>::set_namespace_protected(
+            NamespaceIdentUuid::from(namespace_id),
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/protection",
+        responses(
+            (status = 204, description = "Warehouse protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn set_warehouse_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::set_warehouse_protection(
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     #[derive(Debug, Serialize, utoipa::ToSchema)]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
@@ -1194,6 +1322,22 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/delete-profile",
                     post(update_warehouse_delete_profile),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/table/{table_id}/protection",
+                    post(set_table_protection),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/view/{view_id}/protection",
+                    post(set_view_protection),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
+                    post(set_namespace_protection),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/protection",
+                    post(set_warehouse_protection),
                 )
                 .merge(authorizer.new_router())
         }

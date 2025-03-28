@@ -38,24 +38,27 @@ use crate::{
     },
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
+        namespace::set_namespace_protected,
         role::search_role,
         tabular::{
             clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
+            set_tabular_protected,
             table::{commit_table_transaction, create_table, load_storage_profile},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
-        warehouse::get_warehouse_stats,
+        warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     request_metadata::RequestMetadata,
     service::{
         authn::UserId, storage::StorageProfile, Catalog, CreateNamespaceRequest,
-        CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse, DeletionDetails,
+        CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse,
         GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
-        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid,
-        ProjectId, Result, RoleId, StartupValidationData, TableCommit, TableCreation, TableIdent,
-        TableIdentUuid, TabularIdentOwned, TabularIdentUuid, Transaction, UndropTabularResponse,
-        ViewIdentUuid, WarehouseIdent, WarehouseStatus,
+        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceIdent,
+        NamespaceIdentUuid, NamespaceInfo, ProjectId, Result, RoleId, StartupValidationData,
+        TableCommit, TableCreation, TableIdent, TableIdentUuid, TableInfo, TabularIdentUuid,
+        TabularInfo, Transaction, UndropTabularResponse, ViewIdentUuid, WarehouseIdent,
+        WarehouseStatus,
     },
     SecretIdent,
 };
@@ -207,7 +210,7 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>> {
+    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceInfo>> {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
@@ -239,9 +242,10 @@ impl Catalog for super::PostgresCatalog {
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
-        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<()> {
-        drop_namespace(warehouse_id, namespace_id, transaction).await
+        recursive: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<NamespaceDropInfo> {
+        drop_namespace(warehouse_id, namespace_id, recursive, transaction).await
     }
 
     async fn update_namespace_properties<'a>(
@@ -266,7 +270,7 @@ impl Catalog for super::PostgresCatalog {
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedMapping<TableIdentUuid, TableInfo>> {
         list_tables(
             warehouse_id,
             namespace,
@@ -548,7 +552,7 @@ impl Catalog for super::PostgresCatalog {
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>> {
+    ) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>> {
         list_views(
             warehouse_id,
             namespace,
@@ -603,8 +607,7 @@ impl Catalog for super::PostgresCatalog {
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
-    {
+    ) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>> {
         list_tabulars(
             warehouse_id,
             None,
@@ -640,5 +643,29 @@ impl Catalog for super::PostgresCatalog {
             &catalog_state.read_pool(),
         )
         .await
+    }
+
+    async fn set_tabular_protected(
+        tabular_id: TabularIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        set_tabular_protected(tabular_id, protect, transaction).await
+    }
+
+    async fn set_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        set_namespace_protected(namespace_id, protect, transaction).await
+    }
+
+    async fn set_warehouse_protected(
+        warehouse_id: WarehouseIdent,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 }

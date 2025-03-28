@@ -24,7 +24,10 @@ use crate::{
             TabularIdentUuid, TabularType,
         },
     },
-    service::{ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, ViewIdentUuid},
+    service::{
+        ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, TableInfo, TabularInfo,
+        ViewIdentUuid,
+    },
     WarehouseIdent,
 };
 
@@ -422,7 +425,7 @@ pub(crate) async fn list_views<'e, 'c: 'e, E>(
     include_deleted: bool,
     transaction: E,
     paginate_query: PaginationQuery,
-) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>
+) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -440,7 +443,7 @@ where
         paginate_query,
     )
     .await?;
-    let views = page.map::<ViewIdentUuid, TableIdent>(
+    let views = page.map::<ViewIdentUuid, TableInfo>(
         |k| match k {
             TabularIdentUuid::Table(_) => Err(ErrorModel::internal(
                 "DB returned a table when filtering for views.",
@@ -450,7 +453,7 @@ where
             .into()),
             TabularIdentUuid::View(t) => Ok(t.into()),
         },
-        |(v, _)| Ok(v.into_inner()),
+        TabularInfo::into_view_info,
     )?;
     Ok(views)
 }
@@ -723,7 +726,7 @@ pub(crate) mod tests {
         assert_eq!(views.len(), 1);
         let (list_view_uuid, view) = views.into_iter().next().unwrap();
         assert_eq!(list_view_uuid, view_uuid);
-        assert_eq!(view.name, "myview");
+        assert_eq!(view.table_ident.name, "myview");
 
         let mut conn = state.read_pool().acquire().await.unwrap();
         let metadata = load_view(view_uuid, false, &mut conn).await.unwrap();

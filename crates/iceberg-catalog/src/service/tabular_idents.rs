@@ -86,8 +86,7 @@ impl TabularIdentOwned {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn as_table(&self) -> crate::api::Result<&TableIdent> {
+    pub(crate) fn into_table(self) -> crate::api::Result<TableIdent> {
         match self {
             TabularIdentOwned::Table(ident) => Ok(ident),
             TabularIdentOwned::View(_) => Err(ErrorModel::internal(
@@ -99,8 +98,7 @@ impl TabularIdentOwned {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn as_view(&self) -> crate::api::Result<&TableIdent> {
+    pub(crate) fn into_view(self) -> crate::api::Result<TableIdent> {
         match self {
             TabularIdentOwned::Table(_) => Err(ErrorModel::internal(
                 "Expected a view identifier, but got a table identifier",

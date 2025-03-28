@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH input_rows AS (\n            SELECT\n                unnest($1::uuid[]) as task_id,\n                $2::text as queue_name,\n                unnest($3::uuid[]) as parent_task_id,\n                unnest($4::uuid[]) as idempotency_key,\n                unnest($5::uuid[]) as warehouse_id,\n                unnest($6::timestamptz[]) as suspend_until\n        )\n        INSERT INTO task(\n                task_id,\n                queue_name,\n                status,\n                parent_task_id,\n                idempotency_key,\n                warehouse_id,\n                suspend_until)\n        SELECT\n            i.task_id,\n            i.queue_name,\n            'pending'::task_status,\n            i.parent_task_id,\n            i.idempotency_key,\n            i.warehouse_id,\n            i.suspend_until\n        FROM input_rows i\n        ON CONFLICT ON CONSTRAINT unique_idempotency_key\n        DO UPDATE SET\n            status = EXCLUDED.status,\n            suspend_until = EXCLUDED.suspend_until\n        WHERE task.status = 'cancelled'\n        RETURNING task_id, idempotency_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "idempotency_key",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5669b54a4c82dcca77ac9b8dc3f6f9a4b81e1fef65f7abc2298aaa883e63370f"
+}

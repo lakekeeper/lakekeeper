@@ -1,22 +1,34 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::cancel_pending_tasks;
+use super::{cancel_pending_tasks, queue_task_batch, InputTrait};
 use crate::{
     api::management::v1::TabularType,
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::TabularType as DbTabularType,
-        task_queues::{pick_task, queue_task, record_failure, record_success},
+        task_queues::{pick_task, record_failure, record_success},
         DeletionKind,
     },
     service::task_queue::{
         tabular_expiration_queue::{TabularExpirationInput, TabularExpirationTask},
         TaskFilter, TaskQueue, TaskQueueConfig,
     },
+    WarehouseIdent,
 };
 
 super::impl_pg_task_queue!(TabularExpirationQueue);
+
+impl InputTrait for TabularExpirationInput {
+    fn warehouse_ident(&self) -> WarehouseIdent {
+        self.warehouse_ident
+    }
+
+    fn suspend_until(&self) -> Option<DateTime<Utc>> {
+        Some(self.expire_at)
+    }
+}
 
 #[async_trait]
 impl TaskQueue for TabularExpirationQueue {
@@ -31,17 +43,12 @@ impl TaskQueue for TabularExpirationQueue {
         "tabular_expiration"
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn enqueue(
-        &self,
-        TabularExpirationInput {
-            tabular_id,
-            warehouse_ident,
-            tabular_type,
-            purge,
-            expire_at,
-        }: TabularExpirationInput,
-    ) -> crate::api::Result<()> {
+    #[tracing::instrument(skip(self, tasks))]
+    async fn enqueue_batch(&self, tasks: Vec<Self::Input>) -> crate::api::Result<()> {
+        let (idempotency2task, mut idempotency2specific) = super::preprocess_batch(tasks, |t| {
+            Uuid::new_v5(&t.warehouse_ident, t.tabular_id.as_bytes())
+        })?;
+
         let mut transaction = self
             .pg_queue
             .read_write
@@ -50,66 +57,74 @@ impl TaskQueue for TabularExpirationQueue {
             .await
             .map_err(|e| e.into_error_model("failed to begin transaction for expiration queue"))?;
 
-        tracing::info!(
-            "Queuing expiration for '{tabular_id}' of type: '{}' under warehouse: '{warehouse_ident}'",
-            tabular_type.to_string(),
-        );
+        tracing::debug!("Queuing '{}' expirations", idempotency2task.len());
+        let queued =
+            queue_task_batch(&mut transaction, self.queue_name(), &idempotency2task).await?;
+        let mut task_ids = Vec::with_capacity(queued.len());
+        let mut tabular_ids = Vec::with_capacity(queued.len());
+        let mut warehouse_idents = Vec::with_capacity(queued.len());
+        let mut tabular_types: Vec<DbTabularType> = Vec::with_capacity(queued.len());
+        let mut deletion_kinds = Vec::with_capacity(queued.len());
 
-        let idempotency_key = Uuid::new_v5(&warehouse_ident, tabular_id.as_bytes());
-
-        let Some(task_id) = queue_task(
-            &mut transaction,
-            self.queue_name(),
-            None,
-            idempotency_key,
-            warehouse_ident,
-            Some(expire_at),
-        )
-        .await?
-        else {
-            tracing::debug!("Task already exists");
-            transaction.commit().await.map_err(|e| {
-                tracing::error!(?e, "failed to commit");
-                e.into_error_model("failed to commit transaction enqueuing task")
-            })?;
-            return Ok(());
-        };
-
-        let it = sqlx::query!(
-            r#"INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind)
-            VALUES ($1, $2, $3, $4, $5)
-            -- we update the deletion kind since our caller may now want to purge instead of just delete
-            ON CONFLICT (task_id) DO UPDATE SET deletion_kind = $5
-            RETURNING task_id"#,
-            task_id,
-            tabular_id,
-            *warehouse_ident,
-            match tabular_type {
-                TabularType::Table => DbTabularType::Table,
-                TabularType::View => DbTabularType::View,
-            } as _,
-            if purge {
-                DeletionKind::Purge
-            } else {
-                DeletionKind::Default
-            } as _)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|e| {
-                tracing::error!(?e, "failed to insert into tabular_expirations");
-                e.into_error_model("failed to insert into tabular expirations") })?;
-
-        if let Some(row) = it {
-            tracing::debug!("Queued expiration task: {:?}", row.task_id);
-        } else {
-            tracing::debug!("Expiration task already exists.");
+        for q in queued {
+            if let Some(TabularExpirationInput {
+                tabular_id,
+                warehouse_ident,
+                tabular_type,
+                purge,
+                expire_at: _,
+            }) = idempotency2specific.remove(&q.idempotency_key)
+            {
+                task_ids.push(q.task_id);
+                tabular_ids.push(tabular_id);
+                warehouse_idents.push(*warehouse_ident);
+                tabular_types.push(match tabular_type {
+                    TabularType::Table => DbTabularType::Table,
+                    TabularType::View => DbTabularType::View,
+                });
+                deletion_kinds.push(if purge {
+                    DeletionKind::Purge
+                } else {
+                    DeletionKind::Default
+                });
+            }
+            tracing::debug!("Queued expiration task: {:?}", q.task_id);
         }
+
+        sqlx::query!(
+            r#"WITH input_rows AS (
+            SELECT
+                unnest($1::uuid[]) as task_id,
+                unnest($2::uuid[]) as tabular_id,
+                unnest($3::uuid[]) as warehouse_id,
+                unnest($4::tabular_type[]) as tabular_type,
+                unnest($5::deletion_kind[]) as deletion_kind
+        )
+        INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind)
+        SELECT
+            i.task_id,
+            i.tabular_id,
+            i.warehouse_id,
+            i.tabular_type,
+            i.deletion_kind
+        FROM input_rows i
+        ON CONFLICT (task_id)
+        DO UPDATE SET deletion_kind = EXCLUDED.deletion_kind
+        RETURNING task_id"#,
+            &task_ids,
+            &tabular_ids,
+            &warehouse_idents,
+            &tabular_types as _,
+            &deletion_kinds as _
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|e| e.into_error_model("failed queueing tasks"))?;
 
         transaction.commit().await.map_err(|e| {
             tracing::error!(?e, "failed to commit");
             e.into_error_model("failed to commit transaction inserting tabular expiration task")
         })?;
-
         Ok(())
     }
 

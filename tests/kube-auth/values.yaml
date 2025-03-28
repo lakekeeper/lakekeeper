@@ -20,7 +20,7 @@ catalog:
   image:
     # -- The image repository to pull from
     repository: quay.io/lakekeeper/catalog
-    tag: v0.6.0
+    tag: v0.7.3
     pullPolicy: IfNotPresent
     # -- 65532 = nonroot of google container distroless
     uid: 65532

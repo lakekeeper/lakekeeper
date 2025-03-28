@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH input_rows AS (\n    SELECT unnest($1::uuid[]) as task_ids,\n           unnest($2::uuid[]) as tabular_ids,\n           unnest($3::uuid[]) as warehouse_idents,\n           unnest($4::tabular_type[]) as tabular_types,\n           unnest($5::text[]) as tabular_locations\n    )\n    INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location)\nSELECT i.task_ids,\n       i.tabular_ids,\n       i.warehouse_idents,\n       i.tabular_types,\n       i.tabular_locations\n       FROM input_rows i\nON CONFLICT (task_id) DO UPDATE SET tabular_location = EXCLUDED.tabular_location\nRETURNING task_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "tabular_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tabular_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d2e3c259f817ec2c62793d68ca6bbf2850cf7644692513abc6eb71cfd0f480e4"
+}

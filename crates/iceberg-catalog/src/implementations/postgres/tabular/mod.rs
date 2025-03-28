@@ -21,7 +21,8 @@ use crate::{
         storage::{join_location, split_location},
         task_queue::TaskId,
         DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent, TableIdentUuid,
-        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, UndropTabularResponse,
+        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularInfo,
+        UndropTabularResponse,
     },
     WarehouseIdent,
 };
@@ -33,6 +34,47 @@ const MAX_PARAMETERS: usize = 30000;
 pub(crate) enum TabularType {
     Table,
     View,
+}
+
+pub(crate) async fn set_tabular_protected(
+    tabular_id: TabularIdentUuid,
+    protected: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    tracing::debug!(
+        "Setting tabular protection for {} ({}) to {}",
+        tabular_id,
+        tabular_id.typ_str(),
+        protected
+    );
+    let _ = sqlx::query!(
+        r#"
+        UPDATE tabular
+        SET protected = $2
+        WHERE tabular_id = $1
+        RETURNING tabular_id
+        "#,
+        *tabular_id,
+        protected
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            ErrorModel::not_found(
+                format!("{} not found", tabular_id.typ_str()),
+                "NoSuchTabularError".to_string(),
+                Some(Box::new(e)),
+            )
+        } else {
+            tracing::warn!("Error setting tabular as protected: {}", e);
+            e.into_error_model(format!(
+                "Error setting {} as protected",
+                tabular_id.typ_str()
+            ))
+        }
+    })?;
+    Ok(())
 }
 
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
@@ -342,7 +384,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
+) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -375,7 +417,8 @@ where
             t.created_at,
             t.deleted_at,
             tt.suspend_until as "cleanup_at?",
-            tt.task_id as "cleanup_task_id?"
+            tt.task_id as "cleanup_task_id?",
+            t.protected
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -437,10 +480,11 @@ where
             TabularType::Table => {
                 tabulars.insert(
                     TabularIdentUuid::Table(table.tabular_id),
-                    (
-                        TabularIdentOwned::Table(TableIdent { namespace, name }),
+                    TabularInfo {
+                        table_ident: TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
-                    ),
+                        protected: table.protected,
+                    },
                     PaginateToken::V1(V1PaginateToken {
                         created_at: table.created_at,
                         id: table.tabular_id,
@@ -451,10 +495,11 @@ where
             TabularType::View => {
                 tabulars.insert(
                     TabularIdentUuid::View(table.tabular_id),
-                    (
-                        TabularIdentOwned::View(TableIdent { namespace, name }),
+                    TabularInfo {
+                        table_ident: TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
-                    ),
+                        protected: table.protected,
+                    },
                     PaginateToken::V1(V1PaginateToken {
                         created_at: table.created_at,
                         id: table.tabular_id,
@@ -652,12 +697,20 @@ pub(crate) async fn mark_tabular_as_deleted(
     delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    let _ = sqlx::query!(
+    let r = sqlx::query!(
         r#"
-        UPDATE tabular
-        SET deleted_at = $2
-        WHERE tabular_id = $1
-        RETURNING tabular_id
+        WITH update_info as (
+            SELECT protected
+            FROM tabular
+            WHERE tabular_id = $1
+        ), update as (
+            UPDATE tabular
+            SET deleted_at = $2
+            WHERE tabular_id = $1
+                AND NOT protected
+            RETURNING tabular_id
+        )
+        SELECT protected, (SELECT tabular_id from update) from update_info
         "#,
         *tabular_id,
         delete_date.unwrap_or(Utc::now())
@@ -676,6 +729,19 @@ pub(crate) async fn mark_tabular_as_deleted(
             e.into_error_model(format!("Error marking {} as deleted", tabular_id.typ_str()))
         }
     })?;
+
+    if r.protected {
+        return Err(ErrorModel::conflict(
+            format!(
+                "{} is protected and cannot be deleted",
+                tabular_id.typ_str()
+            ),
+            "ProtectedTabularError",
+            None,
+        )
+        .into());
+    }
+
     Ok(())
 }
 
@@ -684,11 +750,23 @@ pub(crate) async fn drop_tabular(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
-        r#"DELETE FROM tabular
-                WHERE tabular_id = $1
-                    AND typ = $2
-                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-               RETURNING fs_location, fs_protocol"#,
+        r#"WITH delete_info as (
+               SELECT
+                   protected
+               FROM tabular
+               WHERE tabular_id = $1 AND typ = $2
+                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+           ),
+           deleted as (
+           DELETE FROM tabular
+               WHERE tabular_id = $1
+                   AND typ = $2
+                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+                   AND NOT protected
+              RETURNING fs_location, fs_protocol)
+              SELECT protected,
+                     (SELECT fs_protocol from deleted),
+                     (SELECT fs_location from deleted) from delete_info"#,
         *tabular_id,
         TabularType::from(tabular_id) as _
     )
@@ -698,7 +776,7 @@ pub(crate) async fn drop_tabular(
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
                 format!("{} not found", tabular_id.typ_str()),
-                "NoSuchTabularError".to_string(),
+                "NoSuchTabularError",
                 Some(Box::new(e)),
             )
         } else {
@@ -706,8 +784,26 @@ pub(crate) async fn drop_tabular(
             e.into_error_model(format!("Error dropping {}", tabular_id.typ_str()))
         }
     })?;
-
-    Ok(join_location(&location.fs_protocol, &location.fs_location))
+    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
+        Ok(join_location(&fs_protocol, &fs_location))
+    } else if location.protected {
+        Err(ErrorModel::conflict(
+            format!(
+                "{} is protected and cannot be dropped",
+                tabular_id.typ_str()
+            ),
+            "ProtectedTabularError",
+            None,
+        )
+        .into())
+    } else {
+        Err(ErrorModel::internal(
+            format!("{} has no location", tabular_id.typ_str()),
+            "InternalDatabaseError",
+            None,
+        )
+        .into())
+    }
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {

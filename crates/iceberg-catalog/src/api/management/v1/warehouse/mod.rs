@@ -458,6 +458,36 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         Ok(())
     }
+
+    async fn set_warehouse_protection(
+        warehouse_id: WarehouseIdent,
+        protection: bool,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                // TODO: authz
+                &CatalogWarehouseAction::CanDelete,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        tracing::debug!(
+            "Setting protection for warehouse {} to {protection}",
+            warehouse_id
+        );
+        C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
+        transaction.commit().await?;
+
+        Ok(())
+    }
+
     async fn rename_warehouse(
         warehouse_id: WarehouseIdent,
         request: RenameWarehouseRequest,
@@ -871,9 +901,9 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let tabulars = idents
             .into_iter()
             .zip(tabulars.into_iter())
-            .map(|(k, (ident, delete_opts))| {
-                let i = ident.into_inner();
-                let deleted = delete_opts.ok_or(ErrorModel::internal(
+            .map(|(k, info)| {
+                let i = info.table_ident.into_inner();
+                let deleted = info.deletion_details.ok_or(ErrorModel::internal(
                     "Expected delete options to be Some, but found None",
                     "InternalDatabaseError",
                     None,
@@ -993,7 +1023,9 @@ mod test {
         api::{
             iceberg::{
                 types::Prefix,
-                v1::{views::Service, DataAccess, DropParams, NamespaceParameters, ViewParameters},
+                v1::{
+                    views::ViewService, DataAccess, DropParams, NamespaceParameters, ViewParameters,
+                },
             },
             management::v1::{
                 warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},

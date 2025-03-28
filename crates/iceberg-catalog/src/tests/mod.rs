@@ -1,3 +1,4 @@
+mod drop_recursive;
 mod endpoint_stats;
 mod stats;
 
@@ -15,8 +16,10 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::Service as _, tables::TablesService, views::Service, DataAccess,
-                DropParams, NamespaceParameters, TableParameters,
+                namespace::{NamespaceDropFlags, NamespaceService as _},
+                tables::TablesService,
+                views::ViewService,
+                DataAccess, DropParams, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
@@ -41,7 +44,7 @@ use crate::{
             StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
-        State, UserId,
+        Catalog, SecretStore, State, UserId,
     },
     WarehouseIdent, CONFIG,
 };
@@ -158,6 +161,20 @@ pub(crate) async fn create_view<T: Authorizer>(
         crate::catalog::views::create::test::create_view_request(Some(name), location),
         api_context,
         DataAccess::none(),
+        random_request_metadata(),
+    )
+    .await
+}
+
+pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    flags: NamespaceDropFlags,
+    namespace_parameters: NamespaceParameters,
+) -> crate::api::Result<()> {
+    CatalogServer::drop_namespace(
+        namespace_parameters,
+        flags,
+        api_context,
         random_request_metadata(),
     )
     .await
