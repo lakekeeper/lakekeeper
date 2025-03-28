@@ -62,25 +62,25 @@
       <div class="cs_counter_1_wrap">
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="600" class="odometer"></span>+
+            <span data-count-to="600" class="odometer" id="commits-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Commits</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="450" class="odometer"></span>+
-          </div>500
-          <p class="cs_counter_title mb-0">Stars</p>
+            <span data-count-to="500" class="odometer" id="stars-counter"></span>+
+          </div>
+          <p class="cs_counter_title mb-0" >Stars</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="600" class="odometer"></span>+
+            <span data-count-to="700" class="odometer" id="pull-requests-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Pull Requests</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="25" class="odometer"></span>+
+            <span data-count-to="30" class="odometer"></span>+
           </div>
           <p class="cs_counter_title mb-0">Forks</p>
         </div>
@@ -496,55 +496,56 @@
     <div class="cs_height_120 cs_height_lg_80"></div>
     <div class="container">
       <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
-        <h2 class="cs_section_title mb-0">Learn More: Talks & Demos</h2>
+        <h2 id="learn" class="cs_section_title mb-0">Learn More: Talks & Demos</h2>
       </div>
       <div class="cs_height_50 cs_height_lg_50"></div>
       <div class="container">
         <div class="row cs_gap_y_24">
           <div class="container">
             <div class="row cs_gap_y_24">
-              <!-- First Post -->
-              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+              
+              <!-- 5th Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
                 <div class="cs_post cs_style_1">
                   <div class="cs_post_inner">
-                    <a href="https://www.youtube.com/watch?v=p0nVQSolnuY" class="cs_post_thumbnail cs_zoom">
-                      <img src="assets/img/post_1.jpg" alt="Post Thumbnail" class="cs_zoom_in" />
-                    </a>
-                    <div class="cs_post_content">
-                      <div class="cs_post_meta_wrapper">
-                        <div class="cs_post_meta cs_semibold">2024</div>
-                        <div class="cs_post_meta_separator"></div>
-                        <div class="cs_post_meta cs_semibold">BY Christian</div>
-                      </div>
-                      <h3 class="cs_post_title cs_semibold mb-0">
-                        <a href="https://www.youtube.com/watch?v=p0nVQSolnuY">Lakekeeper: Rust based Iceberg Catalog</a>
-                      </h3>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Second Post -->
-              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
-                <div class="cs_post cs_style_1">
-                  <div class="cs_post_inner">
-                    <a href="https://www.youtube.com/watch?v=zBcReOD5KH8&t=6s" class="cs_post_thumbnail cs_zoom">
-                      <img src="assets/img/post_2.png" alt="Post Thumbnail" class="cs_zoom_in" />
+                    <a href="https://techontherocks.show/16" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_5.png" alt="Post Thumbnail" class="cs_zoom_in" />
                     </a>
                     <div class="cs_post_content">
                       <div class="cs_post_meta_wrapper">
                         <div class="cs_post_meta cs_semibold">2025</div>
                         <div class="cs_post_meta_separator"></div>
-                        <div class="cs_post_meta cs_semibold">By Viktor</div>
+                        <div class="cs_post_meta cs_semibold">By Tech on the Rocks</div>
                       </div>
                       <h3 class="cs_post_title cs_semibold mb-0">
-                        <a href="https://www.youtube.com/watch?v=zBcReOD5KH8&t=6s">Towards Actionable Metadata</a>
+                        <a href="https://techontherocks.show/16">Tech on the Rocks: Episode 16</a>
                       </h3>
                     </div>
                   </div>
                 </div>
               </div>
-
+              
+              <!-- 4th Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.4s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://youtu.be/vtwQc3hM6ng" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_4.png" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">By Lakekeeper Team</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://youtu.be/vtwQc3hM6ng">Lakekeeper: Advanced Features Overview</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+                     
               <!-- Third Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
                 <div class="cs_post cs_style_1">
@@ -565,6 +566,50 @@
                   </div>
                 </div>
               </div>
+              
+              <!-- Second Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://www.youtube.com/watch?v=zBcReOD5KH8&t=6s" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_2.png" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">By Viktor</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://www.youtube.com/watch?v=zBcReOD5KH8&t=6s">Towards Actionable Metadata</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+                     
+              <!-- First Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://www.youtube.com/watch?v=p0nVQSolnuY" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_1.jpg" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2024</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">BY Christian</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://www.youtube.com/watch?v=p0nVQSolnuY">Lakekeeper: Rust based Iceberg Catalog</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              
             </div>
           </div>
         </div>
@@ -589,4 +634,6 @@
   </footer>
   <!-- End Footer Section -->
 </div>
+
+
 {% endblock %}
