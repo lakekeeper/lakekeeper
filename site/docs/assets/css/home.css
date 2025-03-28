@@ -2315,7 +2315,9 @@ hr {
   border-radius: 8px;
 }
 .cs_post.cs_style_1 .cs_post_thumbnail img {
+  height: 200px; /* Set a consistent height */
   border-radius: inherit;
+  width: auto;
 }
 .cs_post.cs_style_1 .cs_post_content {
   padding: 20px 0 0 16px;
