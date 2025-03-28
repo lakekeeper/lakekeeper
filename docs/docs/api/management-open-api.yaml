@@ -5,7 +5,7 @@ info:
   license:
     name: Apache-2.0
     identifier: Apache-2.0
-  version: 0.7.3
+  version: 0.7.4
 servers:
 - url: '{scheme}://{host}/{basePath}'
   description: Lakekeeper Management API
@@ -105,7 +105,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/endpoint-statistics:
-    get:
+    post:
       tags:
       - project
       summary: Retrieve API Usage Statistics
