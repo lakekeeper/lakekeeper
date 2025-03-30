@@ -516,15 +516,18 @@ pub(crate) async fn rename_tabular(
     } else {
         let _ = sqlx::query_scalar!(
             r#"
-            UPDATE tabular ti
-            SET name = $1, "namespace_id" = (
+            WITH ns_id AS (
                 SELECT namespace_id
                 FROM namespace
                 WHERE warehouse_id = $2 AND namespace_name = $3
             )
+            UPDATE tabular ti
+            SET name = $1, namespace_id = ns_id.namespace_id
+            FROM ns_id
             WHERE tabular_id = $4 AND typ = $5 AND metadata_location IS NOT NULL
                 AND ti.name = $6
                 AND ti.deleted_at IS NULL
+                AND ns_id.namespace_id IS NOT NULL
                 AND $2 IN (
                     SELECT warehouse_id FROM warehouse WHERE status = 'active'
                 )

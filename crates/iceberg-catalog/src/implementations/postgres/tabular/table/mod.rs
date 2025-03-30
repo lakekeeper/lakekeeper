@@ -1457,6 +1457,35 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
+    async fn test_rename_to_non_existent_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+
+        let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
+
+        let new_table_ident = TableIdent {
+            namespace: new_namespace.clone(),
+            name: "new_table".to_string(),
+        };
+
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_table(
+            warehouse_id,
+            table.table_id,
+            &table.table_ident,
+            &new_table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rename_err.error.code, StatusCode::NOT_FOUND);
+
+        transaction.rollback().await.unwrap();
+    }
+
+    #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
