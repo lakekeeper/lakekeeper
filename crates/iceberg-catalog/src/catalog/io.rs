@@ -222,6 +222,7 @@ mod tests {
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
 
+    #[allow(dead_code)]
     async fn test_remove_all(cred: StorageCredential, profile: StorageProfile) {
         async fn list_simple(file_io: &FileIO, location: &Location) -> Option<Vec<String>> {
             let list = list_location(file_io, location, Some(10)).await.unwrap();
