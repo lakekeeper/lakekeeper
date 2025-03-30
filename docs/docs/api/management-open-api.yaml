@@ -105,7 +105,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/endpoint-statistics:
-    get:
+    post:
       tags:
         - project
       summary: Retrieve API Usage Statistics

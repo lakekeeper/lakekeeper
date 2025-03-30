@@ -948,7 +948,7 @@ pub mod v1 {
     ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],
     ///                                                   [{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]
     #[utoipa::path(
-        get,
+        post,
         tag = "project",
         path = "/management/v1/endpoint-statistics",
         request_body = GetEndpointStatisticsRequest,
@@ -1113,7 +1113,7 @@ pub mod v1 {
                 // Server
                 .route("/info", get(get_server_info))
                 .route("/bootstrap", post(bootstrap))
-                .route("/endpoint-statistics", get(get_endpoint_statistics))
+                .route("/endpoint-statistics", post(get_endpoint_statistics))
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(
