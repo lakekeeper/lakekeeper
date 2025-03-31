@@ -142,7 +142,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         None
     };
 
-    let file_io = storage_profile.file_io(storage_secret.as_ref())?;
+    let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
     write_metadata_file(
         &metadata_location,
         &requested_update_metadata,

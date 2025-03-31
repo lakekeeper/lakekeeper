@@ -65,9 +65,9 @@ pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
     let cred: StorageCredential = S3Credential::AccessKey {
         aws_access_key_id,
         aws_secret_access_key,
+        external_id: None,
     }
     .into();
-
     let mut profile: StorageProfile = S3Profile {
         bucket,
         key_prefix,

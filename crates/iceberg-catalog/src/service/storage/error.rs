@@ -197,6 +197,8 @@ pub enum CredentialsError {
     Mismatch(#[from] ConversionError),
     #[error("Failed to serialize credential.")]
     SerializationError(#[from] serde_json::Error),
+    #[error("Credentials misconfigured: {0}")]
+    Misconfiguration(String),
 }
 
 impl From<CredentialsError> for IcebergErrorResponse {
@@ -220,6 +222,9 @@ impl From<CredentialsError> for IcebergErrorResponse {
             }
             CredentialsError::SerializationError(_) => {
                 ErrorModel::internal(message, "SerializationError", Some(boxed)).into()
+            }
+            CredentialsError::Misconfiguration(_) => {
+                ErrorModel::bad_request(message, "Misconfiguration", Some(boxed)).into()
             }
         }
     }

@@ -80,7 +80,7 @@ impl AdlsProfile {
                 return Err(ValidationError::InvalidProfile {
                     source: None,
                     reason: "SAS token can be only valid up to a week.".to_string(),
-                    entity: "SasTokenValiditySeconds".to_string(),
+                    entity: "sas-token-validity-seconds".to_string(),
                 });
             }
         }
@@ -375,9 +375,9 @@ impl AdlsProfile {
                 return Err(ValidationError::InvalidProfile {
                     source: None,
 
-                    reason: "Storage Profile `key_prefix` must be less than 512 characters."
+                    reason: "Storage Profile `key-prefix` must be less than 512 characters."
                         .to_string(),
-                    entity: "KeyPrefix".to_string(),
+                    entity: "key-prefix".to_string(),
                 });
             }
             for key in key_prefix.split('/') {

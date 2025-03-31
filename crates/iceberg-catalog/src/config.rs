@@ -115,6 +115,17 @@ pub struct DynAppConfig {
         serialize_with = "serialize_reserved_namespaces"
     )]
     pub reserved_namespaces: ReservedNamespaces,
+    // ------------- STORAGE OPTIONS -------------
+    /// If true, cannot create Warehouses with using System Identities.
+    /// Consequently, all credentials must be provided by users on Warehouse creation.
+    pub(crate) s3_disable_system_credentials: bool,
+    /// If true, System Identities cannot be used directly to access files.
+    /// Instead, `assume_role_arn` must be provided by the user if `SystemIdentities` are used.
+    pub(crate) s3_disable_direct_system_credentials: bool,
+    /// If true, users must set `external_id` when using system identities with
+    /// `assume_role_arn`.
+    pub(crate) s3_require_external_id_for_system_credentials: bool,
+
     // ------------- POSTGRES IMPLEMENTATION -------------
     #[redact]
     pub(crate) pg_encryption_key: String,
@@ -423,6 +434,9 @@ impl Default for DynAppConfig {
             pg_connection_max_lifetime: None,
             pg_read_pool_connections: 10,
             pg_write_pool_connections: 5,
+            s3_disable_system_credentials: false,
+            s3_disable_direct_system_credentials: false,
+            s3_require_external_id_for_system_credentials: false,
             nats_address: None,
             nats_topic: None,
             nats_creds_file: None,
@@ -985,6 +999,17 @@ mod test {
             );
             let config = get_config();
             assert!(config.kubernetes_authentication_accept_legacy_serviceaccount);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_s3_disable_system_credentials() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__S3_DISABLE_SYSTEM_CREDENTIALS", "true");
+            let config = get_config();
+            assert!(config.s3_disable_system_credentials);
+            assert!(!config.s3_disable_direct_system_credentials);
             Ok(())
         });
     }

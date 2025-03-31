@@ -21,10 +21,18 @@ Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By defaul
 | `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
 | `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS. |
 
+### Storage
+
+| Variable                                                    | Example            | Description |
+|-------------------------------------------------------------|--------------------|-----|
+| `LAKEKEEPER__S3_DISABLE_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | By default users can create Warehouses using storage credentials configured on the system / instance itself (i.e. `AWS_*` environment variables or EC2 instance profiles). This might be unwanted in some cases if these credentials have access to locations that users should not be able to read or store tables in. When setting `LAKEKEEPER__S3_DISABLE_SYSTEM_CREDENTIALS` to `true`, Lakekeeper does not allow the creation of Warehouses that use system credentials. Default: `false` (System credentials enabled) |
+| `LAKEKEEPER__S3_DISABLE_DIRECT_SYSTEM_CREDENTIALS`          | <nobr>`true`<nobr> | If a Warehouse is created using system credentials, by default, users are not required to specify a `assume-role-arn`. Lakekeeper then uses the configured serviceaccount to access files directly. In managed settings, the configured system account should often not have any permissions itself, other than to assume roles. If `LAKEKEEPER__S3_DISABLE_SYSTEM_CREDENTIALS` is set to `true`, Lakekeeper requires users to set the `assume-role-arn` when configuring Warehouses with system credentials. Default: `false` (Credentials can be used without assuming a role) |
+| `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | <nobr>`true`<nobr> | If true, an `external-id` is required when assuming a role with system credentials. Default: `false` |
+
 
 ### Persistence Store
 
-Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_READ` or use the `PG_*` environment variables. Connection strings take precedence:
+Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_*` or use the `PG_*` environment variables. Connection strings take precedence:
 
 | Variable                                               | Example                                               | Description |
 |--------------------------------------------------------|-------------------------------------------------------|-----|
@@ -141,16 +149,16 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
-| Variable                                     | Example                                                                    | Description |
-|----------------------------------------------|----------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__AUTHZ_BACKEND`                  | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
-| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr> | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
-| `LAKEKEEPER__OPENFGA__STORE_NAME`            | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
-| `LAKEKEEPER__OPENFGA__API_KEY`               | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
+| Variable                                      | Example                                                                    | Description |
+|-----------------------------------------------|----------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__AUTHZ_BACKEND`                   | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
+| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>  | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
+| `LAKEKEEPER__OPENFGA__STORE_NAME`             | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
+| `LAKEKEEPER__OPENFGA__API_KEY`                | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
 | <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr> | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
-| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`         | `abcd`                                                                     | Client Secret for the Client ID. |
-| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`        | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
-| `LAKEKEEPER__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
+| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`          | `abcd`                                                                     | Client Secret for the Client ID. |
+| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`         | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER__OPENFGA__SCOPE`                  | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
 
 
 ### UI
@@ -171,8 +179,8 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
 
-| Variable                                   | Example | Description                                                                                               |
-|--------------------------------------------|---------|-----------------------------------------------------------------------------------------------------------|
+| Variable                                   | Example | Description           |
+|--------------------------------------------|---------|-----------------------|
 | `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
 
 ### SSL Dependencies

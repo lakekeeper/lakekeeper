@@ -244,7 +244,7 @@ mod tests {
         let data_1 = serde_json::json!({"file": "1"});
         let data_2 = serde_json::json!({"file": "2"});
 
-        let file_io = profile.file_io(Some(&cred)).unwrap();
+        let file_io = profile.file_io(Some(&cred)).await.unwrap();
         write_metadata_file(&file_1, data_1, CompressionCodec::Gzip, &file_io)
             .await
             .unwrap();

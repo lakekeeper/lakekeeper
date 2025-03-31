@@ -132,18 +132,16 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the underlying storage profile's file IO creation fails.
-    pub fn file_io(
+    pub async fn file_io(
         &self,
         secret: Option<&StorageCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
         match self {
-            StorageProfile::S3(profile) => profile.file_io(
-                secret
-                    .map(|s| s.try_to_s3())
-                    .transpose()?
-                    .map(Into::into)
-                    .as_ref(),
-            ),
+            StorageProfile::S3(profile) => {
+                profile
+                    .file_io(secret.map(|s| s.try_to_s3()).transpose()?)
+                    .await
+            }
             StorageProfile::Adls(prof) => prof.file_io(secret.map(|s| s.try_to_az()).transpose()?),
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
@@ -290,7 +288,7 @@ impl StorageProfile {
         credential: Option<&StorageCredential>,
         location: Option<&Location>,
     ) -> Result<(), ValidationError> {
-        let file_io = self.file_io(credential)?;
+        let file_io = self.file_io(credential).await?;
 
         let ns_id = NamespaceIdentUuid::default();
         let table_id = TableIdentUuid::default();
@@ -840,6 +838,7 @@ mod tests {
                 wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
             "
             .to_string(),
+            external_id: Some("abctnFEMI".to_string()),
         }
         .into();
 
@@ -886,7 +885,8 @@ mod tests {
             secret,
             StorageCredential::S3(S3Credential::AccessKey {
                 aws_access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
-                aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()
+                aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                external_id: None
             })
         );
     }
@@ -973,6 +973,7 @@ mod tests {
                 let cred: StorageCredential = S3Credential::AccessKey {
                     aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
                     aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                    external_id: None,
                 }
                 .into();
 
@@ -1123,6 +1124,7 @@ mod tests {
         // cleanup
         profile
             .file_io(Some(cred))
+            .await
             .unwrap()
             .remove_all(base_location.as_str())
             .await

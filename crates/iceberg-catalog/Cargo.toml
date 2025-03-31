@@ -31,6 +31,7 @@ aws-credential-types = { version = "^1.2", optional = true }
 aws-sdk-sts = { workspace = true }
 aws-sigv4 = { version = "^1.2", optional = true }
 aws-smithy-http = { workspace = true }
+aws-smithy-http-client = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true, features = ["typed-header"] }
 axum-prometheus = { workspace = true }
@@ -105,8 +106,7 @@ needs_env_var = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_urlencoded = "0.7.1"
 similar = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 tracing-test = "0.2.5"
-

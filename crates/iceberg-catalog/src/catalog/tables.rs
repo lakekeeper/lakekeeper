@@ -219,7 +219,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             None
         };
 
-        let file_io = storage_profile.file_io(storage_secret.as_ref())?;
+        let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
         retry_fn(|| async {
             match crate::service::storage::check_location_is_empty(
                 &file_io,
@@ -362,7 +362,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
-        let file_io = storage_profile.file_io(storage_secret.as_ref())?;
+        let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
         let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
 
@@ -1162,7 +1162,10 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
 
     // Write metadata files
-    let file_io = warehouse.storage_profile.file_io(storage_secret.as_ref())?;
+    let file_io = warehouse
+        .storage_profile
+        .file_io(storage_secret.as_ref())
+        .await?;
 
     let write_futures: Vec<_> = commits
         .iter()

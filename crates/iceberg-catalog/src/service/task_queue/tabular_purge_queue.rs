@@ -138,6 +138,7 @@ where
     let file_io = warehouse
         .storage_profile
         .file_io(secret.as_ref())
+        .await
         .map_err(|e| {
             tracing::error!("Failed to get storage profile: {:?}", e);
             e

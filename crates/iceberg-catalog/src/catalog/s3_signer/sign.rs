@@ -17,7 +17,9 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
         secrets::SecretStore,
-        storage::{s3::S3UrlStyleDetectionMode, S3Location, S3Profile, StorageCredential},
+        storage::{
+            s3::S3UrlStyleDetectionMode, S3Credential, S3Location, S3Profile, StorageCredential,
+        },
         Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid, Transaction,
     },
     WarehouseIdent,
@@ -168,18 +170,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         })
         .transpose()?;
 
-        let credentials: aws_credential_types::Credentials = storage_profile
-            .get_aws_sdk_credentials(storage_secret.as_ref())
-            .map_err(|e| extend_err(IcebergErrorResponse::from(e)))?;
-
         sign(
-            credentials,
+            &storage_profile,
+            storage_secret.as_ref(),
             request_body,
             &request_region,
             &request_url,
             &request_method,
             request_headers,
         )
+        .await
         .map_err(extend_err)
     }
 }
@@ -224,8 +224,9 @@ async fn s3_url_style_detection<C: Catalog>(
     Ok(t)
 }
 
-fn sign(
-    credentials: aws_credential_types::Credentials,
+async fn sign(
+    storage_profile: &S3Profile,
+    credentials: Option<&S3Credential>,
     request_body: Option<String>,
     request_region: &str,
     request_url: &url::Url,
@@ -242,7 +243,18 @@ fn sign(
     let mut sign_settings = SigningSettings::default();
     sign_settings.percent_encoding_mode = aws_sigv4::http_request::PercentEncodingMode::Single;
     sign_settings.payload_checksum_kind = aws_sigv4::http_request::PayloadChecksumKind::XAmzSha256;
-    let identity = credentials.into();
+    let aws_credentials = storage_profile
+        .get_credentials_for_assume_role(credentials)
+        .await?
+        .ok_or_else(|| {
+            ErrorModel::precondition_failed(
+                "Cannot sign requests for Warehouses without S3 credentials",
+                "SignWithoutCredentials",
+                None,
+            )
+        })?;
+    let identity = aws_credentials.into();
+    // let identity = credentials.into();
     let signing_params = v4::SigningParams::builder()
         .identity(&identity)
         .region(request_region)
