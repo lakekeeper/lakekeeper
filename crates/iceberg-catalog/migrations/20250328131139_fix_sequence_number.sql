@@ -8,7 +8,7 @@ WHERE t1.created_at < t2.created_at
   AND "table".table_format_version != '1';
 
 -- table fmt version 1 has no sequence number, hence we only enforce the unique constraint via a partial unique index
-CREATE OR REPLACE FUNCTION is_table_format_v2(table_id_param uuid)
+CREATE OR REPLACE FUNCTION is_not_table_format_v1(table_id_param uuid)
     RETURNS BOOLEAN
     IMMUTABLE AS
 $$
