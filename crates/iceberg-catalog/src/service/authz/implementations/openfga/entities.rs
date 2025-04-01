@@ -149,6 +149,16 @@ impl OpenFgaEntity for ProjectId {
     }
 }
 
+impl OpenFgaEntity for &ProjectId {
+    fn to_openfga(&self) -> String {
+        format!("{}:{self}", self.openfga_type())
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Project
+    }
+}
+
 impl ParseOpenFgaEntity for ProjectId {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
         if r#type != FgaType::Project {
