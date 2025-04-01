@@ -22,4 +22,4 @@ $$ LANGUAGE plpgsql;
 
 CREATE UNIQUE INDEX unique_table_snapshot_sequence_number
     ON table_snapshot (table_id, sequence_number)
-    WHERE is_table_format_v2(table_id);
+    WHERE is_not_table_format_v1(table_id);
