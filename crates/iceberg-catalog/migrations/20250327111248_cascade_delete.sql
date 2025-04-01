@@ -13,3 +13,8 @@ alter table namespace
 
 alter table warehouse
     add column protected bool not null default false;
+
+alter type api_endpoints add value 'management-post-warehouse-protection';
+alter type api_endpoints add value 'management-post-warehouse-namespace-protection';
+alter type api_endpoints add value 'management-post-warehouse-table-protection';
+alter type api_endpoints add value 'management-post-warehouse-view-protection';
