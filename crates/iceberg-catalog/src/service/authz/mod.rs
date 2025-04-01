@@ -747,7 +747,7 @@ pub(crate) mod tests {
         async fn is_allowed_project_action(
             &self,
             _metadata: &RequestMetadata,
-            project_id: ProjectId,
+            project_id: &ProjectId,
             _action: CatalogProjectAction,
         ) -> Result<bool> {
             Ok(self.check_available(format!("project:{project_id}").as_str()))
@@ -818,7 +818,7 @@ pub(crate) mod tests {
         async fn create_project(
             &self,
             _metadata: &RequestMetadata,
-            _project_id: ProjectId,
+            _project_id: &ProjectId,
         ) -> Result<()> {
             Ok(())
         }
@@ -835,7 +835,7 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _warehouse_id: WarehouseIdent,
-            _parent_project_id: ProjectId,
+            _parent_project_id: &ProjectId,
         ) -> Result<()> {
             Ok(())
         }

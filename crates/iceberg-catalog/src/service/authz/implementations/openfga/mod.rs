@@ -395,8 +395,7 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(&project_id, ConsistencyPreference::MinimizeLatency)
-            .await?;
+        self.require_no_relations(&project_id).await?;
         let server = OPENFGA_SERVER.clone();
         let this_id = project_id.to_openfga();
         self.write(
