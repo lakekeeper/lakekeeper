@@ -16,7 +16,8 @@ Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By defaul
 | <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr> | `true`                                 | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
 | `LAKEKEEPER__RESERVED_NAMESPACES`                | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
 | `LAKEKEEPER__METRICS_PORT`                       | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
-| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port the Lakekeeper listens on. Default: `8181` |
+| `LAKEKEEPER__LISTEN_PORT`                        | `8181`                                 | Port Lakekeeper listens on. Default: `8181` |
+| `LAKEKEEPER__BIND_IP`                            | `0.0.0.0`, `::1`, `::`                 | IP Address Lakekeeper binds to. Default: `0.0.0.0` (listen to all incoming IPv4 packages) |
 | `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
 | `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS. |
 
@@ -94,7 +95,29 @@ Authentication is enabled if:
 * `LAKEKEEPER__OPENID_PROVIDER_URI` is set OR
 * `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true
 
-External OpenID and Kubernetes Authentication can also be enabled together. If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. 
+In Lakekeeper multiple Authentication mechanisms can be enabled together, for example OpenID + Kubernetes. Lakekeeper builds an internal Authenticator chain of up to three identity providers. Incoming tokens need to be JWT tokens - Opaque tokens are not yet supported. Incoming tokens are introspected, and each Authentication provider checks if the given token can be handled by this provider. If it can be handled, the token is authenticated against this provider, otherwise the next Authenticator in the chain is checked.
+
+The following Authenticators are available. Enabled Authenticators are checked in order:
+
+1. **OpenID / OAuth2**<br>
+   **Enabled if:** `LAKEKEEPER__OPENID_PROVIDER_URI` is set<br>
+    **Validates Token with:** Locally with JWKS Keys fetched from the well-known configuration.<br>
+   **Accepts JWT if** (both must be true):<br>
+    - Issuer matches the issuer provided in the `.well-known/openid-configuration` of the `LAKEKEEPER__OPENID_PROVIDER_URI` OR issuer matches any of the `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`.<br>
+    - If `LAKEKEEPER__OPENID_AUDIENCE` is specified, any of the configured audiences must be present in the token<br>
+1. **Kubernetes**<br>
+   **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true<br>
+   **Validates Token with:** Kubernetes `TokenReview` API
+   **Accepts JWT if:**<br>
+    - Token audience matches any of the audiences provided in `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`<br>
+    - If `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` is not set, all tokens proceed to validation! We highly recommend to configure audiences, for most deployments `https://kubernetes.default.svc` works.<br>
+1. **Kubernetes Legacy Tokens**<br>
+   **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true and `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is true<br>
+   **Validates Token with:** Kubernetes `TokenReview` API<br>
+   **Accepts JWT if:**<br>
+    - Tokens issuer is `kubernetes/serviceaccount`
+
+If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. 
 
 Typical values for `LAKEKEEPER__OPENID_PROVIDER_URI` are:
 
@@ -103,29 +126,31 @@ Typical values for `LAKEKEEPER__OPENID_PROVIDER_URI` are:
 
 Please check the [Authentication Guide](./authentication.md) for more details.
 
-| Variable                                         | Example                                      | Description |
-|--------------------------------------------------|----------------------------------------------|-----|
-| <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>   | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                    | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
-| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`          | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
-| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`   | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
-| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
-| `LAKEKEEPER__OPENID_SCOPE`                       | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
-| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`               | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
+| Variable                                                                  | Example                                      | Description |
+|---------------------------------------------------------------------------|----------------------------------------------|-----|
+| <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>                            | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. |
+| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
+| `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
+| `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
+| `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid`                               | Specify the field in the user's claims that is used to identify a User. By default Lakekeeper uses the `oid` field if present, otherwise the `sub` field is used. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use the `oid` claim, users from all other IdPs most likely want to use the `sub` claim. |
+| `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+
 
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
-| Variable                                      | Example                                                                    | Description |
-|-----------------------------------------------|----------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__AUTHZ_BACKEND`                   | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
-| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>  | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
-| `LAKEKEEPER__OPENFGA__STORE_NAME`             | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
-| `LAKEKEEPER__OPENFGA__API_KEY`                | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
+| Variable                                     | Example                                                                    | Description |
+|----------------------------------------------|----------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__AUTHZ_BACKEND`                  | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
+| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr> | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
+| `LAKEKEEPER__OPENFGA__STORE_NAME`            | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
+| `LAKEKEEPER__OPENFGA__API_KEY`               | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
 | <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr> | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
-| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`          | `abcd`                                                                     | Client Secret for the Client ID. |
-| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`         | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
-| `LAKEKEEPER_TEST__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
+| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`         | `abcd`                                                                     | Client Secret for the Client ID. |
+| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`        | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
 
 
 ### UI
@@ -142,6 +167,13 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 
+### Endpoint Statistics
+
+Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
+
+| Variable                                   | Example | Description                                                                                               |
+|--------------------------------------------|---------|-----------------------------------------------------------------------------------------------------------|
+| `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
 
 ### SSL Dependencies
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
+
+
+### Miscellaneous Chores
+
+* release 0.7.4 ([e51010a](https://github.com/lakekeeper/lakekeeper/commit/e51010a8d3ceefdad118d3424b81259ab02188b5))
+
+## [0.7.3](https://github.com/lakekeeper/lakekeeper/compare/v0.7.2...v0.7.3) (2025-03-04)
+
+
+### Miscellaneous Chores
+
+* release 0.7.3 ([630ee3a](https://github.com/lakekeeper/lakekeeper/commit/630ee3adc67533e499e8d656fdb1ba49900b87b3))
+
 ## [0.7.2](https://github.com/lakekeeper/lakekeeper/compare/v0.7.1...v0.7.2) (2025-02-27)
 
 

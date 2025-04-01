@@ -1,6 +1,7 @@
 pub mod iceberg;
 pub mod management;
 
+pub(crate) mod endpoints;
 #[cfg(feature = "router")]
 pub mod router;
 

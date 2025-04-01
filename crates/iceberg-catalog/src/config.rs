@@ -6,10 +6,12 @@ use core::result::Result::Ok;
 use std::{
     collections::HashSet,
     convert::Infallible,
+    net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
     path::PathBuf,
     str::FromStr,
     sync::LazyLock,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
@@ -74,7 +76,7 @@ fn get_config() -> DynAppConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
+#[derive(Clone, Deserialize, Serialize, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
     /// Base URL for this REST Catalog.
@@ -85,6 +87,9 @@ pub struct DynAppConfig {
     pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
+    /// Bind IP the server listens on.
+    /// Defaults to 0.0.0.0
+    pub bind_ip: IpAddr,
     /// If true (default), the NIL uuid is used as default project id.
     pub enable_default_project: bool,
     /// Template to obtain the "prefix" for a warehouse,
@@ -167,6 +172,9 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
+    /// Accept legacy k8s token without audience and issuer
+    /// set to kubernetes/serviceaccount
+    pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
     /// Claim to use in provided JWT tokens as the subject.
     pub openid_subject_claim: Option<String>,
 
@@ -199,6 +207,17 @@ pub struct DynAppConfig {
     )]
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
+    // ------------- Stats -------------
+    /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
+    ///
+    /// Accepts a string of format "{number}{ms|s}", e.g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub endpoint_stat_flush_interval: Duration,
+
     // ------------- Internal -------------
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
@@ -227,6 +246,32 @@ where
     S: serde::Serializer,
 {
     duration.num_seconds().to_string().serialize(serializer)
+}
+
+pub(crate) fn seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let buf = String::deserialize(deserializer)?;
+    Ok(if buf.ends_with("ms") {
+        Duration::from_millis(
+            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
+        )
+    } else if buf.ends_with('s') {
+        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
+    } else {
+        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
+    })
+}
+
+pub(crate) fn serialize_std_duration_as_ms<S>(
+    duration: &Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
 fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -391,8 +436,10 @@ impl Default for DynAppConfig {
             openid_scope: None,
             enable_kubernetes_authentication: false,
             kubernetes_authentication_audience: None,
+            kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             listen_port: 8181,
+            bind_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,
             kv2: None,
@@ -401,6 +448,7 @@ impl Default for DynAppConfig {
             secret_backend: SecretBackend::Postgres,
             queue_config: TaskQueueConfig::default(),
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
+            endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
         }
     }
@@ -627,6 +675,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::net::Ipv6Addr;
+
     #[allow(unused_imports)]
     use super::*;
 
@@ -876,6 +926,65 @@ mod test {
                     scope: Some("openfga".to_string())
                 }
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v4_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "0.0.0.0");
+            let config = get_config();
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v4_localhost() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "127.0.0.1");
+            let config = get_config();
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_loopback() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::1");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_legacy_service_account_acceptance() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT",
+                "true",
+            );
+            let config = get_config();
+            assert!(config.kubernetes_authentication_accept_legacy_serviceaccount);
             Ok(())
         });
     }

@@ -80,7 +80,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         metadata: view_metadata,
     } = C::load_view(view_id, false, t.transaction()).await?;
 
-    let view_location = parse_view_location(&view_metadata.location)?;
+    let view_location = parse_view_location(view_metadata.location())?;
 
     t.commit().await?;
 

@@ -128,77 +128,6 @@ impl From<DbTableFormatVersion> for FormatVersion {
     }
 }
 
-pub(crate) async fn load_tables_old(
-    warehouse_id: WarehouseIdent,
-    tables: impl IntoIterator<Item = TableIdentUuid>,
-    include_deleted: bool,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
-    let tables = sqlx::query!(
-        r#"
-        SELECT
-            t."table_id",
-            ti."namespace_id",
-            t."metadata" as "metadata: Json<TableMetadata>",
-            ti."metadata_location",
-            w.storage_profile as "storage_profile: Json<StorageProfile>",
-            w."storage_secret_id"
-        FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.warehouse_id = $1
-        AND w.status = 'active'
-        AND (ti.deleted_at IS NULL OR $3)
-        AND t."table_id" = ANY($2)
-        "#,
-        *warehouse_id,
-        &tables.into_iter().map(Into::into).collect::<Vec<_>>(),
-        include_deleted
-    )
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|e| e.into_error_model("Error fetching table".to_string()))?;
-
-    tables
-        .into_iter()
-        .map(|table| {
-            let table_id = table.table_id.into();
-            let metadata_location = table
-                .metadata_location
-                .as_deref()
-                .map(FromStr::from_str)
-                .transpose()
-                .map_err(|e| {
-                    ErrorModel::internal(
-                        "Error parsing metadata location",
-                        "InternalMetadataLocationParseError",
-                        Some(Box::new(e)),
-                    )
-                })?;
-
-            Ok((
-                table_id,
-                LoadTableResponse {
-                    table_id,
-                    namespace_id: table.namespace_id.into(),
-                    table_metadata: table
-                        .metadata
-                        .ok_or(ErrorModel::internal(
-                            "Table metadata jsonb not found",
-                            "InternalTableMetadataNotFound",
-                            None,
-                        ))?
-                        .0,
-                    metadata_location,
-                    storage_secret_ident: table.storage_secret_id.map(SecretIdent::from),
-                    storage_profile: table.storage_profile.deref().clone(),
-                },
-            ))
-        })
-        .collect::<Result<HashMap<_, _>>>()
-}
-
 pub(crate) async fn list_tables<'e, 'c: 'e, E>(
     warehouse_id: WarehouseIdent,
     namespace: &NamespaceIdent,
@@ -217,7 +146,6 @@ where
         transaction,
         Some(TabularType::Table),
         pagination_query,
-        false,
     )
     .await?;
 
@@ -834,8 +762,12 @@ pub(crate) async fn get_table_metadata_by_s3_location(
 
     let table = match table {
         Ok(table) => table,
-        Err(sqlx::Error::RowNotFound) => return Ok(None),
+        Err(sqlx::Error::RowNotFound) => {
+            tracing::debug!("Table at location {} not found", location);
+            return Ok(None);
+        }
         Err(e) => {
+            tracing::warn!("Error fetching table: {}", e);
             return Err(e
                 .into_error_model("Error fetching table".to_string())
                 .into());
@@ -1522,6 +1454,35 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+    }
+
+    #[sqlx::test]
+    async fn test_rename_to_non_existent_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+
+        let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
+
+        let new_table_ident = TableIdent {
+            namespace: new_namespace.clone(),
+            name: "new_table".to_string(),
+        };
+
+        let mut transaction = pool.begin().await.unwrap();
+        let rename_err = rename_table(
+            warehouse_id,
+            table.table_id,
+            &table.table_ident,
+            &new_table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rename_err.error.code, StatusCode::NOT_FOUND);
+
+        transaction.rollback().await.unwrap();
     }
 
     #[sqlx::test]

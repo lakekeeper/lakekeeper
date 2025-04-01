@@ -6,7 +6,7 @@
       {
         "ordinal": 0,
         "name": "project_id",
-        "type_info": "Uuid"
+        "type_info": "Text"
       },
       {
         "ordinal": 1,
@@ -16,7 +16,7 @@
     ],
     "parameters": {
       "Left": [
-        "UuidArray",
+        "TextArray",
         "Bool"
       ]
     },
