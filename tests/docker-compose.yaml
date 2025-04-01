@@ -5,7 +5,7 @@ services:
       - KC_BOOTSTRAP_ADMIN_USERNAME=admin
       - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
     volumes:
-      - ../examples/access-control/keycloak/realm.json:/opt/keycloak/data/import/realm.json
+      - ../examples/access-control-simple/keycloak/realm.json:/opt/keycloak/data/import/realm.json
     healthcheck:
       test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3' ]
       interval: 2s

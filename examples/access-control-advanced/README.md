@@ -1,4 +1,4 @@
-## Trino Open Policy Agent (OPA) Bridge
+## Advanced Access Control with Trino Open Policy Agent (OPA) Bridge
 This example demonstrates how a shared multi-user trino can enforce permissions for individual users using [trino's OPA Connector](https://trino.io/docs/current/security/opa-access-control.html). 
 
 The example contains in addition to Lakekeeper:
@@ -10,7 +10,7 @@ The example contains in addition to Lakekeeper:
 
 Run the example with the following command:
 ```bash
-cd examples/trino-opa
+cd examples/access-control-advanced
 docker compose up
 ```
 
