@@ -18,4 +18,4 @@ The following files / folders are part of the bridge:
 For configuration options please check `policies/configuration.rego`.
 Further Readings:
 * [Documentation](https://docs.lakekeeper.io/docs/nightly/opa)
-* [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/trino-opa)
+* [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced)
