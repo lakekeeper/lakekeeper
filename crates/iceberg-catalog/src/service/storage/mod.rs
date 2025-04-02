@@ -3,6 +3,7 @@
 pub(crate) mod az;
 mod error;
 pub(crate) mod gcs;
+pub(crate) mod hdfs;
 pub(crate) mod s3;
 
 pub use az::{AdlsLocation, AdlsProfile, AzCredential};
@@ -10,7 +11,8 @@ pub(crate) use error::ValidationError;
 use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
-use iceberg::io::FileIO;
+use hdfs_native_object_store::HdfsObjectStore;
+use iceberg::io::FileIO as IcebergFileIO;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{table::TableProperties, Location},
@@ -22,10 +24,16 @@ use uuid::Uuid;
 use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
 use crate::{
     api::{iceberg::v1::DataAccess, CatalogConfig},
-    catalog::{compression_codec::CompressionCodec, io::list_location},
+    catalog::{
+        compression_codec::CompressionCodec,
+        io::{list_location, FileIO},
+    },
     request_metadata::RequestMetadata,
     retry::retry_fn,
-    service::tabular_idents::TabularIdentUuid,
+    service::{
+        storage::hdfs::{HdfsCredential, HdfsProfile},
+        tabular_idents::TabularIdentUuid,
+    },
     WarehouseIdent,
 };
 
@@ -49,6 +57,9 @@ pub enum StorageProfile {
     #[serde(rename = "gcs")]
     #[schema(title = "StorageProfileGcs")]
     Gcs(GcsProfile),
+    #[serde(rename = "hdfs")]
+    #[schema(title = "StorageProfileHdfs")]
+    Hdfs(HdfsProfile),
 }
 
 #[derive(Debug, Clone, strum_macros::Display)]
@@ -62,6 +73,8 @@ pub enum StorageType {
     Test,
     #[strum(serialize = "gcs")]
     Gcs,
+    #[strum(serialize = "hdfs")]
+    Hdfs,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -101,6 +114,9 @@ impl StorageProfile {
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
+            StorageProfile::Hdfs(prof) => {
+                todo!()
+            }
         }
     }
 
@@ -132,24 +148,31 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the underlying storage profile's file IO creation fails.
-    pub fn file_io(
-        &self,
-        secret: Option<&StorageCredential>,
-    ) -> Result<iceberg::io::FileIO, FileIoError> {
+    pub fn file_io(&self, secret: Option<&StorageCredential>) -> Result<FileIO, FileIoError> {
         match self {
-            StorageProfile::S3(profile) => profile.file_io(
-                secret
-                    .map(|s| s.try_to_s3())
-                    .transpose()?
-                    .map(Into::into)
-                    .as_ref(),
-            ),
-            StorageProfile::Adls(prof) => prof.file_io(secret.map(|s| s.try_to_az()).transpose()?),
+            StorageProfile::S3(profile) => profile
+                .file_io(
+                    secret
+                        .map(|s| s.try_to_s3())
+                        .transpose()?
+                        .map(Into::into)
+                        .as_ref(),
+                )
+                .map(FileIO::FileIO),
+            StorageProfile::Adls(prof) => prof
+                .file_io(secret.map(|s| s.try_to_az()).transpose()?)
+                .map(FileIO::FileIO),
             #[cfg(test)]
-            StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
+            StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file")
+                .build()
+                .map(FileIO::FileIO)
+                .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))?),
             StorageProfile::Gcs(prof) => {
-                Ok(prof.file_io(secret.map(|s| s.try_into_gcs()).transpose()?)?)
+                Ok(prof.file_io(secret.map(|s| s.try_into_gcs()).transpose()?)?).map(FileIO::FileIO)
             }
+            StorageProfile::Hdfs(prof) => HdfsObjectStore::with_url(prof.url.as_str())
+                .map(FileIO::HdfsNative)
+                .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e))),
         }
     }
 
@@ -174,6 +197,7 @@ impl StorageProfile {
                         storage_type: self.storage_type(),
                     })
             }
+            StorageProfile::Hdfs(prof) => prof.base_location(),
         }
     }
 
@@ -200,6 +224,7 @@ impl StorageProfile {
             StorageProfile::Test(_) => StorageType::Test,
             StorageProfile::Adls(_) => StorageType::Adls,
             StorageProfile::Gcs(_) => StorageType::Gcs,
+            StorageProfile::Hdfs(_) => StorageType::Hdfs,
         }
     }
 
@@ -254,6 +279,9 @@ impl StorageProfile {
                     )
                     .await
             }
+            StorageProfile::Hdfs(profile) => {
+                profile.generate_table_config(data_access, table_location, storage_permissions)
+            }
         }
     }
 
@@ -275,6 +303,7 @@ impl StorageProfile {
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(()),
             StorageProfile::Gcs(profile) => profile.normalize(),
+            StorageProfile::Hdfs(profile) => profile.normalize(),
         }
     }
 
@@ -311,6 +340,7 @@ impl StorageProfile {
             StorageProfile::Gcs(_) => true,
             #[cfg(test)]
             StorageProfile::Test(_) => false,
+            StorageProfile::Hdfs(_) => false,
         };
 
         if test_vended_credentials {
@@ -330,7 +360,8 @@ impl StorageProfile {
             match &self {
                 StorageProfile::S3(_) => {
                     tracing::debug!("Getting s3 file io from table config for vended credentials.");
-                    let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
+                    let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)
+                        .map(FileIO::FileIO)?;
                     tracing::debug!(
                         "Validating read/write access to: {test_location} using vended credentials"
                     );
@@ -344,7 +375,8 @@ impl StorageProfile {
                     let sts_file_io = az::get_file_io_from_table_config(
                         &tbl_config.config,
                         p.filesystem.to_string(),
-                    )?;
+                    )
+                    .map(FileIO::FileIO)?;
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
                 }
@@ -354,16 +386,21 @@ impl StorageProfile {
                     tracing::debug!(
                         "Getting gcs file io from table config for vended credentials."
                     );
-                    let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
+                    let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)
+                        .map(FileIO::FileIO)?;
                     tracing::debug!("Validating gcs vended credentials access to: {test_location}");
                     self.validate_read_write(&sts_file_io, &test_location, true)
                         .await?;
+                }
+                StorageProfile::Hdfs(_) => {
+                    tracing::debug!("HDFS does not support vended credentials, not validating it");
                 }
             }
         }
         tracing::info!("Cleanup started");
         // Cleanup
-        crate::catalog::io::remove_all(&file_io, &test_location)
+        file_io
+            .delete_all(&test_location)
             .await
             .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
 
@@ -402,7 +439,7 @@ impl StorageProfile {
 
     async fn validate_read_write(
         &self,
-        file_io: &iceberg::io::FileIO,
+        file_io: &FileIO,
         test_location: &Location,
         is_vended_credentials: bool,
     ) -> Result<(), ValidationError> {
@@ -433,33 +470,25 @@ impl StorageProfile {
         }
 
         // Test write
-        crate::catalog::io::write_metadata_file(
-            &test_file_write,
-            "test",
-            compression_codec,
-            file_io,
-        )
-        .await
-        .map_err(|e| {
-            tracing::info!("Error while writing file: {e:?}");
+        file_io
+            .write_metadata_file(&test_file_write, "test", compression_codec)
+            .await
+            .map_err(|e| {
+                tracing::info!("Error while writing file: {e:?}");
+                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
+            })?;
+
+        // Test read
+        let _ = file_io.read_file(&test_file_write).await.map_err(|e| {
+            tracing::info!("Error while reading file: {e:?}");
             ValidationError::IoOperationFailed(e, Box::new(self.clone()))
         })?;
 
-        // Test read
-        let _ = crate::catalog::io::read_file(file_io, &test_file_write)
-            .await
-            .map_err(|e| {
-                tracing::info!("Error while reading file: {e:?}");
-                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
-            })?;
-
         // Test delete
-        crate::catalog::io::delete_file(file_io, &test_file_write)
-            .await
-            .map_err(|e| {
-                tracing::info!("Error while deleting file: {e:?}");
-                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
-            })?;
+        file_io.delete_file(&test_file_write).await.map_err(|e| {
+            tracing::info!("Error while deleting file: {e:?}");
+            ValidationError::IoOperationFailed(e, Box::new(self.clone()))
+        })?;
 
         tracing::debug!(
             "Successfully wrote, read and deleted file at: {}",
@@ -661,6 +690,9 @@ pub enum StorageCredential {
     #[serde(rename = "gcs")]
     #[schema(title = "StorageCredentialGcs")]
     Gcs(GcsCredential),
+    #[serde(rename = "hdfs")]
+    #[schema(title = "StorageCredentialHdfs")]
+    Hdfs(HdfsCredential),
 }
 
 impl SecretInStorage for StorageCredential {}
@@ -672,6 +704,7 @@ impl StorageCredential {
             StorageCredential::S3(_) => StorageType::S3,
             StorageCredential::Az(_) => StorageType::Adls,
             StorageCredential::Gcs(_) => StorageType::Gcs,
+            StorageCredential::Hdfs(_) => StorageType::Hdfs,
         }
     }
 
@@ -754,7 +787,8 @@ pub(crate) async fn check_location_is_empty(
 ) -> Result<(), ValidationError> {
     tracing::info!("Checking location is empty: {location}");
 
-    let mut entry_stream = list_location(file_io, location, Some(1))
+    let mut entry_stream = file_io
+        .list_location(location, Some(1))
         .await
         .map_err(|e| {
             tracing::warn!("Initing list location failed: {e}");
@@ -1069,6 +1103,9 @@ mod tests {
                 let downscoped2 = gcs::get_file_io_from_table_config(&config2.config).unwrap();
                 (downscoped1, downscoped2)
             }
+            StorageProfile::Hdfs(_) => {
+                unimplemented!("Not supported")
+            }
         };
         // can read & write in own locations
         let test_file1 = table_location1.cloning_push("test.txt");
@@ -1124,7 +1161,7 @@ mod tests {
         profile
             .file_io(Some(cred))
             .unwrap()
-            .remove_all(base_location.as_str())
+            .delete_all(&base_location)
             .await
             .unwrap();
     }

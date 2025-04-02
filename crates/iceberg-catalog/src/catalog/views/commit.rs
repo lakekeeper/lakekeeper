@@ -143,13 +143,13 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     };
 
     let file_io = storage_profile.file_io(storage_secret.as_ref())?;
-    write_metadata_file(
-        &metadata_location,
-        &requested_update_metadata,
-        CompressionCodec::try_from_metadata(&requested_update_metadata)?,
-        &file_io,
-    )
-    .await?;
+    file_io
+        .write_metadata_file(
+            &metadata_location,
+            &requested_update_metadata,
+            CompressionCodec::try_from_metadata(&requested_update_metadata)?,
+        )
+        .await?;
 
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
     // Generate the storage profile. This requires the storage secret

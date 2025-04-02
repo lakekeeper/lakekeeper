@@ -35,10 +35,13 @@ aws-smithy-http = "0.60.11"
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
+figment = { version = "0.10.19", features = ["env"] }
 google-cloud-auth = { package = "gcloud-auth", version = "1.0.0", features = [
     "rustls-tls",
 ], default-features = false }
-figment = { version = "0.10.19", features = ["env"] }
+hdfs-native = { version = "0.11.1" }
+hdfs-native-object-store = { version = "0.13.0" }
+object_store = { version = "0.11.0" }
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"

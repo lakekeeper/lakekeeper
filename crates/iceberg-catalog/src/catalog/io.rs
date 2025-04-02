@@ -1,7 +1,10 @@
-use futures::{stream::BoxStream, StreamExt};
-use iceberg::{io::FileIO, spec::TableMetadata};
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use hdfs_native_object_store::HdfsObjectStore;
+use iceberg::{io::FileIO as IcebergFileIO, spec::TableMetadata};
 use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
+use object_store::{ObjectStore, PutPayload};
 use serde::Serialize;
+use tokio::io::AsyncWrite;
 
 use super::compression_codec::CompressionCodec;
 use crate::{
@@ -9,6 +12,157 @@ use crate::{
     retry::retry_fn,
     service::storage::az::reduce_scheme_string as reduce_azure_scheme,
 };
+
+pub(crate) enum FileIO {
+    FileIO(IcebergFileIO),
+    HdfsNative(HdfsObjectStore),
+}
+
+impl FileIO {
+    pub(crate) async fn write_metadata_file(
+        &self,
+        metadata_location: &Location,
+        metadata: impl Serialize,
+        compression_codec: CompressionCodec,
+    ) -> Result<(), IoError> {
+        match self {
+            FileIO::FileIO(file_io) => {
+                write_metadata_file(metadata_location, metadata, compression_codec, file_io).await
+            }
+            FileIO::HdfsNative(hdfs) => {
+                eprintln!("{metadata_location}");
+                let metadata_location = metadata_location
+                    .as_str()
+                    .strip_prefix(&format!("{}://", metadata_location.scheme()))
+                    .unwrap();
+                eprintln!("{metadata_location}");
+                let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
+
+                let metadata_bytes = compression_codec.compress(buf).await?;
+
+                let _ = hdfs
+                    .put(
+                        &object_store::path::Path::from(metadata_location),
+                        PutPayload::from(metadata_bytes),
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!(?e, "Failed to write metadata file");
+                        IoError::FileWrite(Box::new(e))
+                    })?;
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) async fn read_file(&self, file: &Location) -> Result<Vec<u8>, IoError> {
+        match self {
+            FileIO::FileIO(file_io) => read_file(file_io, file).await,
+            FileIO::HdfsNative(hdfs) => {
+                let file = file
+                    .as_str()
+                    .strip_prefix(&format!("{}://", file.scheme()))
+                    .unwrap();
+                let content = hdfs
+                    .get(&object_store::path::Path::from(file))
+                    .await
+                    .map_err(|e| IoError::FileRead(Box::new(e)))?;
+                Ok(content
+                    .bytes()
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!(?e, "Failed to read file");
+                        IoError::FileRead(Box::new(e))
+                    })
+                    .map(|pl| pl.to_vec())?)
+            }
+        }
+    }
+
+    pub(crate) async fn read_metadata_file(
+        &self,
+        file: &Location,
+    ) -> Result<TableMetadata, IoError> {
+        let content = self.read_file(file).await?;
+        tokio::task::spawn_blocking(move || {
+            serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
+        })
+        .await
+        .unwrap_or_else(|e| Err(IoError::FileDecompression(Box::new(e))))
+    }
+
+    pub(crate) async fn delete_all(&self, location: &Location) -> Result<(), IoError> {
+        match self {
+            FileIO::FileIO(file_io) => remove_all(file_io, location).await,
+            FileIO::HdfsNative(hdfs) => {
+                let location = location
+                    .as_str()
+                    .strip_prefix(&format!("{}://", location.scheme()))
+                    .unwrap();
+                let files = hdfs
+                    .list(Some(&object_store::path::Path::from(location)))
+                    .map(|p| p.map(|p| p.location));
+                let delete_stream = hdfs.delete_stream(files.boxed());
+                let v = delete_stream.try_collect::<Vec<_>>().await;
+                match v {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(?e, "Failed to delete files");
+                        return Err(IoError::FileDelete(Box::new(e)));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) async fn delete_file(&self, location: &Location) -> Result<(), IoError> {
+        match self {
+            FileIO::FileIO(file_io) => delete_file(file_io, location).await,
+            FileIO::HdfsNative(hdfs) => {
+                let location = location
+                    .as_str()
+                    .strip_prefix(&format!("{}://", location.scheme()))
+                    .unwrap();
+                hdfs.delete(&object_store::path::Path::from(location))
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!(?e, "Failed to delete file");
+                        IoError::FileDelete(Box::new(e))
+                    })
+            }
+        }
+    }
+
+    pub(crate) async fn list_location<'a>(
+        &'a self,
+        location: &'a Location,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
+        match self {
+            FileIO::FileIO(file_io) => list_location(file_io, location, page_size).await,
+            FileIO::HdfsNative(hdfs) => {
+                let location = location
+                    .as_str()
+                    .strip_prefix(&format!("{}://", location.scheme()))
+                    .unwrap();
+                Ok(hdfs
+                    .list(Some(&object_store::path::Path::from(location)))
+                    .map(|p| p.map(|p| p.location.to_string()))
+                    .chunks(page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE))
+                    .map(|c| {
+                        c.into_iter()
+                            .collect::<Result<Vec<String>, _>>()
+                            .map_err(|e| {
+                                tracing::warn!(?e, "Failed to list files");
+                                IoError::List(Box::new(e))
+                            })
+                    })
+                    .boxed())
+            }
+        }
+    }
+}
 
 fn normalize_location(location: &Location) -> String {
     if location.as_str().starts_with("abfs") {
@@ -30,7 +184,7 @@ pub(crate) async fn write_metadata_file(
     metadata_location: &Location,
     metadata: impl Serialize,
     compression_codec: CompressionCodec,
-    file_io: &FileIO,
+    file_io: &IcebergFileIO,
 ) -> Result<(), IoError> {
     let metadata_location = normalize_location(metadata_location);
     tracing::debug!("Writing metadata file to {}", metadata_location);
@@ -52,7 +206,10 @@ pub(crate) async fn write_metadata_file(
     .await
 }
 
-pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
+pub(crate) async fn delete_file(
+    file_io: &IcebergFileIO,
+    location: &Location,
+) -> Result<(), IoError> {
     let location = normalize_location(location);
 
     retry_fn(|| async {
@@ -60,12 +217,15 @@ pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result
             .clone()
             .delete(location.clone())
             .await
-            .map_err(IoError::FileDelete)
+            .map_err(|e| IoError::FileDelete(Box::new(e)))
     })
     .await
 }
 
-pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u8>, IoError> {
+pub(crate) async fn read_file(
+    file_io: &IcebergFileIO,
+    file: &Location,
+) -> Result<Vec<u8>, IoError> {
     let file = normalize_location(file);
 
     let content: Vec<_> = retry_fn(|| async {
@@ -90,22 +250,10 @@ pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u
     }
 }
 
-pub(crate) async fn read_metadata_file(
-    file_io: &FileIO,
-    file: &Location,
-) -> Result<TableMetadata, IoError> {
-    let content = read_file(file_io, file).await?;
-    match tokio::task::spawn_blocking(move || {
-        serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => Err(IoError::FileDecompression(Box::new(e))),
-    }
-}
-
-pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
+pub(crate) async fn remove_all(
+    file_io: &IcebergFileIO,
+    location: &Location,
+) -> Result<(), IoError> {
     let location = normalize_location(location.clone().with_trailing_slash());
 
     retry_fn(|| async {
@@ -121,7 +269,7 @@ pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<
 pub(crate) const DEFAULT_LIST_LOCATION_PAGE_SIZE: usize = 1000;
 
 pub(crate) async fn list_location<'a>(
-    file_io: &'a FileIO,
+    file_io: &'a IcebergFileIO,
     location: &'a Location,
     page_size: Option<usize>,
 ) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
@@ -136,7 +284,7 @@ pub(crate) async fn list_location<'a>(
             .await
             .map_err(|e| {
                 tracing::warn!(?e, "Failed to list files in location. Retry three times...");
-                IoError::List(e)
+                IoError::List(Box::new(e))
             })
     })
     .await?
@@ -145,7 +293,7 @@ pub(crate) async fn list_location<'a>(
             .into_iter()
             .map(|it| it.path().to_string())
             .collect()),
-        Err(e) => Err(IoError::List(e)),
+        Err(e) => Err(IoError::List(Box::new(e))),
     });
     Ok(entries.boxed())
 }
@@ -175,11 +323,11 @@ pub enum IoError {
     #[error("Failed to close file. Please check the storage credentials.")]
     FileClose(#[source] iceberg::Error),
     #[error("Failed to delete file. Please check the storage credentials.")]
-    FileDelete(#[source] iceberg::Error),
+    FileDelete(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to remove all files in location. Please check the storage credentials.")]
     FileRemoveAll(#[source] iceberg::Error),
     #[error("Failed to list files in location. Please check the storage credentials.")]
-    List(#[source] iceberg::Error),
+    List(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
 }
 
 impl IoError {
@@ -217,15 +365,19 @@ impl From<IoError> for IcebergErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use iceberg_ext::configs::ParseFromStr;
     use needs_env_var::needs_env_var;
+    use serial_test::serial;
 
     use super::*;
-    use crate::service::storage::{StorageCredential, StorageProfile};
+    use crate::service::storage::{hdfs, hdfs::HdfsProfile, StorageCredential, StorageProfile};
 
     #[allow(dead_code)]
     async fn test_remove_all(cred: StorageCredential, profile: StorageProfile) {
         async fn list_simple(file_io: &FileIO, location: &Location) -> Option<Vec<String>> {
-            let list = list_location(file_io, location, Some(10)).await.unwrap();
+            let list = file_io.list_location(location, Some(10)).await.unwrap();
 
             list.collect::<Vec<_>>()
                 .await
@@ -245,10 +397,12 @@ mod tests {
         let data_2 = serde_json::json!({"file": "2"});
 
         let file_io = profile.file_io(Some(&cred)).unwrap();
-        write_metadata_file(&file_1, data_1, CompressionCodec::Gzip, &file_io)
+        file_io
+            .write_metadata_file(&file_1, data_1, CompressionCodec::Gzip)
             .await
             .unwrap();
-        write_metadata_file(&file_2, data_2, CompressionCodec::Gzip, &file_io)
+        file_io
+            .write_metadata_file(&file_2, data_2, CompressionCodec::Gzip)
             .await
             .unwrap();
 
@@ -265,8 +419,8 @@ mod tests {
         assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
 
         // Remove folder 1 - file 2 should still be here:
-        remove_all(&file_io, &folder_1).await.unwrap();
-        assert!(read_file(&file_io, &file_2).await.is_ok());
+        file_io.delete_all(&folder_1).await.unwrap();
+        assert!(file_io.read_file(&file_2).await.is_ok());
 
         let list = list_simple(&file_io, &location).await.unwrap();
         // Assert that "folder/" / file1 is gone
@@ -278,7 +432,7 @@ mod tests {
         assert!(list_simple(&file_io, &folder_1).await.is_none());
 
         // Cleanup
-        remove_all(&file_io, &folder_2).await.unwrap();
+        file_io.delete_all(&folder_2).await.unwrap();
     }
 
     #[needs_env_var(TEST_AWS = 1)]
@@ -330,5 +484,12 @@ mod tests {
 
             test_remove_all(cred, profile).await;
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_remove_all_hdfs() {
+        let (dfs, prof, creds) = hdfs::test::test_profile();
+        test_remove_all(creds, StorageProfile::Hdfs(prof)).await
     }
 }

@@ -62,6 +62,9 @@ lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
 moka = { workspace = true }
+object_store = { workspace = true }
+hdfs-native = { workspace = true }
+hdfs-native-object-store = { workspace = true }
 openfga-rs = { workspace = true, optional = false }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
@@ -109,4 +112,5 @@ tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-test = "0.2.5"
-
+hdfs-native = { workspace = true, features = ["integration-test"] }
+serial_test = { version = "3.2.0", features = ["async"] }

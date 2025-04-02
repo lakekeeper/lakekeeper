@@ -205,7 +205,9 @@ impl S3Profile {
                 );
         }
 
-        Ok(builder.build()?)
+        builder
+            .build()
+            .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))
     }
 
     /// Validate the S3 profile.
@@ -652,7 +654,9 @@ pub(super) fn get_file_io_from_table_config(
         }
     }
 
-    Ok(builder.build()?)
+    builder
+        .build()
+        .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))
 }
 
 fn validate_region(region: &str) -> Result<(), ValidationError> {
