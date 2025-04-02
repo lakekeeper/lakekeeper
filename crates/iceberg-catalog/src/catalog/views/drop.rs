@@ -25,7 +25,10 @@ use crate::{
 
 pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
-    DropParams { purge_requested }: DropParams,
+    DropParams {
+        purge_requested,
+        force,
+    }: DropParams,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<()> {
@@ -51,7 +54,6 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    let purge_requested = purge_requested.unwrap_or(true);
 
     let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
@@ -66,7 +68,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
-            let location = C::drop_view(view_id, t.transaction()).await?;
+            let location = C::drop_view(view_id, force, t.transaction()).await?;
             // committing here means maybe dangling data if the queue fails
             // OTOH committing after queuing means we may end up with a view pointing to deleted files
             // I feel that some undeleted files are less bad than a view that cannot be loaded
@@ -89,7 +91,8 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer.delete_view(view_id).await?;
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
-            C::mark_tabular_as_deleted(TabularIdentUuid::View(*view_id), t.transaction()).await?;
+            C::mark_tabular_as_deleted(TabularIdentUuid::View(*view_id), force, t.transaction())
+                .await?;
             t.commit().await?;
 
             state
@@ -189,7 +192,8 @@ mod test {
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
-                purge_requested: None,
+                purge_requested: true,
+                force: false,
             },
             api_context.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -257,7 +261,8 @@ mod test {
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
-                purge_requested: None,
+                purge_requested: true,
+                force: false,
             },
             api_context.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -283,13 +288,83 @@ mod test {
                 view: TableIdent::from_strs(&table_ident).unwrap(),
             },
             DropParams {
-                purge_requested: None,
+                purge_requested: true,
+                force: false,
             },
             api_context.clone(),
             RequestMetadata::new_unauthenticated(),
         )
         .await
         .expect("Unprotected View should be droppable");
+
+        let error = load_view(
+            api_context,
+            ViewParameters {
+                prefix: Some(Prefix(prefix.to_string())),
+                view: TableIdent::from_strs(table_ident).unwrap(),
+            },
+        )
+        .await
+        .expect_err("View should no longer exist");
+
+        assert_eq!(error.error.code, StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn test_can_force_drop_protected_view(pool: PgPool) {
+        let (api_context, namespace, whi) = setup(pool, None).await;
+
+        let view_name = "my-view";
+        let rq: CreateViewRequest =
+            super::super::create::test::create_view_request(Some(view_name), None);
+
+        let prefix = &whi.to_string();
+        let created_view = create_view(
+            api_context.clone(),
+            namespace.clone(),
+            rq,
+            Some(prefix.into()),
+        )
+        .await
+        .unwrap();
+        let mut table_ident = namespace.clone().inner();
+        table_ident.push(view_name.into());
+
+        let loaded_view = load_view(
+            api_context.clone(),
+            ViewParameters {
+                prefix: Some(Prefix(prefix.to_string())),
+                view: TableIdent::from_strs(&table_ident).unwrap(),
+            },
+        )
+        .await
+        .expect("View should be loadable");
+        assert_eq!(loaded_view.metadata, created_view.metadata);
+
+        set_protect_view(
+            loaded_view.metadata.uuid().into(),
+            WarehouseIdent::from_str(prefix.as_str()).unwrap(),
+            true,
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        drop_view(
+            ViewParameters {
+                prefix: Some(Prefix(prefix.to_string())),
+                view: TableIdent::from_strs(&table_ident).unwrap(),
+            },
+            DropParams {
+                purge_requested: true,
+                force: false,
+            },
+            api_context.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect("Protected View should be droppable via force");
 
         let error = load_view(
             api_context,

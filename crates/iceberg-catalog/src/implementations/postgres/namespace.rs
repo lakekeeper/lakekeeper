@@ -333,7 +333,7 @@ pub(crate) async fn drop_namespace(
     namespace_id: NamespaceIdentUuid,
     NamespaceDropFlags {
         force,
-        _purge,
+        purge: _purge,
         recursive,
     }: NamespaceDropFlags,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -372,10 +372,12 @@ pub(crate) async fn drop_namespace(
             -- If recursive is true, delete all child namespaces...
             AND (namespace_id = $2 OR ($3 AND namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
             -- ...but only if none are locked
-            AND NOT protected
-            AND ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR ($3 AND NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true)))
+            AND ($4 OR (NOT protected))
+            AND ($4 OR ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR ($3 AND NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true))))
             AND NOT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')
-            AND (NOT EXISTS (SELECT 1 from tabulars) OR ($3 AND NOT EXISTS (SELECT 1 from tabulars WHERE protected = true)))
+            AND ((NOT EXISTS (SELECT 1 from tabulars)) OR
+                  ($3 AND ($4 OR (NOT EXISTS (SELECT 1 from tabulars WHERE protected = true))))
+                )
             AND warehouse_id IN (
                 SELECT warehouse_id FROM warehouse WHERE status = 'active'
             )
@@ -397,7 +399,8 @@ pub(crate) async fn drop_namespace(
         "#,
         *warehouse_id,
         *namespace_id,
-        recursive
+        recursive,
+        force
     )
         .fetch_one(&mut **transaction)
         .await
@@ -439,13 +442,13 @@ pub(crate) async fn drop_namespace(
         );
     }
 
-    if record.is_protected {
+    if !force && record.is_protected {
         return Err(
             ErrorModel::conflict("Namespace is protected", "NamespaceProtected", None).into(),
         );
     }
 
-    if record.has_protected_tabulars || record.has_protected_namespaces {
+    if !force && (record.has_protected_tabulars || record.has_protected_namespaces) {
         return Err(ErrorModel::conflict(
             "Namespace has protected tabulars or namespaces",
             "NamespaceNotEmpty",
@@ -1128,5 +1131,58 @@ pub(crate) mod tests {
         assert!(result.child_namespaces.is_empty());
         assert!(result.child_tables.is_empty());
         assert!(result.open_tasks.is_empty());
+    }
+
+    #[sqlx::test]
+    async fn test_can_recursive_force_drop_nonempty_protected_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let outer_namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &outer_namespace, None).await;
+
+        let namespace =
+            NamespaceIdent::from_vec(vec!["test".to_string(), "test2".to_string()]).unwrap();
+        let _ = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        let err = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.error.code, StatusCode::CONFLICT);
+
+        let drop_info = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags {
+                force: true,
+                recursive: true,
+                purge: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(drop_info.child_namespaces.len(), 1);
+        assert_eq!(drop_info.child_tables.len(), 0);
+        assert_eq!(drop_info.open_tasks.len(), 0);
+
+        transaction.commit().await.unwrap();
     }
 }

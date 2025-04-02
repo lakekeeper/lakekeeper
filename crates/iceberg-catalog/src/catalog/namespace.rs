@@ -366,7 +366,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await
         } else {
-            C::drop_namespace(warehouse_id, namespace_id, false, t.transaction()).await?;
+            C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
             authorizer
                 .delete_namespace(&request_metadata, namespace_id)
                 .await?;
@@ -474,7 +474,7 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
         ))
     {
         let drop_info =
-            C::drop_namespace(warehouse_id, namespace_id, true, t.transaction()).await?;
+            C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
         // commit before starting the purge tasks so that we cannot end in the situation where
         // data is deleted but the transaction is not committed, meaning dangling pointers.
         t.commit().await?;

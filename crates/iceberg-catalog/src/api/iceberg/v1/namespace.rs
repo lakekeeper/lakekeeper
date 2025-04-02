@@ -27,11 +27,20 @@ use crate::{
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default)]
 pub struct NamespaceDropFlags {
-    #[serde(default)]
+    #[serde(
+        deserialize_with = "crate::api::iceberg::types::deserialize_bool",
+        default
+    )]
     pub force: bool,
-    #[serde(default)]
+    #[serde(
+        deserialize_with = "crate::api::iceberg::types::deserialize_bool",
+        default
+    )]
     pub purge: bool,
-    #[serde(default)]
+    #[serde(
+        deserialize_with = "crate::api::iceberg::types::deserialize_bool",
+        default
+    )]
     pub recursive: bool,
 }
 

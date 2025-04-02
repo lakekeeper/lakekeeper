@@ -451,7 +451,7 @@ pub(crate) async fn delete_warehouse(
                WHERE warehouse_id = $1
            ),
            deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND ((not protected) OR $2))
-           SELECT (protected OR $2) FROM delete_info"#,
+           SELECT (protected OR $2) as "protected!" FROM delete_info"#,
         *warehouse_id,
         force
     )

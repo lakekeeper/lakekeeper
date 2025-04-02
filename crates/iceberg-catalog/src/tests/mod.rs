@@ -133,13 +133,17 @@ pub(crate) async fn drop_table<T: Authorizer>(
     ns_name: &str,
     name: &str,
     purge_requested: Option<bool>,
+    force: bool,
 ) -> crate::api::Result<()> {
     CatalogServer::drop_table(
         TableParameters {
             prefix: Some(Prefix(prefix.to_string())),
             table: TableIdent::new(NamespaceIdent::new(ns_name.to_string()), name.to_string()),
         },
-        DropParams { purge_requested },
+        DropParams {
+            purge_requested: purge_requested.unwrap_or_default(),
+            force,
+        },
         api_context,
         random_request_metadata(),
     )

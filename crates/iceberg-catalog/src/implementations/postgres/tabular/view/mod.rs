@@ -164,9 +164,10 @@ pub(crate) async fn create_view(
 
 pub(crate) async fn drop_view(
     view_id: ViewIdentUuid,
+    force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularIdentUuid::View(*view_id), transaction).await
+    drop_tabular(TabularIdentUuid::View(*view_id), force, transaction).await
 }
 
 /// Rename a table. Tables may be moved across namespaces.
@@ -737,7 +738,7 @@ pub(crate) mod tests {
     async fn drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(created_meta.uuid().into(), &mut tx)
+        super::drop_view(created_meta.uuid().into(), false, &mut tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -754,9 +755,14 @@ pub(crate) mod tests {
     async fn soft_drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        mark_tabular_as_deleted(TabularIdentUuid::View(created_meta.uuid()), None, &mut tx)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            TabularIdentUuid::View(created_meta.uuid()),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.uuid().into(),
@@ -767,7 +773,7 @@ pub(crate) mod tests {
         .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        super::drop_view(created_meta.uuid().into(), &mut tx)
+        super::drop_view(created_meta.uuid().into(), false, &mut tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -822,7 +828,7 @@ pub(crate) mod tests {
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
         let (state, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        let e = super::drop_view(Uuid::now_v7().into(), &mut tx)
+        let e = super::drop_view(Uuid::now_v7().into(), false, &mut tx)
             .await
             .expect_err("dropping random uuid should not succeed");
         tx.commit().await.unwrap();

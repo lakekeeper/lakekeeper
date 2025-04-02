@@ -89,6 +89,7 @@ mod test {
             setup.namespace_name.as_str(),
             tn.as_str(),
             None,
+            false,
         )
         .await
         .unwrap();

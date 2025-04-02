@@ -645,7 +645,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     /// Drop a table from the catalog
     async fn drop_table(
         parameters: TableParameters,
-        DropParams { purge_requested }: DropParams,
+        DropParams {
+            purge_requested,
+            force,
+        }: DropParams,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -686,7 +689,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let purge = purge_requested.unwrap_or(true);
 
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
@@ -699,13 +701,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         match warehouse.tabular_delete_profile {
             TabularDeleteProfile::Hard {} => {
-                let location = C::drop_table(table_id, t.transaction()).await?;
+                let location = C::drop_table(table_id, force, t.transaction()).await?;
                 // committing here means maybe dangling data if queue_tabular_purge fails
                 // commiting after queuing means we may end up with a table pointing nowhere
                 // I feel that some undeleted files are less bad than a table that's there but can't be loaded
                 t.commit().await?;
 
-                if purge {
+                if purge_requested {
                     state
                         .v1_state
                         .queues
@@ -723,8 +725,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer.delete_table(table_id).await?;
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
-                C::mark_tabular_as_deleted(TabularIdentUuid::Table(*table_id), t.transaction())
-                    .await?;
+                C::mark_tabular_as_deleted(
+                    TabularIdentUuid::Table(*table_id),
+                    force,
+                    t.transaction(),
+                )
+                .await?;
                 t.commit().await?;
 
                 state
@@ -734,7 +740,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         tabular_id: table_id.into(),
                         warehouse_ident: warehouse_id,
                         tabular_type: TabularType::Table,
-                        purge,
+                        purge: purge_requested,
                         expire_at: chrono::Utc::now() + expiration_seconds,
                     })
                     .await?;
@@ -3233,7 +3239,8 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DropParams {
-                purge_requested: None,
+                purge_requested: true,
+                force: false,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3258,12 +3265,56 @@ pub(crate) mod test {
                 table: table_ident.clone(),
             },
             DropParams {
-                purge_requested: None,
+                purge_requested: true,
+                force: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
         .await
         .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_can_force_drop_protected_table(pool: PgPool) {
+        let (ctx, _, ns_params, _) = table_test_setup(pool).await;
+        let table_ident = TableIdent {
+            namespace: ns_params.namespace.clone(),
+            name: "tab-1".to_string(),
+        };
+        let tab = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some("tab-1".to_string())),
+            DataAccess::none(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::set_table_protection(
+            tab.metadata.uuid().into(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DropParams {
+                purge_requested: true,
+                force: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect("Table couldn't be force dropped which should be possible");
     }
 }

@@ -192,6 +192,7 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
             )
             .delete(
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 Query(drop_params): Query<DropParams>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>| async {
                     {
@@ -203,9 +204,7 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                                     name: view,
                                 },
                             },
-                            DropParams {
-                                purge_requested: None,
-                            },
+                            drop_params,
                             api_context,
                             metadata,
                         )

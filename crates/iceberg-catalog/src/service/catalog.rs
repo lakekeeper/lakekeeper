@@ -443,6 +443,7 @@ where
     /// Returns the table location
     async fn drop_table<'a>(
         table_id: TableIdentUuid,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
@@ -458,6 +459,7 @@ where
 
     async fn mark_tabular_as_deleted(
         table_id: TabularIdentUuid,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
@@ -714,6 +716,7 @@ where
     /// Used for cleanup
     async fn drop_view<'a>(
         view_id: ViewIdentUuid,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 

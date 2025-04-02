@@ -817,9 +817,10 @@ pub(crate) async fn rename_table(
 
 pub(crate) async fn drop_table(
     table_id: TableIdentUuid,
+    force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularIdentUuid::Table(*table_id), transaction).await
+    drop_tabular(TabularIdentUuid::Table(*table_id), force, transaction).await
 }
 
 #[derive(Default)]
@@ -1775,6 +1776,7 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
         mark_tabular_as_deleted(
             TabularIdentUuid::Table(*table.table_id),
+            false,
             None,
             &mut transaction,
         )
@@ -1808,7 +1810,9 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        drop_table(table.table_id, &mut transaction).await.unwrap();
+        drop_table(table.table_id, false, &mut transaction)
+            .await
+            .unwrap();
         transaction.commit().await.unwrap();
 
         assert!(get_table_metadata_by_id(

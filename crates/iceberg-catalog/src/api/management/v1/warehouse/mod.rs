@@ -1105,7 +1105,8 @@ mod test {
                     },
                 },
                 DropParams {
-                    purge_requested: None,
+                    purge_requested: true,
+                    force: true,
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
@@ -1186,7 +1187,8 @@ mod test {
                     },
                 },
                 DropParams {
-                    purge_requested: None,
+                    purge_requested: true,
+                    force: false,
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),

@@ -703,6 +703,10 @@ pub mod v1 {
 
     #[derive(Debug, Deserialize, utoipa::IntoParams)]
     pub struct DeleteWarehouseQuery {
+        #[serde(
+            deserialize_with = "crate::api::iceberg::types::deserialize_bool",
+            default
+        )]
         pub(crate) force: bool,
     }
 

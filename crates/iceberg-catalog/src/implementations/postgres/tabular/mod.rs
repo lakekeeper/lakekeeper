@@ -694,6 +694,7 @@ pub(crate) async fn clear_tabular_deleted_at(
 
 pub(crate) async fn mark_tabular_as_deleted(
     tabular_id: TabularIdentUuid,
+    force: bool,
     delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -707,13 +708,14 @@ pub(crate) async fn mark_tabular_as_deleted(
             UPDATE tabular
             SET deleted_at = $2
             WHERE tabular_id = $1
-                AND NOT protected
+                AND ((NOT protected) OR $3)
             RETURNING tabular_id
         )
-        SELECT protected, (SELECT tabular_id from update) from update_info
+        SELECT (protected OR $3) as "protected!", (SELECT tabular_id from update) from update_info
         "#,
         *tabular_id,
-        delete_date.unwrap_or(Utc::now())
+        delete_date.unwrap_or(Utc::now()),
+        force,
     )
     .fetch_one(&mut **transaction)
     .await
@@ -747,6 +749,7 @@ pub(crate) async fn mark_tabular_as_deleted(
 
 pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
+    force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
@@ -762,13 +765,14 @@ pub(crate) async fn drop_tabular(
                WHERE tabular_id = $1
                    AND typ = $2
                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-                   AND NOT protected
+                   AND ((NOT protected) OR $3)
               RETURNING fs_location, fs_protocol)
-              SELECT protected,
+              SELECT (protected OR $3) as "protected!",
                      (SELECT fs_protocol from deleted),
                      (SELECT fs_location from deleted) from delete_info"#,
         *tabular_id,
-        TabularType::from(tabular_id) as _
+        TabularType::from(tabular_id) as _,
+        force
     )
     .fetch_one(&mut **transaction)
     .await

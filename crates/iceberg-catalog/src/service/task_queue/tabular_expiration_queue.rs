@@ -113,7 +113,7 @@ where
     let tabular_location = match expiration.tabular_type {
         TabularType::Table => {
             let table_id = TableIdentUuid::from(expiration.tabular_id);
-            let location = C::drop_table(table_id, trx.transaction())
+            let location = C::drop_table(table_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
                     tracing::error!("Failed to drop table: {:?}", e);
@@ -125,7 +125,7 @@ where
         }
         TabularType::View => {
             let view_id = ViewIdentUuid::from(expiration.tabular_id);
-            let location = C::drop_view(view_id, trx.transaction())
+            let location = C::drop_view(view_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
                     tracing::error!("Failed to drop table: {:?}", e);
