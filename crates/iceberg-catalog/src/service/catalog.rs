@@ -20,12 +20,13 @@ pub use crate::api::iceberg::v1::{
 };
 use crate::{
     api::{
-        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
+            DeleteWarehouseQuery,
         },
     },
     catalog::tables::TableMetadataDiffs,
@@ -346,7 +347,7 @@ where
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
-        recursive: bool,
+        flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<NamespaceDropInfo>;
 
@@ -625,6 +626,7 @@ where
     /// Delete a warehouse.
     async fn delete_warehouse<'a>(
         warehouse_id: WarehouseIdent,
+        query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
 

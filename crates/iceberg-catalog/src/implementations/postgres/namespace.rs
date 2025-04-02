@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler;
 use crate::{
-    api::iceberg::v1::{PaginatedMapping, MAX_PAGE_SIZE},
+    api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, MAX_PAGE_SIZE},
     catalog::namespace::MAX_NAMESPACE_DEPTH,
     implementations::postgres::{
         pagination::{PaginateToken, V1PaginateToken},
@@ -331,7 +331,11 @@ pub(crate) async fn namespace_to_id(
 pub(crate) async fn drop_namespace(
     warehouse_id: WarehouseIdent,
     namespace_id: NamespaceIdentUuid,
-    recursive: bool,
+    NamespaceDropFlags {
+        force,
+        _purge,
+        recursive,
+    }: NamespaceDropFlags,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<NamespaceDropInfo> {
     // Return 404 not found if namespace does not exist
@@ -704,7 +708,7 @@ pub(crate) mod tests {
         PostgresCatalog::drop_namespace(
             warehouse_id,
             namespace_id,
-            false,
+            NamespaceDropFlags::default(),
             transaction.transaction(),
         )
         .await
@@ -851,9 +855,14 @@ pub(crate) mod tests {
                 .await
                 .unwrap()
                 .expect("Namespace not found");
-        let result = drop_namespace(warehouse_id, namespace_id, false, transaction.transaction())
-            .await
-            .unwrap_err();
+        let result = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(result.error.code, StatusCode::CONFLICT);
     }
@@ -874,9 +883,19 @@ pub(crate) mod tests {
                 .await
                 .unwrap()
                 .expect("Namespace not found");
-        drop_namespace(warehouse_id, namespace_id, true, transaction.transaction())
-            .await
-            .unwrap();
+        let drop_info = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(drop_info.child_namespaces.len(), 0);
+        assert_eq!(drop_info.child_tables.len(), 1);
+        assert_eq!(drop_info.open_tasks.len(), 0);
+
         transaction.commit().await.unwrap();
 
         let mut transaction = PostgresTransaction::begin_read(state.clone())
@@ -912,19 +931,34 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let result = drop_namespace(warehouse_id, response.0, false, transaction.transaction())
-            .await
-            .unwrap_err();
+        let result = drop_namespace(
+            warehouse_id,
+            response.0,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(result.error.code, StatusCode::CONFLICT);
 
-        drop_namespace(warehouse_id, response2.0, false, transaction.transaction())
-            .await
-            .unwrap();
+        drop_namespace(
+            warehouse_id,
+            response2.0,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
 
-        drop_namespace(warehouse_id, response.0, false, transaction.transaction())
-            .await
-            .unwrap();
+        drop_namespace(
+            warehouse_id,
+            response.0,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
     }
 
     #[sqlx::test]
@@ -944,9 +978,23 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        drop_namespace(warehouse_id, response.0, true, transaction.transaction())
-            .await
-            .unwrap();
+        let drop_info = drop_namespace(
+            warehouse_id,
+            response.0,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(drop_info.child_namespaces.len(), 1);
+        assert_eq!(drop_info.child_tables.len(), 0);
+        assert_eq!(drop_info.open_tasks.len(), 0);
+
         transaction.commit().await.unwrap();
 
         let mut transaction = PostgresTransaction::begin_read(state.clone())
@@ -1035,10 +1083,50 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let result = drop_namespace(warehouse_id, response.0, false, transaction.transaction())
-            .await
-            .unwrap_err();
+        let result = drop_namespace(
+            warehouse_id,
+            response.0,
+            NamespaceDropFlags::default(),
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(result.error.code, StatusCode::CONFLICT);
+    }
+
+    #[sqlx::test]
+    async fn test_can_force_drop_protected_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+
+        let response = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        PostgresCatalog::set_namespace_protected(response.0, true, transaction.transaction())
+            .await
+            .unwrap();
+
+        let result = drop_namespace(
+            warehouse_id,
+            response.0,
+            NamespaceDropFlags {
+                force: true,
+                purge: false,
+                recursive: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.child_namespaces.is_empty());
+        assert!(result.child_tables.is_empty());
+        assert!(result.open_tasks.is_empty());
     }
 }

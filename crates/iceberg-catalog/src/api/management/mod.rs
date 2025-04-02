@@ -701,6 +701,11 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_warehouse(warehouse_id.into(), api_context, metadata).await
     }
 
+    #[derive(Debug, Deserialize, utoipa::IntoParams)]
+    pub struct DeleteWarehouseQuery {
+        pub(crate) force: bool,
+    }
+
     /// Delete a warehouse by ID
     #[utoipa::path(
         delete,
@@ -713,10 +718,11 @@ pub mod v1 {
     )]
     async fn delete_warehouse<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
+        Query(query): Query<DeleteWarehouseQuery>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
-        ApiServer::<C, A, S>::delete_warehouse(warehouse_id.into(), api_context, metadata)
+        ApiServer::<C, A, S>::delete_warehouse(warehouse_id.into(), query, api_context, metadata)
             .await
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }

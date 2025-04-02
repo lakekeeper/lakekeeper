@@ -28,12 +28,13 @@ use super::{
 };
 use crate::{
     api::{
-        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
+            DeleteWarehouseQuery,
         },
     },
     implementations::postgres::{
@@ -242,10 +243,10 @@ impl Catalog for super::PostgresCatalog {
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
-        recursive: bool,
+        flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<NamespaceDropInfo> {
-        drop_namespace(warehouse_id, namespace_id, recursive, transaction).await
+        drop_namespace(warehouse_id, namespace_id, flags, transaction).await
     }
 
     async fn update_namespace_properties<'a>(
@@ -467,9 +468,10 @@ impl Catalog for super::PostgresCatalog {
 
     async fn delete_warehouse<'a>(
         warehouse_id: WarehouseIdent,
+        query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
-        delete_warehouse(warehouse_id, transaction).await
+        delete_warehouse(warehouse_id, query, transaction).await
     }
 
     async fn rename_warehouse<'a>(

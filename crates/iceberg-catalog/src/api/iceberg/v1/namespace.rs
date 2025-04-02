@@ -25,7 +25,7 @@ use crate::{
     WarehouseIdent,
 };
 
-#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default)]
 pub struct NamespaceDropFlags {
     #[serde(default)]
     pub force: bool,

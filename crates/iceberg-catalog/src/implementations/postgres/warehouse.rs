@@ -6,8 +6,9 @@ use super::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
     api::{
         iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
-        management::v1::warehouse::{
-            TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse,
+        management::v1::{
+            warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
+            DeleteWarehouseQuery,
         },
         CatalogConfig, ErrorModel, Result,
     },
@@ -439,6 +440,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
 
 pub(crate) async fn delete_warehouse(
     warehouse_id: WarehouseIdent,
+    DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     let protected = sqlx::query_scalar!(
@@ -448,9 +450,10 @@ pub(crate) async fn delete_warehouse(
                FROM warehouse
                WHERE warehouse_id = $1
            ),
-           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND not protected)
-           SELECT protected FROM delete_info"#,
-        *warehouse_id
+           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND ((not protected) OR $2))
+           SELECT (protected OR $2) FROM delete_info"#,
+        *warehouse_id,
+        force
     )
     .fetch_one(&mut **transaction)
     .await
@@ -975,16 +978,47 @@ pub(crate) mod test {
         set_warehouse_protection(warehouse_id, true, trx.transaction())
             .await
             .unwrap();
-        let e = delete_warehouse(warehouse_id, trx.transaction())
-            .await
-            .unwrap_err();
+        let e = delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: false },
+            trx.transaction(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(e.error.code, StatusCode::CONFLICT);
         set_warehouse_protection(warehouse_id, false, trx.transaction())
             .await
             .unwrap();
-        delete_warehouse(warehouse_id, trx.transaction())
+        delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: false },
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
+
+        trx.commit().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_can_force_drop_protected_warehouse(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let warehouse_id =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+        let mut trx = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
+        set_warehouse_protection(warehouse_id, true, trx.transaction())
+            .await
+            .unwrap();
+        delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: true },
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
 
         trx.commit().await.unwrap();
     }

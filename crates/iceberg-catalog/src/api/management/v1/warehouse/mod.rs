@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::default_page_size;
+use super::{default_page_size, DeleteWarehouseQuery};
 pub use crate::service::{
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
@@ -435,6 +435,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
     async fn delete_warehouse(
         warehouse_id: WarehouseIdent,
+        query: DeleteWarehouseQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -450,7 +451,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        C::delete_warehouse(warehouse_id, transaction.transaction()).await?;
+        C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
         authorizer
             .delete_warehouse(&request_metadata, warehouse_id)
             .await?;
