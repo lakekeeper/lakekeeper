@@ -125,10 +125,11 @@ pub(crate) mod iso8601_duration_serde {
         S: Serializer,
     {
         // Convert chrono::Duration to iso8601::Duration
-        let iso_duration = chrono_to_iso_8601_duration(duration);
+        let iso_duration =
+            chrono_to_iso_8601_duration(duration).map_err(serde::ser::Error::custom)?;
 
         // Serialize to string
-        serializer.serialize_str(&iso_duration.unwrap().to_string())
+        serializer.serialize_str(&iso_duration.to_string())
     }
 
     pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
