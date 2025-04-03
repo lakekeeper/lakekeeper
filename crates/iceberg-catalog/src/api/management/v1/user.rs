@@ -228,7 +228,7 @@ pub(crate) fn parse_create_user_request(
         let user_type = request_user_type
             .or_else(|| auth_details.and_then(|a| a.principal_type().map(Into::into)))
             .unwrap_or(UserType::Application);
-        let name = name.unwrap_or(format!("Nameless App with ID {}", creation_user_id));
+        let name = name.unwrap_or(format!("Nameless App with ID {creation_user_id}"));
 
         (name, user_type, email)
     } else {
@@ -451,5 +451,53 @@ fn is_self_provisioning(acting_user_id: Option<&UserId>, request_id: Option<&Use
         }
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_deserialize_create_user_request() {
+        // Test minimal request with just user-type
+        let body = serde_json::json!({
+            "user-type": "application"
+        });
+        let request: CreateUserRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(request.user_type, Some(UserType::Application));
+        assert_eq!(request.update_if_exists, false); // Default value
+        assert_eq!(request.name, None);
+        assert_eq!(request.email, None);
+        assert_eq!(request.id, None);
+
+        // Test full request with all fields
+        let user_id = Uuid::new_v4().to_string();
+        let body = serde_json::json!({
+            "user-type": "human",
+            "update-if-exists": true,
+            "name": "Test User",
+            "email": "test@example.com",
+            "id": format!("oidc~{user_id}")
+        });
+        let request: CreateUserRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(request.user_type, Some(UserType::Human));
+        assert_eq!(request.update_if_exists, true);
+        assert_eq!(request.name, Some("Test User".to_string()));
+        assert_eq!(request.email, Some("test@example.com".to_string()));
+        assert_eq!(
+            request.id.as_ref().map(|id| id.to_string()),
+            Some(format!("oidc~{user_id}"))
+        );
+
+        // Test empty JSON (all defaults)
+        let body = serde_json::json!({});
+        let request: CreateUserRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(request.user_type, None);
+        assert_eq!(request.update_if_exists, false);
+        assert_eq!(request.name, None);
+        assert_eq!(request.email, None);
+        assert_eq!(request.id, None);
     }
 }
