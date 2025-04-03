@@ -143,6 +143,7 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(3, 0)); // <- Change this for every change in the model
 
+
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,

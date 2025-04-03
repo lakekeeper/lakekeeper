@@ -1,9 +1,11 @@
+
 use std::{
     collections::HashSet,
     fmt::Debug,
     str::FromStr,
     sync::{Arc, LazyLock},
 };
+use std::{collections::HashSet, fmt::Debug, sync::Arc};
 
 use axum::Router;
 use openfga_client::{
