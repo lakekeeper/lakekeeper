@@ -961,7 +961,7 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
-      - project
+        - project
       summary: Delete a project by ID
       operationId: delete_project_by_id
       parameters:
@@ -3072,6 +3072,23 @@ components:
               type: string
               enum:
                 - access-key
+            external-id:
+              type:
+                - string
+                - 'null'
+        - type: object
+          title: S3CredentialSystemIdentity
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - system-identity
+            external-id:
+              type:
+                - string
+                - 'null'
     S3Flavor:
       type: string
       enum:
@@ -3097,7 +3114,7 @@ components:
           type:
             - string
             - 'null'
-          description: Optional ARN to assume when accessing the bucket
+          description: Optional ARN to assume when accessing the bucket from Lakekeeper.
         bucket:
           type: string
           description: Name of the S3 bucket
@@ -3158,7 +3175,10 @@ components:
           type:
             - string
             - 'null'
-          description: Optional role ARN to assume for sts vended-credentials
+          description: |-
+            Optional role ARN to assume for sts vended-credentials.
+            If not provided, `assume_role_arn` is used.
+            Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
     S3UrlStyleDetectionMode:
       type: string
       enum:

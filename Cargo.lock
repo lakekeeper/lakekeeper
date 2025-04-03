@@ -6868,8 +6868,6 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost",
- "rustls-native-certs 0.8.1",
- "rustls-pemfile 2.2.0",
  "socket2",
  "tokio",
  "tokio-stream",

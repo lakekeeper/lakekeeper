@@ -147,7 +147,7 @@ pub enum S3Credential {
         external_id: Option<String>,
     },
     #[serde(rename_all = "kebab-case")]
-    #[schema(title = "S3CredentialAccessKey")]
+    #[schema(title = "S3CredentialSystemIdentity")]
     // Credentials are loaded from the environment using the AWS
     // SDK.
     SystemIdentity {
