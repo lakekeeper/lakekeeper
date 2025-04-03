@@ -456,8 +456,9 @@ fn is_self_provisioning(acting_user_id: Option<&UserId>, request_id: Option<&Use
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use uuid::Uuid;
+
+    use super::*;
 
     #[test]
     fn test_deserialize_create_user_request() {
@@ -467,7 +468,7 @@ mod test {
         });
         let request: CreateUserRequest = serde_json::from_value(body).unwrap();
         assert_eq!(request.user_type, Some(UserType::Application));
-        assert_eq!(request.update_if_exists, false); // Default value
+        assert!(!request.update_if_exists); // Default value
         assert_eq!(request.name, None);
         assert_eq!(request.email, None);
         assert_eq!(request.id, None);
@@ -483,11 +484,11 @@ mod test {
         });
         let request: CreateUserRequest = serde_json::from_value(body).unwrap();
         assert_eq!(request.user_type, Some(UserType::Human));
-        assert_eq!(request.update_if_exists, true);
+        assert!(request.update_if_exists);
         assert_eq!(request.name, Some("Test User".to_string()));
         assert_eq!(request.email, Some("test@example.com".to_string()));
         assert_eq!(
-            request.id.as_ref().map(|id| id.to_string()),
+            request.id.as_ref().map(std::string::ToString::to_string),
             Some(format!("oidc~{user_id}"))
         );
 
@@ -495,7 +496,7 @@ mod test {
         let body = serde_json::json!({});
         let request: CreateUserRequest = serde_json::from_value(body).unwrap();
         assert_eq!(request.user_type, None);
-        assert_eq!(request.update_if_exists, false);
+        assert!(!request.update_if_exists);
         assert_eq!(request.name, None);
         assert_eq!(request.email, None);
         assert_eq!(request.id, None);
