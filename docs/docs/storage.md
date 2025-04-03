@@ -123,14 +123,11 @@ First we create a new users, that we are using as a system identity. Do not atta
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 AWS_DEFAULT_REGION=...
-# We also highly recommend these settings if users are allowed to create Warehouses
-# in a self-service manner:
-# 1. Ensure that an `external-id` is set
+# Required for System Credentials to work:
 LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS=true
-# 2. Ensure that an `assume-role-arn` is set, thus ensuring that
-#    permissions associated directly with the system account are never used.
-LAKEKEEPER__S3_DISABLE_DIRECT_SYSTEM_CREDENTIALS=true
 ```
+
+By default Lakekeeper requires both an `external-id` and a `assume-role-arn` when creating a Warehouse. This is part of our philosophy to offer safe defaults. To change this behavior, please check the additional configuration options in the [Configuration Guide](./configuration.md#storage)
 
 In this example, we assume the ARN of the created user is `arn:aws:iam::123:user/lakekeeper-system-identity`.
 
@@ -192,7 +189,7 @@ We are now ready to create the Warehouse using the system identity:
     "warehouse-name": "aws_docs_managed_identity",
     "storage-credential": {
         "type": "s3",
-        "credential-type": "system-identity",
+        "credential-type": "aws-system-identity",
         "external-id": "<external id configured in the trust policy of the role>"
     },
     "storage-profile": {

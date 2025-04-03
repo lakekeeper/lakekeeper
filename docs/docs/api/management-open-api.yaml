@@ -3059,6 +3059,7 @@ components:
       oneOf:
         - type: object
           title: S3CredentialAccessKey
+          description: Authenticate to AWS using access-key and secret-key.
           required:
             - aws-access-key-id
             - aws-secret-access-key
@@ -3078,13 +3079,16 @@ components:
                 - 'null'
         - type: object
           title: S3CredentialSystemIdentity
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
           required:
             - credential-type
           properties:
             credential-type:
               type: string
               enum:
-                - system-identity
+                - aws-system-identity
             external-id:
               type:
                 - string

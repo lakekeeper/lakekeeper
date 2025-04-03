@@ -139,6 +139,7 @@ pub enum S3Flavor {
 pub enum S3Credential {
     #[serde(rename_all = "kebab-case")]
     #[schema(title = "S3CredentialAccessKey")]
+    /// Authenticate to AWS using access-key and secret-key.
     AccessKey {
         aws_access_key_id: String,
         #[redact(partial)]
@@ -148,9 +149,9 @@ pub enum S3Credential {
     },
     #[serde(rename_all = "kebab-case")]
     #[schema(title = "S3CredentialSystemIdentity")]
-    // Credentials are loaded from the environment using the AWS
-    // SDK.
-    SystemIdentity {
+    /// Authenticate to AWS using the identity configured on the system
+    ///  that runs lakekeeper. The AWS SDK is used to load the credentials.
+    AwsSystemIdentity {
         #[redact(partial)]
         external_id: Option<String>,
     },
@@ -163,7 +164,7 @@ impl S3Credential {
     pub fn external_id(&self) -> Option<&str> {
         match self {
             S3Credential::AccessKey { external_id, .. }
-            | S3Credential::SystemIdentity { external_id, .. } => external_id.as_deref(),
+            | S3Credential::AwsSystemIdentity { external_id, .. } => external_id.as_deref(),
         }
     }
 }
@@ -442,8 +443,8 @@ impl S3Profile {
         let external_id = s3_credentials.and_then(|c| c.external_id());
 
         if role_arn.is_none()
-            && matches!(s3_credentials, Some(S3Credential::SystemIdentity { .. }))
-            && CONFIG.s3_disable_direct_system_credentials
+            && matches!(s3_credentials, Some(S3Credential::AwsSystemIdentity { .. }))
+            && !CONFIG.s3_enable_direct_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
             "This deployment of Lakekeeper requires an `assume-role-arn` to be set for system identity credentials."
@@ -523,8 +524,8 @@ impl S3Profile {
         &self,
         s3_credential: Option<&S3Credential>,
     ) -> Result<SdkConfig, CredentialsError> {
-        if matches!(s3_credential, Some(S3Credential::SystemIdentity { .. }))
-            && CONFIG.s3_disable_system_credentials
+        if matches!(s3_credential, Some(S3Credential::AwsSystemIdentity { .. }))
+            && !CONFIG.s3_enable_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
                 "System identity credentials are disabled in this Lakekeeper deployment."
@@ -547,7 +548,7 @@ impl S3Profile {
                 );
                 aws_config::ConfigLoader::default().credentials_provider(aws_credentials)
             }
-            Some(S3Credential::SystemIdentity { external_id: _ }) => aws_config::from_env(),
+            Some(S3Credential::AwsSystemIdentity { external_id: _ }) => aws_config::from_env(),
             None => aws_config::from_env().no_credentials(),
         }
         .region(Some(aws_config::Region::new(
@@ -600,7 +601,7 @@ impl S3Profile {
                     );
                     Ok(Some(aws_credential))
                 }
-                Some(S3Credential::SystemIdentity { external_id: _ }) | None => {
+                Some(S3Credential::AwsSystemIdentity { external_id: _ }) | None => {
                     let sdk_config = self.get_aws_sdk_config(s3_credential).await?;
                     let Some(provider) = sdk_config.credentials_provider() else {
                         return Ok(None);
@@ -1052,11 +1053,11 @@ pub(crate) mod test {
     fn test_storage_secret_deserialization_system_identity_1() {
         let secret = serde_json::json!(
             {
-                "credential-type": "system-identity",
+                "credential-type": "aws-system-identity",
             }
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
-        let expected = S3Credential::SystemIdentity { external_id: None };
+        let expected = S3Credential::AwsSystemIdentity { external_id: None };
         assert_eq!(credential, expected);
     }
 
@@ -1064,12 +1065,12 @@ pub(crate) mod test {
     fn test_storage_secret_deserialization_system_identity_2() {
         let secret = serde_json::json!(
             {
-                "credential-type": "system-identity",
+                "credential-type": "aws-system-identity",
                 "external-id": "baz",
             }
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
-        let expected = S3Credential::SystemIdentity {
+        let expected = S3Credential::AwsSystemIdentity {
             external_id: Some("baz".to_string()),
         };
         assert_eq!(credential, expected);

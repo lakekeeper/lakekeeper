@@ -182,7 +182,7 @@ def storage_config(request) -> dict:
         if settings.aws_s3_use_system_identity:
             storage_credential = {
                 "type": "s3",
-                "credential-type": "system-identity",
+                "credential-type": "aws-system-identity",
                 "external-id": external_id,
             }
 
@@ -200,13 +200,13 @@ def storage_config(request) -> dict:
         }
     elif request.param["type"] == "azure":
         if (
-                settings.azure_storage_account_name is None
-                or settings.azure_storage_account_name == ""
+            settings.azure_storage_account_name is None
+            or settings.azure_storage_account_name == ""
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME is not set")
         if (
-                settings.azure_storage_filesystem is None
-                or settings.azure_storage_filesystem == ""
+            settings.azure_storage_filesystem is None
+            or settings.azure_storage_filesystem == ""
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM is not set")
 
@@ -303,7 +303,7 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-            self, name: str, project_id: uuid.UUID, storage_config: dict
+        self, name: str, project_id: uuid.UUID, storage_config: dict
     ) -> uuid.UUID:
         """Create a warehouse in this server"""
 
@@ -533,8 +533,8 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.token_endpoint}",
     }
     if (
-            storage_config["storage-profile"]["type"] == "s3"
-            and storage_config["storage-profile"]["sts-enabled"]
+        storage_config["storage-profile"]["type"] == "s3"
+        and storage_config["storage-profile"]["sts-enabled"]
     ):
         configuration[
             f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"
