@@ -112,7 +112,7 @@ The following Authenticators are available. Enabled Authenticators are checked i
     - Token audience matches any of the audiences provided in `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`<br>
     - If `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` is not set, all tokens proceed to validation! We highly recommend to configure audiences, for most deployments `https://kubernetes.default.svc` works.<br>
 1. **Kubernetes Legacy Tokens**<br>
-   **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true and `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is true<br>
+   **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true and `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is true<br>
    **Validates Token with:** Kubernetes `TokenReview` API<br>
    **Accepts JWT if:**<br>
     - Tokens issuer is `kubernetes/serviceaccount`
@@ -151,7 +151,7 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | `LAKEKEEPER__OPENFGA__CLIENT_SECRET`               | `abcd`                                                                     | Client Secret for the Client ID. |
 | `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`              | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
 | `LAKEKEEPER__OPENFGA__SCOPE`                       | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`  | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER_TEST__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`  | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
 | `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
 
 ### UI
