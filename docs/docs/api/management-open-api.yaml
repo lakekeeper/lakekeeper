@@ -961,7 +961,7 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
     delete:
       tags:
-      - project
+        - project
       summary: Delete a project by ID
       operationId: delete_project_by_id
       parameters:
@@ -2174,20 +2174,20 @@ components:
         - name
         - namespace
         - typ
-        - warehouse_id
-        - created_at
-        - deleted_at
-        - expiration_date
+        - warehouse-id
+        - created-at
+        - deleted-at
+        - expiration-date
       properties:
-        created_at:
+        created-at:
           type: string
           format: date-time
           description: Date when the tabular was created
-        deleted_at:
+        deleted-at:
           type: string
           format: date-time
           description: Date when the tabular was deleted
-        expiration_date:
+        expiration-date:
           type: string
           format: date-time
           description: Date when the tabular will not be recoverable anymore
@@ -2206,7 +2206,7 @@ components:
         typ:
           $ref: '#/components/schemas/TabularType'
           description: Type of the tabular
-        warehouse_id:
+        warehouse-id:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
@@ -2214,15 +2214,15 @@ components:
       type: object
       required:
         - count
-        - http_route
-        - status_code
-        - created_at
+        - http-route
+        - status-code
+        - created-at
       properties:
         count:
           type: integer
           format: int64
           description: Number of requests to this endpoint for the current time-slice.
-        created_at:
+        created-at:
           type: string
           format: date-time
           description: |-
@@ -2230,18 +2230,18 @@ components:
 
             This is the exact time at which the current endpoint-status-warehouse combination was called
             for the first time in the current time-slice.
-        http_route:
+        http-route:
           type: string
           description: |-
             The route of the endpoint.
 
             Format: `METHOD /path/to/endpoint`
-        status_code:
+        status-code:
           type: integer
           format: int32
           description: The status code of the response.
           minimum: 0
-        updated_at:
+        updated-at:
           type:
             - string
             - 'null'
@@ -2250,7 +2250,7 @@ components:
             Timestamp at which the datapoint was last updated.
 
             This is the exact time at which the current datapoint was last updated.
-        warehouse_id:
+        warehouse-id:
           type:
             - string
             - 'null'
@@ -2260,8 +2260,8 @@ components:
 
             Only present for requests that could be associated with a warehouse. Some management
             endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
-            will not have a `warehouse_id`.
-        warehouse_name:
+            will not have a `warehouse-id`.
+        warehouse-name:
           type:
             - string
             - 'null'
@@ -2270,16 +2270,16 @@ components:
 
             Only present for requests that could be associated with a warehouse. Some management
             endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
-            will not have a `warehouse_id`
+            will not have a `warehouse-id`
     EndpointStatisticsResponse:
       type: object
       required:
         - timestamps
-        - called_endpoints
-        - previous_page_token
-        - next_page_token
+        - called-endpoints
+        - previous-page-token
+        - next-page-token
       properties:
-        called_endpoints:
+        called-endpoints:
           type: array
           items:
             type: array
@@ -2289,13 +2289,13 @@ components:
             Array of arrays of statistics detailing each called endpoint for each `timestamp`.
 
             See docs of `timestamps` for more details.
-        next_page_token:
+        next-page-token:
           type: string
           description: |-
             Token to get the next page of results.
 
-            Inverse of `previous_page_token`, see its documentation above.
-        previous_page_token:
+            Inverse of `previous-page-token`, see its documentation above.
+        previous-page-token:
           type: string
           description: |-
             Token to get the previous page of results.
@@ -2303,7 +2303,7 @@ components:
             Endpoint statistics are not paginated through page-limits, we paginate them by stepping
             through time. By default, the list-statistics endpoint will return all statistics for
             `now()` - 1 day to `now()`. In the request, you can specify a `range_specifier` to set the end
-            date and step interval. The `previous_page_token` will then move to the neighboring window.
+            date and step interval. The `previous-page-token` will then move to the neighboring window.
             E.g. in the default case of `now()` and 1 day, it'd be `now()` - 2 days to `now()` - 1 day.
         timestamps:
           type: array
@@ -2435,7 +2435,7 @@ components:
       required:
         - warehouse
       properties:
-        range_specifier:
+        range-specifier:
           oneOf:
             - type: 'null'
             - $ref: '#/components/schemas/TimeWindowSelector'
@@ -2444,7 +2444,7 @@ components:
 
                 Either for a explicit range or a page token to paginate through the results. See the docs of
                 `RangeSpecifier` for more details.
-        status_codes:
+        status-codes:
           type:
             - array
             - 'null'
@@ -2664,7 +2664,7 @@ components:
       required:
         - tabulars
       properties:
-        next_page_token:
+        next-page-token:
           type:
             - string
             - 'null'
@@ -2689,7 +2689,7 @@ components:
       required:
         - roles
       properties:
-        next_page_token:
+        next-page-token:
           type:
             - string
             - 'null'
@@ -2702,7 +2702,7 @@ components:
       required:
         - users
       properties:
-        next_page_token:
+        next-page-token:
           type:
             - string
             - 'null'
@@ -3678,17 +3678,26 @@ components:
             end:
               type: string
               format: date-time
-              description: End timestamp of the time window
+              description: |-
+                End timestamp of the time window
+                Specify
+              example: 2023-12-31T23:59:59Z
             interval:
               type: string
               description: |-
                 Duration/span of the time window
 
-                The effective time range = `window_end` - `window_duration` to `end`
+                The returned statistics will be for the time window from `end` - `interval` to `end`.
+                Specify a ISO8601 duration string, e.g. `PT1H` for 1 hour, `P1D` for 1 day.
+              example: P1D
             type:
               type: string
               enum:
                 - window
+          example:
+            type: window
+            end: 2023-12-31T23:59:59Z
+            interval: P1D
         - type: object
           required:
             - token
@@ -3704,6 +3713,9 @@ components:
               type: string
               enum:
                 - page-token
+          example:
+            type: page-token
+            token: xyz
     UndropTabularsRequest:
       type: object
       required:
@@ -3786,7 +3798,7 @@ components:
       type: object
       required:
         - name
-        - user_type
+        - user-type
       properties:
         email:
           type:
@@ -3794,7 +3806,7 @@ components:
             - 'null'
         name:
           type: string
-        user_type:
+        user-type:
           $ref: '#/components/schemas/UserType'
     UpdateViewAssignmentsRequest:
       type: object
@@ -4159,15 +4171,15 @@ components:
       type: object
       required:
         - timestamp
-        - number_of_tables
-        - number_of_views
-        - updated_at
+        - number-of-tables
+        - number-of-views
+        - updated-at
       properties:
-        number_of_tables:
+        number-of-tables:
           type: integer
           format: int64
           description: Number of tables in the warehouse.
-        number_of_views:
+        number-of-views:
           type: integer
           format: int64
           description: Number of views in the warehouse.
@@ -4180,7 +4192,7 @@ components:
             We lazily create a new statistics entry every hour, in between hours, the existing entry
             is being updated. If there's a change at `created_at` + 1 hour, a new entry is created. If
             there's no change, no new entry is created.
-        updated_at:
+        updated-at:
           type: string
           format: date-time
           description: Timestamp of when these statistics were last updated

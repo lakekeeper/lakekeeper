@@ -148,8 +148,10 @@ impl ListUsersQuery {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct ListUsersResponse {
     pub users: Vec<User>,
+    #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
 }
 
@@ -173,10 +175,12 @@ pub struct SearchUserRequest {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct UpdateUserRequest {
     pub name: String,
     #[serde(default)]
     pub email: Option<String>,
+    #[serde(alias = "user_type")]
     pub user_type: UserType,
 }
 

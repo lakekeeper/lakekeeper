@@ -13,8 +13,9 @@ use crate::{
     },
     implementations::postgres::{
         dbutils::DBErrorHandler,
-        pagination::{PaginateToken, RoundTrippableDuration, V1PaginateToken},
+        pagination::{PaginateToken, V1PaginateToken},
     },
+    utils::time_conversion::iso_8601_duration_to_chrono,
     ProjectId,
 };
 
@@ -143,36 +144,13 @@ fn parse_token(token: &str) -> Result<(chrono::DateTime<Utc>, chrono::Duration),
     // with our TryFrom implementation, which requires an std::error::Error. As a result, we created our own
     // Duration type, RoundTrippableDuration, which wraps iso8601::Duration and implements TryFrom<&str> and Display.
     // This approach ensures compatibility and functionality.
-    let PaginateToken::V1(V1PaginateToken { created_at, id }): PaginateToken<
-        RoundTrippableDuration,
-    > = PaginateToken::try_from(token)?;
+    let PaginateToken::V1(V1PaginateToken { created_at, id }): PaginateToken<iso8601::Duration> =
+        PaginateToken::try_from(token)?;
 
-    match id.0 {
-        iso8601::Duration::YMDHMS {
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            millisecond,
-        } => {
-            if year != 0 || month != 0 {
-                return Err(ErrorModel::bad_request(
-                    "Invalid paginate token".to_string(),
-                    "PaginateTokenParseError".to_string(),
-                    None,
-                ));
-            }
-            Ok((
-                created_at,
-                chrono::Duration::days(i64::from(day))
-                    + chrono::Duration::hours(i64::from(hour))
-                    + chrono::Duration::minutes(i64::from(minute))
-                    + chrono::Duration::seconds(i64::from(second))
-                    + chrono::Duration::milliseconds(i64::from(millisecond)),
-            ))
-        }
-        iso8601::Duration::Weeks(w) => Ok((created_at, chrono::Duration::weeks(i64::from(w)))),
-    }
+    Ok((
+        created_at,
+        iso_8601_duration_to_chrono(&id).inspect_err(|e| {
+            tracing::error!("Failed to parse duration from statistics page token: {e}");
+        })?,
+    ))
 }

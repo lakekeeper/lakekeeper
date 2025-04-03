@@ -68,8 +68,10 @@ pub struct UpdateRoleRequest {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct ListRolesResponse {
     pub roles: Vec<Role>,
+    #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
 }
 
