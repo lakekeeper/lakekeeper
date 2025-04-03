@@ -561,20 +561,23 @@ pub(crate) async fn update_namespace_properties(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use tracing_test::traced_test;
+
     use super::{
         super::{warehouse::test::initialize_warehouse, PostgresCatalog},
         *,
     };
-    use crate::implementations::postgres::tabular::set_tabular_protected;
     use crate::{
         api::iceberg::types::PageToken,
         implementations::postgres::{
-            tabular::table::{load_tables, tests::initialize_table},
+            tabular::{
+                set_tabular_protected,
+                table::{load_tables, tests::initialize_table},
+            },
             CatalogState, PostgresTransaction,
         },
         service::{Catalog as _, Transaction as _},
     };
-    use tracing_test::traced_test;
 
     pub(crate) async fn initialize_namespace(
         state: CatalogState,
