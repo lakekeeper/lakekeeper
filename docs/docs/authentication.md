@@ -17,8 +17,7 @@ Users are automatically added to Lakekeeper after successful Authentication (use
 - `claims`: all claims
 - `email`: `email` or `upn` if it contains an `@` or `preferred_username` if it contains an `@`
 
-If the `name` cannot be determined because none of the claims are available, the principal is registered und the name `Nameless App with ID <user-id>`.
-
+If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`.
 Lakekeeper determines the ID of users in the following order:
 
 1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this field is used and must be present.
