@@ -116,8 +116,7 @@ As part of the `storage-profile`, the field `assume-role-arn` can optionally be 
 #### System Identities / Managed Identities
 Since Lakekeeper `0.8` credentials to access S3 can also loaded from the environment. Lakekeeper uses the AWS SDK to load environment specifications, which respects all common configuration options, including the `AWS_*` environment variables.
 
-We strongly recommend the use of `external-id`s when a system identity is configured and enabled in Lakekeeper, so that roles that roles can only be assumed by the system identity in Warehouses that own the role. Please find more information about external ids in the [AWS Documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_common-scenarios_third-party.html). If no external IDs are used, it must be ensured that each that has permissions to create a Warehouse in Lakekeeper is authorized to use all roles the system identity may assume. Following we describe a secure example setup.
-
+We strongly recommend the use of `external-id`s when a system identity is configured and enabled in Lakekeeper, so that a role can only be assumed by the system identity in Warehouses that own the role. Please find more information about external ids in the [AWS Documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_common-scenarios_third-party.html). If no external IDs are used, it must be ensured that each that has permissions to create a Warehouse in Lakekeeper is authorized to use all roles the system identity may assume. Following we describe a secure example setup.
 First we create a new users, that we are using as a system identity. Do not attach any trust policy or permissions to it. Configure this user in Lakekeeper, for example by setting the following environment variables in the Lakekeeper deployment:
 
 ```bash
