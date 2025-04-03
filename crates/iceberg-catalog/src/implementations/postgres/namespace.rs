@@ -373,7 +373,8 @@ pub(crate) async fn drop_namespace(
             AND (namespace_id = $2 OR ($3 AND namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
             -- ...but only if none are locked
             AND ($4 OR (NOT protected))
-            AND ($4 OR ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR ($3 AND NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true))))
+            AND ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR
+                ($3 AND ($4 OR NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true))))
             AND NOT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')
             AND ((NOT EXISTS (SELECT 1 from tabulars)) OR
                   ($3 AND ($4 OR (NOT EXISTS (SELECT 1 from tabulars WHERE protected = true))))
@@ -564,6 +565,7 @@ pub(crate) mod tests {
         super::{warehouse::test::initialize_warehouse, PostgresCatalog},
         *,
     };
+    use crate::implementations::postgres::tabular::set_tabular_protected;
     use crate::{
         api::iceberg::types::PageToken,
         implementations::postgres::{
@@ -572,6 +574,7 @@ pub(crate) mod tests {
         },
         service::{Catalog as _, Transaction as _},
     };
+    use tracing_test::traced_test;
 
     pub(crate) async fn initialize_namespace(
         state: CatalogState,
@@ -889,7 +892,11 @@ pub(crate) mod tests {
         let drop_info = drop_namespace(
             warehouse_id,
             namespace_id,
-            NamespaceDropFlags::default(),
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
             transaction.transaction(),
         )
         .await
@@ -1134,6 +1141,7 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
+    #[traced_test]
     async fn test_can_recursive_force_drop_nonempty_protected_namespace(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
@@ -1150,6 +1158,76 @@ pub(crate) mod tests {
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
+
+        set_namespace_protected(namespace_id, true, transaction.transaction())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags {
+                force: false,
+                purge: false,
+                recursive: true,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.error.code, StatusCode::CONFLICT);
+
+        let drop_info = drop_namespace(
+            warehouse_id,
+            dbg!(namespace_id),
+            NamespaceDropFlags {
+                force: true,
+                recursive: true,
+                purge: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        assert_eq!(drop_info.child_namespaces.len(), 1);
+        assert_eq!(drop_info.child_tables.len(), 0);
+        assert_eq!(drop_info.open_tasks.len(), 0);
+    }
+
+    #[sqlx::test]
+    async fn test_can_recursive_force_drop_namespace_with_protected_table(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let outer_namespace = NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap();
+
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &outer_namespace, None).await;
+        let tab = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(outer_namespace),
+            None,
+        )
+        .await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        set_tabular_protected(
+            TabularIdentUuid::Table(*tab.table_id),
+            true,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
 
         let err = drop_namespace(
             warehouse_id,
@@ -1179,8 +1257,8 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        assert_eq!(drop_info.child_namespaces.len(), 1);
-        assert_eq!(drop_info.child_tables.len(), 0);
+        assert_eq!(drop_info.child_namespaces.len(), 0);
+        assert_eq!(drop_info.child_tables.len(), 1);
         assert_eq!(drop_info.open_tasks.len(), 0);
 
         transaction.commit().await.unwrap();

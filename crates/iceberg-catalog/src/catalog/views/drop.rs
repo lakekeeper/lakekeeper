@@ -358,7 +358,7 @@ mod test {
             },
             DropParams {
                 purge_requested: true,
-                force: false,
+                force: true,
             },
             api_context.clone(),
             RequestMetadata::new_unauthenticated(),
