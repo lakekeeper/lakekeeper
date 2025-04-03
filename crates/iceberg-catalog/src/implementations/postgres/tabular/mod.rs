@@ -711,7 +711,7 @@ pub(crate) async fn mark_tabular_as_deleted(
                 AND ((NOT protected) OR $3)
             RETURNING tabular_id
         )
-        SELECT (protected OR $3) as "protected!", (SELECT tabular_id from update) from update_info
+        SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
         "#,
         *tabular_id,
         delete_date.unwrap_or(Utc::now()),
@@ -732,7 +732,7 @@ pub(crate) async fn mark_tabular_as_deleted(
         }
     })?;
 
-    if r.protected {
+    if r.protected && !force {
         return Err(ErrorModel::conflict(
             format!(
                 "{} is protected and cannot be deleted",
@@ -767,7 +767,7 @@ pub(crate) async fn drop_tabular(
                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
                    AND ((NOT protected) OR $3)
               RETURNING fs_location, fs_protocol)
-              SELECT (protected OR $3) as "protected!",
+              SELECT protected as "protected!",
                      (SELECT fs_protocol from deleted),
                      (SELECT fs_location from deleted) from delete_info"#,
         *tabular_id,
@@ -788,10 +788,14 @@ pub(crate) async fn drop_tabular(
             e.into_error_model(format!("Error dropping {}", tabular_id.typ_str()))
         }
     })?;
-    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
-        Ok(join_location(&fs_protocol, &fs_location))
-    } else if location.protected {
-        Err(ErrorModel::conflict(
+
+    tracing::trace!(
+        "{}, {:?}. {:?}",
+        location.protected, location.fs_location, location.fs_protocol
+    );
+
+    if location.protected && !force {
+        return Err(ErrorModel::conflict(
             format!(
                 "{} is protected and cannot be dropped",
                 tabular_id.typ_str()
@@ -799,7 +803,10 @@ pub(crate) async fn drop_tabular(
             "ProtectedTabularError",
             None,
         )
-        .into())
+        .into());
+    }
+    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
+        Ok(join_location(&fs_protocol, &fs_location))
     } else {
         Err(ErrorModel::internal(
             format!("{} has no location", tabular_id.typ_str()),

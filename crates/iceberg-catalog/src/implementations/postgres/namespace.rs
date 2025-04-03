@@ -338,9 +338,7 @@ pub(crate) async fn drop_namespace(
     }: NamespaceDropFlags,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<NamespaceDropInfo> {
-    // Return 404 not found if namespace does not exist
-    let record = sqlx::query!(
-        r#"
+    let info = sqlx::query!(r#"
         WITH namespace_info AS (
             SELECT namespace_name, protected
             FROM namespace
@@ -358,109 +356,107 @@ pub(crate) async fn drop_namespace(
                 LEFT JOIN tabular_expirations te ON ta.tabular_id = te.tabular_id
                 LEFT JOIN task t on te.task_id = t.task_id
             WHERE namespace_id = $2 OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
-        ),
-        deletion_info AS (
-            SELECT
-                (SELECT protected FROM namespace_info) AS is_protected,
-                EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS has_protected_namespaces,
-                EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS has_protected_tabulars,
-                EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running') AS has_running_tasks
-        ),
-        deleted AS (
-            DELETE FROM namespace
-            WHERE warehouse_id = $1
-            -- If recursive is true, delete all child namespaces...
-            AND (namespace_id = $2 OR ($3 AND namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
-            -- ...but only if none are locked
-            AND ($4 OR (NOT protected))
-            AND ((NOT EXISTS (SELECT 1 FROM child_namespaces)) OR
-                ($3 AND ($4 OR NOT EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true))))
-            AND NOT EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running')
-            AND ((NOT EXISTS (SELECT 1 from tabulars)) OR
-                  ($3 AND ($4 OR (NOT EXISTS (SELECT 1 from tabulars WHERE protected = true))))
-                )
-            AND warehouse_id IN (
-                SELECT warehouse_id FROM warehouse WHERE status = 'active'
-            )
-            RETURNING *
         )
         SELECT
-            di.has_protected_namespaces AS "has_protected_namespaces!",
-            di.has_protected_tabulars AS "has_protected_tabulars!",
-            di.has_running_tasks AS "has_running_tasks!",
-            di.is_protected AS "is_protected!",
-            (SELECT count(*) FROM deleted) AS "deleted_count!",
-            ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
+            (SELECT protected FROM namespace_info) AS "is_protected!",
+            EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
+            EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
+            EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running') AS "has_running_tasks!",
             ARRAY(SELECT tabular_id FROM tabulars) AS "child_tabulars!",
+            ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
             ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT task_id FROM tabulars) AS "child_tabular_task_id!: Vec<Option<Uuid>>"
-        FROM deletion_info di;
-        "#,
+"#,
         *warehouse_id,
         *namespace_id,
-        recursive,
-        force
-    )
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db_error) => {
-                if db_error.is_foreign_key_violation() {
-                    ErrorModel::builder()
-                        .code(StatusCode::CONFLICT.into())
-                        .message("Namespace is not empty".to_string())
-                        .r#type("NamespaceNotEmpty".to_string())
-                        .build()
-                } else {
-                    e.into_error_model("Error deleting namespace".to_string())
-                }
-            }
-            _ => e.into_error_model("Error deleting namespace".to_string()),
-        })?;
+    ).fetch_one(&mut **transaction).await.map_err(|e|
+        match e {
+            sqlx::Error::RowNotFound => ErrorModel::not_found(
+                format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
+                "NamespaceNotFound",
+                None,
+            ),
+            _ => {
+                tracing::warn!("Error fetching namespace: {e:?}");
+                e.into_error_model("Error fetching namespace".to_string())
+            },
+        }
+    )?;
 
-    tracing::debug!(
-        "Deleted {deleted_count} namespaces",
-        deleted_count = record.deleted_count
-    );
-
-    if !record.child_namespaces.is_empty() && !recursive {
+    if !recursive && (!info.child_tabulars.is_empty() || !info.child_namespaces.is_empty()) {
         return Err(
             ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
         );
     }
 
-    if !record.child_tabulars.is_empty() && !recursive {
-        return Err(
-            ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
-        );
-    }
-
-    if record.has_running_tasks {
-        return Err(
-            ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
-        );
-    }
-
-    if !force && record.is_protected {
+    if !force && info.is_protected {
         return Err(
             ErrorModel::conflict("Namespace is protected", "NamespaceProtected", None).into(),
         );
     }
 
-    if !force && (record.has_protected_tabulars || record.has_protected_namespaces) {
+    if !force && info.has_protected_namespaces {
         return Err(ErrorModel::conflict(
-            "Namespace has protected tabulars or namespaces",
+            "Namespace has protected child namespaces",
             "NamespaceNotEmpty",
             None,
         )
         .into());
     }
 
-    if record.deleted_count == 0 {
+    if !force && info.has_protected_tabulars {
+        return Err(ErrorModel::conflict(
+            "Namespace has protected tabulars",
+            "NamespaceNotEmpty",
+            None,
+        )
+        .into());
+    }
+
+    if info.has_running_tasks {
+        return Err(
+            ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
+        );
+    }
+
+    // Return 404 not found if namespace does not exist
+    let record = sqlx::query!(
+        r#"
+        DELETE FROM namespace
+            WHERE warehouse_id = $1
+            -- If recursive is true, delete all child namespaces...
+            AND (namespace_id = any($2) or namespace_id = $3)
+            AND warehouse_id IN (
+                SELECT warehouse_id FROM warehouse WHERE status = 'active'
+            )
+        "#,
+        *warehouse_id,
+        &info.child_namespaces,
+        *namespace_id,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db_error) => {
+            if db_error.is_foreign_key_violation() {
+                ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None)
+            } else {
+                e.into_error_model("Error deleting namespace")
+            }
+        }
+        _ => e.into_error_model("Error deleting namespace"),
+    })?;
+
+    tracing::debug!(
+        "Deleted {deleted_count} namespaces",
+        deleted_count = record.rows_affected()
+    );
+
+    if record.rows_affected() == 0 {
         return Err(ErrorModel::internal(
-            format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
+            format!("Namespace {namespace_id} naaot found in warehouse {warehouse_id}"),
             "NamespaceNotFound",
             None,
         )
@@ -468,16 +464,12 @@ pub(crate) async fn drop_namespace(
     }
 
     Ok(NamespaceDropInfo {
-        child_namespaces: record
-            .child_namespaces
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+        child_namespaces: info.child_namespaces.into_iter().map(Into::into).collect(),
         child_tables: izip!(
-            record.child_tabulars,
-            record.child_tabular_fs_protocol,
-            record.child_tabular_fs_location,
-            record.child_tabular_typ
+            info.child_tabulars,
+            info.child_tabular_fs_protocol,
+            info.child_tabular_fs_location,
+            info.child_tabular_typ
         )
         .map(|(id, protocol, fs_location, typ)| {
             (
@@ -489,7 +481,7 @@ pub(crate) async fn drop_namespace(
             )
         })
         .collect_vec(),
-        open_tasks: record
+        open_tasks: info
             .child_tabular_task_id
             .into_iter()
             .filter_map(|ti| ti.map(TaskId::from))
@@ -1186,7 +1178,7 @@ pub(crate) mod tests {
 
         let drop_info = drop_namespace(
             warehouse_id,
-            dbg!(namespace_id),
+            namespace_id,
             NamespaceDropFlags {
                 force: true,
                 recursive: true,

@@ -257,16 +257,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_cannot_recursive_drop_namespace_with_protected_view(pool: PgPool) {
-        let setup = setup_drop_test(
-            pool,
-            1,
-            1,
-            1,
-            TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(10),
-            },
-        )
-        .await;
+        let setup = setup_drop_test(pool, 1, 1, 1, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
         let warehouse = setup.warehouse;
         let prefix = warehouse.warehouse_id.to_string();
@@ -300,7 +291,7 @@ mod test {
         let e = super::super::drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
-                force: true,
+                force: false,
                 purge: true,
                 recursive: true,
             },
@@ -323,7 +314,7 @@ mod test {
         super::super::drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
-                force: true,
+                force: false,
                 purge: true,
                 recursive: true,
             },
@@ -377,7 +368,7 @@ mod test {
                 ListNamespacesQuery {
                     page_token: PageToken::NotSpecified,
                     page_size: Some(1),
-                    parent: None,
+                    parent: Some(root_ns.namespace.clone()),
                     return_uuids: true,
                     return_protection_status: true,
                 },
@@ -405,7 +396,7 @@ mod test {
         let e = super::super::drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
-                force: true,
+                force: false,
                 purge: true,
                 recursive: true,
             },
@@ -413,7 +404,7 @@ mod test {
         )
         .await
         .unwrap_err();
-        assert_eq!(e.error.code, 409, "{}", e.error);
+        assert_eq!(e.error.code, 400, "{}", e.error);
 
         CatalogServer::set_namespace_protected(
             ns_id,
@@ -445,16 +436,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_cannot_recursive_drop_namespace_with_protected_table(pool: PgPool) {
-        let setup = setup_drop_test(
-            pool,
-            1,
-            1,
-            1,
-            TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(10),
-            },
-        )
-        .await;
+        let setup = setup_drop_test(pool, 1, 1, 1, TabularDeleteProfile::Hard {}).await;
         let ctx = setup.ctx;
         let warehouse = setup.warehouse;
         let prefix = warehouse.warehouse_id.to_string();
@@ -489,7 +471,7 @@ mod test {
         let e = super::super::drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
-                force: true,
+                force: false,
                 purge: true,
                 recursive: true,
             },
@@ -512,7 +494,7 @@ mod test {
         super::super::drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
-                force: true,
+                force: false,
                 purge: true,
                 recursive: true,
             },

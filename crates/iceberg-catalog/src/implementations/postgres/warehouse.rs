@@ -450,8 +450,8 @@ pub(crate) async fn delete_warehouse(
                FROM warehouse
                WHERE warehouse_id = $1
            ),
-           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND ((not protected) OR $2))
-           SELECT (protected OR $2) as "protected!" FROM delete_info"#,
+           deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2))
+           SELECT protected as "protected!" FROM delete_info"#,
         *warehouse_id,
         force
     )
@@ -477,7 +477,7 @@ pub(crate) async fn delete_warehouse(
         _ => e.into_error_model("Error deleting warehouse"),
     })?;
 
-    if protected {
+    if protected && !force {
         return Err(
             ErrorModel::conflict("Warehouse is protected", "WarehouseProtected", None).into(),
         );
@@ -1075,7 +1075,7 @@ pub(crate) mod test {
         .unwrap();
 
         assert_eq!(stats.stats.len(), 3);
-        assert!(dbg!(&stats.next_page_token).is_some());
+        assert!(stats.next_page_token.is_some());
 
         let stats = PostgresCatalog::get_warehouse_stats(
             warehouse_id,
