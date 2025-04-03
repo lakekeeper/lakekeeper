@@ -85,10 +85,28 @@ allow_table_metadata if {
     trino.require_table_access(catalog, schema, table, "get_metadata")
 }
 
+allow_table_metadata if {
+    input.action.operation in ["FilterTables", "ShowColumns", "FilterColumns"]
+    catalog := input.action.resource.table.catalogName
+    schema := input.action.resource.table.schemaName
+    table := input.action.resource.table.tableName
+    trino.require_view_access(catalog, schema, table, "get_metadata")
+}
+
+
 allow_table_read if {
     input.action.operation in ["SelectFromColumns"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
     table := input.action.resource.table.tableName
     trino.require_table_access(catalog, schema, table, "read_data")
+}
+
+
+allow_table_read if {
+    input.action.operation in ["SelectFromColumns"]
+    catalog := input.action.resource.table.catalogName
+    schema := input.action.resource.table.schemaName
+    table := input.action.resource.table.tableName
+    trino.require_view_access(catalog, schema, table, "get_metadata")
 }
