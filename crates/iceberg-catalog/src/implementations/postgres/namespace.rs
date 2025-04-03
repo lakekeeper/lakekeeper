@@ -351,37 +351,36 @@ pub(crate) async fn drop_namespace(
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
         ),
         tabulars AS (
-            SELECT ta.tabular_id, te.task_id, t.status as task_status, fs_location, fs_protocol, ta.typ, protected
+            SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected
             FROM tabular ta
-                LEFT JOIN tabular_expirations te ON ta.tabular_id = te.tabular_id
-                LEFT JOIN task t on te.task_id = t.task_id
             WHERE namespace_id = $2 OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+        ),
+        tasks AS (
+            SELECT te.task_id, t.status as task_status from tabular_expirations te join task t on te.task_id = t.task_id
+            WHERE t.status = 'running' AND te.tabular_id = ANY (SELECT tabular_id FROM tabulars)
         )
         SELECT
             (SELECT protected FROM namespace_info) AS "is_protected!",
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
-            EXISTS (SELECT 1 FROM tabulars WHERE task_status = 'running') AS "has_running_tasks!",
+            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
             ARRAY(SELECT tabular_id FROM tabulars) AS "child_tabulars!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
             ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>",
-            ARRAY(SELECT task_id FROM tabulars) AS "child_tabular_task_id!: Vec<Option<Uuid>>"
+            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
 "#,
         *warehouse_id,
         *namespace_id,
     ).fetch_one(&mut **transaction).await.map_err(|e|
-        match e {
-            sqlx::Error::RowNotFound => ErrorModel::not_found(
-                format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
-                "NamespaceNotFound",
-                None,
-            ),
-            _ => {
-                tracing::warn!("Error fetching namespace: {e:?}");
-                e.into_error_model("Error fetching namespace".to_string())
-            },
+        if let sqlx::Error::RowNotFound = e { ErrorModel::not_found(
+            format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
+            "NamespaceNotFound",
+            None,
+        ) } else {
+            tracing::warn!("Error fetching namespace: {e:?}");
+            e.into_error_model("Error fetching namespace".to_string())
         }
     )?;
 
@@ -484,7 +483,7 @@ pub(crate) async fn drop_namespace(
         open_tasks: info
             .child_tabular_task_id
             .into_iter()
-            .filter_map(|ti| ti.map(TaskId::from))
+            .map(TaskId::from)
             .collect(),
     })
 }

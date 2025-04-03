@@ -472,8 +472,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                // TODO: authz
-                &CatalogWarehouseAction::CanDelete,
+                CatalogWarehouseAction::CanDelete,
             )
             .await?;
 

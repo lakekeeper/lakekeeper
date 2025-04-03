@@ -923,14 +923,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::CanUse,
             )
             .await?;
         authorizer
             .require_table_action(
                 &request_metadata,
                 Ok(Some(table_id)),
-                &CatalogTableAction::CanCommit,
+                CatalogTableAction::CanCommit,
             )
             .await
             .map_err(set_not_found_status_code)?;

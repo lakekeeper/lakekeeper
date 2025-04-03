@@ -435,13 +435,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
         authorizer
-            .require_warehouse_action(&metadata, warehouse_id, &CatalogWarehouseAction::CanUse)
+            .require_warehouse_action(&metadata, warehouse_id, CatalogWarehouseAction::CanUse)
             .await?;
         authorizer
             .require_namespace_action(
                 &metadata,
                 Ok(Some(namespace_id)),
-                &CatalogNamespaceAction::CanUpdateProperties,
+                CatalogNamespaceAction::CanUpdateProperties,
             )
             .await
             .map_err(set_not_found_status_code)?;

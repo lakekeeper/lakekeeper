@@ -21,17 +21,16 @@ pub(crate) async fn set_protect_view<C: Catalog, A: Authorizer + Clone, S: Secre
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
 
     let view_id: ViewIdentUuid = authorizer
-        // TODO: authz
         .require_view_action(
             &request_metadata,
             Ok(Some(view_id)),
-            &CatalogViewAction::CanCommit,
+            CatalogViewAction::CanCommit,
         )
         .await?;
 
