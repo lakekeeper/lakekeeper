@@ -22,4 +22,6 @@ docker compose -f docker-compose.yaml -f docker-compose-starrocks-overlay.yaml r
 docker compose -f docker-compose.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh trino"
 # Trino with Open Policy Agent
 docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml -f docker-compose-trino-opa-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh trino_opa"
+# S3 System Identity
+docker compose -f docker-compose.yaml -f docker-compose-s3-system-identity-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_aws_sts"
 ```

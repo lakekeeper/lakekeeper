@@ -115,7 +115,7 @@ pub enum FileIoError {
 
 impl From<FileIoError> for IcebergErrorResponse {
     fn from(err: FileIoError) -> Self {
-        match &err {
+        match err {
             FileIoError::UnsupportedAction(ref action) => ErrorModel::not_implemented(
                 err.to_string(),
                 format!("{action}NotSupported"),
@@ -128,9 +128,7 @@ impl From<FileIoError> for IcebergErrorResponse {
                 Some(Box::new(err)),
             )
             .into(),
-            e @ FileIoError::Credentials(_) => {
-                ErrorModel::internal(e.to_string(), "ConversionError", Some(Box::new(err))).into()
-            }
+            FileIoError::Credentials(cred_e) => cred_e.into(),
         }
     }
 }
@@ -241,7 +239,7 @@ impl From<ConversionError> for IcebergErrorResponse {
     fn from(value: ConversionError) -> Self {
         ErrorModel::internal(
             format!(
-                "Failed to convert'{is}' to '{to}'",
+                "Failed to convert '{is}' to '{to}'",
                 to = value.to,
                 is = value.is
             ),
