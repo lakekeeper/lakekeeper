@@ -7,7 +7,7 @@ use crate::{
             v1::ViewParameters,
         },
         management::v1::{warehouse::TabularDeleteProfile, TabularType},
-        ApiContext,
+        set_not_found_status_code, ApiContext,
     },
     catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
     request_metadata::RequestMetadata,
@@ -48,7 +48,8 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     let view_id: ViewIdentUuid = authorizer
         .require_view_action(&request_metadata, view_id, &CatalogViewAction::CanDrop)
-        .await?;
+        .await
+        .map_err(set_not_found_status_code)?;
 
     // ------------------- BUSINESS LOGIC -------------------
     let purge_requested = purge_requested.unwrap_or(true);
