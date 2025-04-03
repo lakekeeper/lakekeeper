@@ -55,6 +55,7 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f3b7d
 ] }
 iso8601 = "0.6.2"
 openfga-client = { version = "0.2", features = ["auth-middle"] }
+iso8601 = "0.6.2"
 typed-builder = "^0.20.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }

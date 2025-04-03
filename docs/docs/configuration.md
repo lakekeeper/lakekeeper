@@ -154,7 +154,6 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 | `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`  | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER_TEST__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
 | `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
 
-
 ### UI
 
 When using the built-in UI which is hosted as part of the Lakekeeper binary, most values are pre-set with the corresponding values of Lakekeeper itself. Customization is typically required if Authentication is enabled. Please check the [Authentication guide](./authentication.md) for more information.
