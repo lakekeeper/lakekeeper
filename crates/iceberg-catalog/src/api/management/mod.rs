@@ -1069,16 +1069,12 @@ pub mod v1 {
         pub typ: TabularType,
         /// Warehouse ID where the tabular is stored
         #[schema(value_type = uuid::Uuid)]
-        #[serde(alias = "warehouse_id")]
         pub warehouse_id: WarehouseIdent,
         /// Date when the tabular was created
-        #[serde(alias = "created_at")]
         pub created_at: chrono::DateTime<chrono::Utc>,
         /// Date when the tabular was deleted
-        #[serde(alias = "deleted_at")]
         pub deleted_at: chrono::DateTime<chrono::Utc>,
         /// Date when the tabular will not be recoverable anymore
-        #[serde(alias = "expiration_date")]
         pub expiration_date: chrono::DateTime<chrono::Utc>,
     }
 
