@@ -6,9 +6,8 @@ use axum::{
     Extension, Json, Router,
 };
 use http::StatusCode;
-use openfga_rs::{
-    CheckRequestTupleKey, ConsistencyPreference, ReadRequestTupleKey, TupleKey,
-    TupleKeyWithoutCondition,
+use openfga_client::client::{
+    CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
 };
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
@@ -39,8 +38,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::implementations::openfga::{
-            entities::OpenFgaEntity, service_ext::MAX_TUPLES_PER_WRITE, OpenFGAAuthorizer,
-            OpenFGAError, OpenFGAResult,
+            entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
         },
         Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
         ViewIdentUuid,
@@ -592,7 +590,7 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
 
     let managed_access = get_managed_access(&authorizer, &namespace_id).await?;
     let managed_access_inherited = authorizer
-        .check(openfga_rs::CheckRequestTupleKey {
+        .check(CheckRequestTupleKey {
             user: "user:*".to_string(),
             relation: AllNamespaceRelations::ManagedAccessInheritance.to_string(),
             object: namespace_id.to_openfga(),
@@ -1483,15 +1481,6 @@ async fn checked_write<RA: Assignment>(
         return Err(OpenFGAError::AuthenticationRequired);
     }
     let all_modifications = writes.iter().chain(deletes.iter()).collect::<Vec<_>>();
-    // Fail fast for too many writes
-    let num_modifications = i32::try_from(all_modifications.len()).unwrap_or(i32::MAX);
-    if num_modifications > MAX_TUPLES_PER_WRITE {
-        return Err(OpenFGAError::TooManyWrites {
-            actual: num_modifications,
-            max: MAX_TUPLES_PER_WRITE,
-        });
-    }
-
     // ---------------------------- AUTHZ CHECKS ----------------------------
     let openfga_actor = actor.to_openfga();
 
@@ -1554,7 +1543,6 @@ async fn get_managed_access<T: OpenFgaEntity>(
                 object: entity.to_openfga(),
             },
             None,
-            ConsistencyPreference::MinimizeLatency,
         )
         .await?;
 
@@ -1622,7 +1610,7 @@ mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
-        use openfga_rs::TupleKey;
+        use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
         use super::super::*;
@@ -1671,7 +1659,10 @@ mod tests {
                 get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
                     .await
                     .unwrap();
-            assert!(relations.is_empty());
+            assert!(
+                relations.is_empty(),
+                "Expected no relations, found: {relations:?}",
+            );
 
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             authorizer

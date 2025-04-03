@@ -33,7 +33,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t: <C as Catalog>::Transaction =
@@ -44,7 +44,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         .require_namespace_action(
             &request_metadata,
             namespace_id,
-            &CatalogNamespaceAction::CanListViews,
+            CatalogNamespaceAction::CanListViews,
         )
         .await?;
 
@@ -100,10 +100,7 @@ mod test {
         catalog::{test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
-        service::{
-            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-            State, UserId,
-        },
+        service::{authz::tests::HidingAuthorizer, State, UserId},
     };
 
     async fn pagination_test_setup(
@@ -111,18 +108,17 @@ mod test {
         n_tables: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
         let prof = crate::catalog::test::test_io_profile();
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -155,7 +151,7 @@ mod test {
             .unwrap();
             for (start, end) in hidden_ranges.iter().copied() {
                 if i >= start && i < end {
-                    hiding_mock.hide(&format!("view:{}", view.metadata.uuid()));
+                    authz.hide(&format!("view:{}", view.metadata.uuid()));
                 }
             }
         }
@@ -176,14 +172,13 @@ mod test {
     async fn test_view_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz: HidingAuthorizer = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -325,7 +320,7 @@ mod test {
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
-            hiding_mock.hide(&format!("view:{t}"));
+            authz.hide(&format!("view:{t}"));
         }
 
         let page = CatalogServer::list_views(

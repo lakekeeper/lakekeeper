@@ -1,8 +1,8 @@
 [profile.ci]
 failure-output = "immediate-final"
 fail-fast = false
-retries = 2
+retries = 0
 
 
-[profile.ci.junit]  # this can be some other profile, too
+[profile.ci.junit] # this can be some other profile, too
 path = "junit.xml"

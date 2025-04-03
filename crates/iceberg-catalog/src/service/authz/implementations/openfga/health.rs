@@ -1,8 +1,11 @@
 use async_trait::async_trait;
-use openfga_rs::{CheckRequest, CheckRequestTupleKey, ConsistencyPreference};
+use openfga_client::client::CheckRequestTupleKey;
 
-use super::OpenFGAAuthorizer;
-use crate::service::health::{Health, HealthExt, HealthStatus};
+use super::{OpenFGAAuthorizer, OpenFgaEntity, ServerRelation, OPENFGA_SERVER};
+use crate::{
+    service::health::{Health, HealthExt, HealthStatus},
+    ProjectId,
+};
 
 #[async_trait]
 impl HealthExt for OpenFGAAuthorizer {
@@ -11,19 +14,10 @@ impl HealthExt for OpenFGAAuthorizer {
     }
     async fn update_health(&self) {
         let check_result = self
-            .client
-            .check(CheckRequest {
-                store_id: self.store_id.clone(),
-                tuple_key: Some(CheckRequestTupleKey {
-                    user: "server:*".to_string(),
-                    relation: "applied".to_string(),
-                    object: "model_version:1".to_string(),
-                }),
-                contextual_tuples: None,
-                authorization_model_id: self.authorization_model_id.clone(),
-                trace: false,
-                context: None,
-                consistency: ConsistencyPreference::MinimizeLatency.into(),
+            .check(CheckRequestTupleKey {
+                user: ProjectId::default().to_openfga(),
+                relation: ServerRelation::Project.to_string(),
+                object: OPENFGA_SERVER.to_string(),
             })
             .await;
 
@@ -47,6 +41,8 @@ mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
+        use openfga_client::client::ConsistencyPreference;
+
         use super::super::*;
         use crate::service::authz::implementations::openfga::{
             client::new_authorizer, migrate, new_client_from_config,
@@ -54,16 +50,18 @@ mod tests {
 
         #[tokio::test]
         async fn test_health() {
-            let mut client = new_client_from_config().await.unwrap();
+            let client = new_client_from_config().await.unwrap();
 
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            migrate(&mut client, Some(store_name.clone()))
-                .await
-                .unwrap();
+            migrate(&client, Some(store_name.clone())).await.unwrap();
 
-            let authorizer = new_authorizer(client.clone(), Some(store_name))
-                .await
-                .unwrap();
+            let authorizer = new_authorizer(
+                client.clone(),
+                Some(store_name),
+                ConsistencyPreference::HigherConsistency,
+            )
+            .await
+            .unwrap();
 
             authorizer.update_health().await;
             let health = authorizer.health().await;

@@ -791,7 +791,9 @@ pub(crate) async fn drop_tabular(
 
     tracing::trace!(
         "{}, {:?}. {:?}",
-        location.protected, location.fs_location, location.fs_protocol
+        location.protected,
+        location.fs_location,
+        location.fs_protocol
     );
 
     if location.protected && !force {

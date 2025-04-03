@@ -190,7 +190,7 @@ services:
       iceberg_net:
 
   openfga-migrate:
-    image: openfga/openfga:v1.6
+    image: openfga/openfga:v1.8
     command: migrate
     environment:
       - OPENFGA_DATASTORE_ENGINE=postgres
@@ -207,7 +207,7 @@ services:
         condition: service_healthy
       openfga-migrate:
         condition: service_completed_successfully
-    image: openfga/openfga:v1.6
+    image: openfga/openfga:v1.8
     command: run
     environment:
       - OPENFGA_DATASTORE_ENGINE=postgres
