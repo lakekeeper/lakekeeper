@@ -7,7 +7,7 @@ type auth_model_id
 
 type model_version
   relations
-    define applied: [auth_model_id]
+    define openfga_id: [auth_model_id]
     define exists: [auth_model_id:*]
 
 type role

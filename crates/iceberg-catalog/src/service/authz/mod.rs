@@ -191,7 +191,7 @@ where
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
-        action: &CatalogUserAction,
+        action: CatalogUserAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -200,7 +200,7 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        action: &CatalogRoleAction,
+        action: CatalogRoleAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -208,7 +208,7 @@ where
     async fn is_allowed_server_action(
         &self,
         metadata: &RequestMetadata,
-        action: &CatalogServerAction,
+        action: CatalogServerAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -217,7 +217,7 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -226,35 +226,41 @@ where
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        action: &CatalogWarehouseAction,
+        action: CatalogWarehouseAction,
     ) -> Result<bool>;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_namespace_action(
+    async fn is_allowed_namespace_action<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_id: NamespaceIdentUuid,
-        action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
-    ) -> Result<bool>;
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogNamespaceAction> + std::fmt::Display + Send;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_table_action(
+    async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
         table_id: TableIdentUuid,
-        action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
-    ) -> Result<bool>;
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send;
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_view_action(
+    async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
         view_id: ViewIdentUuid,
-        action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
-    ) -> Result<bool>;
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send;
 
     /// Hook that is called when a user is deleted.
     async fn delete_user(&self, metadata: &RequestMetadata, user_id: UserId) -> Result<()>;
@@ -362,7 +368,7 @@ where
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
-        action: &CatalogUserAction,
+        action: CatalogUserAction,
     ) -> Result<()> {
         if self
             .is_allowed_user_action(metadata, user_id, action)
@@ -383,7 +389,7 @@ where
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        action: &CatalogRoleAction,
+        action: CatalogRoleAction,
     ) -> Result<()> {
         if self
             .is_allowed_role_action(metadata, role_id, action)
@@ -403,7 +409,7 @@ where
     async fn require_server_action(
         &self,
         metadata: &RequestMetadata,
-        action: &CatalogServerAction,
+        action: CatalogServerAction,
     ) -> Result<()> {
         if self.is_allowed_server_action(metadata, action).await? {
             Ok(())
@@ -422,7 +428,7 @@ where
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<()> {
         if self
             .is_allowed_project_action(metadata, project_id, action)
@@ -444,7 +450,7 @@ where
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        action: &CatalogWarehouseAction,
+        action: CatalogWarehouseAction,
     ) -> Result<()> {
         if self
             .is_allowed_warehouse_action(metadata, warehouse_id, action)
@@ -469,7 +475,7 @@ where
         // Ok(None): Namespace does not exist.
         // Ok(Some(namespace_id)): Namespace exists.
         namespace_id: Result<Option<NamespaceIdentUuid>>,
-        action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
+        action: impl From<CatalogNamespaceAction> + std::fmt::Display + Send,
     ) -> Result<NamespaceIdentUuid> {
         // It is important to throw the same error if the namespace does not exist (None) or if the action is not allowed,
         // to avoid leaking information about the existence of the namespace.
@@ -505,7 +511,7 @@ where
         &self,
         metadata: &RequestMetadata,
         table_id: Result<Option<T>>,
-        action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
+        action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
         let actor = metadata.actor();
         let msg = format!("Table action {action} forbidden for {actor}");
@@ -539,7 +545,7 @@ where
         &self,
         metadata: &RequestMetadata,
         view_id: Result<Option<ViewIdentUuid>>,
-        action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
+        action: impl From<CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<ViewIdentUuid> {
         let actor = metadata.actor();
         let msg = format!("View action {action} forbidden for {actor}");
@@ -571,10 +577,14 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use std::str::FromStr;
+pub(crate) mod tests {
+    use std::{
+        str::FromStr,
+        sync::{Arc, RwLock},
+    };
 
     use super::*;
+    use crate::service::health::Health;
 
     #[test]
     fn test_catalog_resource_action() {
@@ -641,5 +651,244 @@ mod tests {
             CatalogViewAction::from_str("can_get_metadata").unwrap(),
             CatalogViewAction::CanGetMetadata
         );
+    }
+
+    #[derive(Clone, Debug)]
+    /// A mock of the [`Authorizer`] that allows to hide objects.
+    /// This is useful to test the behavior of the authorizer when objects are hidden.
+    ///
+    /// Objects that have been hidden will return `allowed: false`
+    /// for any check request.
+    pub(crate) struct HidingAuthorizer {
+        pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
+    }
+
+    impl HidingAuthorizer {
+        pub(crate) fn new() -> Self {
+            Self {
+                hidden: Arc::new(RwLock::new(HashSet::new())),
+            }
+        }
+
+        fn check_available(&self, object: &str) -> bool {
+            !self.hidden.read().unwrap().contains(object)
+        }
+
+        pub(crate) fn hide(&self, object: &str) {
+            self.hidden.write().unwrap().insert(object.to_string());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HealthExt for HidingAuthorizer {
+        async fn health(&self) -> Vec<Health> {
+            vec![]
+        }
+        async fn update_health(&self) {
+            // Do nothing
+        }
+    }
+    #[async_trait::async_trait]
+    impl Authorizer for HidingAuthorizer {
+        fn api_doc() -> utoipa::openapi::OpenApi {
+            AllowAllAuthorizer::api_doc()
+        }
+
+        fn new_router<C: Catalog, S: SecretStore>(&self) -> Router<ApiContext<State<Self, C, S>>> {
+            Router::new()
+        }
+
+        async fn check_actor(&self, _actor: &Actor) -> Result<()> {
+            Ok(())
+        }
+
+        async fn can_bootstrap(&self, _metadata: &RequestMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        async fn bootstrap(&self, _metadata: &RequestMetadata, _is_operator: bool) -> Result<()> {
+            Ok(())
+        }
+
+        async fn list_projects(&self, _metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
+            Ok(ListProjectsResponse::All)
+        }
+
+        async fn can_search_users(&self, _metadata: &RequestMetadata) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn is_allowed_user_action(
+            &self,
+            _metadata: &RequestMetadata,
+            _user_id: &UserId,
+            _action: CatalogUserAction,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn is_allowed_role_action(
+            &self,
+            _metadata: &RequestMetadata,
+            role_id: RoleId,
+            _action: CatalogRoleAction,
+        ) -> Result<bool> {
+            Ok(self.check_available(format!("role:{role_id}").as_str()))
+        }
+
+        async fn is_allowed_server_action(
+            &self,
+            _metadata: &RequestMetadata,
+            _action: CatalogServerAction,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn is_allowed_project_action(
+            &self,
+            _metadata: &RequestMetadata,
+            project_id: &ProjectId,
+            _action: CatalogProjectAction,
+        ) -> Result<bool> {
+            Ok(self.check_available(format!("project:{project_id}").as_str()))
+        }
+
+        async fn is_allowed_warehouse_action(
+            &self,
+            _metadata: &RequestMetadata,
+            warehouse_id: WarehouseIdent,
+            _action: CatalogWarehouseAction,
+        ) -> Result<bool> {
+            Ok(self.check_available(format!("warehouse:{warehouse_id}").as_str()))
+        }
+
+        async fn is_allowed_namespace_action<A>(
+            &self,
+            _metadata: &RequestMetadata,
+            namespace_id: NamespaceIdentUuid,
+            _action: A,
+        ) -> Result<bool>
+        where
+            A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
+        {
+            Ok(self.check_available(format!("namespace:{namespace_id}").as_str()))
+        }
+
+        async fn is_allowed_table_action<A>(
+            &self,
+            _metadata: &RequestMetadata,
+            table_id: TableIdentUuid,
+            _action: A,
+        ) -> Result<bool>
+        where
+            A: From<CatalogTableAction> + std::fmt::Display + Send,
+        {
+            Ok(self.check_available(format!("table:{table_id}").as_str()))
+        }
+
+        async fn is_allowed_view_action<A>(
+            &self,
+            _metadata: &RequestMetadata,
+            view_id: ViewIdentUuid,
+            _action: A,
+        ) -> Result<bool>
+        where
+            A: From<CatalogViewAction> + std::fmt::Display + Send,
+        {
+            Ok(self.check_available(format!("view:{view_id}").as_str()))
+        }
+
+        async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_role(
+            &self,
+            _metadata: &RequestMetadata,
+            _role_id: RoleId,
+            _parent_project_id: ProjectId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_role(&self, _metadata: &RequestMetadata, _role_id: RoleId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_project(
+            &self,
+            _metadata: &RequestMetadata,
+            _project_id: &ProjectId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_project(
+            &self,
+            _metadata: &RequestMetadata,
+            _project_id: ProjectId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_warehouse(
+            &self,
+            _metadata: &RequestMetadata,
+            _warehouse_id: WarehouseIdent,
+            _parent_project_id: &ProjectId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_warehouse(
+            &self,
+            _metadata: &RequestMetadata,
+            _warehouse_id: WarehouseIdent,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_namespace(
+            &self,
+            _metadata: &RequestMetadata,
+            _namespace_id: NamespaceIdentUuid,
+            _parent: NamespaceParent,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_namespace(
+            &self,
+            _metadata: &RequestMetadata,
+            _namespace_id: NamespaceIdentUuid,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_table(
+            &self,
+            _metadata: &RequestMetadata,
+            _table_id: TableIdentUuid,
+            _parent: NamespaceIdentUuid,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_table(&self, _table_id: TableIdentUuid) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_view(
+            &self,
+            _metadata: &RequestMetadata,
+            _view_id: ViewIdentUuid,
+            _parent: NamespaceIdentUuid,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_view(&self, _view_id: ViewIdentUuid) -> Result<()> {
+            Ok(())
+        }
     }
 }

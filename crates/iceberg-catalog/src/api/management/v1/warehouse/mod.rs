@@ -298,7 +298,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                &CatalogProjectAction::CanCreateWarehouse,
+                CatalogProjectAction::CanCreateWarehouse,
             )
             .await?;
 
@@ -353,7 +353,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 &request_metadata,
                 &project_id,
-                &CatalogProjectAction::CanListWarehouses,
+                CatalogProjectAction::CanListWarehouses,
             )
             .await?;
 
@@ -368,7 +368,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             authorizer.is_allowed_warehouse_action(
                 &request_metadata,
                 w.id,
-                &CatalogWarehouseAction::CanIncludeInList,
+                CatalogWarehouseAction::CanIncludeInList,
             )
         }))
         .await?
@@ -397,7 +397,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanGetMetadata,
+                CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
 
@@ -420,7 +420,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanGetMetadata,
+                CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
 
@@ -444,7 +444,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanDelete,
+                CatalogWarehouseAction::CanDelete,
             )
             .await?;
 
@@ -470,7 +470,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanRename,
+                CatalogWarehouseAction::CanRename,
             )
             .await?;
 
@@ -497,7 +497,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanModifySoftDeletion,
+                CatalogWarehouseAction::CanModifySoftDeletion,
             )
             .await?;
 
@@ -525,7 +525,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanDeactivate,
+                CatalogWarehouseAction::CanDeactivate,
             )
             .await?;
 
@@ -555,7 +555,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanActivate,
+                CatalogWarehouseAction::CanActivate,
             )
             .await?;
 
@@ -586,7 +586,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUpdateStorage,
+                CatalogWarehouseAction::CanUpdateStorage,
             )
             .await?;
 
@@ -656,7 +656,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUpdateStorageCredential,
+                CatalogWarehouseAction::CanUpdateStorageCredential,
             )
             .await?;
 
@@ -725,7 +725,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::CanUse,
             )
             .await?;
 
@@ -794,7 +794,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanListDeletedTabulars,
+                CatalogWarehouseAction::CanListDeletedTabulars,
             )
             .await?;
 
@@ -835,12 +835,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
                                 (*id).into(),
-                                &crate::service::authz::CatalogViewAction::CanIncludeInList,
+                                crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
                                 (*id).into(),
-                                &crate::service::authz::CatalogTableAction::CanIncludeInList,
+                                crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
                         }))
                         .await?
@@ -1004,10 +1004,7 @@ mod test {
         catalog::{test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
-        service::{
-            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-            State, UserId,
-        },
+        service::{authz::tests::HidingAuthorizer, State, UserId},
         WarehouseIdent,
     };
 
@@ -1016,19 +1013,18 @@ mod test {
         n_tabulars: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         WarehouseIdent,
     ) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
@@ -1083,7 +1079,7 @@ mod test {
                 .iter()
                 .any(|(start, end)| i >= *start && i < *end)
             {
-                hiding_mock.hide(&format!("view:{}", v.metadata.uuid()));
+                authz.hide(&format!("view:{}", v.metadata.uuid()));
             }
         }
 
@@ -1103,14 +1099,13 @@ mod test {
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
@@ -1263,7 +1258,7 @@ mod test {
         let mut ids = all.tabulars;
         ids.sort_by_key(|e| e.id);
         for t in ids.iter().take(6).skip(4) {
-            hiding_mock.hide(&format!("view:{}", t.id));
+            authz.hide(&format!("view:{}", t.id));
         }
 
         let page = ApiServer::list_soft_deleted_tabulars(

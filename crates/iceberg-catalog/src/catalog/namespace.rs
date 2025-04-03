@@ -61,7 +61,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanListNamespaces,
+                CatalogWarehouseAction::CanListNamespaces,
             )
             .await?;
         let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
@@ -72,7 +72,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .require_namespace_action(
                     &request_metadata,
                     namespace_id,
-                    &CatalogNamespaceAction::CanListNamespaces,
+                    CatalogNamespaceAction::CanListNamespaces,
                 )
                 .await?;
         };
@@ -110,7 +110,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         authorizer.is_allowed_namespace_action(
                             &request_metadata,
                             *n,
-                            &CatalogNamespaceAction::CanGetMetadata,
+                            CatalogNamespaceAction::CanGetMetadata,
                         )
                     }))
                     .await?
@@ -187,7 +187,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .require_warehouse_action(
                     &request_metadata,
                     warehouse_id,
-                    &CatalogWarehouseAction::CanUse,
+                    CatalogWarehouseAction::CanUse,
                 )
                 .await?;
         }
@@ -200,7 +200,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .require_namespace_action(
                     &request_metadata,
                     parent_namespace_id,
-                    &CatalogNamespaceAction::CanCreateNamespace,
+                    CatalogNamespaceAction::CanCreateNamespace,
                 )
                 .await?;
             Some(parent_namespace_id)
@@ -209,7 +209,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .require_warehouse_action(
                     &request_metadata,
                     warehouse_id,
-                    &CatalogWarehouseAction::CanCreateNamespace,
+                    CatalogWarehouseAction::CanCreateNamespace,
                 )
                 .await?;
             None
@@ -265,7 +265,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &parameters.namespace,
-            &CatalogNamespaceAction::CanGetMetadata,
+            CatalogNamespaceAction::CanGetMetadata,
             t.transaction(),
         )
         .await?;
@@ -300,7 +300,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &parameters.namespace,
-            &CatalogNamespaceAction::CanGetMetadata,
+            CatalogNamespaceAction::CanGetMetadata,
             t.transaction(),
         )
         .await?;
@@ -339,7 +339,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &parameters.namespace,
-            &CatalogNamespaceAction::CanDelete,
+            CatalogNamespaceAction::CanDelete,
             t.transaction(),
         )
         .await?;
@@ -385,7 +385,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_metadata,
             &warehouse_id,
             &parameters.namespace,
-            &CatalogNamespaceAction::CanUpdateProperties,
+            CatalogNamespaceAction::CanUpdateProperties,
             t.transaction(),
         )
         .await?;
@@ -407,12 +407,12 @@ pub(crate) async fn authorized_namespace_ident_to_id<C: Catalog, A: Authorizer +
     metadata: &RequestMetadata,
     warehouse_id: &WarehouseIdent,
     namespace: &NamespaceIdent,
-    action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
+    action: impl From<CatalogNamespaceAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> Result<NamespaceIdentUuid> {
     validate_namespace_ident(namespace)?;
     authorizer
-        .require_warehouse_action(metadata, *warehouse_id, &CatalogWarehouseAction::CanUse)
+        .require_warehouse_action(metadata, *warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
     let namespace_id = C::namespace_to_id(*warehouse_id, namespace, transaction).await; // Cannot fail before authz
     authorizer
@@ -618,8 +618,7 @@ mod tests {
         },
         request_metadata::RequestMetadata,
         service::{
-            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-            ListNamespacesQuery, State, Transaction, UserId,
+            authz::tests::HidingAuthorizer, ListNamespacesQuery, State, Transaction, UserId,
         },
     };
 
@@ -628,19 +627,18 @@ mod tests {
         number_of_namespaces: usize,
         hide_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         Option<Prefix>,
     ) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -664,7 +662,7 @@ mod tests {
                 .unwrap();
             for (range_start, range_end) in hide_ranges {
                 if n >= *range_start && n < *range_end {
-                    hiding_mock.hide(&format!(
+                    authz.hide(&format!(
                         "namespace:{}",
                         *namespace_to_id(warehouse.warehouse_id, &ns.namespace, trx.transaction(),)
                             .await
@@ -691,14 +689,13 @@ mod tests {
     async fn test_ns_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -797,7 +794,7 @@ mod tests {
         let mut ids = all.namespace_uuids.unwrap();
         ids.sort();
         for i in ids.iter().take(6).skip(4) {
-            hiding_mock.hide(&format!("namespace:{i}"));
+            authz.hide(&format!("namespace:{i}"));
         }
 
         let page = CatalogServer::list_namespaces(

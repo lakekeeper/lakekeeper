@@ -49,7 +49,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
@@ -58,7 +58,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .require_view_action(
             &request_metadata,
             view_id,
-            &CatalogViewAction::CanGetMetadata,
+            CatalogViewAction::CanGetMetadata,
         )
         .await
         .map_err(set_not_found_status_code)?;

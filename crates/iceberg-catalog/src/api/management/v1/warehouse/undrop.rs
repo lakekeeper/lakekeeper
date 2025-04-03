@@ -39,14 +39,14 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
                 futs.push(authorizer.is_allowed_view_action(
                     request_metadata,
                     (*id).into(),
-                    &crate::service::authz::CatalogViewAction::CanUndrop,
+                    crate::service::authz::CatalogViewAction::CanUndrop,
                 ));
             }
             TabularIdentUuid::Table(id) => {
                 futs.push(authorizer.is_allowed_table_action(
                     request_metadata,
                     (*id).into(),
-                    &crate::service::authz::CatalogTableAction::CanUndrop,
+                    crate::service::authz::CatalogTableAction::CanUndrop,
                 ));
             }
         }

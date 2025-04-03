@@ -1,14 +1,11 @@
-name: Examples Test [no-auth]
+name: Examples Test [auth]
 
 on:
   push:
     branches:
       - main
-      - 'manual-release-*'
   pull_request:
-    branches:
-      - main
-      - 'manual-release-*'
+
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,7 +21,19 @@ jobs:
       platform: 'amd64'
       dockerfile: 'docker/full.Dockerfile'
       image_name: 'iceberg-catalog-local'
-  test-examples:
+
+  # Depends on all actions that are required for a "successful" CI run.
+  tests-pass:
+    name: all examples pass
+    runs-on: ubuntu-latest
+    needs:
+      - test-example-access-control-simple
+      - test-example-minimal
+      - test-example-access-control-advanced
+    steps:
+      - run: exit 0
+
+  test-example-minimal:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
@@ -43,16 +52,74 @@ jobs:
         run: |
           docker load -i artifacts/iceberg-catalog-local-amd64.tar
 
-      - name: List docker images
-        run: docker image ls
-
-      - name: Test Examples
+      - name: Test Minimal
         run: |
           cd examples/minimal
           sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
+          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\""
         env:
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
+
+  test-example-access-control-simple:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iceberg-catalog-image
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -Rlh artifacts
+
+      - name: Restore Docker image
+        run: |
+          docker load -i artifacts/iceberg-catalog-local-amd64.tar
+
+      - name: Test Aeccess Control Simple
+        run: |
+          cd examples/access-control-simple
+          sed -i '/pull_policy: always/d' docker-compose.yaml
+          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb"
+        env:
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
+
+  test-example-access-control-advanced:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iceberg-catalog-image
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -Rlh artifacts
+
+      - name: Restore Docker image
+        run: |
+          docker load -i artifacts/iceberg-catalog-local-amd64.tar
+
+      - name: Test Access Control Advanced
+        run: |
+          cd examples/access-control-advanced
+          sed -i '/pull_policy: always/d' docker-compose.yaml
+          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
+        env:
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
+  

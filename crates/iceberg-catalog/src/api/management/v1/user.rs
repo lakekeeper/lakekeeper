@@ -267,7 +267,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let self_provision = is_self_provisioning(acting_user_id, request.id.as_ref());
         if !self_provision {
             authorizer
-                .require_server_action(&request_metadata, &CatalogServerAction::CanProvisionUsers)
+                .require_server_action(&request_metadata, CatalogServerAction::CanProvisionUsers)
                 .await?;
         };
 
@@ -326,7 +326,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_user_action(&request_metadata, &user_id, &CatalogUserAction::CanRead)
+            .require_user_action(&request_metadata, &user_id, CatalogUserAction::CanRead)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -360,7 +360,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_server_action(&request_metadata, &CatalogServerAction::CanListUsers)
+            .require_server_action(&request_metadata, CatalogServerAction::CanListUsers)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -389,7 +389,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_user_action(&request_metadata, &user_id, &CatalogUserAction::CanUpdate)
+            .require_user_action(&request_metadata, &user_id, CatalogUserAction::CanUpdate)
             .await?;
 
         // ------------------- Business Logic -------------------
@@ -421,7 +421,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
-            .require_user_action(&request_metadata, &user_id, &CatalogUserAction::CanDelete)
+            .require_user_action(&request_metadata, &user_id, CatalogUserAction::CanDelete)
             .await?;
 
         // ------------------- Business Logic -------------------

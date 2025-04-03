@@ -1,5 +1,5 @@
 # Open Policy Agent (OPA)
-[Lakekeeper's Open Policy Agent bridge](https://github.com/lakekeeper/lakekeeper/tree/main/authz/opa-bridge) enables compute engines that support fine-grained access control via Open Policy Agent (OPA) as authorization engine to respect privileges in Lakekeeper. We have also prepared a self-contained [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/trino-opa) to get started quickly.
+[Lakekeeper's Open Policy Agent bridge](https://github.com/lakekeeper/lakekeeper/tree/main/authz/opa-bridge) enables compute engines that support fine-grained access control via Open Policy Agent (OPA) as authorization engine to respect privileges in Lakekeeper. We have also prepared a self-contained [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced) to get started quickly.
 
 Let's imagine we have a trusted multi-user query engine such as trino, in addition to single-user query engines like pyiceberg or daft in Jupyter Notebooks. Managing permissions in trino independently of the other tools is not an option, as we do not want to duplicate permissions across query engines. Our multi-user query engine has two options:
 
@@ -47,4 +47,4 @@ opa.log-responses=true
 opa.policy.batched-uri=http://<URL where OPA is reachable>/v1/data/trino/batch
 ```
 
-A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/trino-opa).
+A full self-contained example is [available on GitHub](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced).

@@ -47,7 +47,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::CanUse,
             )
             .await?;
 
@@ -100,7 +100,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .require_table_action(
                     &request_metadata,
                     metadata,
-                    &CatalogTableAction::CanGetMetadata,
+                    CatalogTableAction::CanGetMetadata,
                 )
                 .await?
         } else {
@@ -122,7 +122,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .require_table_action(
                     &request_metadata,
                     metadata,
-                    &CatalogTableAction::CanGetMetadata,
+                    CatalogTableAction::CanGetMetadata,
                 )
                 .await?
         };
@@ -398,7 +398,7 @@ async fn validate_table_method<A: Authorizer>(
             .require_table_action(
                 metadata,
                 Ok(Some(table_id)),
-                &CatalogTableAction::CanWriteData,
+                CatalogTableAction::CanWriteData,
             )
             .await?;
     } else if READ_METHODS.contains(&method.as_str()) {
@@ -406,7 +406,7 @@ async fn validate_table_method<A: Authorizer>(
             .require_table_action(
                 metadata,
                 Ok(Some(table_id)),
-                &CatalogTableAction::CanReadData,
+                CatalogTableAction::CanReadData,
             )
             .await?;
     } else {

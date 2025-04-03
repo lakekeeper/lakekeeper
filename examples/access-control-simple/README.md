@@ -1,5 +1,5 @@
-## Access Control
-This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark as query engines, OpenFGA as Authorization backend, Keycloak as IdP and Minio as storage.
+## Access Control Simple
+This example demonstrates how Authentication and Authorization works. The example contains Jupyter with Spark, Pyiceberg, trino and starrocks as query engines, OpenFGA as Authorization backend, Keycloak as IdP and Minio as storage. In this simple example, query engines are not shared between users. Please check the [`Access Control Advanced Example`](../access-control-advanced/) to see how authentication & authorization works even if trusted query engines are shared between users.
 
 Run the example with the following command:
 ```bash

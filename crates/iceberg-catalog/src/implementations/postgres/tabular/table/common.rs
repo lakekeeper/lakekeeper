@@ -406,8 +406,7 @@ pub(super) async fn insert_snapshot_refs(
     let _ = sqlx::query!(
         r#"
         WITH deleted AS (
-            DELETE FROM table_refs
-            WHERE table_id = $1 AND table_ref_name = ANY($2::TEXT[])
+            DELETE FROM table_refs WHERE table_id = $1 AND table_ref_name not in (select unnest($2::TEXT[]))
         )
         INSERT INTO table_refs(table_id,
                               table_ref_name,

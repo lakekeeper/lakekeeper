@@ -19,8 +19,8 @@ We are tracking open issues and missing features in query engines in a [Tracking
 The following docker compose examples are available for trino:
 
 - [`Minimal`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal): No authentication
-- [`Access-Control`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control): Lakekeeper secured with OAuth2, single technical User for trino
-- [`Trino-OPA`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/trino-opa): Single trino instance secured by OAuth2 shared by multiple users. Lakekeeper Permissions for each individual user enforced by trino via the Open Policy Agent bridge.
+- [`Access-Control-Simple`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-simple): Lakekeeper secured with OAuth2, single technical User for trino
+- [`Access-Control-Advanced`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced): Single trino instance secured by OAuth2 shared by multiple users. Lakekeeper Permissions for each individual user enforced by trino via the Open Policy Agent bridge.
 
 If [Soft-Deletion](./concepts.md#soft-deletion) is enabled in Lakekeeper, make sure to set `"iceberg.unique-table-location" = 'true'`, to ensure that tables can be recreated in new locations while their dropped counterparts are waiting for expiration.
 
@@ -116,7 +116,7 @@ Basic setup in trino:
 The following docker compose examples are available for spark:
 
 - [`Minimal`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal): No authentication
-- [`Access-Control`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control): Lakekeeper secured with OAuth2, single technical User for spark
+- [`Access-Control-Simple`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-simple): Lakekeeper secured with OAuth2, single technical User for spark
 
 Basic setup in spark:
 

@@ -1,22 +1,12 @@
-use std::{
-    collections::HashSet,
-    fmt,
-    fmt::{Debug, Formatter},
-    sync::Arc,
-};
+use std::{collections::HashSet, fmt::Debug, sync::Arc};
 
-use async_stream::{__private::AsyncStream, stream};
-use async_trait::async_trait;
 use axum::Router;
-use futures::{pin_mut, StreamExt};
-use openfga_rs::{
-    open_fga_service_client::OpenFgaServiceClient,
-    tonic::{
-        Response, Status, {self},
+use openfga_client::{
+    client::{
+        CheckRequestTupleKey, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
+        TupleKeyWithoutCondition,
     },
-    CheckRequest, CheckRequestTupleKey, CheckResponse, ConsistencyPreference, ListObjectsRequest,
-    ListObjectsResponse, ReadRequest, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
-    TupleKeyWithoutCondition, WriteRequest, WriteRequestDeletes, WriteRequestWrites, WriteResponse,
+    tonic,
 };
 
 use crate::{
@@ -43,24 +33,20 @@ mod migration;
 mod models;
 mod relations;
 
-mod service_ext;
-
-pub(crate) use client::new_client_from_config;
+pub(crate) use client::{new_authorizer_from_config, new_client_from_config};
 pub use client::{
-    new_authorizer_from_config, BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer,
-    UnauthenticatedOpenFGAAuthorizer,
+    BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
 };
 use entities::{OpenFgaEntity, ParseOpenFgaEntity as _};
-pub use error::{OpenFGAError, OpenFGAResult};
+pub(crate) use error::{OpenFGAError, OpenFGAResult};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
-pub(crate) use models::{ModelVersion, OpenFgaType, RoleAssignee};
+pub(crate) use models::{OpenFgaType, RoleAssignee};
+use openfga_client::client::BasicOpenFgaClient;
 use relations::{
     NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
     WarehouseRelation,
 };
-pub(crate) use service_ext::ClientHelper;
-use service_ext::MAX_TUPLES_PER_WRITE;
 use tokio::sync::RwLock;
 use utoipa::OpenApi;
 
@@ -69,16 +55,15 @@ use crate::{
     service::{
         authn::UserId,
         authz::{
-            implementations::{
-                openfga::{client::ClientConnection, relations::OpenFgaRelation},
-                FgaType,
-            },
+            implementations::{openfga::relations::OpenFgaRelation, FgaType},
             CatalogRoleAction, CatalogUserAction, NamespaceParent,
         },
         health::Health,
         Catalog, RoleId, SecretStore, State, ViewIdentUuid,
     },
 };
+
+const MAX_TUPLES_PER_WRITE: i32 = 100;
 
 lazy_static::lazy_static! {
     static ref AUTH_CONFIG: crate::config::OpenFGAConfig = {
@@ -89,23 +74,10 @@ lazy_static::lazy_static! {
     };
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OpenFGAAuthorizer {
-    pub(crate) client: Arc<dyn Client + Send + Sync + 'static>,
-    pub(crate) store_id: String,
-    pub(crate) authorization_model_id: String,
-    pub(crate) health: Arc<RwLock<Vec<Health>>>,
-}
-
-impl Debug for OpenFGAAuthorizer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpenFGAAuthorizer")
-            .field("store_id", &self.store_id)
-            .field("authorization_model_id", &self.authorization_model_id)
-            .field("health", &self.health)
-            .field("client", &"...")
-            .finish()
-    }
+    client: BasicOpenFgaClient,
+    health: Arc<RwLock<Vec<Health>>>,
 }
 
 #[async_trait::async_trait]
@@ -217,7 +189,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        action: &CatalogRoleAction,
+        action: CatalogRoleAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
@@ -232,7 +204,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
-        action: &CatalogUserAction,
+        action: CatalogUserAction,
     ) -> Result<bool> {
         let actor = metadata.actor();
 
@@ -281,7 +253,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_server_action(
         &self,
         metadata: &RequestMetadata,
-        action: &CatalogServerAction,
+        action: CatalogServerAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
@@ -296,7 +268,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
-        action: &CatalogProjectAction,
+        action: CatalogProjectAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
@@ -311,7 +283,7 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseIdent,
-        action: &CatalogWarehouseAction,
+        action: CatalogWarehouseAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
@@ -322,12 +294,15 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_namespace_action(
+    async fn is_allowed_namespace_action<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_id: NamespaceIdentUuid,
-        action: impl From<&CatalogNamespaceAction> + std::fmt::Display + Send,
-    ) -> Result<bool> {
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
+    {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -337,12 +312,15 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_table_action(
+    async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
         table_id: TableIdentUuid,
-        action: impl From<&CatalogTableAction> + std::fmt::Display + Send,
-    ) -> Result<bool> {
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send,
+    {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -352,12 +330,15 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_view_action(
+    async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
         view_id: ViewIdentUuid,
-        action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
-    ) -> Result<bool> {
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send,
+    {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
@@ -379,8 +360,7 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(&role_id, ConsistencyPreference::MinimizeLatency)
-            .await?;
+        self.require_no_relations(&role_id).await?;
         let parent_id = parent_project_id.to_openfga();
         let this_id = role_id.to_openfga();
         self.write(
@@ -415,8 +395,7 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(project_id, ConsistencyPreference::MinimizeLatency)
-            .await?;
+        self.require_no_relations(&project_id).await?;
         let server = OPENFGA_SERVER.clone();
         let this_id = project_id.to_openfga();
         self.write(
@@ -462,8 +441,7 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(&warehouse_id, ConsistencyPreference::MinimizeLatency)
-            .await?;
+        self.require_no_relations(&warehouse_id).await?;
         let project_id = parent_project_id.to_openfga();
         let this_id = warehouse_id.to_openfga();
         self.write(
@@ -509,8 +487,7 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(&namespace_id, ConsistencyPreference::MinimizeLatency)
-            .await?;
+        self.require_no_relations(&namespace_id).await?;
 
         let (parent_id, parent_child_relation) = match parent {
             NamespaceParent::Warehouse(warehouse_id) => (
@@ -571,8 +548,7 @@ impl Authorizer for OpenFGAAuthorizer {
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
-        self.require_no_relations(&table_id, ConsistencyPreference::HigherConsistency)
-            .await?;
+        self.require_no_relations(&table_id).await?;
 
         self.write(
             Some(vec![
@@ -615,8 +591,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let parent_id = parent.to_openfga();
         let this_id = view_id.to_openfga();
 
-        self.require_no_relations(&view_id, ConsistencyPreference::MinimizeLatency)
-            .await?;
+        self.require_no_relations(&view_id).await?;
 
         self.write(
             Some(vec![
@@ -683,95 +658,52 @@ impl OpenFGAAuthorizer {
     /// At most 100 writes can be performed in a single transaction.
     async fn write(
         &self,
-        writes: Option<Vec<TupleKey>>,
-        deletes: Option<Vec<TupleKeyWithoutCondition>>,
+        writes: impl Into<Option<Vec<TupleKey>>>,
+        deletes: impl Into<Option<Vec<TupleKeyWithoutCondition>>>,
     ) -> OpenFGAResult<()> {
-        let writes = writes.and_then(|w| (!w.is_empty()).then_some(w));
-        let deletes = deletes.and_then(|d| (!d.is_empty()).then_some(d));
-
-        if writes.is_none() && deletes.is_none() {
-            return Ok(());
-        }
-
-        let num_writes_and_deletes = i32::try_from(
-            writes.as_ref().map_or(0, Vec::len) + deletes.as_ref().map_or(0, Vec::len),
-        )
-        .unwrap_or(i32::MAX);
-        if num_writes_and_deletes > MAX_TUPLES_PER_WRITE {
-            return Err(OpenFGAError::TooManyWrites {
-                actual: num_writes_and_deletes,
-                max: MAX_TUPLES_PER_WRITE,
-            });
-        }
-
-        let write_request = WriteRequest {
-            store_id: self.store_id.clone(),
-            writes: writes.map(|writes| WriteRequestWrites { tuple_keys: writes }),
-            deletes: deletes.map(|deletes| WriteRequestDeletes {
-                tuple_keys: deletes,
-            }),
-            authorization_model_id: self.authorization_model_id.clone(),
-        };
-        self.client
-            .write(write_request.clone())
-            .await
-            .map_err(|e| OpenFGAError::WriteFailed {
-                write_request,
-                source: e,
-            })
-            .map(|_| ())
+        self.client.write(writes, deletes).await.inspect_err(|e| {
+            tracing::error!("Failed to write to OpenFGA: {e}");
+        })?;
+        Ok(())
     }
 
     /// A convenience wrapper around read that handles error conversion
     async fn read(
         &self,
         page_size: i32,
-        tuple_key: ReadRequestTupleKey,
-        continuation_token: Option<String>,
-        consistency: ConsistencyPreference,
+        tuple_key: impl Into<ReadRequestTupleKey>,
+        continuation_token: impl Into<Option<String>>,
     ) -> OpenFGAResult<ReadResponse> {
-        let read_request = ReadRequest {
-            store_id: self.store_id.clone(),
-            page_size: Some(page_size),
-            continuation_token: continuation_token.unwrap_or_default(),
-            tuple_key: Some(tuple_key),
-            consistency: consistency.into(),
-        };
         self.client
-            .read(read_request.clone())
+            .read(page_size, tuple_key, continuation_token)
             .await
-            .map_err(|e| OpenFGAError::ReadFailed {
-                read_request: Box::new(read_request),
-                source: e,
+            .inspect_err(|e| {
+                tracing::error!("Failed to read from OpenFGA: {e}");
             })
             .map(tonic::Response::into_inner)
+            .map_err(Into::into)
     }
 
     /// Read all tuples for a given request
-    async fn read_all(&self, tuple_key: ReadRequestTupleKey) -> OpenFGAResult<Vec<Tuple>> {
-        self.client.read_all_pages(&self.store_id, tuple_key).await
+    async fn read_all(
+        &self,
+        tuple_key: impl Into<ReadRequestTupleKey>,
+    ) -> OpenFGAResult<Vec<Tuple>> {
+        self.client
+            .read_all_pages(tuple_key, 100, 500)
+            .await
+            .map_err(Into::into)
     }
 
     /// A convenience wrapper around check
-    async fn check(&self, tuple_key: CheckRequestTupleKey) -> OpenFGAResult<bool> {
-        let check_request = CheckRequest {
-            tuple_key: Some(tuple_key),
-            store_id: self.store_id.clone(),
-            authorization_model_id: self.authorization_model_id.clone(),
-            contextual_tuples: None,
-            trace: false,
-            context: None,
-            consistency: ConsistencyPreference::MinimizeLatency.into(),
-        };
-
+    async fn check(&self, tuple_key: impl Into<CheckRequestTupleKey>) -> OpenFGAResult<bool> {
         self.client
-            .check(check_request.clone())
+            .check(tuple_key, None, None, false)
             .await
-            .map_err(|source| OpenFGAError::CheckFailed {
-                check_request: Box::new(check_request),
-                source,
+            .inspect_err(|e| {
+                tracing::error!("Failed to check with OpenFGA: {e}");
             })
-            .map(|response| response.get_ref().allowed)
+            .map_err(Into::into)
     }
 
     async fn require_action(
@@ -800,38 +732,28 @@ impl OpenFGAAuthorizer {
     }
 
     /// Returns Ok(()) only if not tuples are associated in any relation with the given object.
-    async fn require_no_relations(
-        &self,
-        object: &impl OpenFgaEntity,
-        consistency: ConsistencyPreference,
-    ) -> Result<()> {
+    async fn require_no_relations(&self, object: &impl OpenFgaEntity) -> Result<()> {
         let openfga_tpye = object.openfga_type().clone();
         let fga_object = object.to_openfga();
         let objects = openfga_tpye.user_of();
         let fga_object_str = fga_object.as_str();
 
         // --------------------- 1. Object as "object" for any user ---------------------
-        let tuples = self
-            .read(
-                1,
-                ReadRequestTupleKey {
-                    user: String::new(),
-                    relation: String::new(),
-                    object: fga_object.clone(),
-                },
-                None,
-                consistency,
-            )
-            .await?
-            .tuples;
+        let relations_exist = self
+            .client
+            .exists_relation_to(&fga_object)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to check if relations to {fga_object} exists: {e}");
+                OpenFGAError::from(e)
+            })?;
 
-        if !tuples.is_empty() {
+        if relations_exist {
             return Err(ErrorModel::conflict(
                 format!("Object to create {fga_object} already has relations"),
                 "ObjectHasRelations",
                 None,
             )
-            .append_detail(format!("Found: {tuples:?}"))
             .into());
         }
 
@@ -853,7 +775,6 @@ impl OpenFGAAuthorizer {
                                 object: format!("{o}:"),
                             },
                             None,
-                            consistency,
                         )
                         .await?;
 
@@ -881,12 +802,15 @@ impl OpenFGAAuthorizer {
     }
 
     async fn delete_all_relations(&self, object: &impl OpenFgaEntity) -> Result<()> {
+        let object_openfga = object.to_openfga();
         let (own_relations, user_relations) = futures::join!(
             self.delete_own_relations(object),
             self.delete_user_relations(object)
         );
         own_relations?;
-        user_relations
+        user_relations.inspect_err(|e| {
+            tracing::error!("Failed to delete user relations for {object_openfga}: {e:?}");
+        })
     }
 
     async fn delete_user_relations(&self, user: &impl OpenFgaEntity) -> Result<()> {
@@ -914,7 +838,6 @@ impl OpenFGAAuthorizer {
                                     object: format!("{o}:"),
                                 },
                                 continuation_token.clone(),
-                                ConsistencyPreference::HigherConsistency,
                             )
                             .await?;
                         continuation_token = Some(response.continuation_token);
@@ -949,72 +872,13 @@ impl OpenFGAAuthorizer {
     }
 
     async fn delete_own_relations(&self, object: &impl OpenFgaEntity) -> Result<()> {
-        self.delete_own_relations_inner(object).await?;
-        // OpenFGA does not guarantee transactional consistency, by running a second delete, we have a higher chance of deleting all relations.
-        self.delete_own_relations_inner(object).await
-    }
-
-    async fn delete_own_relations_inner(&self, object: &impl OpenFgaEntity) -> Result<()> {
-        let fga_object = object.to_openfga();
-
-        let read_stream: AsyncStream<_, _> = stream! {
-            let mut continuation_token = None;
-            let mut seen= HashSet::new();
-            while continuation_token != Some(String::new()) {
-                let response = self.read(
-                    MAX_TUPLES_PER_WRITE,
-                    ReadRequestTupleKey {
-                        user: String::new(),
-                        relation: String::new(),
-                        object: fga_object.clone(),
-                    },
-                    continuation_token.clone(),
-                    ConsistencyPreference::HigherConsistency,
-                ).await?;
-                continuation_token = Some(response.continuation_token);
-                let keys = response.tuples.into_iter().filter_map(|t| t.key).filter(|k| !seen.contains(&(k.user.clone(), k.relation.clone()))).collect::<Vec<_>>();
-                seen.extend(keys.iter().map(|k| (k.user.clone(), k.relation.clone())));
-                yield Result::<_, IcebergErrorResponse>::Ok(keys);
-            }
-        };
-        pin_mut!(read_stream);
-        let mut read_tuples: Option<Vec<TupleKey>> = None;
-
-        let delete_tuples = |t: Option<Vec<TupleKey>>| async {
-            match t {
-                Some(tuples) => {
-                    self.write(
-                        None,
-                        Some(
-                            tuples
-                                .into_iter()
-                                .map(|t| TupleKeyWithoutCondition {
-                                    user: t.user,
-                                    relation: t.relation,
-                                    object: t.object,
-                                })
-                                .collect(),
-                        ),
-                    )
-                    .await
-                }
-                None => Ok(()),
-            }
-        };
-
-        loop {
-            let next_future = read_stream.next();
-            let deletion_future = delete_tuples(read_tuples.clone());
-
-            let (tuples, delete) = futures::join!(next_future, deletion_future);
-            delete?;
-
-            if let Some(tuples) = tuples.transpose()? {
-                read_tuples = (!tuples.is_empty()).then_some(tuples);
-            } else {
-                break Ok(());
-            }
-        }
+        let object_openfga = object.to_openfga();
+        self.client
+            .delete_relations_to_object(&object_openfga)
+            .await
+            .inspect_err(|e| tracing::error!("Failed to delete relations to {object_openfga}: {e}"))
+            .map_err(OpenFGAError::from)
+            .map_err(Into::into)
     }
 
     /// A convenience wrapper around `client.list_objects`
@@ -1026,55 +890,11 @@ impl OpenFGAAuthorizer {
     ) -> Result<Vec<String>> {
         let user = user.into();
         self.client
-            .list_objects(ListObjectsRequest {
-                r#type: r#type.into(),
-                relation: relation.into(),
-                user: user.clone(),
-                store_id: self.store_id.clone(),
-                authorization_model_id: self.authorization_model_id.clone(),
-                contextual_tuples: None,
-                context: None,
-                consistency: ConsistencyPreference::MinimizeLatency.into(),
-            })
+            .list_objects(r#type, relation, user, None, None)
             .await
-            .map_err(|e| {
-                let msg = e.message().to_string();
-                let code = e.code().to_string();
-                ErrorModel::internal(
-                    "Failed to list authorization objects",
-                    "AuthorizationListObjectsFailed",
-                    Some(Box::new(e)),
-                )
-                .append_detail(msg)
-                .append_detail(format!("Tonic code: {code}"))
-                .into()
-            })
+            .map_err(|e| OpenFGAError::from(e).into())
             .map(|response| response.into_inner().objects)
     }
-}
-
-#[cfg_attr(test, mockall::automock)]
-#[async_trait]
-pub trait Client {
-    async fn write(&self, request: WriteRequest) -> Result<Response<WriteResponse>, tonic::Status>;
-    async fn list_objects(
-        &self,
-        request: ListObjectsRequest,
-    ) -> Result<Response<ListObjectsResponse>, tonic::Status>;
-    async fn read(
-        &self,
-        request: ReadRequest,
-    ) -> std::result::Result<Response<ReadResponse>, tonic::Status>;
-    async fn read_all_pages(
-        &self,
-        store_id: &str,
-        tuple: ReadRequestTupleKey,
-    ) -> OpenFGAResult<Vec<Tuple>>;
-
-    async fn check(
-        &self,
-        request: CheckRequest,
-    ) -> std::result::Result<Response<CheckResponse>, tonic::Status>;
 }
 
 fn suffixes_for_user(user: &FgaType) -> Vec<String> {
@@ -1085,120 +905,15 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-#[async_trait]
-impl Client for OpenFgaServiceClient<ClientConnection> {
-    async fn write(&self, request: WriteRequest) -> Result<Response<WriteResponse>, Status> {
-        Self::write(&mut self.clone(), request).await
-    }
-
-    async fn list_objects(
-        &self,
-        request: ListObjectsRequest,
-    ) -> Result<Response<ListObjectsResponse>, Status> {
-        Self::list_objects(&mut self.clone(), request).await
-    }
-
-    async fn read(
-        &self,
-        request: ReadRequest,
-    ) -> std::result::Result<Response<ReadResponse>, Status> {
-        Self::read(&mut self.clone(), request).await
-    }
-
-    async fn read_all_pages(
-        &self,
-        store_id: &str,
-        tuple: ReadRequestTupleKey,
-    ) -> OpenFGAResult<Vec<Tuple>> {
-        ClientHelper::read_all_pages(&mut self.clone(), store_id, tuple).await
-    }
-
-    async fn check(
-        &self,
-        request: CheckRequest,
-    ) -> std::result::Result<Response<CheckResponse>, Status> {
-        Self::check(&mut self.clone(), request).await
-    }
-}
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use std::{
-        collections::HashSet,
-        sync::{Arc, RwLock},
-    };
-
     use needs_env_var::needs_env_var;
-    use openfga_rs::{CheckResponse, ReadResponse, WriteResponse};
-
-    use crate::service::authz::implementations::openfga::{MockClient, OpenFGAAuthorizer};
-
-    /// A mock for the `OpenFGA` client that allows to hide objects.
-    /// This is useful to test the behavior of the authorizer when objects are hidden.
-    ///
-    /// Create via `ObjectHidingMock::new()`, use `ObjectHidingMock::to_authorizer` to create an authorizer.
-    /// Hide objects via `ObjectHidingMock::hide`. Objects that have been hidden will return `allowed: false`
-    /// for any check request.
-    pub(crate) struct ObjectHidingMock {
-        pub hidden: Arc<RwLock<HashSet<String>>>,
-        pub mock: Arc<MockClient>,
-    }
-
-    impl ObjectHidingMock {
-        pub(crate) fn new() -> Self {
-            let hidden: Arc<RwLock<HashSet<String>>> = Arc::default();
-            let hidden_clone = hidden.clone();
-            let mut mock = MockClient::default();
-            mock.expect_check().returning(move |r| {
-                let hidden = hidden_clone.clone();
-                let hidden = hidden.read().unwrap();
-
-                if hidden.contains(&r.tuple_key.unwrap().object) {
-                    return Ok(openfga_rs::tonic::Response::new(CheckResponse {
-                        allowed: false,
-                        resolution: String::new(),
-                    }));
-                }
-
-                Ok(openfga_rs::tonic::Response::new(CheckResponse {
-                    allowed: true,
-                    resolution: String::new(),
-                }))
-            });
-            mock.expect_read().returning(|_| {
-                Ok(openfga_rs::tonic::Response::new(ReadResponse {
-                    tuples: vec![],
-                    continuation_token: String::new(),
-                }))
-            });
-            mock.expect_write()
-                .returning(|_| Ok(openfga_rs::tonic::Response::new(WriteResponse {})));
-
-            Self {
-                hidden,
-                mock: Arc::new(mock),
-            }
-        }
-
-        #[cfg(test)]
-        pub(crate) fn hide(&self, object: &str) {
-            self.hidden.write().unwrap().insert(object.to_string());
-        }
-
-        #[cfg(test)]
-        pub(crate) fn to_authorizer(&self) -> OpenFGAAuthorizer {
-            OpenFGAAuthorizer {
-                client: self.mock.clone(),
-                store_id: "test_store".to_string(),
-                authorization_model_id: "test_model".to_string(),
-                health: Arc::default(),
-            }
-        }
-    }
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use http::StatusCode;
+        use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
         use crate::service::{authz::implementations::openfga::client::new_authorizer, RoleId};
@@ -1206,16 +921,16 @@ pub(crate) mod tests {
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 
         async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
-            let mut client = new_client_from_config()
+            let client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            migrate(&mut client, Some(store_name.clone()))
-                .await
-                .unwrap();
+            migrate(&client, Some(store_name.clone())).await.unwrap();
 
-            new_authorizer(client, Some(store_name)).await.unwrap()
+            new_authorizer(client, Some(store_name), TEST_CONSISTENCY)
+                .await
+                .unwrap()
         }
 
         #[tokio::test]
@@ -1259,10 +974,7 @@ pub(crate) mod tests {
             let authorizer = new_authorizer_in_empty_store().await;
 
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             authorizer
                 .write(
@@ -1278,7 +990,7 @@ pub(crate) mod tests {
                 .unwrap();
 
             let err = authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
@@ -1289,10 +1001,7 @@ pub(crate) mod tests {
         async fn test_require_no_relations_used_in_other_relations() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             authorizer
                 .write(
@@ -1308,7 +1017,7 @@ pub(crate) mod tests {
                 .unwrap();
 
             let err = authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             assert_eq!(err.error.code, StatusCode::CONFLICT.as_u16());
@@ -1319,10 +1028,7 @@ pub(crate) mod tests {
         async fn test_delete_own_relations_direct() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             authorizer
                 .write(
@@ -1338,24 +1044,18 @@ pub(crate) mod tests {
                 .unwrap();
 
             authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             authorizer.delete_own_relations(&project_id).await.unwrap();
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
         async fn test_delete_own_relations_usersets() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             authorizer
                 .write(
@@ -1371,24 +1071,18 @@ pub(crate) mod tests {
                 .unwrap();
 
             authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             authorizer.delete_own_relations(&project_id).await.unwrap();
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
         async fn test_delete_own_relations_many() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             for i in 0..502 {
                 authorizer
@@ -1414,42 +1108,30 @@ pub(crate) mod tests {
             }
 
             authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             authorizer.delete_own_relations(&project_id).await.unwrap();
             // openfga is eventually consistent, this should make tests less flaky
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
         async fn test_delete_own_relations_empty() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             authorizer.delete_own_relations(&project_id).await.unwrap();
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
         async fn test_delete_user_relations() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
 
@@ -1467,14 +1149,11 @@ pub(crate) mod tests {
                 .unwrap();
 
             authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             authorizer.delete_user_relations(&project_id).await.unwrap();
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
@@ -1535,25 +1214,16 @@ pub(crate) mod tests {
         async fn test_delete_user_relations_empty() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
             authorizer.delete_user_relations(&project_id).await.unwrap();
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
         async fn test_delete_user_relations_many() {
             let authorizer = new_authorizer_in_empty_store().await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
 
             for i in 0..502 {
                 authorizer
@@ -1579,24 +1249,18 @@ pub(crate) mod tests {
             }
 
             authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
+                .require_no_relations(&project_id)
                 .await
                 .unwrap_err();
             authorizer.delete_user_relations(&project_id).await.unwrap();
-            authorizer
-                .require_no_relations(&project_id, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
         #[tokio::test]
         async fn test_delete_user_relations_userset() {
             let authorizer = new_authorizer_in_empty_store().await;
             let user = RoleId::new(uuid::Uuid::nil());
-            authorizer
-                .require_no_relations(&user, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&user).await.unwrap();
 
             authorizer
                 .write(
@@ -1611,15 +1275,9 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
 
-            authorizer
-                .require_no_relations(&user, TEST_CONSISTENCY)
-                .await
-                .unwrap_err();
+            authorizer.require_no_relations(&user).await.unwrap_err();
             authorizer.delete_user_relations(&user).await.unwrap();
-            authorizer
-                .require_no_relations(&user, TEST_CONSISTENCY)
-                .await
-                .unwrap();
+            authorizer.require_no_relations(&user).await.unwrap();
         }
     }
 }

@@ -3015,7 +3015,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.4.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=7ca94329#7ca9432930268b051523aa46b27e5bdca6ee4cea"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=f3b7dd2#f3b7dd2e9a6fb726db065aeb6822db1091fc7040"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3112,7 +3112,7 @@ dependencies = [
  "mockall",
  "moka",
  "needs_env_var",
- "openfga-rs",
+ "openfga-client",
  "paste",
  "percent-encoding",
  "pretty_assertions",
@@ -4403,18 +4403,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "openfga-rs"
-version = "0.1.0"
-source = "git+https://github.com/c-thiel/openfga-rs.git?rev=2623173bab4f9c59b70f599dbc80bd4fe344e1ed#2623173bab4f9c59b70f599dbc80bd4fe344e1ed"
+name = "openfga-client"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291236924b86e17b53709b542d2dc864a3fd28ad426bfa22c05f3752dc9aa255"
 dependencies = [
+ "async-stream",
+ "futures",
+ "http 1.3.1",
+ "middle",
  "prost",
  "prost-types",
  "prost-wkt",
- "prost-wkt-build",
  "prost-wkt-types",
  "serde",
+ "thiserror 2.0.12",
  "tonic",
- "tonic-build",
+ "tower 0.5.2",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5359,9 +5366,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.14"
+version = "0.12.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "989e327e510263980e231de548a33e63d34962d29ae61b467389a1a09627a254"
+checksum = "d19c46a6fdd48bc4dab94b6103fccc55d34c67cc0ad04653aad4ea2a07cd7bbb"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6851,7 +6858,6 @@ dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
  "bytes",
- "flate2",
  "h2 0.4.5",
  "http 1.3.1",
  "http-body 1.0.1",
@@ -6866,27 +6872,11 @@ dependencies = [
  "rustls-pemfile 2.2.0",
  "socket2",
  "tokio",
- "tokio-rustls 0.26.0",
  "tokio-stream",
  "tower 0.4.13",
  "tower-layer",
  "tower-service",
  "tracing",
- "zstd",
-]
-
-[[package]]
-name = "tonic-build"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "prost-build",
- "prost-types",
- "quote",
- "syn 2.0.87",
 ]
 
 [[package]]
