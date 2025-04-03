@@ -188,22 +188,28 @@ pub(crate) fn parse_create_user_request(
     request_metadata: &RequestMetadata,
     request: Option<CreateUserRequest>,
 ) -> Result<(UserId, String, UserType, Option<String>)> {
-    let (request_name, request_email, request_id, request_user_type) = match request {
+    let (request_name, request_email, user_id_in_request, request_user_type) = match request {
         Some(CreateUserRequest {
             update_if_exists: _,
             name: request_name,
             email: request_email,
-            id: request_id,
+            id: user_id_in_request,
             user_type: request_user_type,
-        }) => (request_name, request_email, request_id, request_user_type),
+        }) => (
+            request_name,
+            request_email,
+            user_id_in_request,
+            request_user_type,
+        ),
         None => (None, None, None, None),
     };
 
     let request_email = request_email.filter(|e| !e.is_empty());
     let request_name = request_name.filter(|n| !n.is_empty());
-    let self_provision = is_self_provisioning(request_metadata.user_id(), request_id.as_ref());
+    let self_provision =
+        is_self_provisioning(request_metadata.user_id(), user_id_in_request.as_ref());
 
-    let creation_user_id = request_id
+    let creation_user_id = user_id_in_request
         .or_else(|| request_metadata.user_id().cloned())
         .ok_or(ErrorModel::bad_request(
         "User ID could not be extracted from the token and must be provided for creating a user.",
@@ -222,11 +228,7 @@ pub(crate) fn parse_create_user_request(
         let user_type = request_user_type
             .or_else(|| auth_details.and_then(|a| a.principal_type().map(Into::into)))
             .unwrap_or(UserType::Application);
-        let name = name.ok_or(ErrorModel::bad_request(
-            "User name could not be extracted from the token and must be provided",
-            "MissingUserName",
-            None,
-        ))?;
+        let name = name.unwrap_or(format!("Nameless App with ID {}", creation_user_id));
 
         (name, user_type, email)
     } else {
