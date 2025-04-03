@@ -6,6 +6,10 @@ services:
         condition: service_healthy
       initialwarehouse:
         condition: service_completed_successfully
+      trino:
+        condition: service_healthy
+      starrocks:
+        condition: service_healthy
     command: start-notebook.sh --NotebookApp.token=''
     volumes:
       - ./notebooks:/home/jovyan/examples/

@@ -44,17 +44,17 @@ services:
       opa:
         condition: service_started
     volumes:
-      - ../examples/trino-opa/trino/access-control.properties:/etc/trino/access-control.properties
-      - ../examples/trino-opa/trino/config.properties:/etc/trino/config.properties
-      - ../examples/trino-opa/trino/log.properties:/etc/trino/log.properties
+      - ../examples/access-control-advanced/trino/access-control.properties:/etc/trino/access-control.properties
+      - ../examples/access-control-advanced/trino/config.properties:/etc/trino/config.properties
+      - ../examples/access-control-advanced/trino/log.properties:/etc/trino/log.properties
 
   # Emulates a reverse proxy that secures the connection to the server.
   # This is required as trino requires HTTPS in OAUTH2 settings (rightfully so!)
   trino-proxy:
     image: nginx
     volumes:
-      - ../examples/trino-opa/nginx.conf:/etc/nginx/nginx.conf
-      - ../examples/trino-opa/certs:/etc/nginx/certs
+      - ../examples/access-control-advanced/nginx.conf:/etc/nginx/nginx.conf
+      - ../examples/access-control-advanced/certs:/etc/nginx/certs
     depends_on:
       trino-opa:
         condition: service_healthy

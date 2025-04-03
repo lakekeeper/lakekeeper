@@ -13,3 +13,6 @@ services:
   migrate:
     image: localhost/iceberg-catalog-local:latest
     pull_policy: never
+  db:
+    ports:
+      - "31102:5432"
