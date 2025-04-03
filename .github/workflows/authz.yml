@@ -28,7 +28,7 @@ jobs:
         run: |
           BASE_PATH=authz/openfga
           LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1)
-          VALIDATION_OUTPUT=$(fga model validate --file $BASE_PATH/$LAST_VERSION/schema.fga)
+          VALIDATION_OUTPUT=$(fga model validate --file $BASE_PATH/$LAST_VERSION/fga.mod)
           echo $VALIDATION_OUTPUT | jq -e '.is_valid == true' > /dev/null || { echo "Validation failed"; exit 1; }
 
       - name: Test Collaboration Model
@@ -41,6 +41,6 @@ jobs:
         run: |
           BASE_PATH=authz/openfga
           LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1)
-          DESIRED_SCHEMA_JSON=$(fga model transform --file $BASE_PATH/$LAST_VERSION/schema.fga)
+          DESIRED_SCHEMA_JSON=$(fga model transform --file $BASE_PATH/$LAST_VERSION/fga.mod)
           CURRENT_SCHEMA_JSON=$(cat $BASE_PATH/$LAST_VERSION/schema.json)
           echo $DESIRED_SCHEMA_JSON | jq -e '. == '"$CURRENT_SCHEMA_JSON" > /dev/null || { echo "Schema json is not up-to-date"; exit 1; }

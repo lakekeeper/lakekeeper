@@ -1,4 +1,9 @@
-use std::{collections::HashSet, fmt::Debug, sync::Arc};
+use std::{
+    collections::HashSet,
+    fmt::Debug,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 
 use axum::Router;
 use openfga_client::{
@@ -6,6 +11,7 @@ use openfga_client::{
         CheckRequestTupleKey, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
         TupleKeyWithoutCondition,
     },
+    migration::AuthorizationModelVersion,
     tonic,
 };
 
@@ -65,14 +71,27 @@ use crate::{
 
 const MAX_TUPLES_PER_WRITE: i32 = 100;
 
-lazy_static::lazy_static! {
-    static ref AUTH_CONFIG: crate::config::OpenFGAConfig = {
-        CONFIG.openfga.clone().expect("OpenFGAConfig not found")
-    };
-    pub(crate) static ref OPENFGA_SERVER: String = {
-        format!("server:{}", CONFIG.server_id)
-    };
-}
+static AUTH_CONFIG: LazyLock<crate::config::OpenFGAConfig> =
+    LazyLock::new(|| CONFIG.openfga.clone().expect("OpenFGAConfig not found"));
+
+static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = LazyLock::new(
+    || {
+        AUTH_CONFIG
+        .authorization_model_version
+        .as_ref()
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            AuthorizationModelVersion::from_str(v).unwrap_or_else(|_| {
+                panic!(
+                    "Failed to parse OpenFGA authorization model version from config. Got {v}, expected <major>.<minor>"
+                )
+            })
+        })
+    },
+);
+
+pub(crate) static OPENFGA_SERVER: LazyLock<String> =
+    LazyLock::new(|| format!("server:{}", CONFIG.server_id));
 
 #[derive(Clone, Debug)]
 pub struct OpenFGAAuthorizer {
@@ -395,7 +414,7 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> Result<()> {
         let actor = metadata.actor();
 
-        self.require_no_relations(&project_id).await?;
+        self.require_no_relations(project_id).await?;
         let server = OPENFGA_SERVER.clone();
         let this_id = project_id.to_openfga();
         self.write(
