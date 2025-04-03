@@ -7,7 +7,7 @@ use crate::{
             v1::ViewParameters,
         },
         management::v1::{warehouse::TabularDeleteProfile, TabularType},
-        ApiContext,
+        set_not_found_status_code, ApiContext,
     },
     catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
     request_metadata::RequestMetadata,
