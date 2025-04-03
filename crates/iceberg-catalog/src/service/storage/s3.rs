@@ -455,6 +455,7 @@ impl S3Profile {
         if external_id.is_none()
             && role_arn.is_some()
             && CONFIG.s3_require_external_id_for_system_credentials
+            && matches!(s3_credentials, Some(S3Credential::AwsSystemIdentity { .. }))
         {
             return Err(CredentialsError::Misconfiguration(
                 "An `external-id` is required when using `assume-role-arn`.".to_string(),
