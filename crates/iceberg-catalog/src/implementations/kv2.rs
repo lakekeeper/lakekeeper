@@ -273,6 +273,7 @@ mod tests {
             let secret: StorageCredential = S3Credential::AccessKey {
                 aws_access_key_id: "my access key".to_string(),
                 aws_secret_access_key: "my secret key".to_string(),
+                external_id: None,
             }
             .into();
 
@@ -295,6 +296,7 @@ mod tests {
             let secret: StorageCredential = S3Credential::AccessKey {
                 aws_access_key_id: "my access key".to_string(),
                 aws_secret_access_key: "my secret key".to_string(),
+                external_id: None,
             }
             .into();
 
