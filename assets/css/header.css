@@ -1,0 +1,44 @@
+.md-header {
+  background-color: #172436;
+  box-shadow: 0 0 0.2rem #0000, 0 0.2rem 0.4rem #0000;
+  color: var(--md-primary-bg-color);
+  display: block;
+  left: 0;
+  position: sticky;
+  right: 0;
+  top: 0;
+  z-index: 4;
+}
+
+.md-tabs,
+.md-footer {
+  background-color: #32485c;
+}
+
+.md-tabs__item {
+  color: #b0b9c0 !important;
+}
+
+.md-tabs__item .md-tabs__item--active{
+  color: white;
+}
+
+
+a {text-decoration: none !important;color: #32485c;}
+
+.md-source {
+  color: #32485c !important;
+  text-decoration: underline;
+}
+
+.md-header a {
+  color: #b1c4d9 !important;
+}
+
+.md-footer__link {
+  color: #b1c4d9 !important;
+}
+
+.md-header .md-tabs__item--active a {
+  color: #fff !important;
+}
