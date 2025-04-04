@@ -32,6 +32,10 @@ pub(crate) enum OpenFGAError {
     },
     #[error("Cannot assign {0} to itself")]
     SelfAssignment(String),
+    #[error("Assignement to non-existing user(s): {0}")]
+    AssignementToNonExistintUsers(String),
+    #[error("Cannot validate assignment request")]
+    CannotValidateRequest,
 }
 
 impl OpenFGAError {
