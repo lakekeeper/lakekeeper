@@ -59,7 +59,7 @@ pub struct ServerInfo {
     pub default_project_id: Option<ProjectId>,
     /// `AuthZ` backend in use.
     pub authz_backend: AuthZBackend,
-    /// If using system identities for storage profiles are enabled.
+    /// If using AWS system identities for S3 storage profiles are enabled.
     pub s3_system_identities_enabled: bool,
 }
 

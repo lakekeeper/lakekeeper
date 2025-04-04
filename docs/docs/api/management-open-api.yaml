@@ -3301,6 +3301,7 @@ components:
         - bootstrapped
         - server-id
         - authz-backend
+        - s3-system-identities-enabled
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
@@ -3313,6 +3314,9 @@ components:
             - string
             - 'null'
           description: Default Project ID. Null if not set
+        s3-system-identities-enabled:
+          type: boolean
+          description: If using AWS system identities for S3 storage profiles are enabled.
         server-id:
           type: string
           format: uuid
