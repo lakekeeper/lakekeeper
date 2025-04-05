@@ -125,6 +125,8 @@ pub struct ListNamespacesResponse {
     /// The order of the IDs in this list corresponds to the order of the namespaces in the `namespaces` field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace_uuids: Option<Vec<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protection_status: Option<Vec<bool>>,
 }
 
 #[cfg(feature = "axum")]

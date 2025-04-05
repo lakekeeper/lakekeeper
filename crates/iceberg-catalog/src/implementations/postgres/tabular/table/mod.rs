@@ -38,7 +38,7 @@ use crate::{
     service::{
         storage::{join_location, split_location, StorageProfile},
         ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result, TableIdent,
-        TableIdentUuid, TabularDetails,
+        TableIdentUuid, TableInfo, TabularDetails, TabularInfo,
     },
     SecretIdent, WarehouseIdent,
 };
@@ -134,7 +134,7 @@ pub(crate) async fn list_tables<'e, 'c: 'e, E>(
     list_flags: crate::service::ListFlags,
     transaction: E,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>>
+) -> Result<PaginatedMapping<TableIdentUuid, TableInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -149,7 +149,7 @@ where
     )
     .await?;
 
-    tabulars.map::<TableIdentUuid, TableIdent>(
+    tabulars.map::<TableIdentUuid, TableInfo>(
         |k| match k {
             TabularIdentUuid::Table(t) => {
                 let r: Result<TableIdentUuid> = Ok(TableIdentUuid::from(t));
@@ -162,7 +162,7 @@ where
             )
             .into()),
         },
-        |(v, _)| Ok(v.into_inner()),
+        TabularInfo::into_table_info,
     )
 }
 
@@ -817,9 +817,10 @@ pub(crate) async fn rename_table(
 
 pub(crate) async fn drop_table(
     table_id: TableIdentUuid,
+    force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularIdentUuid::Table(*table_id), transaction).await
+    drop_tabular(TabularIdentUuid::Table(*table_id), force, transaction).await
 }
 
 #[derive(Default)]
@@ -1515,7 +1516,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables.get(&table1.table_id), Some(&table1.table_ident));
+        assert_eq!(
+            tables.get(&table1.table_id).unwrap().table_ident,
+            table1.table_ident
+        );
 
         let table2 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
         let tables = list_tables(
@@ -1541,7 +1545,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables.get(&table2.table_id), Some(&table2.table_ident));
+        assert_eq!(
+            tables.get(&table2.table_id).unwrap().table_ident,
+            table2.table_ident
+        );
     }
 
     #[sqlx::test]
@@ -1604,7 +1611,10 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(tables.len(), 2);
 
-        assert_eq!(tables.get(&table2.table_id), Some(&table2.table_ident));
+        assert_eq!(
+            tables.get(&table2.table_id).unwrap().table_ident,
+            table2.table_ident
+        );
 
         let tables = list_tables(
             warehouse_id,
@@ -1623,7 +1633,10 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables.get(&table3.table_id), Some(&table3.table_ident));
+        assert_eq!(
+            tables.get(&table3.table_id).unwrap().table_ident,
+            table3.table_ident
+        );
 
         let tables = list_tables(
             warehouse_id,
@@ -1763,6 +1776,7 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
         mark_tabular_as_deleted(
             TabularIdentUuid::Table(*table.table_id),
+            false,
             None,
             &mut transaction,
         )
@@ -1796,7 +1810,9 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        drop_table(table.table_id, &mut transaction).await.unwrap();
+        drop_table(table.table_id, false, &mut transaction)
+            .await
+            .unwrap();
         transaction.commit().await.unwrap();
 
         assert!(get_table_metadata_by_id(

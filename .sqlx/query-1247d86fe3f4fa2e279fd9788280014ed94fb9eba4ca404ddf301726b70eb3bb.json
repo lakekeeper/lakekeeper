@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH input_rows AS (\n            SELECT\n                unnest($1::uuid[]) as task_id,\n                unnest($2::uuid[]) as tabular_id,\n                unnest($3::uuid[]) as warehouse_id,\n                unnest($4::tabular_type[]) as tabular_type,\n                unnest($5::deletion_kind[]) as deletion_kind\n        )\n        INSERT INTO tabular_expirations(task_id, tabular_id, warehouse_id, typ, deletion_kind)\n        SELECT\n            i.task_id,\n            i.tabular_id,\n            i.warehouse_id,\n            i.tabular_type,\n            i.deletion_kind\n        FROM input_rows i\n        ON CONFLICT (task_id)\n        DO UPDATE SET deletion_kind = EXCLUDED.deletion_kind\n        RETURNING task_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "tabular_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tabular_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "deletion_kind[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "deletion_kind",
+                  "kind": {
+                    "Enum": [
+                      "default",
+                      "purge"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1247d86fe3f4fa2e279fd9788280014ed94fb9eba4ca404ddf301726b70eb3bb"
+}

@@ -117,11 +117,18 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
         t.commit().await?;
+        let mut idents = Vec::with_capacity(identifiers.len());
+        let mut protection_status = Vec::with_capacity(identifiers.len());
+        for ident in identifiers {
+            idents.push(ident.table_ident);
+            protection_status.push(ident.protected);
+        }
 
         Ok(ListTablesResponse {
             next_page_token,
-            identifiers,
+            identifiers: idents,
             table_uuids: return_uuids.then_some(table_uuids.into_iter().map(|u| *u).collect()),
+            protection_status: query.return_protection_status.then_some(protection_status),
         })
     }
 
@@ -638,7 +645,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     /// Drop a table from the catalog
     async fn drop_table(
         parameters: TableParameters,
-        DropParams { purge_requested }: DropParams,
+        DropParams {
+            purge_requested,
+            force,
+        }: DropParams,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -679,7 +689,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let purge = purge_requested.unwrap_or(true);
 
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
@@ -692,13 +701,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         match warehouse.tabular_delete_profile {
             TabularDeleteProfile::Hard {} => {
-                let location = C::drop_table(table_id, t.transaction()).await?;
+                let location = C::drop_table(table_id, force, t.transaction()).await?;
                 // committing here means maybe dangling data if queue_tabular_purge fails
                 // commiting after queuing means we may end up with a table pointing nowhere
                 // I feel that some undeleted files are less bad than a table that's there but can't be loaded
                 t.commit().await?;
 
-                if purge {
+                if purge_requested {
                     state
                         .v1_state
                         .queues
@@ -716,8 +725,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer.delete_table(table_id).await?;
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
-                C::mark_tabular_as_deleted(TabularIdentUuid::Table(*table_id), t.transaction())
-                    .await?;
+                C::mark_tabular_as_deleted(
+                    TabularIdentUuid::Table(*table_id),
+                    force,
+                    t.transaction(),
+                )
+                .await?;
                 t.commit().await?;
 
                 state
@@ -727,7 +740,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         tabular_id: table_id.into(),
                         warehouse_ident: warehouse_id,
                         tabular_type: TabularType::Table,
-                        purge,
+                        purge: purge_requested,
                         expire_at: chrono::Utc::now() + expiration_seconds,
                     })
                     .await?;
@@ -892,6 +905,43 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<()> {
         let _ = commit_tables_internal(prefix, request, state, request_metadata).await?;
+        Ok(())
+    }
+
+    async fn set_table_protection(
+        table_id: TableIdentUuid,
+        warehouse_id: WarehouseIdent,
+        protected: bool,
+        state: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        // ------------------- AUTHZ -------------------
+        let authorizer = state.v1_state.authz;
+        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CatalogWarehouseAction::CanUse,
+            )
+            .await?;
+        authorizer
+            .require_table_action(
+                &request_metadata,
+                Ok(Some(table_id)),
+                CatalogTableAction::CanCommit,
+            )
+            .await
+            .map_err(set_not_found_status_code)?;
+
+        C::set_tabular_protected(
+            TabularIdentUuid::Table(*table_id),
+            protected,
+            t.transaction(),
+        )
+        .await?;
+        t.commit().await?;
         Ok(())
     }
 }
@@ -1813,8 +1863,8 @@ pub(crate) mod test {
             iceberg::{
                 types::{PageToken, Prefix},
                 v1::{
-                    tables::TablesService as _, DataAccess, ListTablesQuery, NamespaceParameters,
-                    TableParameters,
+                    tables::TablesService as _, DataAccess, DropParams, ListTablesQuery,
+                    NamespaceParameters, TableParameters,
                 },
             },
             management::v1::warehouse::TabularDeleteProfile,
@@ -1827,6 +1877,8 @@ pub(crate) mod test {
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
             State, UserId,
         },
+        tests::random_request_metadata,
+        WarehouseIdent,
     };
 
     #[test]
@@ -2994,6 +3046,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(11),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3009,6 +3062,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(10),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3024,6 +3078,7 @@ pub(crate) mod test {
                 page_token: PageToken::Present(all.next_page_token.unwrap()),
                 page_size: Some(10),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3040,6 +3095,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3065,6 +3121,7 @@ pub(crate) mod test {
                 page_token: PageToken::Present(first_six.next_page_token.unwrap()),
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3098,6 +3155,7 @@ pub(crate) mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(5),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3124,6 +3182,7 @@ pub(crate) mod test {
                 page_token: PageToken::Present(page.next_page_token.unwrap()),
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3143,5 +3202,117 @@ pub(crate) mod test {
         for (idx, i) in (7..10).enumerate() {
             assert_eq!(next_page_items[idx], format!("tab-{i}"));
         }
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_protected_table(pool: PgPool) {
+        let (ctx, _, ns_params, _) = table_test_setup(pool).await;
+        let table_ident = TableIdent {
+            namespace: ns_params.namespace.clone(),
+            name: "tab-1".to_string(),
+        };
+        let tab = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some("tab-1".to_string())),
+            DataAccess::none(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::set_table_protection(
+            tab.metadata.uuid().into(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DropParams {
+                purge_requested: true,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect_err("Table was dropped which should not be possible");
+        assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
+
+        CatalogServer::set_table_protection(
+            tab.metadata.uuid().into(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            false,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DropParams {
+                purge_requested: true,
+                force: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_can_force_drop_protected_table(pool: PgPool) {
+        let (ctx, _, ns_params, _) = table_test_setup(pool).await;
+        let table_ident = TableIdent {
+            namespace: ns_params.namespace.clone(),
+            name: "tab-1".to_string(),
+        };
+        let tab = CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some("tab-1".to_string())),
+            DataAccess::none(),
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::set_table_protection(
+            tab.metadata.uuid().into(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            true,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: ns_params.prefix.clone(),
+                table: table_ident.clone(),
+            },
+            DropParams {
+                purge_requested: true,
+                force: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect("Table couldn't be force dropped which should be possible");
     }
 }

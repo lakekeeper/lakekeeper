@@ -244,7 +244,7 @@ pub(crate) mod test {
 
     use crate::{
         api::{
-            iceberg::{types::Prefix, v1::namespace::Service},
+            iceberg::{types::Prefix, v1::namespace::NamespaceService},
             management::v1::{
                 bootstrap::{BootstrapRequest, Service as _},
                 warehouse::{

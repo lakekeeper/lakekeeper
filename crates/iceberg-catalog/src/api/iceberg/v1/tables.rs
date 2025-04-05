@@ -21,6 +21,8 @@ use crate::{
         RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
+    service::TableIdentUuid,
+    WarehouseIdent,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -36,6 +38,8 @@ pub struct ListTablesQuery {
     /// Default is false.
     #[serde(default)]
     pub return_uuids: bool,
+    #[serde(default)]
+    pub return_protection_status: bool,
 }
 
 impl From<ListTablesQuery> for PaginationQuery {
@@ -128,6 +132,14 @@ where
     async fn commit_transaction(
         prefix: Option<Prefix>,
         request: CommitTransactionRequest,
+        state: ApiContext<S>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()>;
+
+    async fn set_table_protection(
+        table_id: TableIdentUuid,
+        warehouse_id: WarehouseIdent,
+        protected: bool,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;

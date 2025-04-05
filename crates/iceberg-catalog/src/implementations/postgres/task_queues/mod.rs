@@ -1,8 +1,10 @@
 mod tabular_expiration_queue;
 mod tabular_purge_queue;
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use sqlx::{PgConnection, PgPool};
 pub use tabular_expiration_queue::TabularExpirationQueue;
 pub use tabular_purge_queue::TabularPurgeQueue;
@@ -56,17 +58,95 @@ impl PgQueue {
     }
 }
 
-async fn queue_task(
-    conn: &mut PgConnection,
-    queue_name: &str,
-    parenet_task_id: Option<Uuid>,
-    idempotency_key: Uuid,
+#[derive(Debug)]
+pub struct TaskArg {
+    parent: Option<Uuid>,
     warehouse_ident: WarehouseIdent,
     suspend_until: Option<DateTime<Utc>>,
-) -> Result<Option<Uuid>, IcebergErrorResponse> {
-    let task_id = Uuid::now_v7();
-    Ok(sqlx::query_scalar!(
-        r#"INSERT INTO task(
+}
+
+#[derive(Debug)]
+pub struct InsertResult {
+    pub task_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
+pub trait InputTrait {
+    fn warehouse_ident(&self) -> WarehouseIdent;
+    fn suspend_until(&self) -> Option<chrono::DateTime<Utc>> {
+        None
+    }
+}
+
+fn preprocess_batch<T: InputTrait, F: Fn(&T) -> Uuid>(
+    tasks: Vec<T>,
+    idempotency_fn: F,
+) -> crate::api::Result<(HashMap<Uuid, TaskArg>, HashMap<Uuid, T>)> {
+    let mut idempotency2task = HashMap::with_capacity(tasks.len());
+    let mut idempotency2specific = HashMap::with_capacity(tasks.len());
+    for task in tasks {
+        let idempotency_key = idempotency_fn(&task);
+        if let Some(duplicate) = idempotency2task.insert(
+            idempotency_key,
+            TaskArg {
+                parent: None,
+                warehouse_ident: task.warehouse_ident(),
+                suspend_until: task.suspend_until(),
+            },
+        ) {
+            tracing::error!(?duplicate, "Duplicate Task in Batch.");
+            // TODO: bad-request?
+            return Err(ErrorModel::internal(
+                "Duplicate Task in Batch",
+                "InternalServerError",
+                None,
+            )
+            .into());
+        }
+        idempotency2specific.insert(idempotency_key, task);
+    }
+    Ok((idempotency2task, idempotency2specific))
+}
+
+async fn queue_task_batch(
+    conn: &mut PgConnection,
+    queue_name: &str,
+    tasks: &HashMap<Uuid, TaskArg>,
+) -> Result<Vec<InsertResult>, IcebergErrorResponse> {
+    let mut task_ids = Vec::with_capacity(tasks.len());
+    let mut idempotency_keys = Vec::with_capacity(tasks.len());
+    let mut parent_task_ids = Vec::with_capacity(tasks.len());
+    let mut warehouse_idents = Vec::with_capacity(tasks.len());
+    let mut suspend_untils = Vec::with_capacity(tasks.len());
+
+    for (
+        idempotency_key,
+        TaskArg {
+            parent,
+            warehouse_ident,
+            suspend_until,
+        },
+    ) in tasks
+    {
+        task_ids.push(Uuid::now_v7());
+        idempotency_keys.push(*idempotency_key);
+        parent_task_ids.push(*parent);
+        warehouse_idents.push(**warehouse_ident);
+        suspend_untils.push(*suspend_until);
+    }
+
+    Ok(sqlx::query_as!(
+        InsertResult,
+        r#"WITH input_rows AS (
+            SELECT
+                unnest($1::uuid[]) as task_id,
+                $2::text as queue_name,
+                unnest($3::uuid[]) as parent_task_id,
+                unnest($4::uuid[]) as idempotency_key,
+                unnest($5::uuid[]) as warehouse_id,
+                unnest($6::timestamptz[]) as suspend_until
+        )
+        INSERT INTO task(
                 task_id,
                 queue_name,
                 status,
@@ -74,23 +154,34 @@ async fn queue_task(
                 idempotency_key,
                 warehouse_id,
                 suspend_until)
-        VALUES ($1, $2, 'pending', $3, $4, $5, $6)
+        SELECT
+            i.task_id,
+            i.queue_name,
+            'pending'::task_status,
+            i.parent_task_id,
+            i.idempotency_key,
+            i.warehouse_id,
+            i.suspend_until
+        FROM input_rows i
         ON CONFLICT ON CONSTRAINT unique_idempotency_key
         DO UPDATE SET
             status = EXCLUDED.status,
             suspend_until = EXCLUDED.suspend_until
         WHERE task.status = 'cancelled'
-        RETURNING task_id"#,
-        task_id,
+        RETURNING task_id, idempotency_key"#,
+        &task_ids,
         queue_name,
-        parenet_task_id,
-        idempotency_key,
-        *warehouse_ident,
-        suspend_until
+        &parent_task_ids as _,
+        &idempotency_keys,
+        &warehouse_idents,
+        &suspend_untils
+            .iter()
+            .map(|t| t.as_ref())
+            .collect::<Vec<_>>() as _
     )
-    .fetch_optional(conn)
+    .fetch_all(conn)
     .await
-    .map_err(|e| e.into_error_model("failed queueing task"))?)
+    .map_err(|e| e.into_error_model("failed queueing tasks"))?)
 }
 
 async fn record_failure(
@@ -275,12 +366,38 @@ async fn cancel_pending_tasks(
 
 #[cfg(test)]
 mod test {
+    use maplit::hashmap;
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
     use crate::WarehouseIdent;
     const TEST_WAREHOUSE: WarehouseIdent = WarehouseIdent(Uuid::nil());
+
+    async fn queue_task(
+        conn: &mut PgConnection,
+        queue_name: &str,
+        parent_task_id: Option<Uuid>,
+        idempotency_key: Uuid,
+        warehouse_ident: WarehouseIdent,
+        suspend_until: Option<DateTime<Utc>>,
+    ) -> Result<Option<Uuid>, IcebergErrorResponse> {
+        Ok(queue_task_batch(
+            conn,
+            queue_name,
+            &HashMap::from([(
+                idempotency_key,
+                TaskArg {
+                    parent: parent_task_id,
+                    warehouse_ident,
+                    suspend_until,
+                },
+            )]),
+        )
+        .await?
+        .pop()
+        .map(|x| x.task_id))
+    }
 
     #[sqlx::test]
     async fn test_queue_task(pool: PgPool) {
@@ -565,5 +682,175 @@ mod test {
 
         record_success(task.task_id, &pool).await.unwrap();
         record_success(id2, &pool).await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_queue_batch(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let config = TaskQueueConfig::default();
+        let queue = setup(pool.clone(), config);
+
+        let ids = queue_task_batch(
+            &mut conn,
+            "test",
+            &hashmap! {
+                Uuid::new_v5(&TEST_WAREHOUSE, b"test") => TaskArg {
+                    parent: None,
+                    warehouse_ident: TEST_WAREHOUSE,
+                    suspend_until: None,
+                },
+                Uuid::new_v5(&TEST_WAREHOUSE, b"test2") => TaskArg {
+                    parent: None,
+                    warehouse_ident: TEST_WAREHOUSE,
+                    suspend_until: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let id = ids[0].task_id;
+        let id2 = ids[1].task_id;
+
+        let task = pick_task(&pool, "test", &queue.max_age)
+            .await
+            .unwrap()
+            .unwrap();
+        let task2 = pick_task(&pool, "test", &queue.max_age)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            pick_task(&pool, "test", &queue.max_age)
+                .await
+                .unwrap()
+                .is_none(),
+            "There are no tasks left, something is wrong."
+        );
+
+        assert_eq!(task.task_id, id);
+        assert!(matches!(task.status, TaskStatus::Running));
+        assert_eq!(task.attempt, 1);
+        assert!(task.picked_up_at.is_some());
+        assert!(task.parent_task_id.is_none());
+        assert_eq!(&task.queue_name, "test");
+
+        assert_eq!(task2.task_id, id2);
+        assert!(matches!(task2.status, TaskStatus::Running));
+        assert_eq!(task2.attempt, 1);
+        assert!(task2.picked_up_at.is_some());
+        assert!(task2.parent_task_id.is_none());
+        assert_eq!(&task2.queue_name, "test");
+
+        record_success(task.task_id, &pool).await.unwrap();
+        record_success(id2, &pool).await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_queue_batch_idempotency(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let config = TaskQueueConfig::default();
+        let queue = setup(pool.clone(), config);
+
+        let ids = queue_task_batch(
+            &mut conn,
+            "test",
+            &hashmap! {
+                Uuid::new_v5(&TEST_WAREHOUSE, b"test") => TaskArg {
+                    parent: None,
+                    warehouse_ident: TEST_WAREHOUSE,
+                    suspend_until: None,
+                },
+                Uuid::new_v5(&TEST_WAREHOUSE, b"test2") => TaskArg {
+                    parent: None,
+                    warehouse_ident: TEST_WAREHOUSE,
+                    suspend_until: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        let id = ids[0].task_id;
+        let id2 = ids[1].task_id;
+
+        let task = pick_task(&pool, "test", &queue.max_age)
+            .await
+            .unwrap()
+            .unwrap();
+        let task2 = pick_task(&pool, "test", &queue.max_age)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            pick_task(&pool, "test", &queue.max_age)
+                .await
+                .unwrap()
+                .is_none(),
+            "There are no tasks left, something is wrong."
+        );
+
+        assert_eq!(task.task_id, id);
+        assert!(matches!(task.status, TaskStatus::Running));
+        assert_eq!(task.attempt, 1);
+        assert!(task.picked_up_at.is_some());
+        assert!(task.parent_task_id.is_none());
+        assert_eq!(&task.queue_name, "test");
+
+        assert_eq!(task2.task_id, id2);
+        assert!(matches!(task2.status, TaskStatus::Running));
+        assert_eq!(task2.attempt, 1);
+        assert!(task2.picked_up_at.is_some());
+        assert!(task2.parent_task_id.is_none());
+        assert_eq!(&task2.queue_name, "test");
+
+        record_success(task.task_id, &pool).await.unwrap();
+        record_success(id2, &pool).await.unwrap();
+
+        let new_key = Uuid::new_v5(&TEST_WAREHOUSE, b"test3");
+
+        let ids_second = queue_task_batch(
+            &mut conn,
+            "test",
+            &hashmap! {
+                Uuid::new_v5(&TEST_WAREHOUSE, b"test") => TaskArg {
+                    parent: None,
+                    warehouse_ident: TEST_WAREHOUSE,
+                    suspend_until: None,
+                },
+                new_key => TaskArg {
+                    parent: None,
+                    warehouse_ident: TEST_WAREHOUSE,
+                    suspend_until: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids_second.len(), 1);
+        let id = ids_second[0].task_id;
+        let idempotency_key = ids_second[0].idempotency_key;
+        assert_eq!(idempotency_key, new_key);
+
+        let task = pick_task(&pool, "test", &queue.max_age)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            pick_task(&pool, "test", &queue.max_age)
+                .await
+                .unwrap()
+                .is_none(),
+            "There should be no tasks left, something is wrong."
+        );
+
+        assert_eq!(task.task_id, id);
+        assert!(matches!(task.status, TaskStatus::Running));
+        assert_eq!(task.attempt, 1);
+        assert!(task.picked_up_at.is_some());
+        assert!(task.parent_task_id.is_none());
+        assert_eq!(&task.queue_name, "test");
+
+        record_success(task.task_id, &pool).await.unwrap();
     }
 }

@@ -66,6 +66,8 @@ pub struct ListTablesResponse {
     /// Lakekeeper IDs of the tables.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_uuids: Option<Vec<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protection_status: Option<Vec<bool>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

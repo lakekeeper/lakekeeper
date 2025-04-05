@@ -77,6 +77,10 @@ pub enum Endpoints {
     ManagementPostWarehouseDeletedTabularsUndrop1,
     ManagementPostWarehouseDeletedTabularsUndrop2,
     ManagementPostWarehouseDeleteProfile,
+    ManagementPostWarehouseProtection,
+    ManagementPostWarehouseNamespaceProtection,
+    ManagementPostWarehouseTableProtection,
+    ManagementPostWarehouseViewProtection,
     // authz, we don't resolve single endpoints since every authorizer may have their own set
     ManagementGetPermissions,
     ManagementPostPermissions,
@@ -305,6 +309,18 @@ impl Endpoints {
             Endpoints::ManagementPostPermissions => "POST /management/v1/permissions",
             Endpoints::ManagementHeadPermissions => "HEAD /management/v1/permissions",
             Endpoints::ManagementDeletePermissions => "DELETE /management/v1/permissions",
+            Endpoints::ManagementPostWarehouseProtection => {
+                "POST /management/v1/warehouse/{warehouse_id}/protection"
+            }
+            Endpoints::ManagementPostWarehouseNamespaceProtection => {
+                "POST /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"
+            }
+            Endpoints::ManagementPostWarehouseTableProtection => {
+                "POST /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection"
+            }
+            Endpoints::ManagementPostWarehouseViewProtection => {
+                "POST /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"
+            }
         }
     }
 }

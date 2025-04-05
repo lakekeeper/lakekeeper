@@ -20,12 +20,13 @@ pub use crate::api::iceberg::v1::{
 };
 use crate::{
     api::{
-        iceberg::v1::{PaginatedMapping, PaginationQuery},
+        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
+            DeleteWarehouseQuery,
         },
     },
     catalog::tables::TableMetadataDiffs,
@@ -183,6 +184,59 @@ pub enum StartupValidationData {
     },
 }
 
+#[derive(Debug, PartialEq)]
+pub struct NamespaceInfo {
+    pub namespace_ident: NamespaceIdent,
+    pub protected: bool,
+}
+
+#[derive(Debug)]
+pub struct NamespaceDropInfo {
+    pub child_namespaces: Vec<NamespaceIdentUuid>,
+    pub child_tables: Vec<(TabularIdentUuid, String)>,
+    pub open_tasks: Vec<TaskId>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct TableInfo {
+    pub table_ident: TableIdent,
+    pub deletion_details: Option<DeletionDetails>,
+    pub protected: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct TabularInfo {
+    pub table_ident: TabularIdentOwned,
+    pub deletion_details: Option<DeletionDetails>,
+    pub protected: bool,
+}
+
+impl TabularInfo {
+    /// Verifies that `self` is a table before converting the `TabularInfo` into a `TableInfo`.
+    ///
+    /// # Errors
+    /// If the `TabularInfo` is a view, this will return an error.
+    pub fn into_table_info(self) -> Result<TableInfo> {
+        Ok(TableInfo {
+            table_ident: self.table_ident.into_table()?,
+            deletion_details: self.deletion_details,
+            protected: self.protected,
+        })
+    }
+
+    /// Verifies that `self` is a view before converting the `TabularInfo` into a `TableInfo`.
+    ///
+    /// # Errors
+    /// If the `TabularInfo` is a table, this will return an error.
+    pub fn into_view_info(self) -> Result<TableInfo> {
+        Ok(TableInfo {
+            table_ident: self.table_ident.into_view()?,
+            deletion_details: self.deletion_details,
+            protected: self.protected,
+        })
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Catalog
 where
@@ -263,7 +317,7 @@ where
         warehouse_id: WarehouseIdent,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceIdent>>;
+    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceInfo>>;
 
     async fn create_namespace<'a>(
         warehouse_id: WarehouseIdent,
@@ -293,8 +347,9 @@ where
     async fn drop_namespace<'a>(
         warehouse_id: WarehouseIdent,
         namespace_id: NamespaceIdentUuid,
+        flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<()>;
+    ) -> Result<NamespaceDropInfo>;
 
     /// Update the properties of a namespace.
     ///
@@ -318,7 +373,7 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TableIdentUuid, TableIdent>>;
+    ) -> Result<PaginatedMapping<TableIdentUuid, TableInfo>>;
 
     /// Return Err only on unexpected errors, not if the table does not exist.
     /// If include_staged is true, also return staged tables.
@@ -388,6 +443,7 @@ where
     /// Returns the table location
     async fn drop_table<'a>(
         table_id: TableIdentUuid,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
@@ -403,6 +459,7 @@ where
 
     async fn mark_tabular_as_deleted(
         table_id: TabularIdentUuid,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
@@ -571,6 +628,7 @@ where
     /// Delete a warehouse.
     async fn delete_warehouse<'a>(
         warehouse_id: WarehouseIdent,
+        query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()>;
 
@@ -642,7 +700,7 @@ where
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>;
+    ) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>>;
 
     async fn update_view_metadata(
         namespace_id: NamespaceIdentUuid,
@@ -658,6 +716,7 @@ where
     /// Used for cleanup
     async fn drop_view<'a>(
         view_id: ViewIdentUuid,
+        force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String>;
 
@@ -675,7 +734,7 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>;
+    ) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>>;
 
     async fn load_storage_profile(
         warehouse_id: WarehouseIdent,
@@ -689,6 +748,24 @@ where
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TabularDetails>>;
+
+    async fn set_tabular_protected(
+        tabular_id: TabularIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    async fn set_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    async fn set_warehouse_protected(
+        warehouse_id: WarehouseIdent,
+        protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -480,7 +480,7 @@ where
         // It is important to throw the same error if the namespace does not exist (None) or if the action is not allowed,
         // to avoid leaking information about the existence of the namespace.
         let actor = metadata.actor();
-        let msg = format!("Namespace action {action} forbidden for {actor}");
+        let msg = format!("Namespace not found or action {action} forbidden for {actor}");
         let typ = "NamespaceActionForbidden";
 
         match namespace_id {
@@ -514,7 +514,7 @@ where
         action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
         let actor = metadata.actor();
-        let msg = format!("Table action {action} forbidden for {actor}");
+        let msg = format!("Table not found or action {action} forbidden for {actor}");
         let typ = "TableActionForbidden";
 
         match table_id {
@@ -548,7 +548,7 @@ where
         action: impl From<CatalogViewAction> + std::fmt::Display + Send,
     ) -> Result<ViewIdentUuid> {
         let actor = metadata.actor();
-        let msg = format!("View action {action} forbidden for {actor}");
+        let msg = format!("View not found or action {action} forbidden for {actor}");
         let typ = "ViewActionForbidden";
 
         match view_id {

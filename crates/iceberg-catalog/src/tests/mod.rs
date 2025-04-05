@@ -1,3 +1,4 @@
+mod drop_recursive;
 mod endpoint_stats;
 mod stats;
 
@@ -15,8 +16,10 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::Service as _, tables::TablesService, views::Service, DataAccess,
-                DropParams, NamespaceParameters, TableParameters,
+                namespace::{NamespaceDropFlags, NamespaceService as _},
+                tables::TablesService,
+                views::ViewService,
+                DataAccess, DropParams, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
@@ -41,7 +44,7 @@ use crate::{
             StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
-        State, UserId,
+        Catalog, SecretStore, State, UserId,
     },
     WarehouseIdent, CONFIG,
 };
@@ -130,13 +133,17 @@ pub(crate) async fn drop_table<T: Authorizer>(
     ns_name: &str,
     name: &str,
     purge_requested: Option<bool>,
+    force: bool,
 ) -> crate::api::Result<()> {
     CatalogServer::drop_table(
         TableParameters {
             prefix: Some(Prefix(prefix.to_string())),
             table: TableIdent::new(NamespaceIdent::new(ns_name.to_string()), name.to_string()),
         },
-        DropParams { purge_requested },
+        DropParams {
+            purge_requested: purge_requested.unwrap_or_default(),
+            force,
+        },
         api_context,
         random_request_metadata(),
     )
@@ -158,6 +165,20 @@ pub(crate) async fn create_view<T: Authorizer>(
         crate::catalog::views::create::test::create_view_request(Some(name), location),
         api_context,
         DataAccess::none(),
+        random_request_metadata(),
+    )
+    .await
+}
+
+pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    flags: NamespaceDropFlags,
+    namespace_parameters: NamespaceParameters,
+) -> crate::api::Result<()> {
+    CatalogServer::drop_namespace(
+        namespace_parameters,
+        flags,
+        api_context,
         random_request_metadata(),
     )
     .await

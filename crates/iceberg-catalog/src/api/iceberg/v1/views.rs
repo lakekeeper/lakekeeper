@@ -22,10 +22,12 @@ use crate::{
         RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
+    service::ViewIdentUuid,
+    WarehouseIdent,
 };
 
 #[async_trait]
-pub trait Service<S: crate::api::ThreadSafe>
+pub trait ViewService<S: crate::api::ThreadSafe>
 where
     Self: Send + Sync + 'static,
 {
@@ -85,10 +87,18 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
+
+    async fn set_view_protection(
+        view_id: ViewIdentUuid,
+        warehouse_ident: WarehouseIdent,
+        protected: bool,
+        state: ApiContext<S>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()>;
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
+pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
     Router::new()
         // /{prefix}/namespaces/{namespace}/views
         .route(
@@ -182,6 +192,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
             )
             .delete(
                 |Path((prefix, namespace, view)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 Query(drop_params): Query<DropParams>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>| async {
                     {
@@ -193,9 +204,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                                     name: view,
                                 },
                             },
-                            DropParams {
-                                purge_requested: None,
-                            },
+                            drop_params,
                             api_context,
                             metadata,
                         )

@@ -138,7 +138,7 @@ pub(crate) mod test {
         api_context: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
         params: ViewParameters,
     ) -> crate::api::Result<LoadViewResult> {
-        <CatalogServer<PostgresCatalog, AllowAllAuthorizer, SecretsState> as views::Service<
+        <CatalogServer<PostgresCatalog, AllowAllAuthorizer, SecretsState> as views::ViewService<
             State<AllowAllAuthorizer, PostgresCatalog, SecretsState>,
         >>::load_view(
             params,
