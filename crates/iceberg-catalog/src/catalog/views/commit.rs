@@ -27,8 +27,8 @@ use crate::{
         event_publisher::EventMetadata,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions},
-        Catalog, GetWarehouseResponse, State, TabularIdentUuid, Transaction, ViewIdentUuid,
-        ViewMetadataWithLocation,
+        Catalog, GetWarehouseResponse, State, TabularIdentUuid, Transaction, ViewCommit,
+        ViewIdentUuid, ViewMetadataWithLocation,
     },
 };
 
@@ -95,11 +95,11 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     check_asserts(requirements.as_ref(), view_id)?;
 
     let ViewMetadataWithLocation {
-        metadata_location: before_update_metadata_location,
+        metadata_location: previous_metadata_location,
         metadata: before_update_metadata,
     } = C::load_view(view_id, false, t.transaction()).await?;
-    let before_update_view_location = parse_view_location(before_update_metadata.location())?;
-    let before_update_metadata_location = parse_view_location(&before_update_metadata_location)?;
+    let previous_view_location = parse_view_location(before_update_metadata.location())?;
+    let previous_metadata_location = parse_view_location(&previous_metadata_location)?;
 
     state
         .v1_state
@@ -111,18 +111,15 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     // serialize body before moving it
     let body = maybe_body_to_json(&request);
 
-    let (requested_update_metadata, delete_old_location) = build_new_metadata(
-        request,
-        before_update_metadata,
-        &before_update_view_location,
-    )?;
+    let (requested_update_metadata, delete_old_location) =
+        build_new_metadata(request, before_update_metadata, &previous_view_location)?;
 
     let view_location = parse_view_location(requested_update_metadata.location())?;
     let metadata_location = storage_profile.default_metadata_location(
         &view_location,
         &CompressionCodec::try_from_properties(requested_update_metadata.properties())?,
         Uuid::now_v7(),
-        extract_count_from_metadata_location(&before_update_metadata_location).map_or(0, |v| v + 1),
+        extract_count_from_metadata_location(&previous_metadata_location).map_or(0, |v| v + 1),
     );
 
     if delete_old_location.is_some() {
@@ -130,12 +127,15 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     }
 
     C::update_view_metadata(
-        namespace_id,
-        view_id,
-        &identifier,
-        &metadata_location,
-        requested_update_metadata.clone(),
-        &view_location,
+        ViewCommit {
+            namespace_id,
+            view_id,
+            view_ident: &identifier,
+            new_metadata_location: &metadata_location,
+            previous_metadata_location: &previous_metadata_location,
+            metadata: requested_update_metadata.clone(),
+            new_location: &view_location,
+        },
         t.transaction(),
     )
     .await?;

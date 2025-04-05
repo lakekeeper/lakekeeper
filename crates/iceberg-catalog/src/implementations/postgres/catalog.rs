@@ -55,7 +55,7 @@ use crate::{
         ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceIdent, NamespaceIdentUuid,
         ProjectId, Result, RoleId, StartupValidationData, TableCommit, TableCreation, TableIdent,
         TableIdentUuid, TabularIdentOwned, TabularIdentUuid, Transaction, UndropTabularResponse,
-        ViewIdentUuid, WarehouseIdent, WarehouseStatus,
+        ViewCommit, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -560,22 +560,26 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn update_view_metadata(
-        namespace_id: NamespaceIdentUuid,
-        view_id: ViewIdentUuid,
-        view: &TableIdent,
-        metadata_location: &Location,
-        metadata: ViewMetadata,
-        location: &Location,
+        commit: ViewCommit<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        drop_view(view_id, transaction).await?;
+        let ViewCommit {
+            namespace_id,
+            new_metadata_location,
+            previous_metadata_location,
+            new_location,
+            view_id,
+            view_ident,
+            metadata,
+        } = commit;
+        drop_view(view_id, Some(previous_metadata_location), transaction).await?;
         create_view(
             namespace_id,
-            metadata_location,
+            new_metadata_location,
             transaction,
-            &view.name,
+            &view_ident.name,
             metadata,
-            location,
+            new_location,
         )
         .await
     }
@@ -584,7 +588,7 @@ impl Catalog for super::PostgresCatalog {
         view_id: ViewIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String> {
-        drop_view(view_id, transaction).await
+        drop_view(view_id, None, transaction).await
     }
 
     async fn rename_view(

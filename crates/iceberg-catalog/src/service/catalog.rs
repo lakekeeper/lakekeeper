@@ -144,8 +144,20 @@ pub struct GetProjectResponse {
 pub struct TableCommit {
     pub new_metadata: TableMetadata,
     pub new_metadata_location: Location,
+    pub previous_metadata_location: Option<Location>,
     pub updates: Vec<TableUpdate>,
     pub(crate) diffs: TableMetadataDiffs,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewCommit<'a> {
+    pub namespace_id: NamespaceIdentUuid,
+    pub view_id: ViewIdentUuid,
+    pub view_ident: &'a TableIdent,
+    pub new_metadata_location: &'a Location,
+    pub previous_metadata_location: &'a Location,
+    pub metadata: ViewMetadata,
+    pub new_location: &'a Location,
 }
 
 #[derive(Debug, Clone)]
@@ -645,12 +657,7 @@ where
     ) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>;
 
     async fn update_view_metadata(
-        namespace_id: NamespaceIdentUuid,
-        view_id: ViewIdentUuid,
-        view: &TableIdent,
-        metadata_location: &Location,
-        metadata: ViewMetadata,
-        location: &Location,
+        commit: ViewCommit<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

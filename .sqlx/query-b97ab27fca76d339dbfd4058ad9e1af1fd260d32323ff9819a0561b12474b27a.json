@@ -1,15 +1,20 @@
 {
   "db_name": "PostgreSQL",
-  "query": "DELETE FROM tabular\n                WHERE tabular_id = $1\n                    AND typ = $2\n                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)\n               RETURNING fs_location, fs_protocol",
+  "query": "DELETE FROM tabular\n                WHERE tabular_id = $1\n                    AND typ = $2\n                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)\n               RETURNING metadata_location, fs_location, fs_protocol",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "fs_location",
+        "name": "metadata_location",
         "type_info": "Text"
       },
       {
         "ordinal": 1,
+        "name": "fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
         "name": "fs_protocol",
         "type_info": "Text"
       }
@@ -31,9 +36,10 @@
       ]
     },
     "nullable": [
+      true,
       false,
       false
     ]
   },
-  "hash": "dbbb04880df7024806c1828921a39f85876d3085645b77663203ab052f8c3405"
+  "hash": "b97ab27fca76d339dbfd4058ad9e1af1fd260d32323ff9819a0561b12474b27a"
 }
