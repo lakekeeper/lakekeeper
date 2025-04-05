@@ -144,6 +144,7 @@ pub struct GetProjectResponse {
 pub struct TableCommit {
     pub new_metadata: TableMetadata,
     pub new_metadata_location: Location,
+    pub previous_metadata_location: Option<Location>,
     pub updates: Vec<TableUpdate>,
     pub(crate) diffs: TableMetadataDiffs,
 }

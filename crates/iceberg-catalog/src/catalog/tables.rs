@@ -68,6 +68,9 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
     "write.metadata.delete-after-commit.enabled";
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = false;
 
+pub(crate) const CONCURRENT_UPDATE_ERROR_TYPE: &str = "ConcurrentUpdateError";
+const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
+
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::tables::TablesService<State<A, C, S>> for CatalogServer<C, A, S>
@@ -493,7 +496,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             metadata_location,
             storage_secret_ident,
             storage_profile,
-        } = remove_table(&table_id.ident, &table, &mut metadatas)?;
+        } = take_table_metadata(&table_id.ident, &table, &mut metadatas)?;
         require_not_staged(metadata_location.as_ref())?;
 
         let table_location =
@@ -977,7 +980,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     }
 
     // ------------------- AUTHZ -------------------
-    let authorizer = state.v1_state.authz;
+    let authorizer = state.v1_state.authz.clone();
     authorizer
         .require_warehouse_action(
             &request_metadata,
@@ -1042,10 +1045,6 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .into());
     }
 
-    let mut transaction = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
-
-    // Store data for events before it is moved
     let mut events = vec![];
     let mut event_table_ids: Vec<(TableIdent, TableIdentUuid)> = vec![];
     let mut updates = vec![];
@@ -1058,6 +1057,78 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             }
         }
     }
+
+    // Start the retry loop
+    let mut attempt = 0;
+    loop {
+        let result = try_commit_tables::<C, A, S>(
+            &request,
+            warehouse_id,
+            table_ids.clone(),
+            &state,
+            include_deleted,
+        )
+        .await;
+
+        match result {
+            Ok(commits) => {
+                // Emit events after successful commit
+                let number_of_events = events.len();
+
+                for (event_sequence_number, (body, (table_ident, table_id))) in
+                    events.into_iter().zip(event_table_ids).enumerate()
+                {
+                    emit_change_event(
+                        EventMetadata {
+                            tabular_id: TabularIdentUuid::Table(*table_id),
+                            warehouse_id,
+                            name: table_ident.name,
+                            namespace: table_ident.namespace.to_url_string(),
+                            prefix: prefix
+                                .clone()
+                                .map(|p| p.as_str().to_string())
+                                .unwrap_or_default(),
+                            num_events: number_of_events,
+                            sequence_number: event_sequence_number,
+                            trace_id: request_metadata.request_id(),
+                        },
+                        body,
+                        "updateTable",
+                        state.v1_state.publisher.clone(),
+                    )
+                    .await;
+                }
+                return Ok(commits);
+            }
+            Err(e)
+                if e.error.r#type == CONCURRENT_UPDATE_ERROR_TYPE
+                    && attempt < MAX_RETRIES_ON_CONCURRENT_UPDATE =>
+            {
+                attempt += 1;
+                tracing::info!(
+                    "Concurrent update detected (attempt {}/{}), retrying commit operation",
+                    attempt,
+                    MAX_RETRIES_ON_CONCURRENT_UPDATE
+                );
+                // Short delay before retry to reduce contention
+                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+// Extract the core commit logic to a separate function for retry purposes
+async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    request: &CommitTransactionRequest,
+    warehouse_id: WarehouseIdent,
+    table_ids: HashMap<TableIdent, TableIdentUuid>,
+    state: &ApiContext<State<A, C, S>>,
+    include_deleted: bool,
+) -> Result<Vec<CommitContext>> {
+    let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+    let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
 
     // Load old metadata
     let mut previous_metadatas = C::load_tables(
@@ -1073,9 +1144,9 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     // Apply changes
     let commits = request
         .table_changes
-        .into_iter()
+        .iter()
         .map(|change| {
-            let table_ident = change.identifier.ok_or_else(||
+            let table_ident = change.identifier.as_ref().ok_or_else(||
                     // This should never happen due to validation
                     ErrorModel::internal(
                         "Change without Identifier",
@@ -1083,14 +1154,15 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                         None,
                     ))?;
             let table_id = require_table_id(&table_ident, table_ids.get(&table_ident).copied())?;
-            let previous_table = remove_table(&table_id, &table_ident, &mut previous_metadatas)?;
+            let previous_table_metadata =
+                take_table_metadata(&table_id, &table_ident, &mut previous_metadatas)?;
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,
                 expired_metadata_logs: mut this_expired,
             } = apply_commit(
-                previous_table.table_metadata.clone(),
-                previous_table.metadata_location.as_ref(),
+                previous_table_metadata.table_metadata.clone(),
+                previous_table_metadata.metadata_location.as_ref(),
                 &change.requirements,
                 change.updates.clone(),
             )?;
@@ -1103,7 +1175,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 this_expired.clear();
             }
 
-            let next_metadata_count = previous_table
+            let next_metadata_count = previous_table_metadata
                 .metadata_location
                 .as_ref()
                 .and_then(extract_count_from_metadata_location)
@@ -1112,23 +1184,26 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             let new_table_location =
                 parse_location(new_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
             let new_compression_codec = CompressionCodec::try_from_metadata(&new_metadata)?;
-            let new_metadata_location = previous_table.storage_profile.default_metadata_location(
-                &new_table_location,
-                &new_compression_codec,
-                Uuid::now_v7(),
-                next_metadata_count,
-            );
+            let new_metadata_location = previous_table_metadata
+                .storage_profile
+                .default_metadata_location(
+                    &new_table_location,
+                    &new_compression_codec,
+                    Uuid::now_v7(),
+                    next_metadata_count,
+                );
 
             let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
                 + number_expired_metadata_log_entries)
-                .saturating_sub(previous_table.table_metadata.metadata_log().len());
+                .saturating_sub(previous_table_metadata.table_metadata.metadata_log().len());
 
             Ok(CommitContext {
                 new_metadata,
                 new_metadata_location,
                 new_compression_codec,
-                updates: change.updates,
-                previous_metadata: previous_table.table_metadata,
+                previous_metadata_location: previous_table_metadata.metadata_location,
+                updates: change.updates.clone(),
+                previous_metadata: previous_table_metadata.table_metadata,
                 number_expired_metadata_log_entries,
                 number_added_metadata_log_entries,
             })
@@ -1210,31 +1285,6 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
             .ok()
     });
 
-    let number_of_events = events.len();
-
-    for (event_sequence_number, (body, (table_ident, table_id))) in
-        events.into_iter().zip(event_table_ids).enumerate()
-    {
-        emit_change_event(
-            EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*table_id),
-                warehouse_id,
-                name: table_ident.name,
-                namespace: table_ident.namespace.to_url_string(),
-                prefix: prefix
-                    .clone()
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_default(),
-                num_events: number_of_events,
-                sequence_number: event_sequence_number,
-                trace_id: request_metadata.request_id(),
-            },
-            body,
-            "updateTable",
-            state.v1_state.publisher.clone(),
-        )
-        .await;
-    }
     Ok(commits)
 }
 
@@ -1279,6 +1329,7 @@ struct CommitContext {
     pub new_metadata: iceberg::spec::TableMetadata,
     pub new_metadata_location: Location,
     pub previous_metadata: iceberg::spec::TableMetadata,
+    pub previous_metadata_location: Option<Location>,
     pub updates: Vec<TableUpdate>,
     pub new_compression_codec: CompressionCodec,
     pub number_expired_metadata_log_entries: usize,
@@ -1298,6 +1349,7 @@ impl CommitContext {
             diffs,
             new_metadata: self.new_metadata.clone(),
             new_metadata_location: self.new_metadata_location.clone(),
+            previous_metadata_location: self.previous_metadata_location.clone(),
             updates: self.updates.clone(),
         }
     }
@@ -1595,7 +1647,7 @@ fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
     Ok(())
 }
 
-fn remove_table<T>(
+fn take_table_metadata<T>(
     table_id: &TableIdentUuid,
     table_ident: &TableIdent,
     metadatas: &mut HashMap<TableIdentUuid, T>,
