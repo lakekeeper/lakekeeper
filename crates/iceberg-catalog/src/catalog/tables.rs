@@ -1120,6 +1120,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
 }
 
 // Extract the core commit logic to a separate function for retry purposes
+#[allow(clippy::too_many_lines)]
 async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     request: &CommitTransactionRequest,
     warehouse_id: WarehouseIdent,
@@ -1153,9 +1154,9 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
                         "ChangeWithoutIdentifier",
                         None,
                     ))?;
-            let table_id = require_table_id(&table_ident, table_ids.get(&table_ident).copied())?;
+            let table_id = require_table_id(table_ident, table_ids.get(table_ident).copied())?;
             let previous_table_metadata =
-                take_table_metadata(&table_id, &table_ident, &mut previous_metadatas)?;
+                take_table_metadata(&table_id, table_ident, &mut previous_metadatas)?;
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,
