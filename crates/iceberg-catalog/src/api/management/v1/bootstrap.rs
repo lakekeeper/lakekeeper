@@ -186,7 +186,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
                 config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
             },
-            aws_system_identities_enabled: CONFIG.s3_enable_system_credentials,
+            aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
         })
     }
 }

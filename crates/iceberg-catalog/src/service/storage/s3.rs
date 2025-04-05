@@ -526,7 +526,7 @@ impl S3Profile {
         s3_credential: Option<&S3Credential>,
     ) -> Result<SdkConfig, CredentialsError> {
         if matches!(s3_credential, Some(S3Credential::AwsSystemIdentity { .. }))
-            && !CONFIG.s3_enable_system_credentials
+            && !CONFIG.enable_aws_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
                 "System identity credentials are disabled in this Lakekeeper deployment."

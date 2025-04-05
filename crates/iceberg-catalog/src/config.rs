@@ -124,7 +124,7 @@ pub struct DynAppConfig {
     pub reserved_namespaces: ReservedNamespaces,
     // ------------- STORAGE OPTIONS -------------
     /// If true, can create Warehouses with using System Identities.
-    pub(crate) s3_enable_system_credentials: bool,
+    pub(crate) enable_aws_system_credentials: bool,
     /// If false, System Identities cannot be used directly to access files.
     /// Instead, `assume_role_arn` must be provided by the user if `SystemIdentities` are used.
     pub(crate) s3_enable_direct_system_credentials: bool,
@@ -457,7 +457,7 @@ impl Default for DynAppConfig {
             pg_connection_max_lifetime: None,
             pg_read_pool_connections: 10,
             pg_write_pool_connections: 5,
-            s3_enable_system_credentials: false,
+            enable_aws_system_credentials: false,
             s3_enable_direct_system_credentials: false,
             s3_require_external_id_for_system_credentials: true,
             nats_address: None,
@@ -1044,9 +1044,9 @@ mod test {
     #[test]
     fn test_s3_disable_system_credentials() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__S3_ENABLE_SYSTEM_CREDENTIALS", "true");
+            jail.set_env("LAKEKEEPER_TEST__ENABLE_AWS_SYSTEM_CREDENTIALS", "true");
             let config = get_config();
-            assert!(config.s3_enable_system_credentials);
+            assert!(config.enable_aws_system_credentials);
             assert!(!config.s3_enable_direct_system_credentials);
             Ok(())
         });
