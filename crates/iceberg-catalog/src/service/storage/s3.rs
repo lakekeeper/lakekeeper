@@ -91,8 +91,8 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub allow_alternative_protocols: Option<bool>,
-    /// S3 URL style detection mode.
-    /// The URL style detection heuristic to use. One of `auto`, `path-style`, `virtual-host`.
+    /// S3 URL style detection mode for remote signing.
+    /// One of `auto`, `path-style`, `virtual-host`.
     /// Default: `auto`. When set to `auto`, Lakekeeper will first try to parse the URL as
     /// `virtual-host` and then attempt `path-style`.
     /// `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
@@ -109,7 +109,7 @@ pub struct S3Profile {
     ///   - <https://s3.us-east-1.amazonaws.com/bucket/file>
     #[serde(default)]
     #[builder(default)]
-    pub s3_url_detection_mode: S3UrlStyleDetectionMode,
+    pub remote_signing_url_style: S3UrlStyleDetectionMode,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
@@ -1122,7 +1122,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
-            s3_url_detection_mode: S3UrlStyleDetectionMode::Auto,
+            remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -1163,7 +1163,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
-            s3_url_detection_mode: S3UrlStyleDetectionMode::Auto,
+            remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1207,7 +1207,8 @@ pub(crate) mod test {
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
-                s3_url_detection_mode: crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                remote_signing_url_style:
+                    crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1256,7 +1257,8 @@ pub(crate) mod test {
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
-                s3_url_detection_mode: crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                remote_signing_url_style:
+                    crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),

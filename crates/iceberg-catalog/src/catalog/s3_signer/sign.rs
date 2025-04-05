@@ -197,7 +197,7 @@ async fn s3_url_style_detection<C: Catalog>(
                 .map(|w| {
                     w.storage_profile
                         .try_into_s3()
-                        .map(|s| s.s3_url_detection_mode)
+                        .map(|s| s.remote_signing_url_style)
                         .map_err(|e| {
                             IcebergErrorResponse::from(ErrorModel::bad_request(
                                 "Warehouse storage profile is not an S3 profile",
