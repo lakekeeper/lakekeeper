@@ -2,6 +2,16 @@
 
 
 
+## [0.8.0](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0) (2025-04-05)
+
+
+### Features
+
+* add kafka support [#271](https://github.com/lakekeeper/lakekeeper/issues/271) ([#937](https://github.com/lakekeeper/lakekeeper/issues/937)) ([1fa2f09](https://github.com/lakekeeper/lakekeeper/commit/1fa2f09ce00f906515eeec98338394c2f2bc7b52))
+* Add support for legacy Kubernetes tokens (no audience) ([#940](https://github.com/lakekeeper/lakekeeper/issues/940)) ([e7daf01](https://github.com/lakekeeper/lakekeeper/commit/e7daf010a74b53ac2c6fee0833e8ef1308c1d02a))
+* **s3:** make url-style detection configurable ([#905](https://github.com/lakekeeper/lakekeeper/issues/905)) ([69234fe](https://github.com/lakekeeper/lakekeeper/commit/69234fe4e340485af9bd52be13adb64de7dbd9f8))
+* **stats:** Endpoint call statistics ([#818](https://github.com/lakekeeper/lakekeeper/issues/818)) ([bf7bcde](https://github.com/lakekeeper/lakekeeper/commit/bf7bcde7e8b475e92a03dc92f53a2a9d1190293a))
+
 ## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
 
 
