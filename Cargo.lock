@@ -3101,7 +3101,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-catalog"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-catalog-bin"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -3209,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "axum 0.8.2",
  "chrono",
