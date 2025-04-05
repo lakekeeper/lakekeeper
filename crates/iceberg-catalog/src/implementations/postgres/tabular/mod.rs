@@ -16,6 +16,7 @@ use uuid::Uuid;
 use super::dbutils::DBErrorHandler as _;
 use crate::{
     api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+    catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
         storage::{join_location, split_location},
@@ -681,14 +682,15 @@ pub(crate) async fn mark_tabular_as_deleted(
 
 pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
+    required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    let location = sqlx::query!(
+    let result = sqlx::query!(
         r#"DELETE FROM tabular
                 WHERE tabular_id = $1
                     AND typ = $2
                     AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-               RETURNING fs_location, fs_protocol"#,
+               RETURNING metadata_location, fs_location, fs_protocol"#,
         *tabular_id,
         TabularType::from(tabular_id) as _
     )
@@ -707,7 +709,18 @@ pub(crate) async fn drop_tabular(
         }
     })?;
 
-    Ok(join_location(&location.fs_protocol, &location.fs_location))
+    if let Some(required_metadata_location) = required_metadata_location {
+        if result.metadata_location != Some(required_metadata_location.to_string()) {
+            return Err(ErrorModel::bad_request(
+                format!("Concurrent update on tabular with id {tabular_id}"),
+                CONCURRENT_UPDATE_ERROR_TYPE,
+                None,
+            )
+            .into());
+        }
+    }
+
+    Ok(join_location(&result.fs_protocol, &result.fs_location))
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {
