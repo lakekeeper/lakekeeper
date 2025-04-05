@@ -3301,11 +3301,14 @@ components:
         - bootstrapped
         - server-id
         - authz-backend
-        - s3-system-identities-enabled
+        - aws-system-identities-enabled
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
           description: '`AuthZ` backend in use.'
+        aws-system-identities-enabled:
+          type: boolean
+          description: If using AWS system identities for S3 storage profiles are enabled.
         bootstrapped:
           type: boolean
           description: Whether the catalog has been bootstrapped.
@@ -3314,9 +3317,6 @@ components:
             - string
             - 'null'
           description: Default Project ID. Null if not set
-        s3-system-identities-enabled:
-          type: boolean
-          description: If using AWS system identities for S3 storage profiles are enabled.
         server-id:
           type: string
           format: uuid

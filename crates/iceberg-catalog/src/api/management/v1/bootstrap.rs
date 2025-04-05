@@ -60,7 +60,7 @@ pub struct ServerInfo {
     /// `AuthZ` backend in use.
     pub authz_backend: AuthZBackend,
     /// If using AWS system identities for S3 storage profiles are enabled.
-    pub s3_system_identities_enabled: bool,
+    pub aws_system_identities_enabled: bool,
 }
 
 impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -186,7 +186,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
                 config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
             },
-            s3_system_identities_enabled: CONFIG.s3_enable_system_credentials,
+            aws_system_identities_enabled: CONFIG.s3_enable_system_credentials,
         })
     }
 }
