@@ -107,7 +107,7 @@ pub struct S3Profile {
     /// Path style:
     ///   - <https://s3.endpoint.com/bucket/bar/a/key>
     ///   - <https://s3.us-east-1.amazonaws.com/bucket/file>
-    #[serde(default)]
+    #[serde(default, alias = "s3-url-detection-mode")]
     #[builder(default)]
     pub remote_signing_url_style: S3UrlStyleDetectionMode,
 }
