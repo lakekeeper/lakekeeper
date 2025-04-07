@@ -155,7 +155,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 state
                     .v1_state
                     .secrets
-                    .get_secret_by_id::<StorageCredential>(&storage_secret_ident)
+                    .get_secret_by_id::<StorageCredential>(storage_secret_ident)
                     .await?
                     .secret,
             )

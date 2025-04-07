@@ -158,7 +158,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     // is a stage-create, we still fetch the secret.
     let config = storage_profile
         .generate_table_config(
-            &data_access,
+            data_access,
             storage_secret.as_ref(),
             &view_location,
             StoragePermissions::Read,

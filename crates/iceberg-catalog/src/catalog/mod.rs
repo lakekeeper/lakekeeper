@@ -69,7 +69,7 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
     secret: Option<crate::SecretIdent>,
     state: &S,
 ) -> Result<Option<StorageCredential>, IcebergErrorResponse> {
-    if let Some(secret_id) = &secret {
+    if let Some(secret_id) = secret {
         Ok(Some(state.get_secret_by_id(secret_id).await?.secret))
     } else {
         Ok(None)

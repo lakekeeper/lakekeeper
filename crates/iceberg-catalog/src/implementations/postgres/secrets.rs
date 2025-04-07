@@ -53,7 +53,7 @@ impl SecretStore for SecretsState {
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: for<'de> Deserialize<'de>>(
         &self,
-        secret_id: &SecretIdent,
+        secret_id: SecretIdent,
     ) -> Result<Secret<S>> {
         struct SecretRow {
             secret: Option<String>,
@@ -103,7 +103,7 @@ impl SecretStore for SecretsState {
             })?;
 
         Ok(Secret {
-            secret_id: *secret_id,
+            secret_id,
             secret: inner,
             created_at: secret.created_at,
             updated_at: secret.updated_at,
@@ -192,7 +192,7 @@ mod tests {
         let secret_id = state.create_secret(secret.clone()).await.unwrap();
 
         let read_secret = state
-            .get_secret_by_id::<StorageCredential>(&secret_id)
+            .get_secret_by_id::<StorageCredential>(secret_id)
             .await
             .unwrap();
 
@@ -214,9 +214,7 @@ mod tests {
 
         state.delete_secret(&secret_id).await.unwrap();
 
-        let read_secret = state
-            .get_secret_by_id::<StorageCredential>(&secret_id)
-            .await;
+        let read_secret = state.get_secret_by_id::<StorageCredential>(secret_id).await;
 
         assert!(read_secret.is_err());
     }

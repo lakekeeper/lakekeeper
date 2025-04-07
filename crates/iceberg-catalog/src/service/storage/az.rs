@@ -172,7 +172,7 @@ impl AdlsProfile {
     /// Fails if sas token cannot be generated.
     pub async fn generate_table_config(
         &self,
-        _: &DataAccess,
+        _: DataAccess,
         table_location: &Location,
         creds: &AzCredential,
         permissions: StoragePermissions,

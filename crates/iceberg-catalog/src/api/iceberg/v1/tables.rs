@@ -350,7 +350,7 @@ pub struct TableParameters {
 
 pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 // Modeled as a string to enable multiple values to be specified.
 pub struct DataAccess {
     pub vended_credentials: bool,

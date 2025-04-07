@@ -84,7 +84,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     t.commit().await?;
 
-    let storage_secret: Option<StorageCredential> = if let Some(secret_id) = &storage_secret_id {
+    let storage_secret: Option<StorageCredential> = if let Some(secret_id) = storage_secret_id {
         Some(
             state
                 .v1_state
@@ -99,7 +99,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     let access = storage_profile
         .generate_table_config(
-            &data_access,
+            data_access,
             storage_secret.as_ref(),
             &view_location,
             // TODO: This should be a permission based on authz

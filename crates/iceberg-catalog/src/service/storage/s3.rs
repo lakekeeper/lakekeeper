@@ -342,14 +342,14 @@ impl S3Profile {
         DataAccess {
             vended_credentials,
             remote_signing,
-        }: &DataAccess,
+        }: DataAccess,
         s3_credential: Option<&S3Credential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
         // If vended_credentials is False and remote_signing is False,
         // use remote_signing.
-        let mut remote_signing = !vended_credentials || *remote_signing;
+        let mut remote_signing = !vended_credentials || remote_signing;
 
         let mut config = TableProperties::default();
         let mut creds = TableProperties::default();
@@ -370,7 +370,7 @@ impl S3Profile {
             config.insert(&s3::Endpoint(endpoint.clone()));
         }
 
-        if *vended_credentials {
+        if vended_credentials {
             if self.sts_enabled {
                 let aws_sdk_sts::types::Credentials {
                     access_key_id,

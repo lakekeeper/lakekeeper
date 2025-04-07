@@ -69,7 +69,7 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = false;
 
 pub(crate) const CONCURRENT_UPDATE_ERROR_TYPE: &str = "ConcurrentUpdateError";
-const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
+pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
@@ -215,7 +215,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
         // We don't commit the transaction yet, first we need to write the metadata file.
-        let storage_secret = if let Some(secret_id) = &warehouse.storage_secret_id {
+        let storage_secret = if let Some(secret_id) = warehouse.storage_secret_id {
             let secret_state = state.v1_state.secrets;
             Some(secret_state.get_secret_by_id(secret_id).await?.secret)
         } else {
@@ -272,7 +272,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // on the `data_access` parameter.
         let config = storage_profile
             .generate_table_config(
-                &data_access,
+                data_access,
                 storage_secret.as_ref(),
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
@@ -391,7 +391,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let config = storage_profile
             .generate_table_config(
-                &DataAccess {
+                DataAccess {
                     vended_credentials: false,
                     remote_signing: false,
                 },
@@ -510,7 +510,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             Some(
                 storage_profile
                     .generate_table_config(
-                        &data_access,
+                        data_access,
                         storage_secret.as_ref(),
                         &table_location,
                         storage_permissions,
@@ -576,7 +576,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
         let storage_config = storage_profile
             .generate_table_config(
-                &data_access,
+                data_access,
                 storage_secret.as_ref(),
                 &parse_location(
                     table_id.location.as_str(),

@@ -560,10 +560,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn update_view_metadata(
-        commit: ViewCommit<'_>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
-        let ViewCommit {
+        ViewCommit {
             namespace_id,
             new_metadata_location,
             previous_metadata_location,
@@ -571,7 +568,9 @@ impl Catalog for super::PostgresCatalog {
             view_id,
             view_ident,
             metadata,
-        } = commit;
+        }: ViewCommit<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
         drop_view(view_id, Some(previous_metadata_location), transaction).await?;
         create_view(
             namespace_id,

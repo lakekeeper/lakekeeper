@@ -207,7 +207,7 @@ impl StorageProfile {
     /// Fails if the underlying storage profile's generation fails.
     pub async fn generate_table_config(
         &self,
-        data_access: &DataAccess,
+        data_access: DataAccess,
         secret: Option<&StorageCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -316,7 +316,7 @@ impl StorageProfile {
 
             let tbl_config = self
                 .generate_table_config(
-                    &DataAccess {
+                    DataAccess {
                         remote_signing: false,
                         vended_credentials: true,
                     },
@@ -1024,7 +1024,7 @@ mod tests {
 
         let config1 = profile
             .generate_table_config(
-                &DataAccess {
+                DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
                 },
@@ -1037,7 +1037,7 @@ mod tests {
 
         let config2 = profile
             .generate_table_config(
-                &DataAccess {
+                DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
                 },
