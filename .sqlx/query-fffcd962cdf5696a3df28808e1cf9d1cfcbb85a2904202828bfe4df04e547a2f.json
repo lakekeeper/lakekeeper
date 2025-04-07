@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT \n            warehouse_name,\n            project_id,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds\n        FROM warehouse\n        WHERE warehouse_id = $1\n        ",
+  "query": "\n            SELECT \n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected\n            FROM warehouse\n            WHERE project_id = $1\n            AND status = ANY($2)\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "warehouse_name",
-        "type_info": "Text"
+        "name": "warehouse_id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 1,
-        "name": "project_id",
+        "name": "warehouse_name",
         "type_info": "Text"
       },
       {
@@ -57,11 +57,34 @@
         "ordinal": 6,
         "name": "tabular_expiration_seconds",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "protected",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text",
+        {
+          "Custom": {
+            "name": "warehouse_status[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "warehouse_status",
+                  "kind": {
+                    "Enum": [
+                      "active",
+                      "inactive"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "nullable": [
@@ -71,8 +94,9 @@
       true,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "66159474536c95d2a662c14d5acf29737549d65040ac0f5874ce0d11daf51c21"
+  "hash": "fffcd962cdf5696a3df28808e1cf9d1cfcbb85a2904202828bfe4df04e547a2f"
 }

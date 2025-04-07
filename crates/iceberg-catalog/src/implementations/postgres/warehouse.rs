@@ -302,6 +302,7 @@ pub(crate) async fn list_warehouses<
         status: WarehouseStatus,
         tabular_delete_mode: DbTabularDeleteProfile,
         tabular_expiration_seconds: Option<i64>,
+        protected: bool,
     }
 
     let include_status = include_status.unwrap_or_else(|| vec![WarehouseStatus::Active]);
@@ -315,7 +316,8 @@ pub(crate) async fn list_warehouses<
                 storage_secret_id,
                 status AS "status: WarehouseStatus",
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
-                tabular_expiration_seconds
+                tabular_expiration_seconds,
+                protected
             FROM warehouse
             WHERE project_id = $1
             AND status = ANY($2)
@@ -353,6 +355,7 @@ pub(crate) async fn list_warehouses<
                 storage_secret_id: warehouse.storage_secret_id.map(std::convert::Into::into),
                 status: warehouse.status,
                 tabular_delete_profile,
+                protected: warehouse.protected,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -371,7 +374,8 @@ pub(crate) async fn get_warehouse(
             storage_secret_id,
             status AS "status: WarehouseStatus",
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
-            tabular_expiration_seconds
+            tabular_expiration_seconds,
+            protected
         FROM warehouse
         WHERE warehouse_id = $1
         "#,
@@ -405,6 +409,7 @@ pub(crate) async fn get_warehouse(
             storage_secret_id: warehouse.storage_secret_id.map(std::convert::Into::into),
             status: warehouse.status,
             tabular_delete_profile,
+            protected: warehouse.protected,
         }))
     } else {
         Ok(None)

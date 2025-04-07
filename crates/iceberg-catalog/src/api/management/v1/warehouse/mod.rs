@@ -210,6 +210,8 @@ pub struct GetWarehouseResponse {
     pub delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is active.
     pub status: WarehouseStatus,
+    /// Whether the warehouse is protected from being deleted.
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
@@ -953,6 +955,7 @@ impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
+            protected: warehouse.protected,
         }
     }
 }

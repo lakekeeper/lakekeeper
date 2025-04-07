@@ -72,6 +72,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         storage_secret_id,
         status,
         tabular_delete_profile: _,
+        protected: _,
     } = C::require_warehouse(warehouse_id, t.transaction()).await?;
     require_active_warehouse(status)?;
 

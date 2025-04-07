@@ -131,6 +131,8 @@ pub struct GetWarehouseResponse {
     pub status: WarehouseStatus,
     /// Tabular delete profile used for the warehouse.
     pub tabular_delete_profile: TabularDeleteProfile,
+    /// Whether the warehouse is protected from being deleted.
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone)]
