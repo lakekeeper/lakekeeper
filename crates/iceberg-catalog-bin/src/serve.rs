@@ -405,6 +405,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
             get(|| async { axum::response::Redirect::permanent("/ui/") }),
         )
         .route("/ui/", get(ui::index_handler))
+        .route("/ui/favicon.ico", get(ui::favicon_handler))
         .route("/ui/assets/{*file}", get(ui::static_handler))
         .route("/ui/{*file}", get(ui::index_handler));
 
