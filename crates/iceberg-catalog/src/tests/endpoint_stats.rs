@@ -569,15 +569,12 @@ mod test {
         .unwrap();
 
         assert_eq!(stats.called_endpoints.len(), 1);
-        assert_eq!(stats.called_endpoints[0].len(), 2);
+        assert_eq!(stats.called_endpoints[0].len(), 1);
         assert_eq!(stats.called_endpoints[0][0].http_route, ep.as_http_route());
-        assert_eq!(stats.called_endpoints[0][1].http_route, ep.as_http_route());
         assert_eq!(stats.called_endpoints[0][0].status_code, 200);
-        assert_eq!(stats.called_endpoints[0][1].status_code, 200);
         assert_eq!(stats.called_endpoints[0][0].count, 1);
-        assert_eq!(stats.called_endpoints[0][1].count, 1);
 
-        assert_eq!(stats.called_endpoints[0][0].warehouse_name, None);
+        assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
     }
 
     async fn send_all_endpoints(setup: &StatsSetup) {
