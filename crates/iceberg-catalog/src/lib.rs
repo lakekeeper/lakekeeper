@@ -13,6 +13,7 @@ pub use config::{AuthZBackend, OpenFGAAuth, SecretBackend, CONFIG, DEFAULT_PROJE
 pub use service::{ProjectId, SecretIdent, WarehouseIdent};
 
 pub mod implementations;
+pub(crate) mod utils;
 
 pub mod api;
 mod request_metadata;

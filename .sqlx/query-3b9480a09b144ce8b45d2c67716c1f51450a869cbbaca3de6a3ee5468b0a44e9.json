@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH delete_info as (\n               SELECT\n                   protected\n               FROM tabular\n               WHERE tabular_id = $1 AND typ = $2\n                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)\n           ),\n           deleted as (\n           DELETE FROM tabular\n               WHERE tabular_id = $1\n                   AND typ = $2\n                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)\n                   AND ((NOT protected) OR $3)\n              RETURNING metadata_location, fs_location, fs_protocol)\n              SELECT protected as \"protected!\",\n                     (SELECT metadata_location from deleted),\n                     (SELECT fs_protocol from deleted),\n                     (SELECT fs_location from deleted) from delete_info",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "metadata_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "fs_location",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3b9480a09b144ce8b45d2c67716c1f51450a869cbbaca3de6a3ee5468b0a44e9"
+}

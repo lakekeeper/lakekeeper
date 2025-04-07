@@ -67,7 +67,7 @@ services:
       - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
       - RUST_LOG=trace,axum=trace
     restart: "no"
-    command: [ "migrate" ]
+    command: ["migrate"]
     depends_on:
       db:
         condition: service_healthy
@@ -84,12 +84,15 @@ services:
       - ICEBERG_REST__NATS_TOPIC=changes
       - ICEBERG_REST__NATS_USER=test
       - ICEBERG_REST__NATS_PASSWORD=test
+      - ICEBERG_REST__KAFKA_TOPIC=changes
+      - ICEBERG_REST__KAFKA_CONFIG={"bootstrap.servers"="kafka:19092","security.protocol"="PLAINTEXT"}
+      - ICEBERG_REST__LOG_CLOUDEVENTS=true
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
       - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
       - RUST_LOG=debug,iceberg-catalog=trace,iceberg-catalog-bin=trace,iceberg-ext=trace
     command: [ "serve" ]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: ["CMD", "/home/nonroot/iceberg-catalog", "healthcheck"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -98,6 +101,8 @@ services:
       - "8181:8181"
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      init-kafka:
         condition: service_completed_successfully
       db:
         condition: service_healthy
@@ -119,7 +124,7 @@ services:
       - PGUSER=postgres
       - POSTGRESQL_PORT_NUMBER=2345
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres -p 2345 -d postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 2345 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -139,7 +144,7 @@ services:
       - MINIO_SCHEME=http
       - MINIO_DEFAULT_BUCKETS=tests
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:9000/minio/health/live" ]
+      test: ["CMD", "curl", "-I", "http://localhost:9000/minio/health/live"]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -153,11 +158,64 @@ services:
     ports:
       - "31105:4222"
     healthcheck:
-      test: [ "CMD-SHELL", 'exec 3<>/dev/tcp/127.0.0.1/8222;echo -e "HEAD / HTTP/1.1\r\nhost: localhost:8222\r\nConnection: close\r\n\r\n" >&3;grep "HTTP/1.1 200 OK"  <&3' ]
+      test:
+        [
+          "CMD-SHELL",
+          'exec 3<>/dev/tcp/127.0.0.1/8222;echo -e "HEAD / HTTP/1.1\r\nhost: localhost:8222\r\nConnection: close\r\n\r\n" >&3;grep "HTTP/1.1 200 OK"  <&3',
+        ]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 10s
+    networks:
+      - iceberg_rest_tests
+
+  kafka:
+    image: apache/kafka:latest
+    ports:
+      - "9092:9092"
+    expose:
+      - "19092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT_HOST://:9092,PLAINTEXT://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "./opt/kafka/bin/kafka-topics.sh",
+          "--list",
+          "--bootstrap-server",
+          "localhost:9092",
+        ]
+      interval: 30s
+      timeout: 30s
+      retries: 2
+    networks:
+      - iceberg_rest_tests
+
+  init-kafka:
+    image: apache/kafka:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      echo kafka-init
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic changes
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --list
+      "
     networks:
       - iceberg_rest_tests
 
@@ -167,7 +225,7 @@ services:
       - CATALOG_MANAGEMENT=dynamic
       - LAKEKEEPER_TEST__CATALOG_URL=http://server:8181/catalog
     healthcheck:
-      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
+      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
       interval: 2s
       timeout: 10s
       retries: 2

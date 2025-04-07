@@ -34,7 +34,7 @@ pub struct LoadViewResult {
     pub config: Option<std::collections::HashMap<String, String>>,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CommitViewRequest {
     #[serde(skip_serializing_if = "Option::is_none")]

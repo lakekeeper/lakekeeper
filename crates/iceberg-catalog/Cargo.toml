@@ -13,12 +13,13 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 
 [features]
 all = [
+    "authz-openfga",
     "sqlx-postgres",
     "s3-signer",
     "router",
     "nats",
     "vendored-protoc",
-    "authz-openfga",
+    "kafka",
 ]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
@@ -26,6 +27,7 @@ s3-signer = ["dep:aws-sigv4", "dep:aws-credential-types"]
 router = ["dep:tower-http"]
 nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
+kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
 authz-openfga = ["dep:openfga-client"]
 
@@ -39,6 +41,7 @@ aws-credential-types = { version = "^1.2", optional = true }
 aws-sdk-sts = { workspace = true }
 aws-sigv4 = { version = "^1.2", optional = true }
 aws-smithy-http = { workspace = true }
+aws-smithy-http-client = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true, features = ["typed-header"] }
 axum-prometheus = { workspace = true }
@@ -51,6 +54,7 @@ chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
 figment = { workspace = true }
+figment_file_provider_adapter = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
@@ -74,6 +78,7 @@ openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 rand = "0.9.0"
+rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -118,3 +123,7 @@ tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = "0.2.5"
 
+[build-dependencies]
+openssl-src = { version = "300.4.2", features = [
+    "force-engine",
+], default-features = false, optional = true }

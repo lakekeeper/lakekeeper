@@ -275,6 +275,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 }
 
 #[derive(Deserialize, Serialize, Debug, ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct EndpointStatistic {
     /// Number of requests to this endpoint for the current time-slice.
     pub count: i64,
@@ -288,13 +289,13 @@ pub struct EndpointStatistic {
     ///
     /// Only present for requests that could be associated with a warehouse. Some management
     /// endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
-    /// will not have a `warehouse_id`.
+    /// will not have a `warehouse-id`.
     pub warehouse_id: Option<Uuid>,
     /// The name of the warehouse that handled the request.
     ///
     /// Only present for requests that could be associated with a warehouse. Some management
     /// endpoints cannot be associated with a warehouse, e.g. warehouse creation or user management
-    /// will not have a `warehouse_id`
+    /// will not have a `warehouse-id`
     pub warehouse_name: Option<String>,
     /// Timestamp at which the datapoint was created in the database.
     ///
@@ -308,6 +309,7 @@ pub struct EndpointStatistic {
 }
 
 #[derive(Deserialize, Serialize, Debug, ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct EndpointStatisticsResponse {
     /// Array of timestamps indicating the time at which each entry in the `called_endpoints` array
     /// is valid.
@@ -325,26 +327,40 @@ pub struct EndpointStatisticsResponse {
     /// Endpoint statistics are not paginated through page-limits, we paginate them by stepping
     /// through time. By default, the list-statistics endpoint will return all statistics for
     /// `now()` - 1 day to `now()`. In the request, you can specify a `range_specifier` to set the end
-    /// date and step interval. The `previous_page_token` will then move to the neighboring window.
+    /// date and step interval. The `previous-page-token` will then move to the neighboring window.
     /// E.g. in the default case of `now()` and 1 day, it'd be `now()` - 2 days to `now()` - 1 day.
     pub previous_page_token: String,
     /// Token to get the next page of results.
     ///
-    /// Inverse of `previous_page_token`, see its documentation above.
+    /// Inverse of `previous-page-token`, see its documentation above.
     pub next_page_token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 #[serde(rename_all = "kebab-case", tag = "type")]
 pub enum TimeWindowSelector {
+    #[schema(example = json!({
+        "type": "window",
+        "end": "2023-12-31T23:59:59Z",
+        "interval": "P1D"
+    }))]
     Window {
         /// End timestamp of the time window
+        /// Specify
+        #[schema(example = "2023-12-31T23:59:59Z")]
         end: chrono::DateTime<chrono::Utc>,
         /// Duration/span of the time window
         ///
-        /// The effective time range = `window_end` - `window_duration` to `end`
+        /// The returned statistics will be for the time window from `end` - `interval` to `end`.
+        /// Specify a ISO8601 duration string, e.g. `PT1H` for 1 hour, `P1D` for 1 day.
+        #[schema(example = "P1D")]
+        #[serde(with = "crate::utils::time_conversion::iso8601_duration_serde")]
         interval: chrono::Duration,
     },
+    #[schema(example = json!({
+        "type": "page-token",
+        "token": "xyz"
+    }))]
     PageToken {
         /// Opaque Token from previous response for paginating through time windows
         ///
@@ -354,6 +370,7 @@ pub enum TimeWindowSelector {
 }
 
 #[derive(Deserialize, ToSchema, Debug)]
+#[serde(rename_all = "kebab-case")]
 pub struct GetEndpointStatisticsRequest {
     /// Warehouse filter
     ///
@@ -413,8 +430,11 @@ fn validate_project_name(project_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use uuid::Uuid;
 
+    use super::TimeWindowSelector;
     use crate::api::management::v1::project::WarehouseFilter;
 
     #[test]
@@ -427,5 +447,22 @@ mod test {
 
         let js = serde_json::json!({"type": "all"});
         let _ = serde_json::from_value::<WarehouseFilter>(js).unwrap();
+    }
+
+    #[test]
+    fn test_time_window_selector() {
+        let window = TimeWindowSelector::Window {
+            end: chrono::DateTime::from_str("2023-10-01T00:00:00Z").unwrap(),
+            interval: chrono::Duration::days(1),
+        };
+        let js = serde_json::to_value(&window).unwrap();
+        assert_eq!(
+            js,
+            serde_json::json!({
+                "type": "window",
+                "end": "2023-10-01T00:00:00Z",
+                "interval": "P1D"
+            })
+        );
     }
 }

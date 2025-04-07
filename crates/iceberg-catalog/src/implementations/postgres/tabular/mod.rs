@@ -19,6 +19,7 @@ use crate::{
         iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
         management::v1::ProtectionResponse,
     },
+    catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
         storage::{join_location, split_location},
@@ -757,6 +758,7 @@ pub(crate) async fn mark_tabular_as_deleted(
 pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
     force: bool,
+    required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
@@ -773,8 +775,9 @@ pub(crate) async fn drop_tabular(
                    AND typ = $2
                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
                    AND ((NOT protected) OR $3)
-              RETURNING fs_location, fs_protocol)
+              RETURNING metadata_location, fs_location, fs_protocol)
               SELECT protected as "protected!",
+                     (SELECT metadata_location from deleted),
                      (SELECT fs_protocol from deleted),
                      (SELECT fs_location from deleted) from delete_info"#,
         *tabular_id,
@@ -814,6 +817,18 @@ pub(crate) async fn drop_tabular(
         )
         .into());
     }
+
+    if let Some(required_metadata_location) = required_metadata_location {
+        if location.metadata_location != Some(required_metadata_location.to_string()) {
+            return Err(ErrorModel::bad_request(
+                format!("Concurrent update on tabular with id {tabular_id}"),
+                CONCURRENT_UPDATE_ERROR_TYPE,
+                None,
+            )
+            .into());
+        }
+    }
+
     if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
         Ok(join_location(&fs_protocol, &fs_location))
     } else {

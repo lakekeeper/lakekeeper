@@ -13,7 +13,7 @@ where
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: SecretInStorage + DeserializeOwned>(
         &self,
-        secret_id: &SecretIdent,
+        secret_id: SecretIdent,
     ) -> Result<Secret<S>>;
 
     /// Create a new secret

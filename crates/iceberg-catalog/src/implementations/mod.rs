@@ -24,7 +24,7 @@ pub enum Secrets {
 impl SecretStore for Secrets {
     async fn get_secret_by_id<S: SecretInStorage + serde::de::DeserializeOwned>(
         &self,
-        secret_id: &SecretIdent,
+        secret_id: SecretIdent,
     ) -> crate::api::Result<Secret<S>> {
         match self {
             Self::Postgres(state) => state.get_secret_by_id(secret_id).await,

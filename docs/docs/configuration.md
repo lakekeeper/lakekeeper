@@ -6,7 +6,7 @@ For most deployments, we recommend to set at least the following variables: `LAK
 
 ## Routing and Base-URL
 
-Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By default, these links are generated using the `x-forwarded-for`, `x-forwarded-proto` and `x-forwarded-port` headers, if these are not present, the `host` header is used. If these heuristics are not working for you, you may set the `LAKEKEEPER_BASE_URI` environment variable to the base-URL where Lakekeeper is externally reachable. This may be necessary if Lakekeeper runs behind a reverse proxy or load balancer, and you cannot set the headers accordingly. In general, we recommend relying on the headers.
+Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default, these links are generated using the `x-forwarded-for`, `x-forwarded-proto` and `x-forwarded-port` headers, if these are not present, the `host` header is used. If these heuristics are not working for you, you may set the `LAKEKEEPER_BASE_URI` environment variable to the base-URL where Lakekeeper is externally reachable. This may be necessary if Lakekeeper runs behind a reverse proxy or load balancer, and you cannot set the headers accordingly. In general, we recommend relying on the headers.
 
 ### General
 
@@ -21,10 +21,18 @@ Some Lakekeeper endspoints return links pointing at Lakekeeper itself. By defaul
 | `LAKEKEEPER__SECRET_BACKEND`                     | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
 | `LAKEKEEPER__ALLOW_ORIGIN`                       | `*`                                    | A comma separated list of allowed origins for CORS. |
 
+### Storage
+
+| Variable                                                    | Example            | Description |
+|-------------------------------------------------------------|--------------------|-----|
+| `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`                  | <nobr>`true`<nobr> | Lakekeeper can use system identities  (i.e. `AWS_*` environment variables or EC2 instance profiles) as storage credentials for Warehouses. This is disabled by default to not accidentally grant lakekeeper users access to locations that users should not be able to read or store tables in. When setting `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`, Lakekeeper does allow the creation of Warehouses that use system credentials. Default: `false` (System credentials disabled) |
+| `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS`           | <nobr>`true`<nobr> | If a Warehouse is created using system credentials, by default, users are required to specify a `assume-role-arn`. Lakekeeper then assumes the specified role to access files. If `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS` is set to `true`, Lakekeeper allows the creation of Warehouses even without an `assume-role-arn` being specified, thus, the system user requires direct access to warehouse locations. Default: `false` (Credentials cannot be used without assuming a role) |
+| `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | <nobr>`true`<nobr> | If true, an `external-id` is required when assuming a role with system credentials. Default: `true` |
+
 
 ### Persistence Store
 
-Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_READ` or use the `PG_*` environment variables. Connection strings take precedence:
+Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_*` or use the `PG_*` environment variables. Connection strings take precedence:
 
 | Variable                                               | Example                                               | Description |
 |--------------------------------------------------------|-------------------------------------------------------|-----|
@@ -80,9 +88,52 @@ Lakekeeper can publish change events to Nats (Kafka is coming soon). The followi
 | `LAKEKEEPER__NATS_PASSWORD`                | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
 | <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing nats credentials |
 | `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | Nats token to use for authentication |
+
+### Kafka
+
+Lakekeeper uses [rust-rdkafka](https://github.com/fede1024/rust-rdkafka) to enable publishing events to Kafka.
+
+The following features of rust-rdkafka are enabled:
+
+- tokio
+- ztstd
+- gssapi-vendored
+- curl-static
+- ssl-vendored
+- libz-static
+
+This means that all features of [librdkafka](https://github.com/confluentinc/librdkafka) are usable. All necessary dependencies are statically linked and cannot be disabled. If you want to use dynamic linking or disable a feature, you'll have to fork Lakekeeper and change the features accordingly. Please refer to the documentation of rust-rdkafka for details on how to enable dynamic linking or disable certain features.
+
+To publish events to Kafka, set the following environment variables:
+
+| Variable                        | Example                                                                   | Description                                                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LAKEKEEPER__KAFKA_TOPIC`       | `lakekeeper`                                                              | The topic to which events are published                                                                                                                                                 |
+| `LAKEKEEPER__KAFKA_CONFIG`      | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
+| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below                                      |
+
+#### Notes
+
+`LAKEKEEPER__KAFKA_CONFIG` and `LAKEKEEPER__KAFKA_CONFIG_FILE` are mutually exclusive and the values are not merged, if both variables are set. In case that both are set, `LAKEKEEPER__KAFKA_CONFIG` is used.
+
+A `LAKEKEEPER__KAFKA_CONFIG_FILE` could look like this:
+
+```
+{
+  "bootstrap.servers"="host1:port,host2:port",
+  "security.protocol"="SASL_SSL",
+  "sasl.mechanisms"="PLAIN",
+}
+```
+
+Checking configuration parameters is deferred to `rdkafka`
+
+
+
 ### Logging Cloudevents
 
 Cloudevents can also be logged, if you do not have Nats up and running. This feature can be enabled by setting
+Cloudevents can also be logged, if you do not have Nats or Kafka up and running. This feature can be enabled by setting
 
 `LAKEKEEPER__LOG_CLOUDEVENTS=true`
 
@@ -112,7 +163,7 @@ The following Authenticators are available. Enabled Authenticators are checked i
     - Token audience matches any of the audiences provided in `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`<br>
     - If `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE` is not set, all tokens proceed to validation! We highly recommend to configure audiences, for most deployments `https://kubernetes.default.svc` works.<br>
 1. **Kubernetes Legacy Tokens**<br>
-   **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true and `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is true<br>
+   **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true and `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is true<br>
    **Validates Token with:** Kubernetes `TokenReview` API<br>
    **Accepts JWT if:**<br>
     - Tokens issuer is `kubernetes/serviceaccount`
@@ -141,17 +192,18 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
-| Variable                                     | Example                                                                    | Description |
-|----------------------------------------------|----------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__AUTHZ_BACKEND`                  | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
-| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr> | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
-| `LAKEKEEPER__OPENFGA__STORE_NAME`            | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
-| `LAKEKEEPER__OPENFGA__API_KEY`               | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
-| <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr> | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
-| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`         | `abcd`                                                                     | Client Secret for the Client ID. |
-| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`        | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
-| `LAKEKEEPER__OPENFGA__SCOPE`             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
-
+| Variable                                           | Example                                                                    | Description |
+|----------------------------------------------------|----------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__AUTHZ_BACKEND`                        | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
+| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>       | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
+| `LAKEKEEPER__OPENFGA__STORE_NAME`                  | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
+| `LAKEKEEPER__OPENFGA__API_KEY`                     | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
+| <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr>      | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
+| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`               | `abcd`                                                                     | Client Secret for the Client ID. |
+| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`              | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER__OPENFGA__SCOPE`                       | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`  | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
 
 ### UI
 
@@ -171,8 +223,8 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
 
-| Variable                                   | Example | Description                                                                                               |
-|--------------------------------------------|---------|-----------------------------------------------------------------------------------------------------------|
+| Variable                                   | Example | Description           |
+|--------------------------------------------|---------|-----------------------|
 | `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
 
 ### SSL Dependencies

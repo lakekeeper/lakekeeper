@@ -1,5 +1,4 @@
 //! Contains Configuration of the service Module
-
 #![allow(clippy::ref_option)]
 
 use core::result::Result::Ok;
@@ -21,7 +20,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{service::task_queue::TaskQueueConfig, ProjectId, WarehouseIdent};
+use crate::{
+    service::{event_publisher::kafka::KafkaConfig, task_queue::TaskQueueConfig},
+    ProjectId, WarehouseIdent,
+};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -41,9 +43,14 @@ fn get_config() -> DynAppConfig {
     #[cfg(test)]
     let prefixes = &["LAKEKEEPER_TEST__"];
 
+    let file_keys = &["kafka_config"];
+
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        config = config.merge(figment::providers::Env::prefixed(prefix).split("__"));
+        let env = figment::providers::Env::prefixed(prefix).split("__");
+        config = config
+            .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
+            .merge(env);
     }
 
     let mut config = config
@@ -115,6 +122,16 @@ pub struct DynAppConfig {
         serialize_with = "serialize_reserved_namespaces"
     )]
     pub reserved_namespaces: ReservedNamespaces,
+    // ------------- STORAGE OPTIONS -------------
+    /// If true, can create Warehouses with using System Identities.
+    pub(crate) enable_aws_system_credentials: bool,
+    /// If false, System Identities cannot be used directly to access files.
+    /// Instead, `assume_role_arn` must be provided by the user if `SystemIdentities` are used.
+    pub(crate) s3_enable_direct_system_credentials: bool,
+    /// If true, users must set `external_id` when using system identities with
+    /// `assume_role_arn`.
+    pub(crate) s3_require_external_id_for_system_credentials: bool,
+
     // ------------- POSTGRES IMPLEMENTATION -------------
     #[redact]
     pub(crate) pg_encryption_key: String,
@@ -144,6 +161,10 @@ pub struct DynAppConfig {
     pub nats_password: Option<String>,
     #[redact]
     pub nats_token: Option<String>,
+
+    // ------------- KAFKA CLOUDEVENTS -------------
+    pub kafka_topic: Option<String>,
+    pub kafka_config: Option<KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -362,6 +383,19 @@ pub struct OpenFGAConfig {
     /// Authentication configuration
     #[serde(default)]
     pub auth: OpenFGAAuth,
+    /// Explicitly set the Authorization model prefix.
+    /// Defaults to `collaboration` if not set.
+    /// We recommend to use this setting only in combination with
+    /// `authorization_model_version`
+    #[serde(default = "default_openfga_model_prefix")]
+    pub authorization_model_prefix: String,
+    /// Version of the model to use. If specified, the specified
+    /// model version must already exist.
+    /// This can be used to roll-back to previously applied model versions
+    /// or to connect to externally managed models.
+    /// Migration is disabled if the model version is set.
+    /// Version should have the format <major>.<minor>.
+    pub authorization_model_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -423,12 +457,17 @@ impl Default for DynAppConfig {
             pg_connection_max_lifetime: None,
             pg_read_pool_connections: 10,
             pg_write_pool_connections: 5,
+            enable_aws_system_credentials: false,
+            s3_enable_direct_system_credentials: false,
+            s3_require_external_id_for_system_credentials: true,
             nats_address: None,
             nats_topic: None,
             nats_creds_file: None,
             nats_user: None,
             nats_password: None,
             nats_token: None,
+            kafka_config: None,
+            kafka_topic: None,
             log_cloudevents: None,
             openid_provider_uri: None,
             openid_audience: None,
@@ -570,6 +609,9 @@ struct OpenFGAConfigSerde {
     /// Store Name - if not specified, `lakekeeper` is used.
     #[serde(default = "default_openfga_store_name")]
     store_name: String,
+    #[serde(default = "default_openfga_model_prefix")]
+    authorization_model_prefix: String,
+    authorization_model_version: Option<String>,
     /// API-Key. If client-id is specified, this is ignored.
     api_key: Option<String>,
     /// Client id
@@ -587,6 +629,10 @@ fn default_openfga_store_name() -> String {
     "lakekeeper".to_string()
 }
 
+fn default_openfga_model_prefix() -> String {
+    "collaboration".to_string()
+}
+
 fn deserialize_openfga_config<'de, D>(deserializer: D) -> Result<Option<OpenFGAConfig>, D::Error>
 where
     D: Deserializer<'de>,
@@ -599,6 +645,8 @@ where
         api_key,
         endpoint,
         store_name,
+        authorization_model_prefix,
+        authorization_model_version,
     }) = Option::<OpenFGAConfigSerde>::deserialize(deserializer)?
     else {
         return Ok(None);
@@ -629,6 +677,8 @@ where
         endpoint,
         store_name,
         auth,
+        authorization_model_prefix,
+        authorization_model_version,
     }))
 }
 
@@ -669,6 +719,8 @@ where
         api_key,
         endpoint: value.endpoint.clone(),
         store_name: value.store_name.clone(),
+        authorization_model_prefix: value.authorization_model_prefix.clone(),
+        authorization_model_version: value.authorization_model_version.clone(),
     }
     .serialize(serializer)
 }
@@ -985,6 +1037,17 @@ mod test {
             );
             let config = get_config();
             assert!(config.kubernetes_authentication_accept_legacy_serviceaccount);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_s3_disable_system_credentials() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ENABLE_AWS_SYSTEM_CREDENTIALS", "true");
+            let config = get_config();
+            assert!(config.enable_aws_system_credentials);
+            assert!(!config.s3_enable_direct_system_credentials);
             Ok(())
         });
     }

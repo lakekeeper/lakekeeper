@@ -152,33 +152,35 @@ pub(crate) async fn list_location<'a>(
 
 #[derive(thiserror::Error, Debug, strum::IntoStaticStr)]
 pub enum IoError {
-    #[error("Failed to create file. Please check the storage credentials.")]
+    #[error("Failed to create file. Please check the storage credentials: {}", .0)]
     FileCreation(#[source] iceberg::Error),
-    #[error("Failed to read file. Please check the storage credentials.")]
+    #[error("Failed to read file. Please check the storage credentials: {}", .0)]
     FileInput(#[source] iceberg::Error),
-    #[error("Failed to create file writer. Please check the storage credentials.")]
+    #[error("Failed to create file writer. Please check the storage credentials: {}", .0)]
     FileWriterCreation(#[source] iceberg::Error),
     #[error("Failed to serialize data.")]
     Serialization(#[source] serde_json::Error),
-    #[error("Failed to deserialize table metadata.")]
+    #[error("Failed to deserialize table metadata")]
     TableMetadataDeserialization(#[source] serde_json::Error),
-    #[error("Failed to write table metadata to compressed buffer.")]
+    #[error("Failed to write table metadata to compressed buffer: {}", .0)]
     Write(#[source] iceberg::Error),
-    #[error("Failed to finish compressing file.")]
+    #[error("Failed to finish compressing file")]
     FileCompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-    #[error("Failed to finish decompressing file.")]
+    #[error("Failed to finish decompressing file")]
     FileDecompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to write file. Please check the storage credentials.")]
     FileWrite(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
     #[error("Failed to read file. Please check the storage credentials.")]
     FileRead(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-    #[error("Failed to close file. Please check the storage credentials.")]
+    #[error("Failed to close file. Please check the storage credentials: {}", .0)]
     FileClose(#[source] iceberg::Error),
-    #[error("Failed to delete file. Please check the storage credentials.")]
+    #[error("Failed to delete file. Please check the storage credentials: {}", .0)]
     FileDelete(#[source] iceberg::Error),
-    #[error("Failed to remove all files in location. Please check the storage credentials.")]
+    #[error(
+        "Failed to remove all files in location. Please check the storage credentials: {}", .0
+    )]
     FileRemoveAll(#[source] iceberg::Error),
-    #[error("Failed to list files in location. Please check the storage credentials.")]
+    #[error("Failed to list files in location. Please check the storage credentials: {}", .0)]
     List(#[source] iceberg::Error),
 }
 
@@ -244,7 +246,7 @@ mod tests {
         let data_1 = serde_json::json!({"file": "1"});
         let data_2 = serde_json::json!({"file": "2"});
 
-        let file_io = profile.file_io(Some(&cred)).unwrap();
+        let file_io = profile.file_io(Some(&cred)).await.unwrap();
         write_metadata_file(&file_1, data_1, CompressionCodec::Gzip, &file_io)
             .await
             .unwrap();

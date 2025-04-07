@@ -148,8 +148,10 @@ impl ListUsersQuery {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct ListUsersResponse {
     pub users: Vec<User>,
+    #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
 }
 
@@ -173,10 +175,12 @@ pub struct SearchUserRequest {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct UpdateUserRequest {
     pub name: String,
     #[serde(default)]
     pub email: Option<String>,
+    #[serde(alias = "user_type")]
     pub user_type: UserType,
 }
 
@@ -188,22 +192,28 @@ pub(crate) fn parse_create_user_request(
     request_metadata: &RequestMetadata,
     request: Option<CreateUserRequest>,
 ) -> Result<(UserId, String, UserType, Option<String>)> {
-    let (request_name, request_email, request_id, request_user_type) = match request {
+    let (request_name, request_email, user_id_in_request, request_user_type) = match request {
         Some(CreateUserRequest {
             update_if_exists: _,
             name: request_name,
             email: request_email,
-            id: request_id,
+            id: user_id_in_request,
             user_type: request_user_type,
-        }) => (request_name, request_email, request_id, request_user_type),
+        }) => (
+            request_name,
+            request_email,
+            user_id_in_request,
+            request_user_type,
+        ),
         None => (None, None, None, None),
     };
 
     let request_email = request_email.filter(|e| !e.is_empty());
     let request_name = request_name.filter(|n| !n.is_empty());
-    let self_provision = is_self_provisioning(request_metadata.user_id(), request_id.as_ref());
+    let self_provision =
+        is_self_provisioning(request_metadata.user_id(), user_id_in_request.as_ref());
 
-    let creation_user_id = request_id
+    let creation_user_id = user_id_in_request
         .or_else(|| request_metadata.user_id().cloned())
         .ok_or(ErrorModel::bad_request(
         "User ID could not be extracted from the token and must be provided for creating a user.",
@@ -222,11 +232,7 @@ pub(crate) fn parse_create_user_request(
         let user_type = request_user_type
             .or_else(|| auth_details.and_then(|a| a.principal_type().map(Into::into)))
             .unwrap_or(UserType::Application);
-        let name = name.ok_or(ErrorModel::bad_request(
-            "User name could not be extracted from the token and must be provided",
-            "MissingUserName",
-            None,
-        ))?;
+        let name = name.unwrap_or(format!("Nameless App with ID {creation_user_id}"));
 
         (name, user_type, email)
     } else {
@@ -449,5 +455,54 @@ fn is_self_provisioning(acting_user_id: Option<&UserId>, request_id: Option<&Use
         }
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn test_deserialize_create_user_request() {
+        // Test minimal request with just user-type
+        let body = serde_json::json!({
+            "user-type": "application"
+        });
+        let request: CreateUserRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(request.user_type, Some(UserType::Application));
+        assert!(!request.update_if_exists); // Default value
+        assert_eq!(request.name, None);
+        assert_eq!(request.email, None);
+        assert_eq!(request.id, None);
+
+        // Test full request with all fields
+        let user_id = Uuid::new_v4().to_string();
+        let body = serde_json::json!({
+            "user-type": "human",
+            "update-if-exists": true,
+            "name": "Test User",
+            "email": "test@example.com",
+            "id": format!("oidc~{user_id}")
+        });
+        let request: CreateUserRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(request.user_type, Some(UserType::Human));
+        assert!(request.update_if_exists);
+        assert_eq!(request.name, Some("Test User".to_string()));
+        assert_eq!(request.email, Some("test@example.com".to_string()));
+        assert_eq!(
+            request.id.as_ref().map(std::string::ToString::to_string),
+            Some(format!("oidc~{user_id}"))
+        );
+
+        // Test empty JSON (all defaults)
+        let body = serde_json::json!({});
+        let request: CreateUserRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(request.user_type, None);
+        assert!(!request.update_if_exists);
+        assert_eq!(request.name, None);
+        assert_eq!(request.email, None);
+        assert_eq!(request.id, None);
     }
 }

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     aws_s3_bucket: Optional[str] = None
     aws_s3_region: Optional[str] = None
     aws_s3_sts_role_arn: Optional[str] = None
+    aws_s3_key_prefix: Optional[str] = None
+    aws_s3_use_system_identity: Optional[bool] = None
+    aws_s3_assume_role_arn: Optional[str] = None
+    aws_s3_assume_role_external_id: Optional[str] = None
     s3_access_key: Optional[Secret] = None
     s3_secret_key: Optional[Secret] = None
     s3_bucket: Optional[str] = None
@@ -81,7 +85,9 @@ if settings.s3_access_key is not None:
             "must be one of 'both', 'enabled', 'disabled'"
         )
 
-if settings.aws_s3_access_key is not None:
+if (
+    settings.aws_s3_access_key is not None and settings.aws_s3_access_key != ""
+) or settings.aws_s3_use_system_identity:
     if settings.s3_sts_mode == "both":
         STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": True})
         STORAGE_CONFIGS.append({"type": "aws", "sts-enabled": False})
@@ -103,22 +109,24 @@ if settings.gcs_credential is not None:
 
 
 def string_to_bool(s: str) -> bool:
+    if s is None:
+        return False
     return s.lower() in ["true", "1"]
+
+
+def filter_empty_str(s: Optional[str]) -> Optional[str]:
+    if s is None or s == "":
+        return None
+    return s
 
 
 @pytest.fixture(scope="session", params=STORAGE_CONFIGS)
 def storage_config(request) -> dict:
+    path_style_access = string_to_bool(settings.s3_path_style_access)
+
     if request.param["type"] == "s3":
         if settings.s3_bucket is None or settings.s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__S3_BUCKET is not set")
-
-        if (
-                settings.s3_path_style_access is not None
-                and settings.s3_path_style_access != ""
-        ):
-            path_style_access = string_to_bool(settings.s3_path_style_access)
-        else:
-            path_style_access = None
 
         if settings.s3_region is None:
             pytest.skip("LAKEKEEPER_TEST__S3_REGION is not set")
@@ -149,47 +157,56 @@ def storage_config(request) -> dict:
         if settings.aws_s3_bucket is None or settings.aws_s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
 
-        if (
-                settings.s3_path_style_access is not None
-                and settings.s3_path_style_access != ""
-        ):
-            path_style_access = string_to_bool(settings.s3_path_style_access)
-        else:
-            path_style_access = None
+        aws_s3_key_prefix = filter_empty_str(settings.aws_s3_key_prefix)
+        assume_role_arn = filter_empty_str(settings.aws_s3_assume_role_arn)
+        external_id = filter_empty_str(settings.aws_s3_assume_role_external_id)
+        aws_s3_sts_role_arn = filter_empty_str(settings.aws_s3_sts_role_arn)
 
         if settings.aws_s3_region is None:
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_REGION is not set")
 
-        return {
-            "storage-profile": {
+        storage_profile = {
+            "type": "s3",
+            "bucket": settings.aws_s3_bucket,
+            "region": settings.aws_s3_region,
+            "path-style-access": path_style_access,
+            "key-prefix": aws_s3_key_prefix,
+            "flavor": "aws",
+            "assume-role-arn": assume_role_arn,
+            "sts-enabled": request.param["sts-enabled"],
+            "sts-role-arn": (
+                aws_s3_sts_role_arn if request.param["sts-enabled"] else None
+            ),
+        }
+
+        if settings.aws_s3_use_system_identity:
+            storage_credential = {
                 "type": "s3",
-                "bucket": settings.aws_s3_bucket,
-                "region": settings.aws_s3_region,
-                "path-style-access": path_style_access,
-                "flavor": "aws",
-                "sts-enabled": request.param["sts-enabled"],
-                "sts-role-arn": (
-                    settings.aws_s3_sts_role_arn
-                    if request.param["sts-enabled"]
-                    else None
-                ),
-            },
-            "storage-credential": {
+                "credential-type": "aws-system-identity",
+                "external-id": external_id,
+            }
+
+        else:
+            storage_credential = {
                 "type": "s3",
                 "credential-type": "access-key",
                 "aws-access-key-id": settings.aws_s3_access_key,
                 "aws-secret-access-key": settings.aws_s3_secret_access_key,
-            },
+            }
+
+        return {
+            "storage-profile": storage_profile,
+            "storage-credential": storage_credential,
         }
     elif request.param["type"] == "azure":
         if (
-                settings.azure_storage_account_name is None
-                or settings.azure_storage_account_name == ""
+            settings.azure_storage_account_name is None
+            or settings.azure_storage_account_name == ""
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME is not set")
         if (
-                settings.azure_storage_filesystem is None
-                or settings.azure_storage_filesystem == ""
+            settings.azure_storage_filesystem is None
+            or settings.azure_storage_filesystem == ""
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM is not set")
 
@@ -240,6 +257,9 @@ def io_fsspec(storage_config: dict):
                 "endpoint"
             ]
 
+        if "aws-access-key-id" not in storage_config["storage-credential"]:
+            pytest.skip("`aws-access-key-id` not found in storage-credential. ")
+
         fs = fsspec.filesystem(
             "s3",
             anon=False,
@@ -283,7 +303,7 @@ class Server:
         return uuid.UUID(project_id)
 
     def create_warehouse(
-            self, name: str, project_id: uuid.UUID, storage_config: dict
+        self, name: str, project_id: uuid.UUID, storage_config: dict
     ) -> uuid.UUID:
         """Create a warehouse in this server"""
 
@@ -300,10 +320,11 @@ class Server:
             json=create_payload,
             headers={"Authorization": f"Bearer {self.access_token}"},
         )
-        response.raise_for_status()
-        if not response.ok:
+        try:
+            response.raise_for_status()
+        except Exception as e:
             raise ValueError(
-                f"Failed to create warehouse ({response.status_code}): {response.text}"
+                f"Failed to create warehouse ({response.status_code}): {response.text}."
             )
 
         warehouse_id = response.json()["warehouse-id"]
@@ -512,8 +533,8 @@ def spark(warehouse: Warehouse, storage_config):
         f"spark.sql.catalog.{catalog_name}.oauth2-server-uri": f"{settings.token_endpoint}",
     }
     if (
-            storage_config["storage-profile"]["type"] == "s3"
-            and storage_config["storage-profile"]["sts-enabled"]
+        storage_config["storage-profile"]["type"] == "s3"
+        and storage_config["storage-profile"]["sts-enabled"]
     ):
         configuration[
             f"spark.sql.catalog.{catalog_name}.header.X-Iceberg-Access-Delegation"

@@ -1,0 +1,21 @@
+module lakekeeper-role
+
+type role
+  relations
+    # Relation Hierarchies
+    define project: [project]
+    define assignee: [user, role#assignee]
+    define ownership: [user, role#assignee]
+
+    # ------------------ Actions ------------------
+    # Can assume a role
+    define can_assume: assignee
+    define can_grant_assignee: ownership or security_admin from project
+    define can_change_ownership: can_grant_assignee
+    define can_delete: can_grant_assignee
+    # Can update base attributes like name and description
+    define can_update: can_grant_assignee
+    # Can get name and description of this role
+    define can_read: can_list_roles from project
+    # get assignments to this role
+    define can_read_assignments: can_read

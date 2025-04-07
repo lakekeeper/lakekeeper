@@ -141,7 +141,8 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
 1. Head to `crate::service::authz::implementations::openfga::migration.rs`, modify `ACTIVE_MODEL_VERSION` to the newer version. For backwards compatible changes, change the `add_model` section. For changes that require migrations, add an additional `add_model` section that includes the migration fn.
 ```rust
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| AuthorizationModelVersion::new(2, 1)); // <- Change this for every change in the model
+    LazyLock::new(|| AuthorizationModelVersion::new(3, 0)); // <- Change this for every change in the model
+
 
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
@@ -150,17 +151,17 @@ fn get_model_manager(
     openfga_client::migration::TupleModelManager::new(
         client.clone(),
         &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
-        MODEL_PREFIX,
+        &AUTH_CONFIG.authorization_model_prefix,
     )
     .add_model(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-            "../../../../../../../authz/openfga/v2.1/schema.json"
+            "../../../../../../../authz/openfga/v3.0/schema.json"
         ))
         // Change also the model version in this string:
-        .expect("Model v2.1 is a valid AuthorizationModel in JSON format."),
-        AuthorizationModelVersion::new(2, 1),
+        .expect("Model v3.0 is a valid AuthorizationModel in JSON format."),
+        AuthorizationModelVersion::new(3, 0),
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_>>,
         None::<MigrationFn<_>>,

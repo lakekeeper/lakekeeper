@@ -1200,6 +1200,7 @@ pub mod v1 {
     }
 
     #[derive(Debug, Serialize, utoipa::ToSchema)]
+    #[serde(rename_all = "kebab-case")]
     pub struct ListDeletedTabularsResponse {
         /// List of tabulars
         pub tabulars: Vec<DeletedTabularResponse>,
@@ -1208,6 +1209,7 @@ pub mod v1 {
     }
 
     #[derive(Debug, Serialize, utoipa::ToSchema)]
+    #[serde(rename_all = "kebab-case")]
     pub struct DeletedTabularResponse {
         /// Unique identifier of the tabular
         pub id: uuid::Uuid,

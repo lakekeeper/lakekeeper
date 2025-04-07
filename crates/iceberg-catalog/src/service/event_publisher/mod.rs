@@ -7,6 +7,10 @@ use uuid::Uuid;
 use super::WarehouseIdent;
 use crate::service::tabular_idents::TabularIdentUuid;
 
+#[cfg(feature = "kafka")]
+pub mod kafka;
+pub mod nats;
+
 #[derive(Debug, Clone)]
 pub struct CloudEventsPublisher {
     tx: tokio::sync::mpsc::Sender<CloudEventsMessage>,
@@ -162,28 +166,6 @@ impl CloudEventsPublisherBackgroundTask {
 pub trait CloudEventBackend: Debug {
     async fn publish(&self, event: Event) -> anyhow::Result<()>;
     fn name(&self) -> &str;
-}
-
-#[cfg(feature = "nats")]
-#[derive(Debug)]
-pub struct NatsBackend {
-    pub client: async_nats::Client,
-    pub topic: String,
-}
-
-#[cfg(feature = "nats")]
-#[async_trait]
-impl CloudEventBackend for NatsBackend {
-    async fn publish(&self, event: Event) -> anyhow::Result<()> {
-        Ok(self
-            .client
-            .publish(self.topic.clone(), serde_json::to_vec(&event)?.into())
-            .await?)
-    }
-
-    fn name(&self) -> &'static str {
-        "nats-publisher"
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -234,6 +234,7 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct WarehouseStatistics {
     /// Timestamp of when these statistics are valid until
     ///

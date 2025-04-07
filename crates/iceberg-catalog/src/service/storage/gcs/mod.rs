@@ -174,7 +174,7 @@ impl GcsProfile {
     /// Generate the table configuration for GCS.
     pub(crate) async fn generate_table_config(
         &self,
-        _: &DataAccess,
+        _: DataAccess,
         cred: Option<&GcsCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,

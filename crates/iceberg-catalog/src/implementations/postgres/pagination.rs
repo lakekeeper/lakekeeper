@@ -5,7 +5,6 @@ use std::{fmt::Display, str::FromStr};
 use base64::Engine;
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
-use thiserror::Error;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PaginateToken<T> {
@@ -36,39 +35,10 @@ where
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) struct RoundTrippableDuration(pub(crate) iso8601::Duration);
-
-#[derive(Debug, Error)]
-#[error("Failed to parse duration: {0}")]
-pub(super) struct DurationError(String);
-
-impl TryFrom<&str> for RoundTrippableDuration {
-    type Error = ErrorModel;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let duration = iso8601::Duration::from_str(value).map_err(|e| {
-            tracing::info!("Failed to parse duration: {e}");
-            ErrorModel::bad_request(
-                "Invalid duration".to_string(),
-                "DurationParseError".to_string(),
-                Some(Box::new(DurationError(e))),
-            )
-        })?;
-        Ok(Self(duration))
-    }
-}
-
-impl Display for RoundTrippableDuration {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl<T, Z> TryFrom<&str> for PaginateToken<T>
+impl<T> TryFrom<&str> for PaginateToken<T>
 where
-    T: for<'a> TryFrom<&'a str, Error = Z> + Display,
-    Z: std::error::Error + Send + Sync + 'static,
+    T: FromStr + Display,
+    <T as FromStr>::Err: Display,
 {
     type Error = ErrorModel;
 
@@ -101,7 +71,13 @@ where
                         ts.parse().map_err(|e| parse_error(Some(Box::new(e))))?,
                     )
                     .ok_or(parse_error(None))?;
-                    let id = id.try_into().map_err(|e| parse_error(Some(Box::new(e))))?;
+                    let id = id.parse().map_err(|e| {
+                        parse_error(Some(Box::new(ErrorModel::bad_request(
+                            format!("Pagination id could not be parsed: {e}"),
+                            "PaginationTokenIdParseError".to_string(),
+                            None,
+                        ))))
+                    })?;
                     Ok(PaginateToken::V1(V1PaginateToken { created_at, id }))
                 }
                 _ => Err(parse_error(None)),
@@ -111,11 +87,11 @@ where
     }
 }
 
-fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> ErrorModel {
+fn parse_error(source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> ErrorModel {
     ErrorModel::bad_request(
         "Invalid paginate token".to_string(),
         "PaginateTokenParseError".to_string(),
-        e,
+        source,
     )
 }
 
@@ -123,16 +99,6 @@ fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) ->
 mod test {
     use super::*;
     use crate::service::ProjectId;
-
-    #[test]
-    fn test_roundtrip_duration() {
-        let duration =
-            RoundTrippableDuration(iso8601::Duration::from_str("P1Y2M3DT4H5M6S").unwrap());
-        let duration_str = duration.to_string();
-        let duration_after: RoundTrippableDuration =
-            RoundTrippableDuration::try_from(duration_str.as_str()).unwrap();
-        assert_eq!(duration, duration_after);
-    }
 
     #[test]
     fn test_paginate_token() {

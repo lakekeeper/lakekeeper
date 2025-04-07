@@ -9,12 +9,12 @@ ENV NVM_DIR=/root/.nvm
 # We only pay the installation cost once, 
 # it will be cached from the second build onwards
 RUN apt-get update -qq && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -yqq curl build-essential libpq-dev pkg-config libssl-dev make perl wget zip unzip --no-install-recommends && \
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
-    . "$NVM_DIR/nvm.sh" && nvm install ${NODE_VERSION}  && \
-    . "$NVM_DIR/nvm.sh" && nvm use v${NODE_VERSION}  && \
-    . "$NVM_DIR/nvm.sh" && nvm alias default v${NODE_VERSION}  && \
-    node -v && npm -v
+  DEBIAN_FRONTEND=noninteractive apt-get install -yqq cmake curl build-essential libpq-dev pkg-config make perl wget zip unzip --no-install-recommends && \
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
+  . "$NVM_DIR/nvm.sh" && nvm install ${NODE_VERSION}  && \
+  . "$NVM_DIR/nvm.sh" && nvm use v${NODE_VERSION}  && \
+  . "$NVM_DIR/nvm.sh" && nvm alias default v${NODE_VERSION}  && \
+  node -v && npm -v
 
 ENV PATH="/root/.nvm/versions/node/v${NODE_VERSION}/bin/:${PATH}"
 
@@ -48,18 +48,18 @@ FROM busybox:1.37.0 as cleaner
 COPY --from=base / /clean
 
 RUN rm -r /clean/usr/lib/*-linux-gnu/libgomp*  \
-    /clean/usr/lib/*-linux-gnu/libssl*  \
-    /clean/usr/lib/*-linux-gnu/libstdc++* \
-    /clean/usr/lib/*-linux-gnu/engines-3 \
-    /clean/usr/lib/*-linux-gnu/ossl-modules \
-    /clean/usr/lib/*-linux-gnu/libcrypto.so.3 \
-    /clean/usr/lib/*-linux-gnu/gconv \
-    /clean/var/lib/dpkg/status.d/libgomp1*  \
-    /clean/var/lib/dpkg/status.d/libssl3*  \
-    /clean/var/lib/dpkg/status.d/libstdc++6* \
-    /clean/usr/share/doc/libssl3 \
-    /clean/usr/share/doc/libstdc++6 \
-    /clean/usr/share/doc/libgomp1
+  /clean/usr/lib/*-linux-gnu/libssl*  \
+  /clean/usr/lib/*-linux-gnu/libstdc++* \
+  /clean/usr/lib/*-linux-gnu/engines-3 \
+  /clean/usr/lib/*-linux-gnu/ossl-modules \
+  /clean/usr/lib/*-linux-gnu/libcrypto.so.3 \
+  /clean/usr/lib/*-linux-gnu/gconv \
+  /clean/var/lib/dpkg/status.d/libgomp1*  \
+  /clean/var/lib/dpkg/status.d/libssl3*  \
+  /clean/var/lib/dpkg/status.d/libstdc++6* \
+  /clean/usr/share/doc/libssl3 \
+  /clean/usr/share/doc/libstdc++6 \
+  /clean/usr/share/doc/libgomp1
 
 
 FROM scratch

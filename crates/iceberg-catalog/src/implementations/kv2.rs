@@ -23,14 +23,14 @@ impl SecretStore for SecretsState {
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: DeserializeOwned>(
         &self,
-        secret_id: &SecretIdent,
+        secret_id: SecretIdent,
     ) -> Result<Secret<S>> {
         // it seems there is no atomic get for metadata and secret so we read_metadata, and then
         // read the secret with the current version defined in the previously read metadata
         let metadata = vaultrs::kv2::read_metadata(
             &*self.vault_client.read().await,
             self.secret_mount.as_str(),
-            &secret_ident_to_key(*secret_id),
+            &secret_ident_to_key(secret_id),
         )
         .await
         .map_err(|err| {
@@ -42,11 +42,11 @@ impl SecretStore for SecretsState {
         })?;
 
         Ok(Secret {
-            secret_id: *secret_id,
+            secret_id,
             secret: vaultrs::kv2::read_version::<S>(
                 &*self.vault_client.read().await,
                 self.secret_mount.as_str(),
-                &secret_ident_to_key(*secret_id),
+                &secret_ident_to_key(secret_id),
                 metadata.current_version,
             )
             .await
@@ -273,13 +273,14 @@ mod tests {
             let secret: StorageCredential = S3Credential::AccessKey {
                 aws_access_key_id: "my access key".to_string(),
                 aws_secret_access_key: "my secret key".to_string(),
+                external_id: None,
             }
             .into();
 
             let secret_id = state.create_secret(secret.clone()).await.unwrap();
 
             let read_secret = state
-                .get_secret_by_id::<StorageCredential>(&secret_id)
+                .get_secret_by_id::<StorageCredential>(secret_id)
                 .await
                 .unwrap();
 
@@ -295,6 +296,7 @@ mod tests {
             let secret: StorageCredential = S3Credential::AccessKey {
                 aws_access_key_id: "my access key".to_string(),
                 aws_secret_access_key: "my secret key".to_string(),
+                external_id: None,
             }
             .into();
 
@@ -305,9 +307,7 @@ mod tests {
 
             state.delete_secret(&secret_id).await.unwrap();
 
-            let read_secret = state
-                .get_secret_by_id::<StorageCredential>(&secret_id)
-                .await;
+            let read_secret = state.get_secret_by_id::<StorageCredential>(secret_id).await;
 
             assert!(read_secret.is_err());
         }

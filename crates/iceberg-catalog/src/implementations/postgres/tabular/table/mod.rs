@@ -820,7 +820,7 @@ pub(crate) async fn drop_table(
     force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularIdentUuid::Table(*table_id), force, transaction).await
+    drop_tabular(TabularIdentUuid::Table(*table_id), force, None, transaction).await
 }
 
 #[derive(Default)]
