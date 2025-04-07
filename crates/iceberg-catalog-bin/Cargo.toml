@@ -26,7 +26,7 @@ async-nats = { workspace = true }
 axum = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
 iceberg-catalog = { path = "../iceberg-catalog", features = ["all"] }
-lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "537f296ad2f715da16cf824d0a6b5022b95bd538", optional = true }
+lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "2dbea62", optional = true }
 limes = { workspace = true }
 mime_guess = { version = "^2.0", optional = true }
 moka = { workspace = true, optional = true }
