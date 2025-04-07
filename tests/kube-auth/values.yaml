@@ -19,8 +19,8 @@ helmWait: true
 catalog:
   image:
     # -- The image repository to pull from
-    repository: quay.io/lakekeeper/catalog
-    tag: v0.6.0
+    repository: null
+    tag: null
     pullPolicy: IfNotPresent
     # -- 65532 = nonroot of google container distroless
     uid: 65532
