@@ -3113,12 +3113,7 @@ components:
       type: object
       required:
         - protected
-        - entity_id
       properties:
-        entity_id:
-          type: string
-          format: uuid
-          description: Unique identifier of the table
         protected:
           type: boolean
           description: Indicates whether the entity is protected

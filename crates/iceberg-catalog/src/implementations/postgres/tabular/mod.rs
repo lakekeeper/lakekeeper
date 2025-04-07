@@ -56,7 +56,7 @@ pub(crate) async fn set_tabular_protected(
         UPDATE tabular
         SET protected = $2
         WHERE tabular_id = $1
-        RETURNING tabular_id, protected, updated_at
+        RETURNING protected, updated_at
         "#,
         *tabular_id,
         protected
@@ -79,7 +79,6 @@ pub(crate) async fn set_tabular_protected(
         }
     })?;
     Ok(ProtectionResponse {
-        entity_id: row.tabular_id,
         protected: row.protected,
         updated_at: row.updated_at,
     })

@@ -30,7 +30,6 @@ pub mod v1 {
         User,
     };
     use utoipa::{openapi::security::SecurityScheme, OpenApi, ToSchema};
-    use uuid::Uuid;
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
@@ -1088,8 +1087,6 @@ pub mod v1 {
     pub struct ProtectionResponse {
         /// Indicates whether the entity is protected
         pub protected: bool,
-        /// Unique identifier of the table
-        pub entity_id: Uuid,
         /// Updated at
         pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     }

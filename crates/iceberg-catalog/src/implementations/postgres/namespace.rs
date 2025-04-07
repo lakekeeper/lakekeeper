@@ -503,7 +503,7 @@ pub(crate) async fn set_namespace_protected(
         WHERE namespace_id = $2 AND warehouse_id IN (
             SELECT warehouse_id FROM warehouse WHERE status = 'active'
         )
-        returning namespace_id, protected, updated_at
+        returning protected, updated_at
         "#,
         protect,
         *namespace_id
@@ -524,7 +524,6 @@ pub(crate) async fn set_namespace_protected(
     })?;
 
     Ok(ProtectionResponse {
-        entity_id: row.namespace_id,
         protected: row.protected,
         updated_at: row.updated_at,
     })

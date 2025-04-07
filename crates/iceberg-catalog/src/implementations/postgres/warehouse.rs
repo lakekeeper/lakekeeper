@@ -544,7 +544,7 @@ pub(crate) async fn set_warehouse_protection(
         "UPDATE warehouse
             SET protected = $1
             WHERE warehouse_id = $2
-            returning warehouse_id, protected, updated_at",
+            returning protected, updated_at",
         protected,
         *warehouse_id
     )
@@ -562,7 +562,6 @@ pub(crate) async fn set_warehouse_protection(
     })?;
 
     Ok(ProtectionResponse {
-        entity_id: row.warehouse_id,
         protected: row.protected,
         updated_at: row.updated_at,
     })
