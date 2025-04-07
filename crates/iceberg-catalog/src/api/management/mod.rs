@@ -1130,7 +1130,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection",
         responses(
-            (status = 204, description = "Table protection set successfully"),
+            (status = 200, body = ProtectedBody, description = "View protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
@@ -1155,7 +1155,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
         responses(
-            (status = 204, description = "Namespace protection set successfully"),
+            (status = 200, body = ProtectedBody, description = "Namespace protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
@@ -1180,7 +1180,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/protection",
         responses(
-            (status = 204, description = "Warehouse protection set successfully"),
+            (status = 200, body = ProtectedBody, description = "Warehouse protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]

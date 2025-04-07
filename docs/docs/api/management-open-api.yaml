@@ -1693,8 +1693,12 @@ paths:
               $ref: '#/components/schemas/ProtectedBody'
         required: true
       responses:
-        '204':
+        '200':
           description: Namespace protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectedBody'
         4XX:
           description: ''
           content:
@@ -1720,8 +1724,12 @@ paths:
               $ref: '#/components/schemas/ProtectedBody'
         required: true
       responses:
-        '204':
+        '200':
           description: Warehouse protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectedBody'
         4XX:
           description: ''
           content:
@@ -1934,8 +1942,12 @@ paths:
               $ref: '#/components/schemas/ProtectedBody'
         required: true
       responses:
-        '204':
-          description: Table protection set successfully
+        '200':
+          description: View protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectedBody'
         4XX:
           description: ''
           content:
