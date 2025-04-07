@@ -280,7 +280,7 @@ mod tests {
             let secret_id = state.create_secret(secret.clone()).await.unwrap();
 
             let read_secret = state
-                .get_secret_by_id::<StorageCredential>(&secret_id)
+                .get_secret_by_id::<StorageCredential>(secret_id)
                 .await
                 .unwrap();
 
@@ -307,9 +307,7 @@ mod tests {
 
             state.delete_secret(&secret_id).await.unwrap();
 
-            let read_secret = state
-                .get_secret_by_id::<StorageCredential>(&secret_id)
-                .await;
+            let read_secret = state.get_secret_by_id::<StorageCredential>(secret_id).await;
 
             assert!(read_secret.is_err());
         }
