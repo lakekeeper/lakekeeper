@@ -1690,7 +1690,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProtectedBody'
+              $ref: '#/components/schemas/SetProtectionRequest'
         required: true
       responses:
         '200':
@@ -1698,7 +1698,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectedBody'
+                $ref: '#/components/schemas/ProtectionResponse'
         4XX:
           description: ''
           content:
@@ -1721,7 +1721,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProtectedBody'
+              $ref: '#/components/schemas/SetProtectionRequest'
         required: true
       responses:
         '200':
@@ -1729,7 +1729,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectedBody'
+                $ref: '#/components/schemas/ProtectionResponse'
         4XX:
           description: ''
           content:
@@ -1902,7 +1902,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProtectedBody'
+              $ref: '#/components/schemas/SetProtectionRequest'
         required: true
       responses:
         '200':
@@ -1939,7 +1939,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProtectedBody'
+              $ref: '#/components/schemas/SetProtectionRequest'
         required: true
       responses:
         '200':
@@ -1947,7 +1947,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProtectedBody'
+                $ref: '#/components/schemas/ProtectionResponse'
         4XX:
           description: ''
           content:
@@ -3109,14 +3109,6 @@ components:
         - select
         - create
         - modify
-    ProtectedBody:
-      type: object
-      required:
-        - protected
-      properties:
-        protected:
-          type: boolean
-          description: Setting this to `true` will prevent the entity from being deleted unless `force` is used.
     ProtectionResponse:
       type: object
       required:
@@ -3505,6 +3497,14 @@ components:
       properties:
         managed-access:
           type: boolean
+    SetProtectionRequest:
+      type: object
+      required:
+        - protected
+      properties:
+        protected:
+          type: boolean
+          description: Setting this to `true` will prevent the entity from being deleted unless `force` is used.
     StorageCredential:
       oneOf:
         - allOf:

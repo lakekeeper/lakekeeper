@@ -872,7 +872,7 @@ pub mod v1 {
     }
 
     #[derive(Deserialize, Debug, ToSchema)]
-    pub struct ProtectedBody {
+    pub struct SetProtectionRequest {
         /// Setting this to `true` will prevent the entity from being deleted unless `force` is used.
         pub protected: bool,
     }
@@ -1113,7 +1113,7 @@ pub mod v1 {
         Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         CatalogServer::<C, A, S>::set_table_protection(
             TableIdentUuid::from(table_id),
@@ -1130,7 +1130,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection",
         responses(
-            (status = 200, body = ProtectedBody, description = "View protection set successfully"),
+            (status = 200, body = ProtectionResponse, description = "View protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
@@ -1138,7 +1138,7 @@ pub mod v1 {
         Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         CatalogServer::<C, A, S>::set_view_protection(
             ViewIdentUuid::from(view_id),
@@ -1155,7 +1155,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
         responses(
-            (status = 200, body = ProtectedBody, description = "Namespace protection set successfully"),
+            (status = 200, body = ProtectionResponse, description = "Namespace protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
@@ -1163,7 +1163,7 @@ pub mod v1 {
         Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         CatalogServer::<C, A, S>::set_namespace_protected(
             NamespaceIdentUuid::from(namespace_id),
@@ -1180,7 +1180,7 @@ pub mod v1 {
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/protection",
         responses(
-            (status = 200, body = ProtectedBody, description = "Warehouse protection set successfully"),
+            (status = 200, body = ProtectionResponse, description = "Warehouse protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
@@ -1188,7 +1188,7 @@ pub mod v1 {
         Path(warehouse_id): Path<uuid::Uuid>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::set_warehouse_protection(
             warehouse_id.into(),
