@@ -9,8 +9,7 @@ use iceberg_catalog::{AuthZBackend, CONFIG};
 use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
 
 // Static configuration for UI
-#[allow(clippy::declare_interior_mutable_const)]
-const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
+static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
     let default_config = LakekeeperConsoleConfig::default();
     LakekeeperConsoleConfig {
         idp_authority: std::env::var("LAKEKEEPER__UI__OPENID_PROVIDER_URI")
@@ -40,7 +39,7 @@ const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
     }
 });
 
-const MIME_TYPE_ICON: LazyLock<mime_guess::Mime> =
+static MIME_TYPE_ICON: LazyLock<mime_guess::Mime> =
     LazyLock::new(|| mime_guess::Mime::from_str("image/x-icon").unwrap());
 
 #[derive(Debug, Clone)]
