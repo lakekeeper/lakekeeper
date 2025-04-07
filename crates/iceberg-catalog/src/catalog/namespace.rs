@@ -15,7 +15,7 @@ use crate::{
             GetNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters,
             Prefix, Result, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
         },
-        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, ProtectionResponse, TabularType},
         set_not_found_status_code,
     },
     catalog,
@@ -429,7 +429,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
@@ -449,9 +449,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             "Setting protection status for namespace: {:?} to {protected}",
             namespace_id
         );
-        C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
+        let status = C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
         t.commit().await?;
-        Ok(())
+        Ok(status)
     }
 }
 

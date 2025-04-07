@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
-    api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+    api::{
+        iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+        management::v1::ProtectionResponse,
+    },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
         storage::{join_location, split_location},
@@ -40,19 +43,19 @@ pub(crate) async fn set_tabular_protected(
     tabular_id: TabularIdentUuid,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
+) -> Result<ProtectionResponse> {
     tracing::debug!(
         "Setting tabular protection for {} ({}) to {}",
         tabular_id,
         tabular_id.typ_str(),
         protected
     );
-    let _ = sqlx::query!(
+    let row = sqlx::query!(
         r#"
         UPDATE tabular
         SET protected = $2
         WHERE tabular_id = $1
-        RETURNING tabular_id
+        RETURNING tabular_id, protected, updated_at
         "#,
         *tabular_id,
         protected
@@ -74,7 +77,11 @@ pub(crate) async fn set_tabular_protected(
             ))
         }
     })?;
-    Ok(())
+    Ok(ProtectionResponse {
+        entity_id: row.tabular_id,
+        protected: row.protected,
+        updated_at: row.updated_at,
+    })
 }
 
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(

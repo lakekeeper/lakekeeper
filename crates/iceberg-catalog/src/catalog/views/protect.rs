@@ -1,5 +1,5 @@
 use crate::{
-    api::ApiContext,
+    api::{management::v1::ProtectionResponse, ApiContext},
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
@@ -14,7 +14,7 @@ pub(crate) async fn set_protect_view<C: Catalog, A: Authorizer + Clone, S: Secre
     protect: bool,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-) -> Result<()> {
+) -> Result<ProtectionResponse> {
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
     authorizer
@@ -35,7 +35,9 @@ pub(crate) async fn set_protect_view<C: Catalog, A: Authorizer + Clone, S: Secre
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-    C::set_tabular_protected(TabularIdentUuid::View(*view_id), protect, t.transaction()).await?;
+    let status =
+        C::set_tabular_protected(TabularIdentUuid::View(*view_id), protect, t.transaction())
+            .await?;
     t.commit().await?;
-    Ok(())
+    Ok(status)
 }

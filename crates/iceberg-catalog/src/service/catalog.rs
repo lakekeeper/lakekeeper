@@ -26,7 +26,7 @@ use crate::{
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
-            DeleteWarehouseQuery,
+            DeleteWarehouseQuery, ProtectionResponse,
         },
     },
     catalog::tables::TableMetadataDiffs,
@@ -753,19 +753,19 @@ where
         tabular_id: TabularIdentUuid,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()>;
+    ) -> Result<ProtectionResponse>;
 
     async fn set_namespace_protected(
         namespace_id: NamespaceIdentUuid,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()>;
+    ) -> Result<ProtectionResponse>;
 
     async fn set_warehouse_protected(
         warehouse_id: WarehouseIdent,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()>;
+    ) -> Result<ProtectionResponse>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

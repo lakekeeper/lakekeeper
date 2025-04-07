@@ -9,7 +9,10 @@ use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler;
 use crate::{
-    api::iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, MAX_PAGE_SIZE},
+    api::{
+        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, MAX_PAGE_SIZE},
+        management::v1::ProtectionResponse,
+    },
     catalog::namespace::MAX_NAMESPACE_DEPTH,
     implementations::postgres::{
         pagination::{PaginateToken, V1PaginateToken},
@@ -492,27 +495,39 @@ pub(crate) async fn set_namespace_protected(
     namespace_id: NamespaceIdentUuid,
     protect: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let affected = sqlx::query!(
+) -> Result<ProtectionResponse> {
+    let row = sqlx::query!(
         r#"
         UPDATE namespace
         SET protected = $1
         WHERE namespace_id = $2 AND warehouse_id IN (
             SELECT warehouse_id FROM warehouse WHERE status = 'active'
         )
+        returning namespace_id, protected, updated_at
         "#,
         protect,
         *namespace_id
     )
-    .execute(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error setting namespace protection".to_string()))?;
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            ErrorModel::not_found(
+                format!("Namespace {namespace_id} not found"),
+                "NamespaceNotFound",
+                None,
+            )
+        } else {
+            tracing::error!("Error setting namespace protection: {e:?}");
+            e.into_error_model("Error setting namespace protection".to_string())
+        }
+    })?;
 
-    if affected.rows_affected() == 0 {
-        return Err(ErrorModel::not_found("Namespace not found", "NamespaceNotFound", None).into());
-    }
-
-    Ok(())
+    Ok(ProtectionResponse {
+        entity_id: row.namespace_id,
+        protected: row.protected,
+        updated_at: row.updated_at,
+    })
 }
 
 pub(crate) async fn update_namespace_properties(

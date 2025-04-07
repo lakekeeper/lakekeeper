@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::{default_page_size, DeleteWarehouseQuery};
+use super::{default_page_size, DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
@@ -465,7 +465,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         protection: bool,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
@@ -482,10 +482,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             "Setting protection for warehouse {} to {protection}",
             warehouse_id
         );
-        C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
+        let status =
+            C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
 
-        Ok(())
+        Ok(status)
     }
 
     async fn rename_warehouse(

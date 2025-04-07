@@ -18,6 +18,7 @@ use crate::{
                 DataAccess,
             },
         },
+        management::v1::ProtectionResponse,
         ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
         RenameTableRequest, Result,
     },
@@ -94,7 +95,7 @@ where
         protected: bool,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<()>;
+    ) -> Result<ProtectionResponse>;
 }
 
 #[allow(clippy::too_many_lines)]

@@ -40,7 +40,7 @@ use crate::{
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, ProtectionResponse, TabularType},
         set_not_found_status_code,
     },
     catalog,
@@ -914,7 +914,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
@@ -935,14 +935,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await
             .map_err(set_not_found_status_code)?;
 
-        C::set_tabular_protected(
+        let status = C::set_tabular_protected(
             TabularIdentUuid::Table(*table_id),
             protected,
             t.transaction(),
         )
         .await?;
         t.commit().await?;
-        Ok(())
+        Ok(status)
     }
 }
 

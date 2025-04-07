@@ -34,7 +34,7 @@ use crate::{
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
-            DeleteWarehouseQuery,
+            DeleteWarehouseQuery, ProtectionResponse,
         },
     },
     implementations::postgres::{
@@ -654,7 +654,7 @@ impl Catalog for super::PostgresCatalog {
         tabular_id: TabularIdentUuid,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         set_tabular_protected(tabular_id, protect, transaction).await
     }
 
@@ -662,7 +662,7 @@ impl Catalog for super::PostgresCatalog {
         namespace_id: NamespaceIdentUuid,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         set_namespace_protected(namespace_id, protect, transaction).await
     }
 
@@ -670,7 +670,7 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseIdent,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 }

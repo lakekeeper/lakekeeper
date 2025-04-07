@@ -29,7 +29,8 @@ pub mod v1 {
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
         User,
     };
-    use utoipa::{openapi::security::SecurityScheme, OpenApi};
+    use utoipa::{openapi::security::SecurityScheme, OpenApi, ToSchema};
+    use uuid::Uuid;
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
@@ -870,9 +871,10 @@ pub mod v1 {
         purge: bool,
     }
 
-    #[derive(Deserialize, Debug)]
-    struct ProtectedQuery {
-        protected: bool,
+    #[derive(Deserialize, Debug, ToSchema)]
+    pub struct ProtectedBody {
+        /// Setting this to `true` will prevent the entity from being deleted unless `force` is used.
+        pub protected: bool,
     }
 
     #[derive(Debug, Deserialize, Serialize, utoipa::IntoParams)]
@@ -1082,21 +1084,37 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    #[derive(Serialize, Deserialize, Debug, utoipa::ToSchema)]
+    pub struct ProtectionResponse {
+        /// Indicates whether the entity is protected
+        pub protected: bool,
+        /// Unique identifier of the table
+        pub entity_id: Uuid,
+        /// Updated at
+        pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    }
+
+    impl IntoResponse for ProtectionResponse {
+        fn into_response(self) -> Response {
+            (StatusCode::OK, Json(self)).into_response()
+        }
+    }
+
     #[utoipa::path(
         post,
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection",
         responses(
-            (status = 204, description = "Table protection set successfully"),
+            (status = 200, body =  ProtectionResponse, description = "Table protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn set_table_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
-        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-    ) -> Result<StatusCode> {
+        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+    ) -> Result<ProtectionResponse> {
         CatalogServer::<C, A, S>::set_table_protection(
             TableIdentUuid::from(table_id),
             warehouse_id.into(),
@@ -1104,8 +1122,7 @@ pub mod v1 {
             api_context,
             metadata,
         )
-        .await?;
-        Ok(StatusCode::NO_CONTENT)
+        .await
     }
 
     #[utoipa::path(
@@ -1119,10 +1136,10 @@ pub mod v1 {
     )]
     async fn set_view_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
-        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-    ) -> Result<StatusCode> {
+        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+    ) -> Result<ProtectionResponse> {
         CatalogServer::<C, A, S>::set_view_protection(
             ViewIdentUuid::from(view_id),
             warehouse_id.into(),
@@ -1130,8 +1147,7 @@ pub mod v1 {
             api_context,
             metadata,
         )
-        .await?;
-        Ok(StatusCode::NO_CONTENT)
+        .await
     }
 
     #[utoipa::path(
@@ -1145,10 +1161,10 @@ pub mod v1 {
     )]
     async fn set_namespace_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
-        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-    ) -> Result<StatusCode> {
+        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+    ) -> Result<ProtectionResponse> {
         CatalogServer::<C, A, S>::set_namespace_protected(
             NamespaceIdentUuid::from(namespace_id),
             warehouse_id.into(),
@@ -1156,8 +1172,7 @@ pub mod v1 {
             api_context,
             metadata,
         )
-        .await?;
-        Ok(StatusCode::NO_CONTENT)
+        .await
     }
 
     #[utoipa::path(
@@ -1171,18 +1186,17 @@ pub mod v1 {
     )]
     async fn set_warehouse_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
-        Query(ProtectedQuery { protected }): Query<ProtectedQuery>,
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
-    ) -> Result<StatusCode> {
+        Json(ProtectedBody { protected }): Json<ProtectedBody>,
+    ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::set_warehouse_protection(
             warehouse_id.into(),
             protected,
             api_context,
             metadata,
         )
-        .await?;
-        Ok(StatusCode::NO_CONTENT)
+        .await
     }
 
     #[derive(Debug, Serialize, utoipa::ToSchema)]

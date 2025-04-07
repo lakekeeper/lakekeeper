@@ -1,6 +1,6 @@
 use std::{collections::HashSet, ops::Deref};
 
-use sqlx::{types::Json, Error, PgPool};
+use sqlx::{types::Json, PgPool};
 
 use super::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
         iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
         management::v1::{
             warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
-            DeleteWarehouseQuery,
+            DeleteWarehouseQuery, ProtectionResponse,
         },
         CatalogConfig, ErrorModel, Result,
     },
@@ -539,24 +539,33 @@ pub(crate) async fn set_warehouse_protection(
     warehouse_id: WarehouseIdent,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<()> {
-    let row_count = sqlx::query!(
+) -> Result<ProtectionResponse> {
+    let row = sqlx::query!(
         "UPDATE warehouse
             SET protected = $1
-            WHERE warehouse_id = $2",
+            WHERE warehouse_id = $2
+            returning warehouse_id, protected, updated_at",
         protected,
         *warehouse_id
     )
-    .execute(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| e.into_error_model("Error setting warehouse protection"))?
-    .rows_affected();
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            return ErrorModel::not_found(
+                format!("Warehouse '{warehouse_id}' not found"),
+                "WarehouseNotFound",
+                Some(Box::new(e)),
+            );
+        };
+        e.into_error_model("Error setting warehouse protection")
+    })?;
 
-    if row_count == 0 {
-        return Err(ErrorModel::not_found("Warehouse not found", "WarehouseNotFound", None).into());
-    }
-
-    Ok(())
+    Ok(ProtectionResponse {
+        entity_id: row.warehouse_id,
+        protected: row.protected,
+        updated_at: row.updated_at,
+    })
 }
 
 pub(crate) async fn update_storage_profile(
@@ -596,7 +605,7 @@ pub(crate) async fn update_storage_profile(
     Ok(())
 }
 
-fn map_select_warehouse_err(e: Error) -> ErrorModel {
+fn map_select_warehouse_err(e: sqlx::Error) -> ErrorModel {
     ErrorModel::internal(
         "Error fetching warehouse",
         "WarehouseFetchError",

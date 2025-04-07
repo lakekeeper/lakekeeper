@@ -18,6 +18,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     api::{
         iceberg::types::{PageToken, Prefix},
+        management::v1::ProtectionResponse,
         ApiContext, Result,
     },
     request_metadata::RequestMetadata,
@@ -106,7 +107,7 @@ where
         protected: bool,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<()>;
+    ) -> Result<ProtectionResponse>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -471,7 +472,7 @@ mod tests {
                 _protected: bool,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-            ) -> Result<()> {
+            ) -> Result<ProtectionResponse> {
                 panic!("Should not be called");
             }
         }
@@ -587,7 +588,7 @@ mod tests {
                 _protected: bool,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
-            ) -> Result<()> {
+            ) -> Result<ProtectionResponse> {
                 panic!("Should not be called");
             }
         }

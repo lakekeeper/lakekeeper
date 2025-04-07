@@ -1686,6 +1686,12 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProtectedBody'
+        required: true
       responses:
         '204':
           description: Namespace protection set successfully
@@ -1707,6 +1713,12 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProtectedBody'
+        required: true
       responses:
         '204':
           description: Warehouse protection set successfully
@@ -1878,9 +1890,19 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProtectedBody'
+        required: true
       responses:
-        '204':
+        '200':
           description: Table protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
         4XX:
           description: ''
           content:
@@ -1905,6 +1927,12 @@ paths:
           schema:
             type: string
             format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProtectedBody'
+        required: true
       responses:
         '204':
           description: Table protection set successfully
@@ -3069,6 +3097,33 @@ components:
         - select
         - create
         - modify
+    ProtectedBody:
+      type: object
+      required:
+        - protected
+      properties:
+        protected:
+          type: boolean
+          description: Setting this to `true` will prevent the entity from being deleted unless `force` is used.
+    ProtectionResponse:
+      type: object
+      required:
+        - protected
+        - entity_id
+      properties:
+        entity_id:
+          type: string
+          format: uuid
+          description: Unique identifier of the table
+        protected:
+          type: boolean
+          description: Indicates whether the entity is protected
+        updated_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Updated at
     RenameProjectRequest:
       type: object
       required:

@@ -17,13 +17,16 @@ use iceberg_ext::{
 
 use super::{tables::validate_table_properties, CatalogServer};
 use crate::{
-    api::iceberg::{
-        types::DropParams,
-        v1::{
-            ApiContext, CommitViewRequest, CreateViewRequest, DataAccess, ListTablesQuery,
-            ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RenameTableRequest,
-            Result, ViewParameters,
+    api::{
+        iceberg::{
+            types::DropParams,
+            v1::{
+                ApiContext, CommitViewRequest, CreateViewRequest, DataAccess, ListTablesQuery,
+                ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix,
+                RenameTableRequest, Result, ViewParameters,
+            },
         },
+        management::v1::ProtectionResponse,
     },
     request_metadata::RequestMetadata,
     service::{authz::Authorizer, Catalog, SecretStore, State, ViewIdentUuid},
@@ -111,7 +114,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-    ) -> Result<()> {
+    ) -> Result<ProtectionResponse> {
         protect::set_protect_view(view_id, warehouse_ident, protected, state, request_metadata)
             .await
     }

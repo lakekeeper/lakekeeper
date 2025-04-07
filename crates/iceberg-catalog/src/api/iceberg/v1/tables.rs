@@ -16,6 +16,7 @@ use crate::{
             types::{DropParams, Prefix},
             v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
         },
+        management::v1::ProtectionResponse,
         ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
         CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
         RenameTableRequest, Result,
@@ -142,7 +143,7 @@ where
         protected: bool,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
-    ) -> Result<()>;
+    ) -> Result<ProtectionResponse>;
 }
 
 #[allow(clippy::too_many_lines)]
