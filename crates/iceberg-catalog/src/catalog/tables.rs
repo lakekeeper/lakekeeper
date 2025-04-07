@@ -926,14 +926,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 CatalogWarehouseAction::CanUse,
             )
             .await?;
+
         authorizer
             .require_table_action(
                 &request_metadata,
                 Ok(Some(table_id)),
-                CatalogTableAction::CanCommit,
+                CatalogTableAction::CanDrop,
             )
-            .await
-            .map_err(set_not_found_status_code)?;
+            .await?;
 
         let status = C::set_tabular_protected(
             TabularIdentUuid::Table(*table_id),

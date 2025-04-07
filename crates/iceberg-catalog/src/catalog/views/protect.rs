@@ -30,7 +30,7 @@ pub(crate) async fn set_protect_view<C: Catalog, A: Authorizer + Clone, S: Secre
         .require_view_action(
             &request_metadata,
             Ok(Some(view_id)),
-            CatalogViewAction::CanCommit,
+            CatalogViewAction::CanDrop,
         )
         .await?;
 

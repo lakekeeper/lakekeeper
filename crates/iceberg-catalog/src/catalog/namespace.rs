@@ -441,7 +441,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .require_namespace_action(
                 &metadata,
                 Ok(Some(namespace_id)),
-                CatalogNamespaceAction::CanUpdateProperties,
+                CatalogNamespaceAction::CanDelete,
             )
             .await
             .map_err(set_not_found_status_code)?;
