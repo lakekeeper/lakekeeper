@@ -167,6 +167,7 @@ pub(crate) async fn create_view<T: Authorizer>(
 pub struct TestWarehouseResponse {
     pub warehouse_id: WarehouseIdent,
     pub warehouse_name: String,
+    pub additional_warehouses: Vec<(WarehouseIdent, String)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -178,10 +179,16 @@ pub(crate) async fn setup<T: Authorizer>(
     delete_profile: TabularDeleteProfile,
     user_id: Option<UserId>,
     q_config: Option<TaskQueueConfig>,
+    number_of_warehouses: usize,
 ) -> (
     ApiContext<State<T, PostgresCatalog, SecretsState>>,
     TestWarehouseResponse,
 ) {
+    assert!(
+        number_of_warehouses > 0,
+        "Number of warehouses must be greater than 0",
+    );
+
     let api_context = get_api_context(&pool, authorizer, q_config);
 
     let metadata = if let Some(user_id) = user_id {
@@ -212,16 +219,34 @@ pub(crate) async fn setup<T: Authorizer>(
             delete_profile,
         },
         api_context.clone(),
-        metadata,
+        metadata.clone(),
     )
     .await
     .unwrap();
-
+    let mut additional_warehouses = vec![];
+    for i in 1..number_of_warehouses {
+        let warehouse_name = format!("test-warehouse-{}-{}", i, Uuid::now_v7());
+        let warehouse = ApiServer::create_warehouse(
+            CreateWarehouseRequest {
+                warehouse_name: warehouse_name.clone(),
+                project_id: None,
+                storage_profile: test_io_profile(),
+                storage_credential: None,
+                delete_profile,
+            },
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+        additional_warehouses.push((warehouse.warehouse_id, warehouse_name.clone()));
+    }
     (
         api_context,
         TestWarehouseResponse {
             warehouse_id: warehouse.warehouse_id,
             warehouse_name,
+            additional_warehouses,
         },
     )
 }

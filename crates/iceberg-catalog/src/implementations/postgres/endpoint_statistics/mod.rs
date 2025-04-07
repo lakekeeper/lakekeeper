@@ -26,6 +26,7 @@ mod test {
             TabularDeleteProfile::Hard {},
             None,
             None,
+            1,
         )
         .await;
 
