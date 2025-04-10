@@ -3166,7 +3166,6 @@ dependencies = [
  "strum_macros 0.27.1",
  "thiserror 2.0.12",
  "time",
- "time-test",
  "tokio",
  "tower 0.5.2",
  "tower-http",
@@ -6804,15 +6803,6 @@ checksum = "e8093bc3e81c3bc5f7879de09619d06c9a5a5e45ca44dfeeb7225bae38005c5c"
 dependencies = [
  "num-conv",
  "time-core",
-]
-
-[[package]]
-name = "time-test"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff3804c6adc3d7a9f51586d6a47f7e57e173b9a2d257679deeb6d686d2698073"
-dependencies = [
- "time",
 ]
 
 [[package]]

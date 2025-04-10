@@ -108,7 +108,6 @@ vaultrs-login = "0.2.1"
 veil = { workspace = true }
 
 [dev-dependencies]
-time-test = "0.3.0"
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }

@@ -986,7 +986,6 @@ mod tests {
     #[needs_env_var(TEST_AWS = 1)]
     #[test]
     fn test_vended_aws() {
-        time_test::time_test!();
         crate::test::test_block_on(
             async {
                 let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
@@ -1021,8 +1020,6 @@ mod tests {
     #[tracing_test::traced_test]
     async fn test_validate_aws() {
         use super::s3::test::aws::get_storage_profile;
-
-        time_test::time_test!();
 
         let (profile, credential) = get_storage_profile();
         let profile: StorageProfile = profile.into();
