@@ -107,16 +107,16 @@ pub(crate) async fn create_ns<T: Authorizer>(
 
 pub(crate) async fn create_table<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    prefix: &str,
-    ns_name: &str,
-    name: &str,
+    prefix: impl Into<String>,
+    ns_name: impl Into<String>,
+    name: impl Into<String>,
 ) -> crate::api::Result<LoadTableResult> {
     CatalogServer::create_table(
         NamespaceParameters {
-            prefix: Some(Prefix(prefix.to_string())),
-            namespace: NamespaceIdent::new(ns_name.to_string()),
+            prefix: Some(Prefix(prefix.into())),
+            namespace: NamespaceIdent::new(ns_name.into()),
         },
-        crate::catalog::tables::test::create_request(Some(name.to_string())),
+        crate::catalog::tables::test::create_request(Some(name.into())),
         DataAccess::none(),
         api_context,
         random_request_metadata(),

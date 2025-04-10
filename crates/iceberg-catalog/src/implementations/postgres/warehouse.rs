@@ -601,10 +601,25 @@ pub(crate) async fn get_warehouse_stats(
 
     let stats = sqlx::query!(
         r#"
-        SELECT number_of_views, number_of_tables, created_at, updated_at, timestamp
-        FROM warehouse_statistics
-        WHERE warehouse_id = $1
-        AND (timestamp < $2 OR $2 IS NULL)
+        SELECT
+            number_of_views as "number_of_views!",
+            number_of_tables as "number_of_tables!",
+            created_at as "created_at!",
+            updated_at,
+            timestamp as "timestamp!"
+        FROM (
+            (SELECT number_of_views, number_of_tables, created_at, updated_at, timestamp
+            FROM warehouse_statistics
+            WHERE warehouse_id = $1
+            AND (timestamp < $2 OR $2 IS NULL))
+
+            UNION ALL
+
+            (SELECT number_of_views, number_of_tables, created_at, updated_at, timestamp
+            FROM warehouse_statistics_history
+            WHERE warehouse_id = $1
+            AND (timestamp < $2 OR $2 IS NULL))
+        ) AS ww
         ORDER BY timestamp DESC
         LIMIT $3
         "#,
@@ -936,16 +951,17 @@ pub(crate) mod test {
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
+
         for i in 0..10 {
             sqlx::query!(
                 r#"
-                INSERT INTO warehouse_statistics (number_of_views, number_of_tables, warehouse_id, timestamp)
+                INSERT INTO warehouse_statistics_history (number_of_views, number_of_tables, warehouse_id, timestamp)
                 VALUES ($1, $2, $3, $4)
                 "#,
                 i,
                 i,
                 warehouse_id.0,
-                chrono::Utc::now() + chrono::Duration::hours(i)
+                chrono::Utc::now() - chrono::Duration::hours(i)
             )
             .execute(&mut **t.transaction())
             .await
