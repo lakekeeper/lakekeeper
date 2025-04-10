@@ -37,8 +37,10 @@ mod test {
             endpoints::Endpoints,
             management::v1::{
                 project::{
-                    GetEndpointStatisticsRequest, Service, TimeWindowSelector, WarehouseFilter,
+                    GetEndpointStatisticsRequest, Service as OtherService, TimeWindowSelector,
+                    WarehouseFilter,
                 },
+                warehouse::Service,
                 ApiServer,
             },
         },
@@ -53,7 +55,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
-        let setup = super::setup_stats_test(pool, FlushMode::Automatic).await;
+        let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
 
         // send each endpoint once
         send_all_endpoints(&setup).await;
@@ -101,7 +103,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_pagination_endpoints_statistics(pool: sqlx::PgPool) {
-        let setup = super::setup_stats_test(pool, FlushMode::Automatic).await;
+        let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
         // sync to the nearest second
         let now = Utc::now();
         let tdiff = now - now.round_subsecs(0);
@@ -300,7 +302,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_endpoint_statistics_filters(pool: sqlx::PgPool) {
-        let setup = super::setup_stats_test(pool, FlushMode::Automatic).await;
+        let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
 
         // Send endpoints data with OK status
         for ep in Endpoints::iter() {
@@ -416,7 +418,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_not_existing_project_is_not_recorded(pg_pool: PgPool) {
-        let setup = super::setup_stats_test(pg_pool, FlushMode::Manual).await;
+        let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 1).await;
         let ep = Endpoints::CatalogDeleteNamespaceTable;
         let (method, path) = ep.as_http_route().split_once(' ').unwrap();
         let method = Method::from_str(method).unwrap();
@@ -469,6 +471,110 @@ mod test {
 
         assert_eq!(stats.called_endpoints.len(), 0);
         assert_eq!(stats.timestamps.len(), 0);
+    }
+
+    #[sqlx::test]
+    async fn test_with_multiple_warehouses(pg_pool: PgPool) {
+        let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 3).await;
+        let ep = Endpoints::CatalogDeleteNamespaceTable;
+
+        let request_metadata = RequestMetadata::new_test(
+            None,
+            None,
+            Actor::Anonymous,
+            DEFAULT_PROJECT_ID.clone(),
+            Some(Arc::from(ep.path())),
+            ep.method(),
+        );
+
+        setup
+            .tx
+            .send(EndpointStatisticsMessage::EndpointCalled {
+                request_metadata: request_metadata.clone(),
+                response_status: http::StatusCode::OK,
+                path_params: hashmap! {
+                    "warehouse_id".to_string() => setup.warehouse.warehouse_id.to_string(),
+                },
+                query_params: HashMap::default(),
+            })
+            .await
+            .unwrap();
+        // send message for second warehouse
+        setup
+            .tx
+            .send(EndpointStatisticsMessage::EndpointCalled {
+                request_metadata: request_metadata.clone(),
+                response_status: http::StatusCode::OK,
+                path_params: hashmap! {
+                    "warehouse_id".to_string() => setup.warehouse.additional_warehouses.first().unwrap().0.to_string(),
+                },
+                query_params: HashMap::default(),
+            })
+            .await
+            .unwrap();
+
+        setup
+            .tx
+            .send(EndpointStatisticsMessage::Flush)
+            .await
+            .unwrap();
+
+        setup
+            .tx
+            .send(EndpointStatisticsMessage::Shutdown)
+            .await
+            .unwrap();
+        setup.tracker_handle.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        // Test filtering by warehouse
+        let stats = ApiServer::get_endpoint_statistics(
+            setup.ctx.clone(),
+            GetEndpointStatisticsRequest {
+                warehouse: WarehouseFilter::All,
+                status_codes: None,
+                range_specifier: None,
+            },
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.called_endpoints.len(), 1, "{stats:?}");
+        assert_eq!(stats.called_endpoints[0].len(), 2);
+        assert_eq!(stats.called_endpoints[0][0].http_route, ep.as_http_route());
+        assert_eq!(stats.called_endpoints[0][1].http_route, ep.as_http_route());
+        assert_eq!(stats.called_endpoints[0][0].status_code, 200);
+        assert_eq!(stats.called_endpoints[0][1].status_code, 200);
+        assert_eq!(stats.called_endpoints[0][0].count, 1);
+        assert_eq!(stats.called_endpoints[0][1].count, 1);
+        assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
+
+        ApiServer::delete_warehouse(
+            stats.called_endpoints[0][0].warehouse_id.unwrap().into(),
+            setup.ctx.clone(),
+            request_metadata.clone(),
+        )
+        .await
+        .unwrap();
+
+        let stats = ApiServer::get_endpoint_statistics(
+            setup.ctx.clone(),
+            GetEndpointStatisticsRequest {
+                warehouse: WarehouseFilter::All,
+                status_codes: None,
+                range_specifier: None,
+            },
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.called_endpoints.len(), 1);
+        assert_eq!(stats.called_endpoints[0].len(), 1);
+        assert_eq!(stats.called_endpoints[0][0].http_route, ep.as_http_route());
+        assert_eq!(stats.called_endpoints[0][0].status_code, 200);
+        assert_eq!(stats.called_endpoints[0][0].count, 1);
+
+        assert!(stats.called_endpoints[0][0].warehouse_name.is_some());
     }
 
     async fn send_all_endpoints(setup: &StatsSetup) {
@@ -524,7 +630,11 @@ async fn configure_trigger(pool: &PgPool) {
     .unwrap();
 }
 
-async fn setup_stats_test(pool: PgPool, flush_mode: FlushMode) -> StatsSetup {
+async fn setup_stats_test(
+    pool: PgPool,
+    flush_mode: FlushMode,
+    number_of_warehouses: usize,
+) -> StatsSetup {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -548,6 +658,7 @@ async fn setup_stats_test(pool: PgPool, flush_mode: FlushMode) -> StatsSetup {
             max_age: chrono::Duration::seconds(60),
             poll_interval: std::time::Duration::from_secs(10),
         }),
+        number_of_warehouses,
     )
     .await;
 

@@ -42,6 +42,7 @@ nav:
   - Docs:
       - nightly: "!include docs/docs/nightly/mkdocs.yml"
       - latest: "!include docs/docs/latest/mkdocs.yml"
+      - Release 0.8.x: "!include docs/docs/0.8.x/mkdocs.yml"
       - Release 0.7.x: "!include docs/docs/0.7.x/mkdocs.yml"
       - Release 0.6.x: "!include docs/docs/0.6.x/mkdocs.yml"
       - Release 0.5.x: "!include docs/docs/0.5.x/mkdocs.yml"
@@ -85,9 +86,10 @@ plugins:
   - search
   - exclude-search:
       exclude:
-        - docs/0.6.0/*
-        - docs/0.5.0/*
-        - docs/0.5.2/*
+        - docs/0.8.x/*
+        - docs/0.7.x/*
+        - docs/0.6.x/*
+        - docs/0.5.x/*
         - docs/nightly/*
   - autorefs
 

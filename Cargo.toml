@@ -88,10 +88,6 @@ http-body-util = "^0.1"
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
-kube = { version = "0.98", default-features = false, features = [
-    "rustls-tls",
-    "client",
-] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 moka = { version = "^0.12", features = ["sync"] }
 percent-encoding = "2.3.1"
@@ -142,5 +138,5 @@ pretty_assertions = "~1.4"
 similar = "2.6.0"
 assert-json-diff = "2.0.2"
 maplit = "1.0.2"
-limes = { version = "0.2.0", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { version = "0.2.1", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }

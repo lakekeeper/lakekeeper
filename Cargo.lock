@@ -3101,7 +3101,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-catalog"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3140,7 +3140,6 @@ dependencies = [
  "itertools 0.14.0",
  "jsonwebtoken",
  "jwks_client_rs",
- "kube 0.98.0",
  "lazy-regex",
  "lazy_static",
  "limes",
@@ -3187,7 +3186,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-catalog-bin"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -3209,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "axum 0.8.2",
  "chrono",
@@ -3588,62 +3587,13 @@ dependencies = [
 
 [[package]]
 name = "kube"
-version = "0.98.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32053dc495efad4d188c7b33cc7c02ef4a6e43038115348348876efd39a53cba"
-dependencies = [
- "k8s-openapi",
- "kube-client 0.98.0",
- "kube-core 0.98.0",
-]
-
-[[package]]
-name = "kube"
 version = "0.99.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a4eb20010536b48abe97fec37d23d43069bcbe9686adcf9932202327bc5ca6e"
 dependencies = [
  "k8s-openapi",
- "kube-client 0.99.0",
- "kube-core 0.99.0",
-]
-
-[[package]]
-name = "kube-client"
-version = "0.98.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d34ad38cdfbd1fa87195d42569f57bb1dda6ba5f260ee32fef9570b7937a0c9"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "chrono",
- "either",
- "futures",
- "home",
- "http 1.3.1",
- "http-body 1.0.1",
- "http-body-util",
- "hyper 1.6.0",
- "hyper-http-proxy",
- "hyper-rustls 0.27.2",
- "hyper-timeout",
- "hyper-util",
- "jsonpath-rust",
- "k8s-openapi",
- "kube-core 0.98.0",
- "pem",
- "rustls 0.23.23",
- "rustls-pemfile 2.2.0",
- "secrecy",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.12",
- "tokio",
- "tokio-util",
- "tower 0.5.2",
- "tower-http",
- "tracing",
+ "kube-client",
+ "kube-core",
 ]
 
 [[package]]
@@ -3668,7 +3618,7 @@ dependencies = [
  "hyper-util",
  "jsonpath-rust",
  "k8s-openapi",
- "kube-core 0.99.0",
+ "kube-core",
  "pem",
  "rustls 0.23.23",
  "secrecy",
@@ -3681,22 +3631,6 @@ dependencies = [
  "tower 0.5.2",
  "tower-http",
  "tracing",
-]
-
-[[package]]
-name = "kube-core"
-version = "0.98.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97aa830b288a178a90e784d1b0f1539f2d200d2188c7b4a3146d9dc983d596f3"
-dependencies = [
- "chrono",
- "form_urlencoded",
- "http 1.3.1",
- "k8s-openapi",
- "serde",
- "serde-value",
- "serde_json",
- "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -3718,7 +3652,7 @@ dependencies = [
 [[package]]
 name = "lakekeeper-console"
 version = "0.1.0"
-source = "git+https://github.com/lakekeeper/console?rev=ffc8b30#ffc8b3093f93128b068d631ca88f16e985e6d80e"
+source = "git+https://github.com/lakekeeper/console?rev=2dbea62#2dbea62c127169320586b218b54dece907992576"
 dependencies = [
  "derivative",
  "fs_extra",
@@ -3865,7 +3799,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -3918,16 +3852,16 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d90b2cc3011d5adfd7f6ff7e7ff2682054e6d433c648b5e2e18668dbb4b543d6"
+checksum = "5e63ea0b048ae70f12d2f4d8954e6d7634f61f91528689d4ab9ce9b68e868845"
 dependencies = [
  "axum 0.8.2",
  "axum-extra",
  "jsonwebtoken",
  "jwks_client_rs",
  "k8s-openapi",
- "kube 0.99.0",
+ "kube",
  "once_cell",
  "reqwest",
  "serde",
@@ -6907,9 +6841,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.44.1"
+version = "1.44.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f382da615b842244d4b8738c82ed1275e6c5dd90c459a30941cd07080b06c91a"
+checksum = "e6b88822cbe49de4185e3a4cbf8321dd487cf5fe0c5c65695fef6346371e9c48"
 dependencies = [
  "backtrace",
  "bytes",

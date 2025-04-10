@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.8.0](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0) (2025-04-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* drop duplicate sequence numbers in table snapshots & add index ([#952](https://github.com/lakekeeper/lakekeeper/issues/952))
+* Move APIs affecting the default project to /default-project according to OpenAPI spec ([#878](https://github.com/lakekeeper/lakekeeper/issues/878))
+* Remove `project_id` from `RenameProjectRequest`. Use `/v1/project/{project_id}/rename` instead.
+* Change Project ID type from UUID to String (alphanumeric + hyphen + underscore)
+
+### Features
+
+* Accept nameless Application Clients for self-provisioning (Missing app_displayname in Entra-ID token) ([#970](https://github.com/lakekeeper/lakekeeper/issues/970)) ([f880c91](https://github.com/lakekeeper/lakekeeper/commit/f880c91e25492841eb14fa69d352885067fd545d))
+* Add information about AWS System Identities for S3 storage profiles to Server Info ([#972](https://github.com/lakekeeper/lakekeeper/issues/972)) ([5b6aefc](https://github.com/lakekeeper/lakekeeper/commit/5b6aefc77f5f3f25255eec98860093647b9ab693))
+* add kafka support [#271](https://github.com/lakekeeper/lakekeeper/issues/271) ([#937](https://github.com/lakekeeper/lakekeeper/issues/937)) ([1fa2f09](https://github.com/lakekeeper/lakekeeper/commit/1fa2f09ce00f906515eeec98338394c2f2bc7b52))
+* Add support for legacy Kubernetes tokens (no audience) ([#940](https://github.com/lakekeeper/lakekeeper/issues/940)) ([e7daf01](https://github.com/lakekeeper/lakekeeper/commit/e7daf010a74b53ac2c6fee0833e8ef1308c1d02a))
+* AWS / S3 Managed Identities ([#965](https://github.com/lakekeeper/lakekeeper/issues/965)) ([7490047](https://github.com/lakekeeper/lakekeeper/commit/7490047972f3abdeb7a84fef6a77f2096486119a))
+* Change Project ID type from UUID to String (alphanumeric + hyphen + underscore) ([984381b](https://github.com/lakekeeper/lakekeeper/commit/984381b0925828c20eef6281e883f8226c2cad78))
+* Migrate to OpenFGA Client ([#876](https://github.com/lakekeeper/lakekeeper/issues/876)) ([72ebee4](https://github.com/lakekeeper/lakekeeper/commit/72ebee47526cc4ec2362808d7c65f43c0a89f496))
+* Re-add constraints for string project IDs ([#960](https://github.com/lakekeeper/lakekeeper/issues/960)) ([44b6248](https://github.com/lakekeeper/lakekeeper/commit/44b624882e7115de7bc4b4c432567efca5d1f47d))
+* Remove `project_id` from `RenameProjectRequest`. Use `/v1/project/{project_id}/rename` instead. ([984381b](https://github.com/lakekeeper/lakekeeper/commit/984381b0925828c20eef6281e883f8226c2cad78))
+* **s3:** make url-style detection configurable ([#905](https://github.com/lakekeeper/lakekeeper/issues/905)) ([69234fe](https://github.com/lakekeeper/lakekeeper/commit/69234fe4e340485af9bd52be13adb64de7dbd9f8))
+* Split OpenFGA Model into components ([#881](https://github.com/lakekeeper/lakekeeper/issues/881)) ([e3b658b](https://github.com/lakekeeper/lakekeeper/commit/e3b658bde8abd1e63ce4457027af895e4b6ca5f4))
+* **stats:** Endpoint call statistics ([#818](https://github.com/lakekeeper/lakekeeper/issues/818)) ([bf7bcde](https://github.com/lakekeeper/lakekeeper/commit/bf7bcde7e8b475e92a03dc92f53a2a9d1190293a))
+* **view:** allow view location updates for trino ([#944](https://github.com/lakekeeper/lakekeeper/issues/944)) ([0628fa8](https://github.com/lakekeeper/lakekeeper/commit/0628fa801e34122e262b66a1d84f39b068eff690))
+
+
+### Bug Fixes
+
+* Consistency checks for READ Committed transaction level ([#975](https://github.com/lakekeeper/lakekeeper/issues/975)) ([6b852dd](https://github.com/lakekeeper/lakekeeper/commit/6b852dddd32a0e6165ef9c8eed308169a3477587))
+* drop duplicate sequence numbers in table snapshots & add index ([#952](https://github.com/lakekeeper/lakekeeper/issues/952)) ([abb4882](https://github.com/lakekeeper/lakekeeper/commit/abb4882c2ae1f6701957b1ff51d1afd7d561a525))
+* Endpoint Statistics API, Consistently use kebab-case in API ([#968](https://github.com/lakekeeper/lakekeeper/issues/968)) ([5568a9d](https://github.com/lakekeeper/lakekeeper/commit/5568a9d3ac36bf5356b31230a8ce14f00a5100e1))
+* error message if rename target namespace does not exist ([8b60142](https://github.com/lakekeeper/lakekeeper/commit/8b60142f7b365926a69d496d97cf14b184410d5a))
+* Move APIs affecting the default project to /default-project according to OpenAPI spec ([#878](https://github.com/lakekeeper/lakekeeper/issues/878)) ([fa4b26a](https://github.com/lakekeeper/lakekeeper/commit/fa4b26a0aeac7ba93995e5b24984321114b87a04))
+* set method of endpoint statistics get to post ([#951](https://github.com/lakekeeper/lakekeeper/issues/951)) ([329f63d](https://github.com/lakekeeper/lakekeeper/commit/329f63d4659afab9d48caa6353fe120167be694c))
+* **stats:** unique constraint violation on warehouse deletion ([#977](https://github.com/lakekeeper/lakekeeper/issues/977)) ([af66510](https://github.com/lakekeeper/lakekeeper/commit/af6651034610f3a5ff7de2cb8c92d794458deb7f))
+* Table References not deleted ([#956](https://github.com/lakekeeper/lakekeeper/issues/956)) ([2ee3ac1](https://github.com/lakekeeper/lakekeeper/commit/2ee3ac11118fd460d2bf172cafa311c1e704448e))
+* table snapshot refs with add+remove+set-current ref in one transaction ([#945](https://github.com/lakekeeper/lakekeeper/issues/945)) ([94da715](https://github.com/lakekeeper/lakekeeper/commit/94da715ece3c69703c56fb3e6eebb408261b06aa))
+* use correct image for kube auth test ([#979](https://github.com/lakekeeper/lakekeeper/issues/979)) ([a077d2d](https://github.com/lakekeeper/lakekeeper/commit/a077d2d490c323f6bcfaaa6c599dd47720c5fc7a))
+* **views:** set 404 instead of 403 on failed view deletion ([#963](https://github.com/lakekeeper/lakekeeper/issues/963)) ([d5c4cd6](https://github.com/lakekeeper/lakekeeper/commit/d5c4cd6c8478896b51d56556602e2d0b543bfa42))
+
+
+### Miscellaneous Chores
+
+* release 0.8.0 ([f1b8083](https://github.com/lakekeeper/lakekeeper/commit/f1b80837ed6e296c48f2dd4491ded384c3658546))
+
 ## [0.7.4](https://github.com/lakekeeper/lakekeeper/compare/v0.7.3...v0.7.4) (2025-03-20)
 
 
