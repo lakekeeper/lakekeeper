@@ -36,7 +36,7 @@ use crate::{
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[allow(clippy::unsafe_derive_deserialize)]
 // tokio::join! uses unsafe code internally.
-// This is no problem for us as we don't circumvent the initialization of the struct.
+// This is no problem since our constructor does not enforce any invariants relevant to the unsafe code. Deserialize is even the primary way of constructing `StorageProfile` since it is received via REST.
 pub enum StorageProfile {
     /// Azure storage profile
     #[serde(rename = "adls", alias = "azdls")]
