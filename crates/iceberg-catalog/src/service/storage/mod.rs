@@ -34,6 +34,9 @@ use crate::{
     Debug, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema,
 )]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(clippy::unsafe_derive_deserialize)]
+// tokio::join! uses unsafe code internally.
+// This is no problem for us as we don't circumvent the initialization of the struct.
 pub enum StorageProfile {
     /// Azure storage profile
     #[serde(rename = "adls", alias = "azdls")]
