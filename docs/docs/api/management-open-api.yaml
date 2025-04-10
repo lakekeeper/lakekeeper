@@ -2773,6 +2773,7 @@ components:
         - storage-profile
         - delete-profile
         - status
+        - protected
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
@@ -2787,6 +2788,9 @@ components:
         project-id:
           type: string
           description: Project ID in which the warehouse was created.
+        protected:
+          type: boolean
+          description: Whether the warehouse is protected from being deleted.
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
