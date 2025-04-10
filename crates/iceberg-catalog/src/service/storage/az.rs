@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::{Arc, OnceLock},
+    sync::{Arc, LazyLock},
 };
 
 use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
@@ -60,7 +60,9 @@ lazy_static::lazy_static! {
     static ref DEFAULT_AUTHORITY_HOST: Url = Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL");
 }
 
-static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static STS_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static STS_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
+    LazyLock::new(|| Arc::new(STS_CLIENT.clone()));
 
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
@@ -177,7 +179,6 @@ impl AdlsProfile {
         creds: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
-        let http_client = STS_CLIENT.get_or_init(reqwest::Client::new).clone();
         let sas = match creds {
             AzCredential::ClientCredentials {
                 client_id,
@@ -185,7 +186,7 @@ impl AdlsProfile {
                 client_secret,
             } => {
                 let token = azure_identity::ClientSecretCredential::new(
-                    Arc::new(http_client),
+                    STS_CLIENT_ARC.clone(),
                     self.authority_host
                         .clone()
                         .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
@@ -233,8 +234,7 @@ impl AdlsProfile {
         &self,
         credential: Option<&AzCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("azdls")
-            .with_client(STS_CLIENT.get_or_init(reqwest::Client::new).clone());
+        let mut builder = iceberg::io::FileIOBuilder::new("azdls").with_client(STS_CLIENT.clone());
 
         builder = builder
             .with_prop(
@@ -614,7 +614,7 @@ pub(super) fn get_file_io_from_table_config(
     file_system: String,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
     Ok(iceberg::io::FileIOBuilder::new("azdls")
-        .with_client(STS_CLIENT.get_or_init(reqwest::Client::new).clone())
+        .with_client(STS_CLIENT.clone())
         .with_props(config.inner())
         .with_prop(AzdlsConfigKeys::Filesystem, file_system)
         .build()?)
@@ -622,9 +622,7 @@ pub(super) fn get_file_io_from_table_config(
 
 fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
     azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
-        .transport(TransportOptions::new(Arc::new(
-            STS_CLIENT.get_or_init(reqwest::Client::new).clone(),
-        )))
+        .transport(TransportOptions::new(STS_CLIENT_ARC.clone()))
         .client_options(
             azure_core::ClientOptions::default().retry(RetryOptions::fixed(
                 FixedRetryOptions::default()

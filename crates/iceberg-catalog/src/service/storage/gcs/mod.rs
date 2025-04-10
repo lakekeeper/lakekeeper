@@ -1,6 +1,6 @@
 #![allow(clippy::module_name_repetitions)]
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
 use base64::Engine;
 use iceberg_ext::configs::{
@@ -24,6 +24,8 @@ use crate::{
 };
 
 mod sts;
+
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -248,6 +250,7 @@ pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
     Ok(iceberg::io::FileIOBuilder::new("gcs")
+        .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .build()?)
 }

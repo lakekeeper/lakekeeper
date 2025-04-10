@@ -758,7 +758,7 @@ impl S3Profile {
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
-    let mut builder = iceberg::io::FileIOBuilder::new("s3");
+    let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client((*S3_HTTP_CLIENT).clone());
 
     for key in [
         s3::Region::KEY,

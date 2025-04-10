@@ -298,9 +298,6 @@ impl StorageProfile {
             std::borrow::ToOwned::to_owned,
         );
         tracing::debug!("Validating direct read/write access to {test_location}");
-        // Validate direct read/write access
-        self.validate_read_write(&file_io, &test_location, false)
-            .await?;
 
         // Test vended-credentials access
         let test_vended_credentials = match self {
@@ -311,61 +308,30 @@ impl StorageProfile {
             StorageProfile::Test(_) => false,
         };
 
-        if test_vended_credentials {
-            tracing::debug!("Validating vended credentials access to: {test_location}");
+        // Run both validations in parallel
+        let direct_validation = self.validate_read_write(&file_io, &test_location, false);
 
-            let tbl_config = self
-                .generate_table_config(
-                    DataAccess {
-                        remote_signing: false,
-                        vended_credentials: true,
-                    },
-                    credential,
-                    &test_location,
-                    StoragePermissions::ReadWriteDelete,
-                )
-                .await?;
-            match &self {
-                StorageProfile::S3(_) => {
-                    tracing::debug!("Getting s3 file io from table config for vended credentials.");
-                    let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
-                    tracing::debug!(
-                        "Validating read/write access to: {test_location} using vended credentials"
-                    );
-                    self.validate_read_write(&sts_file_io, &test_location, true)
-                        .await?;
-                }
-                StorageProfile::Adls(p) => {
-                    tracing::debug!(
-                        "Validating adls vended credentials access to: {test_location}"
-                    );
-                    let sts_file_io = az::get_file_io_from_table_config(
-                        &tbl_config.config,
-                        p.filesystem.to_string(),
-                    )?;
-                    self.validate_read_write(&sts_file_io, &test_location, true)
-                        .await?;
-                }
-                #[cfg(test)]
-                StorageProfile::Test(_) => {}
-                StorageProfile::Gcs(_) => {
-                    tracing::debug!(
-                        "Getting gcs file io from table config for vended credentials."
-                    );
-                    let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
-                    tracing::debug!("Validating gcs vended credentials access to: {test_location}");
-                    self.validate_read_write(&sts_file_io, &test_location, true)
-                        .await?;
-                }
+        let vended_validation = async {
+            if test_vended_credentials {
+                self.validate_vended_credentials_access(credential, &test_location)
+                    .await?;
             }
-        }
-        tracing::info!("Cleanup started");
+            Ok::<(), ValidationError>(())
+        };
+
+        let (direct_result, vended_result) = tokio::join!(direct_validation, vended_validation);
+
+        // Check results from both validations
+        direct_result?;
+        vended_result?;
+
+        tracing::debug!("Cleanup started");
         // Cleanup
         crate::catalog::io::remove_all(&file_io, &test_location)
             .await
             .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
 
-        tracing::info!("Cleanup finished");
+        tracing::debug!("Cleanup finished");
         retry_fn(|| async {
             match check_location_is_empty(&file_io, &test_location, self, || {
                 ValidationError::InvalidLocation {
@@ -395,6 +361,62 @@ impl StorageProfile {
         })
         .await??;
         tracing::debug!("checked location is empty");
+        Ok(())
+    }
+
+    /// Validate access with vended credentials
+    ///
+    /// # Errors
+    /// Fails if a file cannot be written and deleted using vended credentials.
+    async fn validate_vended_credentials_access(
+        &self,
+        credential: Option<&StorageCredential>,
+        test_location: &Location,
+    ) -> Result<(), ValidationError> {
+        tracing::debug!("Validating vended credentials access to: {test_location}");
+
+        let tbl_config = self
+            .generate_table_config(
+                DataAccess {
+                    remote_signing: false,
+                    vended_credentials: true,
+                },
+                credential,
+                test_location,
+                StoragePermissions::ReadWriteDelete,
+            )
+            .await?;
+
+        match &self {
+            StorageProfile::S3(_) => {
+                tracing::debug!("Getting s3 file io from table config for vended credentials.");
+                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
+                tracing::debug!(
+                    "Validating read/write access to: {test_location} using vended credentials"
+                );
+                self.validate_read_write(&sts_file_io, test_location, true)
+                    .await?;
+            }
+            StorageProfile::Adls(p) => {
+                tracing::debug!("Validating adls vended credentials access to: {test_location}");
+                let sts_file_io = az::get_file_io_from_table_config(
+                    &tbl_config.config,
+                    p.filesystem.to_string(),
+                )?;
+                self.validate_read_write(&sts_file_io, test_location, true)
+                    .await?;
+            }
+            #[cfg(test)]
+            StorageProfile::Test(_) => {}
+            StorageProfile::Gcs(_) => {
+                tracing::debug!("Getting gcs file io from table config for vended credentials.");
+                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
+                tracing::debug!("Validating gcs vended credentials access to: {test_location}");
+                self.validate_read_write(&sts_file_io, test_location, true)
+                    .await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -964,6 +986,7 @@ mod tests {
     #[needs_env_var(TEST_AWS = 1)]
     #[test]
     fn test_vended_aws() {
+        time_test::time_test!();
         crate::test::test_block_on(
             async {
                 let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
@@ -991,6 +1014,23 @@ mod tests {
             },
             true,
         );
+    }
+
+    #[needs_env_var(TEST_AWS = 1)]
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_validate_aws() {
+        use super::s3::test::aws::get_storage_profile;
+
+        time_test::time_test!();
+
+        let (profile, credential) = get_storage_profile();
+        let profile: StorageProfile = profile.into();
+        let cred: StorageCredential = credential.into();
+        profile
+            .validate_access(Some(&cred), None)
+            .await
+            .expect("Failed to validate access");
     }
 
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
