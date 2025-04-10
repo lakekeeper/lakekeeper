@@ -318,7 +318,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 C::list_warehouses(&project_id, None, transaction.transaction()).await?;
             transaction.commit().await?;
 
-            for w in warehouses.iter() {
+            for w in &warehouses {
                 if storage_profile.is_overlapping_location(&w.storage_profile) {
                     return Err::<_, IcebergErrorResponse>(
                         ErrorModel::bad_request(

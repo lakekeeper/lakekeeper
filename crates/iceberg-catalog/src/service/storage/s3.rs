@@ -185,6 +185,7 @@ impl S3Profile {
         schema == "s3" || (self.allow_alternate_schemes() && (schema == "s3a" || schema == "s3n"))
     }
 
+    #[must_use]
     /// Check whether the location of this storage profile is overlapping
     /// with the given storage profile.
     pub fn is_overlapping_location(&self, other: &Self) -> bool {

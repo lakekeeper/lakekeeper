@@ -388,6 +388,7 @@ impl AdlsProfile {
         Ok(())
     }
 
+    #[must_use]
     /// Check whether the location of this storage profile is overlapping
     /// with the given storage profile.
     pub fn is_overlapping_location(&self, other: &Self) -> bool {
