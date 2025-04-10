@@ -72,7 +72,35 @@ Projects can contain multiple Roles, allowing Roles to be reused in all Warehous
 Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeeper. The concept of "external" tables will follow in a later release. When managed tables are dropped, Lakekeeper defaults to setting `purgeRequested` parameter of the `dropTable` endpoint to true unless explicitly set to false. Currently most query engines do not set this flag, which defaults to enabling purge. If purge is enabled for a drop, all files of the table are removed.
 
 ## Soft Deletion
-In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse. The expiration delay is determined at the time of dropping the table, that means changing the delay in the warehouse settings will only affect newly dropped tables. If you want "soft-deleted" tables to be gone faster, undrop the tables, change the expiration delay and re-drop them. 
+In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse. The expiration delay is determined at the time of dropping the table, that means changing the delay in the warehouse settings will only affect newly dropped tables. If you want "soft-deleted" tables to be gone faster, undrop the tables, change the expiration delay and re-drop them.
+
+## Protection and Deletion Mechanisms in Lakekeeper
+Lakekeeper provides several complementary mechanisms for protecting data assets and managing their deletion while balancing flexibility and data governance.
+
+### Protection
+Protection prevents accidental deletion of important entities in Lakekeeper. When an entity is protected, attempts to delete it through standard API calls will be rejected.
+
+Protection can be applied to Warehouses, Namespaces, Tables, and Views via the Management API.
+
+### Recursive Deletion on Namespaces
+By default, Lakekeeper enforces that namespaces must be empty before deletion. Recursive deletion provides a way to delete a namespace and all its contained entities in a single operation.
+
+When deleting a namespace, add the recursive=true query parameter to the request.
+
+Protected entities within the hierarchy will prevent recursive deletion unless force is also used.
+
+### Force Deletion
+Force deletion is an administrative override that allows deletion of protected entities and bypasses certain safety checks:
+- Bypasses protection settings
+- Overrides soft-deletion mechanisms for immediate hard deletion
+- Requires appropriate administrative permissions
+
+Add the `force=true` query parameter to deletion requests:
+```
+DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
+```
+
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
 
 
 ## Migration
