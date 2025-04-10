@@ -545,6 +545,7 @@ async fn setup_drop_test(
             max_age: chrono::Duration::seconds(60),
             poll_interval: std::time::Duration::from_secs(10),
         }),
+        1,
     )
     .await;
     let mut ns_names = Vec::new();

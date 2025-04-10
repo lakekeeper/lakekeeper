@@ -41,7 +41,7 @@ mod test {
                     WarehouseFilter,
                 },
                 warehouse::Service,
-                ApiServer,
+                ApiServer, DeleteWarehouseQuery,
             },
         },
         request_metadata::RequestMetadata,
@@ -550,6 +550,7 @@ mod test {
 
         ApiServer::delete_warehouse(
             stats.called_endpoints[0][0].warehouse_id.unwrap().into(),
+            DeleteWarehouseQuery { force: false },
             setup.ctx.clone(),
             request_metadata.clone(),
         )
