@@ -84,6 +84,48 @@ pub(crate) async fn set_tabular_protected(
     })
 }
 
+pub(crate) async fn get_tabular_protected(
+    tabular_id: TabularIdentUuid,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ProtectionResponse> {
+    tracing::debug!(
+        "Getting tabular protection status for {} ({})",
+        tabular_id,
+        tabular_id.typ_str()
+    );
+
+    let row = sqlx::query!(
+        r#"
+        SELECT protected, updated_at
+        FROM tabular
+        WHERE tabular_id = $1
+        "#,
+        *tabular_id
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            ErrorModel::not_found(
+                format!("{} not found", tabular_id.typ_str()),
+                "NoSuchTabularError".to_string(),
+                Some(Box::new(e)),
+            )
+        } else {
+            tracing::warn!("Error getting tabular protection status: {}", e);
+            e.into_error_model(format!(
+                "Error getting protection status for {}",
+                tabular_id.typ_str()
+            ))
+        }
+    })?;
+
+    Ok(ProtectionResponse {
+        protected: row.protected,
+        updated_at: row.updated_at,
+    })
+}
+
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
     warehouse_id: WarehouseIdent,
     table: &TabularIdentBorrowed<'a>,

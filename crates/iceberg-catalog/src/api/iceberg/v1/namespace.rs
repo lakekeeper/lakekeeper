@@ -18,12 +18,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     api::{
         iceberg::types::{PageToken, Prefix},
-        management::v1::ProtectionResponse,
         ApiContext, Result,
     },
     request_metadata::RequestMetadata,
-    service::NamespaceIdentUuid,
-    WarehouseIdent,
 };
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default)]
@@ -100,14 +97,6 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<UpdateNamespacePropertiesResponse>;
-
-    async fn set_namespace_protected(
-        namespace_id: NamespaceIdentUuid,
-        warehouse_id: WarehouseIdent,
-        protected: bool,
-        state: ApiContext<S>,
-        request_metadata: RequestMetadata,
-    ) -> Result<ProtectionResponse>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -381,7 +370,7 @@ mod tests {
     use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
     use super::{super::*, *};
-    use crate::{request_metadata::RequestMetadata, service::NamespaceIdentUuid, WarehouseIdent};
+    use crate::request_metadata::RequestMetadata;
 
     #[tokio::test]
     async fn test_namespace_params() {
@@ -463,16 +452,6 @@ mod tests {
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> Result<UpdateNamespacePropertiesResponse> {
-                panic!("Should not be called");
-            }
-
-            async fn set_namespace_protected(
-                _namespace_id: NamespaceIdentUuid,
-                _warehouse_id: WarehouseIdent,
-                _protected: bool,
-                _state: ApiContext<ThisState>,
-                _request_metadata: RequestMetadata,
-            ) -> Result<ProtectionResponse> {
                 panic!("Should not be called");
             }
         }
@@ -579,16 +558,6 @@ mod tests {
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
             ) -> Result<UpdateNamespacePropertiesResponse> {
-                panic!("Should not be called");
-            }
-
-            async fn set_namespace_protected(
-                _namespace_id: NamespaceIdentUuid,
-                _warehouse_id: WarehouseIdent,
-                _protected: bool,
-                _state: ApiContext<ThisState>,
-                _request_metadata: RequestMetadata,
-            ) -> Result<ProtectionResponse> {
                 panic!("Should not be called");
             }
         }

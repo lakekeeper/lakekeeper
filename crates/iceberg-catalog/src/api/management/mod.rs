@@ -1,8 +1,11 @@
 pub mod v1 {
     pub mod bootstrap;
+    pub mod namespace;
     pub mod project;
     pub mod role;
+    pub mod table;
     pub mod user;
+    pub mod view;
     pub mod warehouse;
 
     use std::marker::PhantomData;
@@ -16,6 +19,7 @@ pub mod v1 {
     use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
+    use namespace::NamespaceManagementService as _;
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
@@ -25,11 +29,13 @@ pub mod v1 {
         SearchRoleResponse, Service as _, UpdateRoleRequest,
     };
     use serde::{Deserialize, Serialize};
+    use table::TableManagementService as _;
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
         User,
     };
     use utoipa::{openapi::security::SecurityScheme, OpenApi, ToSchema};
+    use view::ViewManagementService as _;
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
@@ -40,13 +46,7 @@ pub mod v1 {
 
     use crate::{
         api::{
-            iceberg::{
-                types::PageToken,
-                v1::{
-                    namespace::NamespaceService, tables::TablesService, views::ViewService,
-                    PaginationQuery,
-                },
-            },
+            iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 user::{ListUsersQuery, ListUsersResponse},
@@ -54,7 +54,6 @@ pub mod v1 {
             },
             ApiContext, IcebergErrorResponse, Result,
         },
-        catalog::CatalogServer,
         request_metadata::RequestMetadata,
         service::{
             authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse,
@@ -119,6 +118,9 @@ pub mod v1 {
             set_table_protection,
             set_view_protection,
             set_warehouse_protection,
+            get_namespace_protection,
+            get_table_protection,
+            get_view_protection,
             undrop_tabulars,
             undrop_tabulars_deprecated,
             update_role,
@@ -1098,6 +1100,29 @@ pub mod v1 {
     }
 
     #[utoipa::path(
+        get,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection",
+        responses(
+            (status = 200, body =  ProtectionResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_table_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::get_table_protection(
+            TableIdentUuid::from(table_id),
+            warehouse_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    #[utoipa::path(
         post,
         tag = "warehouse",
         path = "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection",
@@ -1112,10 +1137,33 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
-        CatalogServer::<C, A, S>::set_table_protection(
+        ApiServer::<C, A, S>::set_table_protection(
             TableIdentUuid::from(table_id),
             warehouse_id.into(),
             protected,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    #[utoipa::path(
+        get,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection",
+        responses(
+            (status = 200, body = ProtectionResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_view_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::get_view_protection(
+            ViewIdentUuid::from(view_id),
+            warehouse_id.into(),
             api_context,
             metadata,
         )
@@ -1137,10 +1185,33 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
-        CatalogServer::<C, A, S>::set_view_protection(
+        ApiServer::<C, A, S>::set_view_protection(
             ViewIdentUuid::from(view_id),
             warehouse_id.into(),
             protected,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    #[utoipa::path(
+        get,
+        tag = "warehouse",
+        path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
+        responses(
+            (status = 200, body = ProtectionResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_namespace_protection<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::get_namespace_protection(
+            NamespaceIdentUuid::from(namespace_id),
+            warehouse_id.into(),
             api_context,
             metadata,
         )
@@ -1162,7 +1233,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
-        CatalogServer::<C, A, S>::set_namespace_protected(
+        ApiServer::<C, A, S>::set_namespace_protection(
             NamespaceIdentUuid::from(namespace_id),
             warehouse_id.into(),
             protected,
@@ -1348,15 +1419,15 @@ pub mod v1 {
                 )
                 .route(
                     "/warehouse/{warehouse_id}/table/{table_id}/protection",
-                    post(set_table_protection),
+                    get(get_table_protection).post(set_table_protection),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/view/{view_id}/protection",
-                    post(set_view_protection),
+                    get(get_view_protection).post(set_view_protection),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
-                    post(set_namespace_protection),
+                    get(get_namespace_protection).post(set_namespace_protection),
                 )
                 .route(
                     "/warehouse/{warehouse_id}/protection",

@@ -40,7 +40,7 @@ use crate::{
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, ProtectionResponse, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, TabularType},
         set_not_found_status_code,
     },
     catalog,
@@ -909,43 +909,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<()> {
         let _ = commit_tables_internal(prefix, request, state, request_metadata).await?;
         Ok(())
-    }
-
-    async fn set_table_protection(
-        table_id: TableIdentUuid,
-        warehouse_id: WarehouseIdent,
-        protected: bool,
-        state: ApiContext<State<A, C, S>>,
-        request_metadata: RequestMetadata,
-    ) -> Result<ProtectionResponse> {
-        // ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-
-        authorizer
-            .require_warehouse_action(
-                &request_metadata,
-                warehouse_id,
-                CatalogWarehouseAction::CanUse,
-            )
-            .await?;
-
-        authorizer
-            .require_table_action(
-                &request_metadata,
-                Ok(Some(table_id)),
-                CatalogTableAction::CanDrop,
-            )
-            .await?;
-
-        let status = C::set_tabular_protected(
-            TabularIdentUuid::Table(*table_id),
-            protected,
-            t.transaction(),
-        )
-        .await?;
-        t.commit().await?;
-        Ok(status)
     }
 }
 
@@ -1919,7 +1882,10 @@ pub(crate) mod test {
                     NamespaceParameters, TableParameters,
                 },
             },
-            management::v1::warehouse::TabularDeleteProfile,
+            management::v1::{
+                table::TableManagementService, warehouse::TabularDeleteProfile,
+                ApiServer as ManagementApiServer,
+            },
             ApiContext,
         },
         catalog::{tables::validate_table_properties, test::impl_pagination_tests, CatalogServer},
@@ -3273,7 +3239,7 @@ pub(crate) mod test {
         .await
         .unwrap();
 
-        CatalogServer::set_table_protection(
+        ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
             WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             true,
@@ -3299,7 +3265,7 @@ pub(crate) mod test {
         .expect_err("Table was dropped which should not be possible");
         assert_eq!(e.error.code, StatusCode::CONFLICT, "{e:?}");
 
-        CatalogServer::set_table_protection(
+        ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
             WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             false,
@@ -3342,7 +3308,7 @@ pub(crate) mod test {
         .await
         .unwrap();
 
-        CatalogServer::set_table_protection(
+        ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
             WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             true,

@@ -16,14 +16,11 @@ use crate::{
             types::{DropParams, Prefix},
             v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
         },
-        management::v1::ProtectionResponse,
         ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
         CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
         RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
-    service::TableIdentUuid,
-    WarehouseIdent,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -136,14 +133,6 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
-
-    async fn set_table_protection(
-        table_id: TableIdentUuid,
-        warehouse_id: WarehouseIdent,
-        protected: bool,
-        state: ApiContext<S>,
-        request_metadata: RequestMetadata,
-    ) -> Result<ProtectionResponse>;
 }
 
 #[allow(clippy::too_many_lines)]
