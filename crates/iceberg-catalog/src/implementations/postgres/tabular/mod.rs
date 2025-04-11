@@ -514,7 +514,7 @@ where
                     .to_string(),
                 );
             }
-        };
+        }
     }
 
     Ok(tabulars)
@@ -608,7 +608,7 @@ pub(crate) async fn rename_tabular(
                 .build(),
             _ => e.into_error_model(format!("Error renaming {}", source_id.typ_str())),
         })?;
-    };
+    }
 
     Ok(())
 }

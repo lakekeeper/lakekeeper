@@ -145,7 +145,10 @@ impl StorageProfile {
                     .file_io(secret.map(|s| s.try_to_s3()).transpose()?)
                     .await
             }
-            StorageProfile::Adls(prof) => prof.file_io(secret.map(|s| s.try_to_az()).transpose()?),
+            StorageProfile::Adls(prof) => {
+                prof.file_io(secret.map(|s| s.try_to_az()).transpose()?)
+                    .await
+            }
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
             StorageProfile::Gcs(prof) => {
@@ -313,7 +316,6 @@ impl StorageProfile {
 
         // Run both validations in parallel
         let direct_validation = self.validate_read_write(&file_io, &test_location, false);
-
         let vended_validation = async {
             if test_vended_credentials {
                 self.validate_vended_credentials_access(credential, &test_location)
@@ -324,7 +326,6 @@ impl StorageProfile {
 
         let (direct_result, vended_result) = tokio::join!(direct_validation, vended_validation);
 
-        // Check results from both validations
         direct_result?;
         vended_result?;
 

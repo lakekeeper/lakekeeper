@@ -79,7 +79,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     CatalogNamespaceAction::CanListNamespaces,
                 )
                 .await?;
-        };
+        }
 
         // ------------------- BUSINESS LOGIC -------------------
         let (idents, ids, next_page_token) = catalog::fetch_until_full_page::<_, _, _, C>(

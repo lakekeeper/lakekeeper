@@ -48,7 +48,7 @@ fxhash = "0.2.1"
 google-cloud-auth = { package = "gcloud-auth", version = "1.0.0", features = [
     "rustls-tls",
 ], default-features = false }
-figment = { version = "0.10.19", features = ["env"] }
+figment = { version = "^0.10", features = ["env"] }
 figment_file_provider_adapter = "0.1.1"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
@@ -61,7 +61,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f3b7dd2", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "6aa537eca5bda98a7ea433ed79307c9082374efd", features = [
     "storage-all",
 ] }
 iso8601 = "0.6.2"

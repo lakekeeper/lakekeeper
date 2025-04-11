@@ -274,7 +274,8 @@ fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
     let x_forwarded_host = if let Some(forwarded_for) = x_forwarded_for {
         let mut x_forwarded_host = String::new();
         if let Some(proto) = x_forwarded_proto {
-            x_forwarded_host.push_str(&format!("{proto}://"));
+            x_forwarded_host.push_str(proto);
+            x_forwarded_host.push_str("://");
         } else {
             // we default to https since we assume that a reverse proxy did tls termination
             // leaving out protocol would break at least iceberg java which requires a protocol.

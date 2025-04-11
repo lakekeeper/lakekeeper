@@ -25,10 +25,10 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 
 | Variable                                                    | Example            | Description |
 |-------------------------------------------------------------|--------------------|-----|
-| `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`                  | <nobr>`true`<nobr> | Lakekeeper can use system identities  (i.e. `AWS_*` environment variables or EC2 instance profiles) as storage credentials for Warehouses. This is disabled by default to not accidentally grant lakekeeper users access to locations that users should not be able to read or store tables in. When setting `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`, Lakekeeper does allow the creation of Warehouses that use system credentials. Default: `false` (System credentials disabled) |
+| `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS`                 | <nobr>`true`<nobr> | Lakekeeper can use system identities  (i.e. `AWS_*` environment variables or EC2 instance profiles) as storage credentials for Warehouses. This is disabled by default to not accidentally grant lakekeeper users access to locations that users should not be able to read or store tables in. When setting `LAKEKEEPER__ENABLE_AWS_SYSTEM_CREDENTIALS` to `true`, Lakekeeper allows the creation of Warehouses that use system credentials. Default: `false` (System credentials for AWS disabled) |
 | `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS`           | <nobr>`true`<nobr> | If a Warehouse is created using system credentials, by default, users are required to specify a `assume-role-arn`. Lakekeeper then assumes the specified role to access files. If `LAKEKEEPER__S3_ENABLE_DIRECT_SYSTEM_CREDENTIALS` is set to `true`, Lakekeeper allows the creation of Warehouses even without an `assume-role-arn` being specified, thus, the system user requires direct access to warehouse locations. Default: `false` (Credentials cannot be used without assuming a role) |
 | `LAKEKEEPER__S3_REQUIRE_EXTERNAL_ID_FOR_SYSTEM_CREDENTIALS` | <nobr>`true`<nobr> | If true, an `external-id` is required when assuming a role with system credentials. Default: `true` |
-
+| `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS`               | <nobr>`true`<nobr> | Lakekeeper can use system identities  (i.e. `AZURE_*` environment variables or VM managed identities) as storage credentials for Warehouses. This is disabled by default to not accidentally grant lakekeeper users access to locations that users should not be able to read or store tables in. When setting `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS` to `true`, Lakekeeper allows the creation of Warehouses that use azure system credentials. Default: `false` (System credentials for Azure disabled) |
 
 ### Persistence Store
 
@@ -106,11 +106,11 @@ This means that all features of [librdkafka](https://github.com/confluentinc/lib
 
 To publish events to Kafka, set the following environment variables:
 
-| Variable                        | Example                                                                   | Description                                                                                                                                                                             |
-| ------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LAKEKEEPER__KAFKA_TOPIC`       | `lakekeeper`                                                              | The topic to which events are published                                                                                                                                                 |
+| Variable                        | Example                                                                   | Description |
+|---------------------------------|---------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__KAFKA_TOPIC`       | `lakekeeper`                                                              | The topic to which events are published |
 | `LAKEKEEPER__KAFKA_CONFIG`      | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
-| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below                                      |
+| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below |
 
 #### Notes
 

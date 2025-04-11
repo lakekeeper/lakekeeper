@@ -10,7 +10,7 @@ pub(crate) mod tables;
 pub(crate) mod tabular;
 pub(crate) mod views;
 
-use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData, sync::LazyLock};
 
 use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
@@ -78,9 +78,11 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 
 pub const DEFAULT_PAGE_SIZE: i64 = 100;
 
-lazy_static::lazy_static! {
-    pub static ref DEFAULT_PAGE_SIZE_USIZE: usize = DEFAULT_PAGE_SIZE.try_into().expect("1, 1000 is a valid usize");
-}
+pub static DEFAULT_PAGE_SIZE_USIZE: LazyLock<usize> = LazyLock::new(|| {
+    DEFAULT_PAGE_SIZE
+        .try_into()
+        .expect("1, 1000 is a valid usize")
+});
 
 pub struct UnfilteredPage<Entity, EntityId> {
     pub entities: Vec<Entity>,

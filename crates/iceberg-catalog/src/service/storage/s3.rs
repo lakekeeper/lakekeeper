@@ -1183,17 +1183,22 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_MINIO = 1)]
     pub(crate) mod minio {
+        use std::sync::LazyLock;
+
         use crate::service::storage::{
             S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
         };
 
-        lazy_static::lazy_static! {
-            static ref TEST_BUCKET: String = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-            static ref TEST_REGION: String = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-            static ref TEST_ACCESS_KEY: String = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-            static ref TEST_SECRET_KEY: String = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-            static ref TEST_ENDPOINT: String = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
-        }
+        static TEST_BUCKET: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap());
+        static TEST_REGION: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into()));
+        static TEST_ACCESS_KEY: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap());
+        static TEST_SECRET_KEY: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap());
+        static TEST_ENDPOINT: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap());
 
         pub(crate) fn storage_profile(prefix: &str) -> (S3Profile, S3Credential) {
             let profile = S3Profile {

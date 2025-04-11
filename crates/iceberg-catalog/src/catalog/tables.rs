@@ -272,7 +272,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &file_io,
             )
             .await?;
-        };
+        }
 
         // This requires the storage secret
         // because the table config might contain vended-credentials based
@@ -1026,7 +1026,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 None,
             )
             .into());
-        };
+        }
     }
 
     // ------------------- AUTHZ -------------------
@@ -1162,7 +1162,6 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 );
                 // Short delay before retry to reduce contention
                 tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
-                continue;
             }
             Err(e) => return Err(e),
         }
@@ -1363,7 +1362,7 @@ pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Optio
         .as_str()
         .trim_end_matches('/')
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or(location.as_str());
 
     if let Some((_whole, version, _metadata_id)) = lazy_regex::regex_captures!(

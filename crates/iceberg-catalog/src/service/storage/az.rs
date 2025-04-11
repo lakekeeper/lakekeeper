@@ -5,6 +5,9 @@ use std::{
 };
 
 use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_identity::{
+    DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
+};
 use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
@@ -34,7 +37,7 @@ use crate::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
         StoragePermissions, StorageType, TableConfig,
     },
-    WarehouseIdent,
+    WarehouseIdent, CONFIG,
 };
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -56,16 +59,19 @@ pub struct AdlsProfile {
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
-lazy_static::lazy_static! {
-    static ref DEFAULT_AUTHORITY_HOST: Url = Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL");
-}
+static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
+});
 
-static STS_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-static STS_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
-    LazyLock::new(|| Arc::new(STS_CLIENT.clone()));
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
+    LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
 
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
+
+static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
+    LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
 
 impl AdlsProfile {
     /// Validate the Azure storage profile.
@@ -186,7 +192,7 @@ impl AdlsProfile {
                 client_secret,
             } => {
                 let token = azure_identity::ClientSecretCredential::new(
-                    STS_CLIENT_ARC.clone(),
+                    HTTP_CLIENT_ARC.clone(),
                     self.authority_host
                         .clone()
                         .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
@@ -210,6 +216,22 @@ impl AdlsProfile {
                     .saturating_add(time::Duration::days(7)),
                 azure_core::auth::Secret::new(key.to_string()),
             )?,
+            AzCredential::AzureSystemIdentity {} => {
+                let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
+                self.sas_via_delegation_key(
+                    table_location,
+                    StorageCredentials::token_credential(identity),
+                    permissions,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::debug!("Failed to get azure system identity token: {e}",);
+                    CredentialsError::ShortTermCredential {
+                        reason: "Failed to get azure system identity token".to_string(),
+                        source: Some(Box::new(e)),
+                    }
+                })?
+            }
         };
 
         let mut creds = TableProperties::default();
@@ -226,15 +248,46 @@ impl AdlsProfile {
         })
     }
 
+    fn get_system_identity(&self) -> Result<Arc<DefaultAzureCredential>, CredentialsError> {
+        if !CONFIG.enable_azure_system_credentials {
+            return Err(CredentialsError::Misconfiguration(
+                "Azure System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
+        }
+
+        let authority_host_str = (self.authority_host.as_ref()).map_or(
+            DEFAULT_AUTHORITY_HOST.clone().to_string(),
+            std::string::ToString::to_string,
+        );
+
+        SYSTEM_IDENTITY_CACHE
+            .try_get_with(authority_host_str.clone(), || {
+                let mut options = TokenCredentialOptions::default();
+                options.set_authority_host(authority_host_str);
+                DefaultAzureCredentialBuilder::new()
+                    .with_options(options)
+                    .build()
+                    .map(Arc::new)
+            })
+            .map_err(|e| {
+                tracing::error!("Failed to get Azure system identity: {e}");
+                CredentialsError::ShortTermCredential {
+                    reason: "Failed to get Azure system identity".to_string(),
+                    source: Some(Box::new(e)),
+                }
+            })
+    }
+
     /// Create a new `FileIO` instance for Adls.
     ///
     /// # Errors
     /// Fails if the `FileIO` instance cannot be created.
-    pub fn file_io(
+    pub async fn file_io(
         &self,
         credential: Option<&AzCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("azdls").with_client(STS_CLIENT.clone());
+        let mut builder = iceberg::io::FileIOBuilder::new("azdls").with_client(HTTP_CLIENT.clone());
 
         builder = builder
             .with_prop(
@@ -246,7 +299,12 @@ impl AdlsProfile {
                 ),
             )
             .with_prop(AzdlsConfigKeys::AccountName, self.account_name.clone())
-            .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.clone());
+            .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.clone())
+            .with_client(HTTP_CLIENT.clone());
+
+        if let Some(authority_host) = &self.authority_host {
+            builder = builder.with_prop(AzdlsConfigKeys::AuthorityHost, authority_host.to_string());
+        }
 
         if let Some(credential) = credential {
             match credential {
@@ -267,11 +325,41 @@ impl AdlsProfile {
                 AzCredential::SharedAccessKey { key } => {
                     builder = builder.with_prop(AzdlsConfigKeys::AccountKey, key.to_string());
                 }
-            }
-        }
+                AzCredential::AzureSystemIdentity {} => {
+                    // ToDo: Use azure_identity to get token, then pass it to FileIO.
+                    // As of writing this is not supported in OpenDAL and iceberg-rust.
+                    if !CONFIG.enable_azure_system_credentials {
+                        return Err(CredentialsError::Misconfiguration(
+                        "Azure System identity credentials are disabled in this Lakekeeper deployment.".to_string(),
+                    ).into());
+                    }
+                    let table_config = self
+                        .generate_table_config(
+                            DataAccess {
+                                vended_credentials: true,
+                                remote_signing: false,
+                            },
+                            self.base_location()
+                                .map_err(|e| CredentialsError::ShortTermCredential {
+                                    reason: "Failed to get base location for storage profile"
+                                        .to_string(),
+                                    source: Some(Box::new(e)),
+                                })?
+                                .without_trailing_slash(),
+                            credential,
+                            StoragePermissions::ReadWriteDelete,
+                        )
+                        .await
+                        .map_err(|e| CredentialsError::ShortTermCredential {
+                            reason: e.to_string(),
+                            source: Some(Box::new(e)),
+                        })?;
 
-        if let Some(authority_host) = &self.authority_host {
-            builder = builder.with_prop(AzdlsConfigKeys::AuthorityHost, authority_host.to_string());
+                    builder = builder
+                        .with_props(table_config.config.inner())
+                        .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.to_string());
+                }
+            }
         }
 
         Ok(builder.build()?)
@@ -334,6 +422,8 @@ impl AdlsProfile {
             self.filesystem.as_str(),
             rootless_path
         );
+
+        println!("canonical_resource: {canonical_resource:?}");
 
         let sas = BlobSharedAccessSignature::new(
             key,
@@ -551,7 +641,7 @@ pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
             caps.expand("$protocol$path", &mut location);
         }
         return location;
-    };
+    }
     path.to_string()
 }
 
@@ -572,6 +662,9 @@ pub enum AzCredential {
         #[redact]
         key: String,
     },
+    #[serde(rename_all = "kebab-case")]
+    #[schema(title = "AzCredentialManagedIdentity")]
+    AzureSystemIdentity {},
 }
 
 impl From<StoragePermissions> for BlobSasPermissions {
@@ -614,7 +707,7 @@ pub(super) fn get_file_io_from_table_config(
     file_system: String,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
     Ok(iceberg::io::FileIOBuilder::new("azdls")
-        .with_client(STS_CLIENT.clone())
+        .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .with_prop(AzdlsConfigKeys::Filesystem, file_system)
         .build()?)
@@ -622,7 +715,7 @@ pub(super) fn get_file_io_from_table_config(
 
 fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
     azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
-        .transport(TransportOptions::new(STS_CLIENT_ARC.clone()))
+        .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
         .client_options(
             azure_core::ClientOptions::default().retry(RetryOptions::fixed(
                 FixedRetryOptions::default()
@@ -759,7 +852,7 @@ fn normalize_host(host: String) -> Result<Option<String>, ValidationError> {
                 reason: "`endpoint_suffix` must be a valid hostname.".to_string(),
                 entity: "EndpointSuffix".to_string(),
             });
-        };
+        }
 
         Ok(Some(host))
     }
@@ -870,6 +963,19 @@ pub(crate) mod test {
                     .await
                     .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
             }
+        }
+
+        #[tokio::test]
+        #[needs_env_var::needs_env_var(LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS = 1)]
+        async fn test_system_identity_can_validate() {
+            let prof = azure_profile();
+            let mut prof: StorageProfile = prof.into();
+            prof.normalize().expect("failed to validate profile");
+            let cred = AzCredential::AzureSystemIdentity {};
+            let cred: StorageCredential = cred.into();
+            prof.validate_access(Some(&cred), None)
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
         }
     }
 

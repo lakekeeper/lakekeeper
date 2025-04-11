@@ -160,9 +160,7 @@ impl EndpointStatisticsTracker {
                 tracing::info_span!("endpoint_statistics_tracker", iteration_id=%Uuid::now_v7());
 
             match self.loop_tick(&mut last_update).instrument(span).await {
-                LoopState::Continue => {
-                    continue;
-                }
+                LoopState::Continue => {}
                 LoopState::Break => {
                     self.close().await;
                     break;

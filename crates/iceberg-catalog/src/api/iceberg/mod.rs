@@ -126,7 +126,7 @@ pub mod v1 {
                     self.ordering.remove(idx);
                     self.next_page_tokens.remove(idx);
                 }
-            };
+            }
             self.ordering.push(key);
             self.next_page_tokens.push(next_page_token);
         }
