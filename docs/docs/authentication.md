@@ -192,8 +192,28 @@ Repeat this process for each query engine / machine user that is required:
     - **Name**: choose any, for this example we choose `Spark`
     - **Redirect URI**: Leave empty - we are going to use the Client Credential Flow
 2. When the App Registration is created, select "Manage" -> "Certificates & secrets" and create a "New client secret". Note down the secrets "Value".
+3. There might be an additional step needed before you can utilize the machine user. First, get the token for it using the credentials you created on previous steps:
+```
+curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token \
+-d 'client_id={client_id}' \
+-d 'grant_type=client_credentials' \
+-d 'scope=email openid {APP2_client_id}%2F.default' \
+-d 'client_secret={client_secret}'
+```
+Note that `scope` parameter might not accept `api://` prefix for the APP2 scope for some Entra tenants. In that case, simply use `app2_client_id/.default` as shown above. Copy the `access_token` from the response and decode it using jwt.io or any other JWT decode tool. In order for automatic registration to work, token must contain the following claims:
+- `app_displayname`: name of the APP3 assigned in step 1
+- `appid`: application identifier (client identifier) of the App 3
+- `idtyp`: "app" (indicates this is an Entra service principal)
+For some Entra installations you might not get any of those claims in the JWT. `idtyp` can be added via optional claims. In this case, add them to `access_token` of **APP2** and set `name` to `idtyp` and `essential` to `true`. However, if `app_displayname` is not present, you'll need to register the machine user via Lakekeeper API. In order to do that:
+- create a token via UI login, to authenticate the API call
+- note `sub` claim value from the APP3 JWT
+- run:
+```
+curl -X POST http://lakekeeper-url/management/v1/user -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d '{ "id": "oidc~{sub_claim_value}", "user-type": "application", "name": "my-machine-app" }'
+```
 
-That's it! We can now use the second App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
+That's it! We can now use the third App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
 
 === "PyIceberg"
 
