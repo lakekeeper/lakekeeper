@@ -13,7 +13,7 @@ from conftest import settings
 
 @pytest.fixture(scope="session")
 def s3_warehouse_location(warehouse: conftest.Warehouse, storage_config):
-    key_prefix = storage_config["storage-profile"]["key_prefix"]
+    key_prefix = storage_config["storage-profile"]["key-prefix"]
     return f"s3://{settings.s3_bucket}/{key_prefix}"
 
 
