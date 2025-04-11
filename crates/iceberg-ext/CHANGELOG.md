@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.0...v0.9.0) (2025-04-11)
+
+
+### Features
+
+* Azure Managed Identities ([#999](https://github.com/lakekeeper/lakekeeper/issues/999)) ([faee35e](https://github.com/lakekeeper/lakekeeper/commit/faee35e6282b7ee7a67086c8b5caa6459696d353))
+* Recursive Deletes and Force Deletes ([#891](https://github.com/lakekeeper/lakekeeper/issues/891)) ([9762d52](https://github.com/lakekeeper/lakekeeper/commit/9762d525758d9fbc5346f09dab4db7dacfc07eec))
+
 ## [0.8.0](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0) (2025-04-08)
 
 
