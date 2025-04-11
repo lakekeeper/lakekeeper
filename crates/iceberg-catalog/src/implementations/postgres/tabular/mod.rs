@@ -15,13 +15,18 @@ use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
-    api::iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+    api::{
+        iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+        management::v1::ProtectionResponse,
+    },
+    catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
         storage::{join_location, split_location},
         task_queue::TaskId,
         DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent, TableIdentUuid,
-        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, UndropTabularResponse,
+        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularInfo,
+        UndropTabularResponse,
     },
     WarehouseIdent,
 };
@@ -33,6 +38,50 @@ const MAX_PARAMETERS: usize = 30000;
 pub(crate) enum TabularType {
     Table,
     View,
+}
+
+pub(crate) async fn set_tabular_protected(
+    tabular_id: TabularIdentUuid,
+    protected: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ProtectionResponse> {
+    tracing::debug!(
+        "Setting tabular protection for {} ({}) to {}",
+        tabular_id,
+        tabular_id.typ_str(),
+        protected
+    );
+    let row = sqlx::query!(
+        r#"
+        UPDATE tabular
+        SET protected = $2
+        WHERE tabular_id = $1
+        RETURNING protected, updated_at
+        "#,
+        *tabular_id,
+        protected
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            ErrorModel::not_found(
+                format!("{} not found", tabular_id.typ_str()),
+                "NoSuchTabularError".to_string(),
+                Some(Box::new(e)),
+            )
+        } else {
+            tracing::warn!("Error setting tabular as protected: {}", e);
+            e.into_error_model(format!(
+                "Error setting {} as protected",
+                tabular_id.typ_str()
+            ))
+        }
+    })?;
+    Ok(ProtectionResponse {
+        protected: row.protected,
+        updated_at: row.updated_at,
+    })
 }
 
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
@@ -280,8 +329,8 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location, table_migrated)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'true')
+        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING tabular_id
         "#,
         id,
@@ -342,10 +391,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-    // FIXME: remove with 0.6
-    // TODO: make an enum
-    only_unmigrated: bool,
-) -> Result<PaginatedMapping<TabularIdentUuid, (TabularIdentOwned, Option<DeletionDetails>)>>
+) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -378,7 +424,8 @@ where
             t.created_at,
             t.deleted_at,
             tt.suspend_until as "cleanup_at?",
-            tt.task_id as "cleanup_task_id?"
+            tt.task_id as "cleanup_task_id?",
+            t.protected
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
@@ -386,17 +433,16 @@ where
         LEFT JOIN task tt ON te.task_id = tt.task_id
         WHERE n.warehouse_id = $1
             AND (namespace_name = $2 OR $2 IS NULL)
-            AND (n.namespace_id = $11 OR $11 IS NULL)
+            AND (n.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
             AND (t.typ = $3 OR $3 IS NULL)
             -- active tables are tables that are not staged and not deleted
             AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)
             AND (t.deleted_at IS NULL OR $5)
             AND (t.metadata_location IS NOT NULL OR $6)
-            AND (t.table_migrated != $7)
-            AND ((t.created_at > $8 OR $8 IS NULL) OR (t.created_at = $8 AND t.tabular_id > $9))
+            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
             ORDER BY t.created_at, t.tabular_id ASC
-            LIMIT $10
+            LIMIT $9
         "#,
         *warehouse_id,
         namespace.as_deref().map(|n| n.as_ref().as_slice()),
@@ -404,7 +450,6 @@ where
         list_flags.include_active,
         list_flags.include_deleted,
         list_flags.include_staged,
-        only_unmigrated,
         token_ts,
         token_id,
         page_size,
@@ -442,10 +487,11 @@ where
             TabularType::Table => {
                 tabulars.insert(
                     TabularIdentUuid::Table(table.tabular_id),
-                    (
-                        TabularIdentOwned::Table(TableIdent { namespace, name }),
+                    TabularInfo {
+                        table_ident: TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
-                    ),
+                        protected: table.protected,
+                    },
                     PaginateToken::V1(V1PaginateToken {
                         created_at: table.created_at,
                         id: table.tabular_id,
@@ -456,10 +502,11 @@ where
             TabularType::View => {
                 tabulars.insert(
                     TabularIdentUuid::View(table.tabular_id),
-                    (
-                        TabularIdentOwned::View(TableIdent { namespace, name }),
+                    TabularInfo {
+                        table_ident: TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
-                    ),
+                        protected: table.protected,
+                    },
                     PaginateToken::V1(V1PaginateToken {
                         created_at: table.created_at,
                         id: table.tabular_id,
@@ -467,7 +514,7 @@ where
                     .to_string(),
                 );
             }
-        };
+        }
     }
 
     Ok(tabulars)
@@ -521,15 +568,18 @@ pub(crate) async fn rename_tabular(
     } else {
         let _ = sqlx::query_scalar!(
             r#"
-            UPDATE tabular ti
-            SET name = $1, "namespace_id" = (
+            WITH ns_id AS (
                 SELECT namespace_id
                 FROM namespace
                 WHERE warehouse_id = $2 AND namespace_name = $3
             )
+            UPDATE tabular ti
+            SET name = $1, namespace_id = ns_id.namespace_id
+            FROM ns_id
             WHERE tabular_id = $4 AND typ = $5 AND metadata_location IS NOT NULL
                 AND ti.name = $6
                 AND ti.deleted_at IS NULL
+                AND ns_id.namespace_id IS NOT NULL
                 AND $2 IN (
                     SELECT warehouse_id FROM warehouse WHERE status = 'active'
                 )
@@ -558,7 +608,7 @@ pub(crate) async fn rename_tabular(
                 .build(),
             _ => e.into_error_model(format!("Error renaming {}", source_id.typ_str())),
         })?;
-    };
+    }
 
     Ok(())
 }
@@ -651,18 +701,28 @@ pub(crate) async fn clear_tabular_deleted_at(
 
 pub(crate) async fn mark_tabular_as_deleted(
     tabular_id: TabularIdentUuid,
+    force: bool,
     delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    let _ = sqlx::query!(
+    let r = sqlx::query!(
         r#"
-        UPDATE tabular
-        SET deleted_at = $2
-        WHERE tabular_id = $1
-        RETURNING tabular_id
+        WITH update_info as (
+            SELECT protected
+            FROM tabular
+            WHERE tabular_id = $1
+        ), update as (
+            UPDATE tabular
+            SET deleted_at = $2
+            WHERE tabular_id = $1
+                AND ((NOT protected) OR $3)
+            RETURNING tabular_id
+        )
+        SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
         "#,
         *tabular_id,
-        delete_date.unwrap_or(Utc::now())
+        delete_date.unwrap_or(Utc::now()),
+        force,
     )
     .fetch_one(&mut **transaction)
     .await
@@ -678,21 +738,50 @@ pub(crate) async fn mark_tabular_as_deleted(
             e.into_error_model(format!("Error marking {} as deleted", tabular_id.typ_str()))
         }
     })?;
+
+    if r.protected && !force {
+        return Err(ErrorModel::conflict(
+            format!(
+                "{} is protected and cannot be deleted",
+                tabular_id.typ_str()
+            ),
+            "ProtectedTabularError",
+            None,
+        )
+        .into());
+    }
+
     Ok(())
 }
 
 pub(crate) async fn drop_tabular(
     tabular_id: TabularIdentUuid,
+    force: bool,
+    required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
-        r#"DELETE FROM tabular
-                WHERE tabular_id = $1
-                    AND typ = $2
-                    AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-               RETURNING fs_location, fs_protocol"#,
+        r#"WITH delete_info as (
+               SELECT
+                   protected
+               FROM tabular
+               WHERE tabular_id = $1 AND typ = $2
+                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+           ),
+           deleted as (
+           DELETE FROM tabular
+               WHERE tabular_id = $1
+                   AND typ = $2
+                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+                   AND ((NOT protected) OR $3)
+              RETURNING metadata_location, fs_location, fs_protocol)
+              SELECT protected as "protected!",
+                     (SELECT metadata_location from deleted),
+                     (SELECT fs_protocol from deleted),
+                     (SELECT fs_location from deleted) from delete_info"#,
         *tabular_id,
-        TabularType::from(tabular_id) as _
+        TabularType::from(tabular_id) as _,
+        force
     )
     .fetch_one(&mut **transaction)
     .await
@@ -700,7 +789,7 @@ pub(crate) async fn drop_tabular(
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
                 format!("{} not found", tabular_id.typ_str()),
-                "NoSuchTabularError".to_string(),
+                "NoSuchTabularError",
                 Some(Box::new(e)),
             )
         } else {
@@ -709,7 +798,46 @@ pub(crate) async fn drop_tabular(
         }
     })?;
 
-    Ok(join_location(&location.fs_protocol, &location.fs_location))
+    tracing::trace!(
+        "{}, {:?}. {:?}",
+        location.protected,
+        location.fs_location,
+        location.fs_protocol
+    );
+
+    if location.protected && !force {
+        return Err(ErrorModel::conflict(
+            format!(
+                "{} is protected and cannot be dropped",
+                tabular_id.typ_str()
+            ),
+            "ProtectedTabularError",
+            None,
+        )
+        .into());
+    }
+
+    if let Some(required_metadata_location) = required_metadata_location {
+        if location.metadata_location != Some(required_metadata_location.to_string()) {
+            return Err(ErrorModel::bad_request(
+                format!("Concurrent update on tabular with id {tabular_id}"),
+                CONCURRENT_UPDATE_ERROR_TYPE,
+                None,
+            )
+            .into());
+        }
+    }
+
+    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
+        Ok(join_location(&fs_protocol, &fs_location))
+    } else {
+        Err(ErrorModel::internal(
+            format!("{} has no location", tabular_id.typ_str()),
+            "InternalDatabaseError",
+            None,
+        )
+        .into())
+    }
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {

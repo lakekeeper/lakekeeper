@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT project_id, warehouse_name, warehouse_id\n               FROM warehouse\n               WHERE (project_id, warehouse_name) IN (\n                   SELECT unnest($1::text[]), unnest($2::text[])\n               )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "da55f392a6251f03b0dbc3c6d1df7fc7360fd89beddd4a15469f3bb251985b97"
+}

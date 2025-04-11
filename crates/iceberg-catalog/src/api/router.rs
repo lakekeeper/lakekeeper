@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::LazyLock};
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
@@ -26,18 +26,17 @@ use crate::{
         event_publisher::CloudEventsPublisher,
         health::ServiceHealthProvider,
         task_queue::TaskQueues,
-        Catalog, SecretStore, State,
+        Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
 };
 
-lazy_static::lazy_static! {
-    static ref ICEBERG_OPENAPI_SPEC_YAML: serde_json::Value = {
-        let mut yaml_str = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
-        yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
-        serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
-    };
-}
+static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    let mut yaml_str =
+        include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
+    yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
+    serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+});
 
 pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,
@@ -50,6 +49,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
+    pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -69,6 +69,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
             .field(
                 "metrics_layer",
                 &self.metrics_layer.as_ref().map(|_| "PrometheusMetricLayer"),
+            )
+            .field(
+                "endpoint_statistics_tracker_tx",
+                &self.endpoint_statistics_tracker_tx,
             )
             .finish()
     }
@@ -95,6 +99,7 @@ pub fn new_full_router<
         service_health_provider,
         cors_origins,
         metrics_layer,
+        endpoint_statistics_tracker_tx,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -142,6 +147,10 @@ pub fn new_full_router<
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            endpoint_statistics_tracker_tx,
+            crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
+        ))
         .layer(maybe_auth_layer)
         .route(
             "/health",

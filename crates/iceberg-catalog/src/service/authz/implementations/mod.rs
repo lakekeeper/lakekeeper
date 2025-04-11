@@ -8,6 +8,7 @@ use crate::{
 
 pub(super) mod allow_all;
 
+#[cfg(feature = "authz-openfga")]
 pub mod openfga;
 
 /// Get the default authorizer from the configuration
@@ -32,9 +33,9 @@ pub async fn migrate_default_authorizer() -> std::result::Result<(), ErrorModel>
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => Ok(()),
         AuthZBackend::OpenFGA => {
-            let mut client = openfga::new_client_from_config().await?;
+            let client = openfga::new_client_from_config().await?;
             let store_name = None;
-            openfga::migrate(&mut client, store_name).await?;
+            openfga::migrate(&client, store_name).await?;
             Ok(())
         }
     }

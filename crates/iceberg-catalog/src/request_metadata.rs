@@ -1,10 +1,11 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use axum::{
+    extract::MatchedPath,
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use http::HeaderMap;
+use http::{HeaderMap, Method};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
@@ -26,6 +27,8 @@ pub struct RequestMetadata {
     authentication: Option<Authentication>,
     base_url: String,
     actor: Actor,
+    matched_path: Option<Arc<str>>,
+    request_method: Method,
 }
 
 impl RequestMetadata {
@@ -52,6 +55,15 @@ impl RequestMetadata {
         }
     }
 
+    #[must_use]
+    pub(crate) fn matched_path(&self) -> Option<&str> {
+        self.matched_path.as_deref()
+    }
+
+    pub(crate) fn request_method(&self) -> &Method {
+        &self.request_method
+    }
+
     #[cfg(test)]
     #[must_use]
     pub fn new_unauthenticated() -> Self {
@@ -61,12 +73,14 @@ impl RequestMetadata {
             authentication: None,
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Anonymous,
+            matched_path: None,
+            request_method: Method::default(),
         }
     }
 
     #[must_use]
     pub fn preferred_project_id(&self) -> Option<ProjectId> {
-        self.project_id.or(*DEFAULT_PROJECT_ID)
+        self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
     #[cfg(test)]
@@ -86,7 +100,30 @@ impl RequestMetadata {
             ),
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Principal(user_id),
+            matched_path: None,
+            request_method: Method::default(),
             project_id: None,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new_test(
+        authentication: Option<Authentication>,
+        base_url: Option<String>,
+        actor: Actor,
+        project_id: Option<ProjectId>,
+        matched_path: Option<Arc<str>>,
+        request_method: Method,
+    ) -> Self {
+        Self {
+            request_id: Uuid::now_v7(),
+            authentication,
+            base_url: base_url.unwrap_or_else(|| "http://localhost:8181".to_string()),
+            actor,
+            project_id,
+            matched_path,
+            request_method,
         }
     }
 
@@ -199,12 +236,22 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         Ok(ident) => ident,
         Err(err) => return err.into_response(),
     };
+
+    let matched_path = request
+        .extensions()
+        .get::<MatchedPath>()
+        .cloned()
+        .map(|mp| Arc::from(mp.as_str()));
+    let request_method = request.method().clone();
+
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
         base_url: host,
         actor: Actor::Anonymous,
         project_id,
+        matched_path,
+        request_method,
     });
     next.run(request).await
 }
@@ -227,7 +274,8 @@ fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
     let x_forwarded_host = if let Some(forwarded_for) = x_forwarded_for {
         let mut x_forwarded_host = String::new();
         if let Some(proto) = x_forwarded_proto {
-            x_forwarded_host.push_str(&format!("{proto}://"));
+            x_forwarded_host.push_str(proto);
+            x_forwarded_host.push_str("://");
         } else {
             // we default to https since we assume that a reverse proxy did tls termination
             // leaving out protocol would break at least iceberg java which requires a protocol.

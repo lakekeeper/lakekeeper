@@ -160,6 +160,13 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: returnProtectionStatus
+          in: query
+          description: If true, include the `protection-status` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListNamespacesResponse'
@@ -297,7 +304,7 @@ paths:
     delete:
       tags:
         - Catalog API
-      summary: Drop a namespace from the catalog. Namespace must be empty.
+      summary: Drop a namespace from the catalog.
       operationId: dropNamespace
       responses:
         204:
@@ -323,6 +330,29 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+      parameters:
+        - name: force
+          in: query
+          description: If force and recursive are set to true, immediately delete all contents of the namespace without considering soft-delete policies. Force has no effect without recursive=true.
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: recursive
+          in: query
+          description: Delete a namespace and its contents. This means all tables, views, and namespaces under this namespace will be deleted. The namespace itself will also be deleted. If the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided. The deletion will not be a soft-deletion. Every table, view and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending `tabular_expiration` will be cancelled. If there is a running `tabular_expiration`, this call will fail with a `409 Conflict` error.
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: purge
+          in: query
+          description: If recursive is true, also deletes table and view data. If false, only metadata is dropped from the catalog, table location remains untouched. Defaults to true for all tables managed by Lakekeeper.
+          required: false
+          schema:
+            type: boolean
+            default: true
+      description: Drop a namespace from the catalog. By default, the namespace needs to be empty. You can however set `recursive=true` which will delete all tables, views and namespaces under this namespace. The namespace itself will also be deleted. If the warehouse containing the namespace is configured with a soft-deletion profile, the `force` flag has to be provided. The deletion will not be a soft-deletion. Every table, view and namespace will be gone as soon as this call returns. Depending on whether the `purge` flag was set to true, the data will be queued for deletion too. Any pending `tabular_expiration` will be cancelled. If there is a running `tabular_expiration`, this call will fail with a `409 Conflict` error.
   /v1/{prefix}/namespaces/{namespace}/properties:
     parameters:
       - $ref: '#/components/parameters/prefix'
@@ -396,6 +426,13 @@ paths:
         - name: returnUuids
           in: query
           description: If true, include the `table-uuids` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: returnProtectionStatus
+          in: query
+          description: If true, include the `protection-status` field in the response
           required: false
           schema:
             type: boolean
@@ -537,23 +574,9 @@ paths:
 
         Responses must include a valid status
 
-        - When "completed" the planning operation has produced plan-tasks and
+        - When "completed" the planning operation has produced plan-tasks and file-scan-tasks that must be returned in the response
 
-
-
-
-
-
-          file-scan-tasks that must be returned in the response
-
-        - When "submitted" the planning operation has not completed; the client
-
-
-
-
-
-
-          should wait to call this endpoint again to fetch a completed response
+        - When "submitted" the planning operation has not completed; the client should wait to call this endpoint again to fetch a completed response
 
         - When "failed" the response must be a valid error response
 
@@ -606,14 +629,7 @@ paths:
 
         - Scan tasks for each plan task have been fetched using fetchScanTasks
 
-        - A plan-id has produced a "failed" or "cancelled" status from
-
-
-
-
-
-
-          planTableScan or fetchPlanningResult
+        - A plan-id has produced a "failed" or "cancelled" status from planTableScan or fetchPlanningResult
       responses:
         204:
           description: Success, no content
@@ -872,6 +888,13 @@ paths:
           in: query
           required: false
           description: Whether the user requested to purge the underlying table's data and metadata
+          schema:
+            type: boolean
+            default: false
+        - name: force
+          in: query
+          description: If true, ignore `protection-status` when dropping.
+          required: false
           schema:
             type: boolean
             default: false
@@ -1148,6 +1171,13 @@ paths:
       parameters:
         - $ref: '#/components/parameters/page-token'
         - $ref: '#/components/parameters/page-size'
+        - name: returnProtectionStatus
+          in: query
+          description: If true, include the `protection-status` field in the response
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         200:
           $ref: '#/components/responses/ListTablesResponse'
@@ -1357,6 +1387,14 @@ paths:
           $ref: '#/components/responses/ServiceUnavailableResponse'
         5XX:
           $ref: '#/components/responses/ServerErrorResponse'
+      parameters:
+        - name: force
+          in: query
+          description: If true, ignore `protection-status` when dropping.
+          required: false
+          schema:
+            type: boolean
+            default: false
     head:
       tags:
         - Catalog API
@@ -3258,6 +3296,11 @@ components:
           nullable: true
           items:
             type: string
+        protection-status:
+          type: array
+          nullable: true
+          items:
+            type: boolean
     ListNamespacesResponse:
       type: object
       properties:
@@ -3274,6 +3317,11 @@ components:
           nullable: true
           items:
             type: string
+        protection-status:
+          type: array
+          nullable: true
+          items:
+            type: boolean
     UpdateNamespacePropertiesResponse:
       type: object
       required:

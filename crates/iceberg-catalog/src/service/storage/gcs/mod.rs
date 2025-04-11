@@ -1,6 +1,6 @@
 #![allow(clippy::module_name_repetitions)]
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
 use base64::Engine;
 use iceberg_ext::configs::{
@@ -24,6 +24,8 @@ use crate::{
 };
 
 mod sts;
+
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -90,7 +92,7 @@ impl GcsProfile {
         &self,
         credential: Option<&GcsCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("gcs");
+        let mut builder = iceberg::io::FileIOBuilder::new("gcs").with_client(HTTP_CLIENT.clone());
 
         if let Some(GcsCredential::ServiceAccountKey { key }) = credential {
             builder = builder.with_prop(
@@ -144,7 +146,7 @@ impl GcsProfile {
         CatalogConfig {
             defaults: HashMap::with_capacity(0),
             overrides: HashMap::with_capacity(0),
-            endpoints: supported_endpoints(),
+            endpoints: supported_endpoints().to_vec(),
         }
     }
 
@@ -174,7 +176,7 @@ impl GcsProfile {
     /// Generate the table configuration for GCS.
     pub(crate) async fn generate_table_config(
         &self,
-        _: &DataAccess,
+        _: DataAccess,
         cred: Option<&GcsCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -248,6 +250,7 @@ pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
     Ok(iceberg::io::FileIOBuilder::new("gcs")
+        .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .build()?)
 }
@@ -332,7 +335,7 @@ fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use needs_env_var::needs_env_var;
 
     use crate::service::storage::gcs::validate_bucket_name;
@@ -370,31 +373,34 @@ mod test {
     }
 
     #[needs_env_var(TEST_GCS = 1)]
-    mod cloud_tests {
+    pub(crate) mod cloud_tests {
+
         use crate::service::storage::{
             gcs::{GcsCredential, GcsProfile, GcsServiceKey},
             StorageCredential, StorageProfile,
         };
 
+        pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
+            let bucket = std::env::var("GCS_BUCKET").expect("Missing GCS_BUCKET");
+            let key = std::env::var("GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
+            let key: GcsServiceKey = serde_json::from_str(&key).unwrap();
+            let cred = GcsCredential::ServiceAccountKey { key };
+            let profile = GcsProfile {
+                bucket,
+                key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+            };
+            (profile, cred)
+        }
+
         #[tokio::test]
         async fn test_can_validate() {
-            let cred: StorageCredential = std::env::var("GCS_CREDENTIAL")
-                .map(|s| GcsCredential::ServiceAccountKey {
-                    key: serde_json::from_str::<GcsServiceKey>(&s).unwrap(),
-                })
-                .map_err(|_| ())
-                .expect("Missing cred")
-                .into();
+            let (profile, cred) = get_storage_profile();
+
+            let cred: StorageCredential = cred.into();
             let s = &serde_json::to_string(&cred).unwrap();
             serde_json::from_str::<StorageCredential>(s).expect("json roundtrip failed");
 
-            let bucket = std::env::var("GCS_BUCKET").expect("Missing bucket");
-
-            let mut profile: StorageProfile = GcsProfile {
-                bucket,
-                key_prefix: Some("test_prefix".to_string()),
-            }
-            .into();
+            let mut profile: StorageProfile = profile.into();
 
             profile.normalize().expect("Failed to normalize profile");
             profile.validate_access(Some(&cred), None).await.unwrap();

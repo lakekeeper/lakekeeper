@@ -189,21 +189,25 @@ impl<'de> Deserialize<'de> for NextPageToken {
     }
 }
 
+fn true_fn() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DropParams {
+    #[serde(deserialize_with = "deserialize_bool", default = "true_fn")]
+    pub purge_requested: bool,
     #[serde(deserialize_with = "deserialize_bool", default)]
-    pub purge_requested: Option<bool>,
+    pub force: bool,
 }
 
-fn deserialize_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+pub(crate) fn deserialize_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s: Option<&str> = Option::deserialize(deserializer)?;
-    s.map(<bool>::parse_value)
-        .transpose()
-        .map_err(serde::de::Error::custom)
+    let s: String = String::deserialize(deserializer)?;
+    <bool>::parse_value(s.as_str()).map_err(serde::de::Error::custom)
 }
 
 #[cfg(test)]
@@ -221,7 +225,8 @@ mod tests {
         assert_eq!(
             params,
             DropParams {
-                purge_requested: Some(true)
+                purge_requested: true,
+                force: false,
             }
         );
 
@@ -230,7 +235,8 @@ mod tests {
         assert_eq!(
             params,
             DropParams {
-                purge_requested: Some(true)
+                purge_requested: true,
+                force: false,
             }
         );
 
@@ -239,7 +245,27 @@ mod tests {
         assert_eq!(
             empty_params,
             DropParams {
-                purge_requested: None
+                purge_requested: true,
+                force: false,
+            }
+        );
+
+        let query = "force=true&purgeRequested=true";
+        let params: DropParams = serde_urlencoded::from_str(query).unwrap();
+        assert_eq!(
+            params,
+            DropParams {
+                purge_requested: true,
+                force: true,
+            }
+        );
+        let query = "force=true&purgeRequested=false";
+        let params: DropParams = serde_urlencoded::from_str(query).unwrap();
+        assert_eq!(
+            params,
+            DropParams {
+                purge_requested: false,
+                force: true,
             }
         );
     }

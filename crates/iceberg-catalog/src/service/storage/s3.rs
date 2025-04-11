@@ -2,13 +2,15 @@
 
 use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
-use aws_config::{BehaviorVersion, SdkConfig};
+use aws_config::{identity::IdentityCache, BehaviorVersion, SdkConfig};
+use aws_sdk_sts::config::{ProvideCredentials as _, SharedIdentityCache};
 use iceberg_ext::configs::{
     self,
     table::{client, custom, s3, TableProperties},
     ConfigProperty, Location,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use veil::Redact;
 
 use super::StorageType;
@@ -22,10 +24,19 @@ use crate::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
         StoragePermissions, TableConfig,
     },
-    WarehouseIdent,
+    WarehouseIdent, CONFIG,
 };
 
-static S3_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static STS_HTTP_CLIENT: LazyLock<aws_sdk_sts::config::SharedHttpClient> = LazyLock::new(|| {
+    aws_smithy_http_client::Builder::new()
+        .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
+            aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
+        ))
+        .build_https()
+});
+static AWS_IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
+    LazyLock::new(|| IdentityCache::lazy().build());
 
 #[derive(
     Debug,
@@ -46,7 +57,7 @@ pub struct S3Profile {
     #[builder(default, setter(strip_option))]
     pub key_prefix: Option<String>,
     #[serde(default)]
-    /// Optional ARN to assume when accessing the bucket
+    /// Optional ARN to assume when accessing the bucket from Lakekeeper.
     #[builder(default, setter(strip_option))]
     pub assume_role_arn: Option<String>,
     /// Optional endpoint to use for S3 requests, if not provided
@@ -63,7 +74,9 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub path_style_access: Option<bool>,
-    /// Optional role ARN to assume for sts vended-credentials
+    /// Optional role ARN to assume for sts vended-credentials.
+    /// If not provided, `assume_role_arn` is used.
+    /// Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
     #[builder(default, setter(strip_option))]
     pub sts_role_arn: Option<String>,
     pub sts_enabled: bool,
@@ -78,6 +91,37 @@ pub struct S3Profile {
     #[serde(default)]
     #[builder(default, setter(strip_option))]
     pub allow_alternative_protocols: Option<bool>,
+    /// S3 URL style detection mode for remote signing.
+    /// One of `auto`, `path-style`, `virtual-host`.
+    /// Default: `auto`. When set to `auto`, Lakekeeper will first try to parse the URL as
+    /// `virtual-host` and then attempt `path-style`.
+    /// `path` assumes the bucket name is the first path segment in the URL. `virtual-host`
+    /// assumes the bucket name is the first subdomain if it is preceding `.s3` or `.s3-`.
+    ///
+    /// Examples
+    ///
+    /// Virtual host:
+    ///   - <https://bucket.s3.endpoint.com/bar/a/key>
+    ///   - <https://bucket.s3-eu-central-1.amazonaws.com/file>
+    ///
+    /// Path style:
+    ///   - <https://s3.endpoint.com/bucket/bar/a/key>
+    ///   - <https://s3.us-east-1.amazonaws.com/bucket/file>
+    #[serde(default, alias = "s3-url-detection-mode")]
+    #[builder(default)]
+    pub remote_signing_url_style: S3UrlStyleDetectionMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum S3UrlStyleDetectionMode {
+    /// Use the path style for all requests.
+    Path,
+    /// Use the virtual host style for all requests.
+    VirtualHost,
+    /// Automatically detect the style based on the request.
+    #[default]
+    Auto,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -95,26 +139,32 @@ pub enum S3Flavor {
 pub enum S3Credential {
     #[serde(rename_all = "kebab-case")]
     #[schema(title = "S3CredentialAccessKey")]
+    /// Authenticate to AWS using access-key and secret-key.
     AccessKey {
         aws_access_key_id: String,
         #[redact(partial)]
         aws_secret_access_key: String,
+        #[redact(partial)]
+        external_id: Option<String>,
+    },
+    #[serde(rename_all = "kebab-case")]
+    #[schema(title = "S3CredentialSystemIdentity")]
+    /// Authenticate to AWS using the identity configured on the system
+    ///  that runs lakekeeper. The AWS SDK is used to load the credentials.
+    AwsSystemIdentity {
+        #[redact(partial)]
+        external_id: Option<String>,
     },
 }
 
-impl From<&S3Credential> for aws_credential_types::Credentials {
-    fn from(cred: &S3Credential) -> Self {
-        match &cred {
-            S3Credential::AccessKey {
-                aws_access_key_id,
-                aws_secret_access_key,
-            } => aws_credential_types::Credentials::new(
-                aws_access_key_id.clone(),
-                aws_secret_access_key.clone(),
-                None,
-                None,
-                "iceberg-rest-secret-storage",
-            ),
+impl S3Credential {
+    /// Get the external ID for the credential.
+    /// Returns `None` if the credential is not an access key.
+    #[must_use]
+    pub fn external_id(&self) -> Option<&str> {
+        match self {
+            S3Credential::AccessKey { external_id, .. }
+            | S3Credential::AwsSystemIdentity { external_id, .. } => external_id.as_deref(),
         }
     }
 }
@@ -139,21 +189,23 @@ impl S3Profile {
     ///
     /// # Errors
     /// Fails if the `FileIO` instance cannot be created.
-    pub fn file_io(
+    pub async fn file_io(
         &self,
-        credential: Option<&aws_credential_types::Credentials>,
+        credential: Option<&S3Credential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client((*S3_CLIENT).clone());
+        let mut builder =
+            iceberg::io::FileIOBuilder::new("s3").with_client((*S3_HTTP_CLIENT).clone());
 
         builder = builder.with_prop(iceberg::io::S3_REGION, self.region.clone());
 
         if let Some(endpoint) = &self.endpoint {
             builder = builder.with_prop(iceberg::io::S3_ENDPOINT, endpoint);
         }
-        if let Some(_assume_role_arn) = &self.assume_role_arn {
-            return Err(FileIoError::UnsupportedAction(
-                "S3 Assume role ARN".to_string(),
-            ));
+        if let Some(path_style_access) = &self.path_style_access {
+            builder = builder.with_prop(
+                iceberg::io::S3_PATH_STYLE_ACCESS,
+                path_style_access.to_string(),
+            );
         }
 
         builder = builder.with_prop(
@@ -161,17 +213,28 @@ impl S3Profile {
             self.path_style_access.unwrap_or_default(),
         );
 
-        if let Some(credential) = credential {
-            if let Some(session_token) = &credential.session_token() {
-                builder = builder.with_prop(iceberg::io::S3_SESSION_TOKEN, session_token);
-            }
-            builder = builder
-                .with_prop(iceberg::io::S3_ACCESS_KEY_ID, credential.access_key_id())
+        let credentials = self.get_credentials_for_assume_role(credential).await?;
+        let builder = if let Some(credentials) = credentials {
+            let builder = builder
+                .with_prop(iceberg::io::S3_ACCESS_KEY_ID, credentials.access_key_id())
                 .with_prop(
                     iceberg::io::S3_SECRET_ACCESS_KEY,
-                    credential.secret_access_key(),
-                );
-        }
+                    credentials.secret_access_key(),
+                )
+                .with_prop(iceberg::io::S3_DISABLE_CONFIG_LOAD, "true")
+                .with_prop(iceberg::io::S3_DISABLE_EC2_METADATA, "true");
+
+            if let Some(session_token) = credentials.session_token() {
+                builder.with_prop(iceberg::io::S3_SESSION_TOKEN, session_token)
+            } else {
+                builder
+            }
+        } else {
+            builder
+                .with_prop(iceberg::io::S3_ALLOW_ANONYMOUS, "true")
+                .with_prop(iceberg::io::S3_DISABLE_CONFIG_LOAD, "true")
+                .with_prop(iceberg::io::S3_DISABLE_EC2_METADATA, "true")
+        };
 
         Ok(builder.build()?)
     }
@@ -192,11 +255,15 @@ impl S3Profile {
         self.normalize_assume_role_arn();
         self.normalize_sts_role_arn();
 
-        if self.sts_enabled && matches!(self.flavor, S3Flavor::Aws) && self.sts_role_arn.is_none() {
+        if self.sts_enabled
+            && matches!(self.flavor, S3Flavor::Aws)
+            && self.sts_role_arn.is_none()
+            && self.assume_role_arn.is_none()
+        {
             return Err(ValidationError::InvalidProfile {
                 source: None,
-                reason: "Storage Profile `sts-role-arn` is required for AWS flavor.".to_string(),
-                entity: "sts_role_arn".to_string(),
+                reason: "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
+                entity: "sts-role-arn".to_string(),
             });
         }
 
@@ -232,60 +299,6 @@ impl S3Profile {
         Ok(other)
     }
 
-    #[cfg(feature = "s3-signer")]
-    /// Get the AWS SDK credentials for the S3 profile.
-    ///
-    /// # Errors
-    /// Fails if the assume role ARN is provided.
-    /// Fails if the credential is missing.
-    pub fn get_aws_sdk_credentials(
-        &self,
-        credential: Option<&S3Credential>,
-    ) -> Result<aws_credential_types::Credentials, CredentialsError> {
-        use super::StorageType;
-
-        let Self {
-            assume_role_arn,
-            endpoint: _,
-            region: _,
-            path_style_access: _,
-            bucket: _,
-            key_prefix: _,
-            sts_role_arn: _,
-            sts_enabled: _,
-            flavor: _,
-            allow_alternative_protocols: _,
-        } = self;
-
-        // assume_role_arn is not supported currently
-        if let Some(_assume_role_arn) = assume_role_arn {
-            return Err(CredentialsError::UnsupportedCredential(
-                "S3 Assume role ARN not supported.".to_string(),
-            ));
-        }
-
-        // Currently there is no supported configuration without Credential
-        if let Some(credential) = credential {
-            match credential {
-                S3Credential::AccessKey {
-                    aws_access_key_id,
-                    aws_secret_access_key,
-                } => {
-                    let credentials = aws_credential_types::Credentials::new(
-                        aws_access_key_id.clone(),
-                        aws_secret_access_key.clone(),
-                        None,
-                        None,
-                        "iceberg-rest-secret-storage",
-                    );
-                    Ok(credentials)
-                }
-            }
-        } else {
-            Err(CredentialsError::MissingCredential(StorageType::S3))
-        }
-    }
-
     #[must_use]
     pub fn generate_catalog_config(
         &self,
@@ -303,7 +316,7 @@ impl S3Profile {
                     .s3_signer_uri_for_warehouse(warehouse_id)
                     .to_string(),
             )]),
-            endpoints: supported_endpoints(),
+            endpoints: supported_endpoints().to_vec(),
         }
     }
 
@@ -329,14 +342,14 @@ impl S3Profile {
         DataAccess {
             vended_credentials,
             remote_signing,
-        }: &DataAccess,
-        cred: Option<&S3Credential>,
+        }: DataAccess,
+        s3_credential: Option<&S3Credential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
         // If vended_credentials is False and remote_signing is False,
         // use remote_signing.
-        let mut remote_signing = !vended_credentials || *remote_signing;
+        let mut remote_signing = !vended_credentials || remote_signing;
 
         let mut config = TableProperties::default();
         let mut creds = TableProperties::default();
@@ -357,7 +370,7 @@ impl S3Profile {
             config.insert(&s3::Endpoint(endpoint.clone()));
         }
 
-        if *vended_credentials {
+        if vended_credentials {
             if self.sts_enabled {
                 let aws_sdk_sts::types::Credentials {
                     access_key_id,
@@ -365,17 +378,16 @@ impl S3Profile {
                     session_token,
                     expiration: _,
                     ..
-                } = if let (Some(cred), Some(arn)) = (cred, self.sts_role_arn.as_ref()) {
-                    self.get_aws_sts_token(table_location, cred, arn, storage_permissions)
+                } = if let Some(arn) = self.sts_role_arn.as_ref().or(self.assume_role_arn.as_ref())
+                {
+                    self.get_aws_sts_token(table_location, s3_credential, arn, storage_permissions)
                         .await?
-                } else if let (S3Flavor::S3Compat, Some(cred)) = (self.flavor, cred) {
-                    self.get_minio_sts_token(table_location, cred, storage_permissions)
+                } else if S3Flavor::S3Compat == self.flavor {
+                    self.get_minio_sts_token(table_location, s3_credential, storage_permissions)
                         .await?
                 } else {
-                    // This error should never be returned since we validate this when creating the profile.
-                    // We should consider using an enum instead of 3 independent fields.
                     return Err(TableConfigError::Misconfiguration(
-                        "STS either needs Flavor s3-compat and credentials OR Flavor aws, credentials and a sts role arn.".to_string(),
+                        "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
                     ));
                 };
                 config.insert(&s3::AccessKeyId(access_key_id.clone()));
@@ -404,10 +416,10 @@ impl S3Profile {
     async fn get_aws_sts_token(
         &self,
         table_location: &Location,
-        cred: &S3Credential,
+        cred: Option<&S3Credential>,
         arn: &str,
         storage_permissions: StoragePermissions,
-    ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
         self.get_sts_token(table_location, cred, Some(arn), storage_permissions)
             .await
     }
@@ -415,60 +427,200 @@ impl S3Profile {
     async fn get_minio_sts_token(
         &self,
         table_location: &Location,
-        cred: &S3Credential,
+        cred: Option<&S3Credential>,
         storage_permissions: StoragePermissions,
-    ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
         self.get_sts_token(table_location, cred, None, storage_permissions)
             .await
     }
 
-    async fn get_sts_token(
+    async fn assume_role_with_sts(
         &self,
-        table_location: &Location,
-        cred: &S3Credential,
-        arn: Option<&str>,
-        storage_permissions: StoragePermissions,
-    ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
-        let cred = self
-            .get_aws_sdk_config(self.get_aws_sdk_credentials(Some(cred))?)
-            .await;
+        s3_credentials: Option<&S3Credential>,
+        role_arn: Option<&str>,
+        policy: Option<String>,
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
+        let external_id = s3_credentials.and_then(|c| c.external_id());
 
-        let assume_role_builder = aws_sdk_sts::Client::new(&cred)
+        if role_arn.is_none()
+            && matches!(s3_credentials, Some(S3Credential::AwsSystemIdentity { .. }))
+            && !CONFIG.s3_enable_direct_system_credentials
+        {
+            return Err(CredentialsError::Misconfiguration(
+            "This deployment of Lakekeeper requires an `assume-role-arn` to be set for system identity credentials."
+                .to_string(),
+        ));
+        }
+
+        if external_id.is_none()
+            && role_arn.is_some()
+            && CONFIG.s3_require_external_id_for_system_credentials
+            && matches!(s3_credentials, Some(S3Credential::AwsSystemIdentity { .. }))
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "An `external-id` is required when using `assume-role-arn`.".to_string(),
+            ));
+        }
+
+        let sdk_config = self.get_aws_sdk_config(s3_credentials).await?;
+
+        // ToDo: Test caching
+        let assume_role_builder = aws_sdk_sts::Client::new(&sdk_config)
             .assume_role()
-            .role_session_name("iceberg")
-            .policy(Self::get_aws_policy_string(
-                table_location,
-                storage_permissions,
-            )?);
-        let assume_role_builder = if let Some(arn) = arn {
-            assume_role_builder.role_arn(arn)
+            .role_session_name("lakekeeper-sts");
+
+        // Attach policy if provided
+        let assume_role_builder = if let Some(policy) = policy {
+            assume_role_builder.policy(policy)
+        } else {
+            assume_role_builder
+        };
+
+        // Attach ARN if provided.
+        // Some non AWS S3 implementations (e.g. MinIO) don't require an arn.
+        let assume_role_builder = if let Some(role_arn) = role_arn {
+            assume_role_builder.role_arn(role_arn)
+        } else {
+            assume_role_builder
+        };
+
+        let assume_role_builder = if let Some(external_id) = external_id {
+            assume_role_builder.external_id(external_id)
         } else {
             assume_role_builder
         };
 
         let v = assume_role_builder.send().await.map_err(|e| {
-            TableConfigError::FailedDependency(format!(
-                "aws::sts::assume_role token call failed: {e:?}"
-            ))
+            let err_str = format!("{e:?}");
+            tracing::warn!("Failed to assume role via STS: {err_str}");
+            CredentialsError::ShortTermCredential {
+                source: Some(Box::new(e)),
+                reason: format!("Failed to assume role via STS: {err_str}").to_string(),
+            }
         })?;
 
-        v.credentials.ok_or(TableConfigError::FailedDependency(
-            "aws::sts::assume_role token call response didn't contain credentials".to_string(),
-        ))
+        v.credentials.ok_or_else(|| {
+            tracing::warn!("No credentials returned from STS");
+            CredentialsError::ShortTermCredential {
+                source: None,
+                reason: "No credentials returned from STS".to_string(),
+            }
+        })
     }
 
-    async fn get_aws_sdk_config(&self, creds: aws_credential_types::Credentials) -> SdkConfig {
-        let loader = aws_config::ConfigLoader::default()
-            .region(Some(aws_config::Region::new(
-                self.region.as_str().to_string(),
-            )))
-            .behavior_version(BehaviorVersion::latest())
-            .credentials_provider(creds);
+    async fn get_sts_token(
+        &self,
+        table_location: &Location,
+        s3_credential: Option<&S3Credential>,
+        role_arn: Option<&str>,
+        storage_permissions: StoragePermissions,
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
+        let policy = Self::get_aws_policy_string(table_location, storage_permissions)?;
+        self.assume_role_with_sts(s3_credential, role_arn, Some(policy))
+            .await
+    }
 
-        if let Some(endpoint) = &self.endpoint {
-            loader.endpoint_url(endpoint.to_string()).load().await
+    /// Load the native AWS SDK config without assuming any role.
+    async fn get_aws_sdk_config(
+        &self,
+        s3_credential: Option<&S3Credential>,
+    ) -> Result<SdkConfig, CredentialsError> {
+        if matches!(s3_credential, Some(S3Credential::AwsSystemIdentity { .. }))
+            && !CONFIG.enable_aws_system_credentials
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
+        }
+
+        let loader = match s3_credential {
+            Some(S3Credential::AccessKey {
+                aws_access_key_id,
+                aws_secret_access_key,
+                external_id: _,
+            }) => {
+                let aws_credentials = aws_credential_types::Credentials::new(
+                    aws_access_key_id,
+                    aws_secret_access_key,
+                    None,
+                    None,
+                    "lakekeeper-secret-storage",
+                );
+                aws_config::ConfigLoader::default().credentials_provider(aws_credentials)
+            }
+            Some(S3Credential::AwsSystemIdentity { external_id: _ }) => aws_config::from_env(),
+            None => aws_config::from_env().no_credentials(),
+        }
+        .region(Some(aws_config::Region::new(
+            self.region.as_str().to_string(),
+        )))
+        .behavior_version(BehaviorVersion::latest())
+        .http_client((*STS_HTTP_CLIENT).clone())
+        .identity_cache(AWS_IDENTITY_CACHE.clone());
+
+        let loader = if let Some(endpoint) = &self.endpoint {
+            loader.endpoint_url(endpoint.to_string())
         } else {
-            loader.load().await
+            loader
+        };
+
+        Ok(loader.load().await)
+    }
+
+    pub(crate) async fn get_credentials_for_assume_role(
+        &self,
+        s3_credential: Option<&S3Credential>,
+    ) -> Result<Option<aws_credential_types::Credentials>, CredentialsError> {
+        if let Some(assume_role_arn) = &self.assume_role_arn {
+            let aws_sts_credential = self
+                .assume_role_with_sts(s3_credential, Some(assume_role_arn), None)
+                .await?;
+            let aws_credential = aws_credential_types::Credentials::new(
+                aws_sts_credential.access_key_id(),
+                aws_sts_credential.secret_access_key(),
+                Some(aws_sts_credential.session_token().to_string()),
+                std::time::SystemTime::try_from(*aws_sts_credential.expiration())
+                    .inspect_err(|e| tracing::warn!("Failed to convert AWS smithy expiration for credentials to SystemTime: {e:?}"))
+                    .ok(),
+                "lakekeeper-secret-storage-assume-role",
+            );
+            Ok(Some(aws_credential))
+        } else {
+            match s3_credential {
+                Some(S3Credential::AccessKey {
+                    aws_access_key_id,
+                    aws_secret_access_key,
+                    external_id: _,
+                }) => {
+                    let aws_credential = aws_credential_types::Credentials::new(
+                        aws_access_key_id,
+                        aws_secret_access_key,
+                        None,
+                        None,
+                        "lakekeeper-secret-storage-native",
+                    );
+                    Ok(Some(aws_credential))
+                }
+                Some(S3Credential::AwsSystemIdentity { external_id: _ }) | None => {
+                    let sdk_config = self.get_aws_sdk_config(s3_credential).await?;
+                    let Some(provider) = sdk_config.credentials_provider() else {
+                        return Ok(None);
+                    };
+
+                    let aws_credential = provider
+                        .provide_credentials()
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to obtain credentials from environment (S3Credential: {s3_credential:?}): {e:?}");
+                            CredentialsError::ShortTermCredential {
+                                source: Some(Box::new(e)),
+                                reason: "Failed to obtain S3 credentials from environment".to_string(),
+                            }
+                        })?;
+                    Ok(Some(aws_credential))
+                }
+            }
         }
     }
 
@@ -485,11 +637,12 @@ impl S3Profile {
     fn get_aws_policy_string(
         table_location: &Location,
         storage_permissions: StoragePermissions,
-    ) -> Result<String, TableConfigError> {
+    ) -> Result<String, CredentialsError> {
         let table_location = S3Location::try_from_location(table_location, true).map_err(|e| {
-            TableConfigError::Misconfiguration(
-                format!("Location is no valid S3 location: {e}").to_string(),
-            )
+            CredentialsError::ShortTermCredential {
+                source: None,
+                reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}").to_string(),
+            }
         })?;
         let bucket_arn = format!(
             "arn:aws:s3:::{}",
@@ -605,7 +758,7 @@ impl S3Profile {
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
-    let mut builder = iceberg::io::FileIOBuilder::new("s3");
+    let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client((*S3_HTTP_CLIENT).clone());
 
     for key in [
         s3::Region::KEY,
@@ -613,6 +766,7 @@ pub(super) fn get_file_io_from_table_config(
         s3::AccessKeyId::KEY,
         s3::SecretAccessKey::KEY,
         s3::SessionToken::KEY,
+        s3::PathStyleAccess::KEY,
     ] {
         if let Some(value) = config.get_custom_prop(key) {
             builder = builder.with_prop(key, value);
@@ -860,6 +1014,70 @@ pub(crate) mod test {
     };
 
     #[test]
+    fn test_storage_secret_deserialization_access_key_1() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "aws-access-key-id": "foo",
+                "aws-secret-access-key": "bar",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::AccessKey {
+            aws_access_key_id: "foo".to_string(),
+            aws_secret_access_key: "bar".to_string(),
+            external_id: None,
+        };
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_access_key_2() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "aws-access-key-id": "foo",
+                "aws-secret-access-key": "bar",
+                "external-id": "baz",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::AccessKey {
+            aws_access_key_id: "foo".to_string(),
+            aws_secret_access_key: "bar".to_string(),
+            external_id: Some("baz".to_string()),
+        };
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_system_identity_1() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "aws-system-identity",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::AwsSystemIdentity { external_id: None };
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_system_identity_2() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "aws-system-identity",
+                "external-id": "baz",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::AwsSystemIdentity {
+            external_id: Some("baz".to_string()),
+        };
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
     fn test_is_valid_bucket_name() {
         let cases = vec![
             ("foo".to_string(), true),
@@ -904,6 +1122,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
+            remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -944,6 +1163,7 @@ pub(crate) mod test {
             sts_enabled: false,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
+            remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -963,17 +1183,22 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_MINIO = 1)]
     pub(crate) mod minio {
+        use std::sync::LazyLock;
+
         use crate::service::storage::{
             S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
         };
 
-        lazy_static::lazy_static! {
-            static ref TEST_BUCKET: String = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
-            static ref TEST_REGION: String = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-            static ref TEST_ACCESS_KEY: String = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-            static ref TEST_SECRET_KEY: String = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
-            static ref TEST_ENDPOINT: String = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap();
-        }
+        static TEST_BUCKET: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap());
+        static TEST_REGION: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into()));
+        static TEST_ACCESS_KEY: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap());
+        static TEST_SECRET_KEY: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap());
+        static TEST_ENDPOINT: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap());
 
         pub(crate) fn storage_profile(prefix: &str) -> (S3Profile, S3Credential) {
             let profile = S3Profile {
@@ -987,10 +1212,13 @@ pub(crate) mod test {
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
+                remote_signing_url_style:
+                    crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
                 aws_secret_access_key: TEST_SECRET_KEY.clone(),
+                external_id: None,
             };
 
             (profile, cred)
@@ -1018,9 +1246,33 @@ pub(crate) mod test {
     }
 
     #[needs_env_var(TEST_AWS = 1)]
-    mod aws {
+    pub(crate) mod aws {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
+
+        pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
+            let profile = S3Profile {
+                bucket: std::env::var("AWS_S3_BUCKET").unwrap(),
+                key_prefix: Some(uuid::Uuid::now_v7().to_string()),
+                assume_role_arn: None,
+                endpoint: None,
+                region: std::env::var("AWS_S3_REGION").unwrap(),
+                path_style_access: Some(true),
+                sts_role_arn: Some(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap()),
+                flavor: S3Flavor::Aws,
+                sts_enabled: true,
+                allow_alternative_protocols: Some(false),
+                remote_signing_url_style:
+                    crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+            };
+            let cred = S3Credential::AccessKey {
+                aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
+                aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                external_id: None,
+            };
+
+            (profile, cred)
+        }
 
         #[test]
         fn test_can_validate() {
@@ -1030,28 +1282,9 @@ pub(crate) mod test {
             // sqlx::test
             crate::test::test_block_on(
                 async {
-                    let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
-                    let region = std::env::var("AWS_S3_REGION").unwrap();
-                    let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
-                    let cred: StorageCredential = S3Credential::AccessKey {
-                        aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                        aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
-                    }
-                    .into();
-
-                    let mut profile: StorageProfile = S3Profile {
-                        bucket,
-                        key_prefix: Some("test_prefix".to_string()),
-                        assume_role_arn: None,
-                        endpoint: None,
-                        region,
-                        path_style_access: Some(true),
-                        sts_role_arn: Some(sts_role_arn),
-                        flavor: S3Flavor::Aws,
-                        sts_enabled: true,
-                        allow_alternative_protocols: Some(false),
-                    }
-                    .into();
+                    let (profile, cred) = get_storage_profile();
+                    let cred: StorageCredential = cred.into();
+                    let mut profile: StorageProfile = profile.into();
 
                     profile.normalize().unwrap();
                     profile.validate_access(Some(&cred), None).await.unwrap();

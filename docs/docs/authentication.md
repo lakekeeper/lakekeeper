@@ -10,6 +10,22 @@ Lakekeeper can be configured to integrate with all common identity providers. Fo
 
 If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token to match the specified value. We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
 
+Users are automatically added to Lakekeeper after successful Authentication (user provides a valid token with the correct issuer and audience). If a User does not yet exist in Lakekeeper's Database, the provided JWT token is parsed. The following fields are parsed:
+
+- `name`: `name` or `given_name`/ `first_name` and `family_name`/ `last_name` or `app_displayname` or `preferred_username`
+- `subject`: `sub` unless `subject_claim` is set, then it will be the value of the claim.
+- `claims`: all claims
+- `email`: `email` or `upn` if it contains an `@` or `preferred_username` if it contains an `@`
+
+If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`.
+Lakekeeper determines the ID of users in the following order:
+
+1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this field is used and must be present.
+1. If `oid` is present, it is used. The main motivation to prefer the `oid` over the `sub` is that the `sub` field is not unique across applications, while the `oid` is. (See for example [Entra-ID](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference)). Lakekeeper needs to the same IDs as query engines in order to share Permissions.
+1. If the `sub` field is present, use it, otherwise fail.
+
+IDs from the OIDC provider in Lakekeeper have the form `oidc~<ID from the provider>`.
+
 ### Authenticating Machine Users
 All common iceberg clients and IdPs support the OAuth2 `Client-Credential` flow. The `Client-Credential` flow requires a `Client-ID` and `Client-Secret` that is provided in a secure way to the client. In the following sections we demonstrate for selected IdPs how applications can be setup for machine users to connect.
 
@@ -176,8 +192,28 @@ Repeat this process for each query engine / machine user that is required:
     - **Name**: choose any, for this example we choose `Spark`
     - **Redirect URI**: Leave empty - we are going to use the Client Credential Flow
 2. When the App Registration is created, select "Manage" -> "Certificates & secrets" and create a "New client secret". Note down the secrets "Value".
+3. There might be an additional step needed before you can utilize the machine user. First, get the token for it using the credentials you created on previous steps:
+```
+curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token \
+-d 'client_id={client_id}' \
+-d 'grant_type=client_credentials' \
+-d 'scope=email openid {APP2_client_id}%2F.default' \
+-d 'client_secret={client_secret}'
+```
+Note that `scope` parameter might not accept `api://` prefix for the APP2 scope for some Entra tenants. In that case, simply use `app2_client_id/.default` as shown above. Copy the `access_token` from the response and decode it using jwt.io or any other JWT decode tool. In order for automatic registration to work, token must contain the following claims:
+- `app_displayname`: name of the APP3 assigned in step 1
+- `appid`: application identifier (client identifier) of the App 3
+- `idtyp`: "app" (indicates this is an Entra service principal)
+For some Entra installations you might not get any of those claims in the JWT. `idtyp` can be added via optional claims. In this case, add them to `access_token` of **APP2** and set `name` to `idtyp` and `essential` to `true`. However, if `app_displayname` is not present, you'll need to register the machine user via Lakekeeper API. In order to do that:
+- create a token via UI login, to authenticate the API call
+- note `sub` claim value from the APP3 JWT
+- run:
+```
+curl -X POST http://lakekeeper-url/management/v1/user -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d '{ "id": "oidc~{sub_claim_value}", "user-type": "application", "name": "my-machine-app" }'
+```
 
-That's it! We can now use the second App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
+That's it! We can now use the third App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
 
 === "PyIceberg"
 

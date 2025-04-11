@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            number_of_views as \"number_of_views!\",\n            number_of_tables as \"number_of_tables!\",\n            created_at as \"created_at!\",\n            updated_at,\n            timestamp as \"timestamp!\"\n        FROM (\n            (SELECT number_of_views, number_of_tables, created_at, updated_at, timestamp\n            FROM warehouse_statistics\n            WHERE warehouse_id = $1\n            AND (timestamp < $2 OR $2 IS NULL))\n\n            UNION ALL\n\n            (SELECT number_of_views, number_of_tables, created_at, updated_at, timestamp\n            FROM warehouse_statistics_history\n            WHERE warehouse_id = $1\n            AND (timestamp < $2 OR $2 IS NULL))\n        ) AS ww\n        ORDER BY timestamp DESC\n        LIMIT $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number_of_views!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "number_of_tables!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "timestamp!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "48475e35dc4e5363310fbc65d192a8e2f2b4f68e5239ebddbdfb74218b388266"
+}

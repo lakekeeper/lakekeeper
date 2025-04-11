@@ -15,11 +15,21 @@ Lakekeeper is currently only compatible with Postgres >= 15.
 
 All docker compose examples come with batteries included (Identity Provider, Storage (S3), Query Engines, Jupyter) but are not accessible (by default) for compute outside of the docker network. To use Lakekeeper with external tools outside of the docker network, please check [Option 2: Docker Compose](#option-2-docker-compose)
 
-=== "🐳 With Authentication & Authorization"
+=== "🐳 With Authentication & Authorization - Advanced"
+    The advanced examples contains multiple query engines, including query engines that are shared between users while still enforcing single-user permissions.
 
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
-    cd examples/access-control
+    cd examples/access-control-advanced
+    docker-compose up -d
+    ```
+
+=== "🐳 With Authentication & Authorization - Simple"
+    The simple access control example contains multiple query engines, each used by a single user.
+
+    ```bash
+    git clone https://github.com/lakekeeper/lakekeeper
+    cd examples/access-control-simple
     docker-compose up -d
     ```
 

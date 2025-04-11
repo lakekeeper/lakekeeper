@@ -10,7 +10,7 @@ pub(crate) mod tables;
 pub(crate) mod tabular;
 pub(crate) mod views;
 
-use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData, sync::LazyLock};
 
 use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
@@ -69,7 +69,7 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
     secret: Option<crate::SecretIdent>,
     state: &S,
 ) -> Result<Option<StorageCredential>, IcebergErrorResponse> {
-    if let Some(secret_id) = &secret {
+    if let Some(secret_id) = secret {
         Ok(Some(state.get_secret_by_id(secret_id).await?.secret))
     } else {
         Ok(None)
@@ -78,9 +78,11 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 
 pub const DEFAULT_PAGE_SIZE: i64 = 100;
 
-lazy_static::lazy_static! {
-    pub static ref DEFAULT_PAGE_SIZE_USIZE: usize = DEFAULT_PAGE_SIZE.try_into().expect("1, 1000 is a valid usize");
-}
+pub static DEFAULT_PAGE_SIZE_USIZE: LazyLock<usize> = LazyLock::new(|| {
+    DEFAULT_PAGE_SIZE
+        .try_into()
+        .expect("1, 1000 is a valid usize")
+});
 
 pub struct UnfilteredPage<Entity, EntityId> {
     pub entities: Vec<Entity>,
@@ -244,7 +246,7 @@ pub(crate) mod test {
 
     use crate::{
         api::{
-            iceberg::{types::Prefix, v1::namespace::Service},
+            iceberg::{types::Prefix, v1::namespace::NamespaceService},
             management::v1::{
                 bootstrap::{BootstrapRequest, Service as _},
                 warehouse::{
@@ -289,6 +291,7 @@ pub(crate) mod test {
         let cred: StorageCredential = S3Credential::AccessKey {
             aws_access_key_id,
             aws_secret_access_key,
+            external_id: None,
         }
         .into();
 

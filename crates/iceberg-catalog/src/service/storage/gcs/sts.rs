@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use google_cloud_auth::credentials::CredentialsFile;
 use iceberg_ext::configs::Location;
@@ -8,8 +8,12 @@ use url::Url;
 use crate::service::storage::{error::TableConfigError, gcs::GcsServiceKey, StoragePermissions};
 
 static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-static STS_URL: OnceLock<Url> = OnceLock::new();
 const STS_URL_STR: &str = "https://sts.googleapis.com/v1/token";
+static STS_URL: LazyLock<Url> = LazyLock::new(|| {
+    STS_URL_STR
+        .parse::<Url>()
+        .expect("failed to parse a constant to a url")
+});
 const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
 pub(crate) async fn downscope(
@@ -19,13 +23,7 @@ pub(crate) async fn downscope(
     storage_permissions: StoragePermissions,
 ) -> Result<STSResponse, TableConfigError> {
     let client = STS_CLIENT.get_or_init(reqwest::Client::new);
-    let sts_url = STS_URL
-        .get_or_init(|| {
-            STS_URL_STR
-                .parse::<Url>()
-                .expect("failed to parse a constant to a url")
-        })
-        .clone();
+    let sts_url = STS_URL.clone();
 
     let c =
         google_cloud_auth::project::Config::default().with_scopes(&[GOOGLE_CLOUD_PLATFORM_SCOPE]);

@@ -29,7 +29,7 @@ pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStor
         &request_metadata,
         warehouse_id,
         &view,
-        &CatalogViewAction::CanGetMetadata,
+        CatalogViewAction::CanGetMetadata,
         t.transaction(),
     )
     .await?;
@@ -44,11 +44,11 @@ pub(crate) async fn authorized_view_ident_to_id<C: Catalog, A: Authorizer>(
     metadata: &RequestMetadata,
     warehouse_id: WarehouseIdent,
     view_ident: &TableIdent,
-    action: impl From<&CatalogViewAction> + std::fmt::Display + Send,
+    action: impl From<CatalogViewAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
 ) -> Result<ViewIdentUuid> {
     authorizer
-        .require_warehouse_action(metadata, warehouse_id, &CatalogWarehouseAction::CanUse)
+        .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
     let view_id = C::view_to_id(warehouse_id, view_ident, transaction).await; // We can't fail before AuthZ
     authorizer

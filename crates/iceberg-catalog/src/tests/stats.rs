@@ -3,12 +3,10 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::{
-    api::{
-        management::v1::warehouse::{CreateWarehouseResponse, TabularDeleteProfile},
-        ApiContext,
-    },
+    api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
     implementations::postgres::{PostgresCatalog, SecretsState},
     service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig, State, UserId},
+    tests::TestWarehouseResponse,
 };
 
 mod test {
@@ -91,6 +89,7 @@ mod test {
             setup.namespace_name.as_str(),
             tn.as_str(),
             None,
+            false,
         )
         .await
         .unwrap();
@@ -124,7 +123,7 @@ mod test {
 
 struct StatsSetup {
     ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
-    warehouse: CreateWarehouseResponse,
+    warehouse: TestWarehouseResponse,
     namespace_name: String,
 }
 
@@ -146,7 +145,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
+                .with_default_directive(LevelFilter::DEBUG.into())
                 .from_env_lossy(),
         )
         .try_init()
@@ -165,6 +164,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
             max_age: chrono::Duration::seconds(60),
             poll_interval: std::time::Duration::from_secs(10),
         }),
+        1,
     )
     .await;
 

@@ -24,7 +24,10 @@ use crate::{
             TabularIdentUuid, TabularType,
         },
     },
-    service::{ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, ViewIdentUuid},
+    service::{
+        ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, TableInfo, TabularInfo,
+        ViewIdentUuid,
+    },
     WarehouseIdent,
 };
 
@@ -161,9 +164,17 @@ pub(crate) async fn create_view(
 
 pub(crate) async fn drop_view(
     view_id: ViewIdentUuid,
+    force: bool,
+    required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularIdentUuid::View(*view_id), transaction).await
+    drop_tabular(
+        TabularIdentUuid::View(*view_id),
+        force,
+        required_metadata_location,
+        transaction,
+    )
+    .await
 }
 
 /// Rename a table. Tables may be moved across namespaces.
@@ -422,7 +433,7 @@ pub(crate) async fn list_views<'e, 'c: 'e, E>(
     include_deleted: bool,
     transaction: E,
     paginate_query: PaginationQuery,
-) -> Result<PaginatedMapping<ViewIdentUuid, TableIdent>>
+) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -438,10 +449,9 @@ where
         transaction,
         Some(TabularType::View),
         paginate_query,
-        false,
     )
     .await?;
-    let views = page.map::<ViewIdentUuid, TableIdent>(
+    let views = page.map::<ViewIdentUuid, TableInfo>(
         |k| match k {
             TabularIdentUuid::Table(_) => Err(ErrorModel::internal(
                 "DB returned a table when filtering for views.",
@@ -451,7 +461,7 @@ where
             .into()),
             TabularIdentUuid::View(t) => Ok(t.into()),
         },
-        |(v, _)| Ok(v.into_inner()),
+        TabularInfo::into_view_info,
     )?;
     Ok(views)
 }
@@ -518,7 +528,7 @@ pub(crate) mod tests {
         spec::{ViewMetadata, ViewMetadataBuilder},
         NamespaceIdent, TableIdent,
     };
-    use iceberg_ext::configs::Location;
+    use iceberg_ext::configs::{Location, ParseFromStr};
     use serde_json::json;
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -724,7 +734,7 @@ pub(crate) mod tests {
         assert_eq!(views.len(), 1);
         let (list_view_uuid, view) = views.into_iter().next().unwrap();
         assert_eq!(list_view_uuid, view_uuid);
-        assert_eq!(view.name, "myview");
+        assert_eq!(view.table_ident.name, "myview");
 
         let mut conn = state.read_pool().acquire().await.unwrap();
         let metadata = load_view(view_uuid, false, &mut conn).await.unwrap();
@@ -732,10 +742,10 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
-    async fn drop_view(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _) = prepare_view(pool).await;
+    async fn drop_view_unconditionally(pool: sqlx::PgPool) {
+        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(created_meta.uuid().into(), &mut tx)
+        super::drop_view(created_meta.uuid().into(), false, None, &mut tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -749,12 +759,54 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
-    async fn soft_drop_view(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _) = prepare_view(pool).await;
+    async fn drop_view_correct_location(pool: sqlx::PgPool) {
+        let (state, created_meta, _, _, _, metadata_location) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        mark_tabular_as_deleted(TabularIdentUuid::View(created_meta.uuid()), None, &mut tx)
-            .await
-            .unwrap();
+        super::drop_view(
+            created_meta.uuid().into(),
+            false,
+            Some(&metadata_location),
+            &mut tx,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        load_view(
+            created_meta.uuid().into(),
+            false,
+            &mut state.write_pool().acquire().await.unwrap(),
+        )
+        .await
+        .expect_err("dropped view should not be loadable");
+    }
+
+    #[sqlx::test]
+    async fn test_drop_view_metadata_mismatch(pool: sqlx::PgPool) {
+        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let mut tx = state.write_pool().begin().await.unwrap();
+        super::drop_view(
+            created_meta.uuid().into(),
+            false,
+            Some(&Location::parse_value("s3://not-the/old-location").unwrap()),
+            &mut tx,
+        )
+        .await
+        .expect_err("dropping view with wrong metadata location should fail");
+        tx.commit().await.unwrap();
+    }
+
+    #[sqlx::test]
+    async fn soft_drop_view(pool: sqlx::PgPool) {
+        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let mut tx = state.write_pool().begin().await.unwrap();
+        mark_tabular_as_deleted(
+            TabularIdentUuid::View(created_meta.uuid()),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.uuid().into(),
@@ -765,7 +817,7 @@ pub(crate) mod tests {
         .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        super::drop_view(created_meta.uuid().into(), &mut tx)
+        super::drop_view(created_meta.uuid().into(), false, None, &mut tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -781,7 +833,7 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn view_exists(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_ident, namespace, name) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_ident, namespace, name, _) = prepare_view(pool).await;
         let exists = super::view_ident_to_id(
             warehouse_ident,
             &TableIdent {
@@ -818,9 +870,9 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
-        let (state, _, _, _, _) = prepare_view(pool).await;
+        let (state, _, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        let e = super::drop_view(Uuid::now_v7().into(), &mut tx)
+        let e = super::drop_view(Uuid::now_v7().into(), false, None, &mut tx)
             .await
             .expect_err("dropping random uuid should not succeed");
         tx.commit().await.unwrap();
@@ -835,6 +887,7 @@ pub(crate) mod tests {
         WarehouseIdent,
         NamespaceIdent,
         String,
+        Location,
     ) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -850,16 +903,17 @@ pub(crate) mod tests {
         let location = "s3://my_bucket/my_table/metadata/bar"
             .parse::<Location>()
             .unwrap();
+        let metadata_location = format!(
+            "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
         let request = view_request(None, &location);
         let mut tx = pool.begin().await.unwrap();
         super::create_view(
             namespace_id,
-            &format!(
-                "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
-                Uuid::now_v7()
-            )
-            .parse()
-            .unwrap(),
+            &metadata_location,
             &mut tx,
             "myview",
             request.clone(),
@@ -869,6 +923,13 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        (state, request, warehouse_id, namespace, "myview".into())
+        (
+            state,
+            request,
+            warehouse_id,
+            namespace,
+            "myview".into(),
+            metadata_location,
+        )
     }
 }

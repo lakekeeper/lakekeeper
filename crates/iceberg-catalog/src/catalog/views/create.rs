@@ -62,7 +62,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
@@ -71,7 +71,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .require_namespace_action(
             &request_metadata,
             namespace_id,
-            &CatalogNamespaceAction::CanCreateView,
+            CatalogNamespaceAction::CanCreateView,
         )
         .await?;
 
@@ -139,7 +139,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let storage_secret =
         maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
 
-    let file_io = storage_profile.file_io(storage_secret.as_ref())?;
+    let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
     let compression_codec = CompressionCodec::try_from_metadata(&metadata.metadata)?;
     write_metadata_file(
         &metadata_location,
@@ -158,7 +158,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     // is a stage-create, we still fetch the secret.
     let config = storage_profile
         .generate_table_config(
-            &data_access,
+            data_access,
             storage_secret.as_ref(),
             &view_location,
             StoragePermissions::Read,

@@ -1,11 +1,13 @@
+use std::collections::HashSet;
+
 use iceberg::spec::{FormatVersion, TableMetadata};
 use iceberg_ext::{catalog::rest::ErrorModel, configs::Location};
 use itertools::Itertools;
-use sqlx::{Postgres, Transaction};
+use sqlx::{Postgres, Row, Transaction};
 
 use crate::{
     api,
-    catalog::tables::TableMetadataDiffs,
+    catalog::tables::{TableMetadataDiffs, CONCURRENT_UPDATE_ERROR_TYPE},
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::table::{
@@ -25,51 +27,85 @@ pub(crate) async fn commit_table_transaction(
 ) -> api::Result<()> {
     let commits: Vec<TableCommit> = commits.into_iter().collect();
     validate_commit_count(&commits)?;
-    let n_commits = commits.len();
-    let (meta, atomic): (Vec<_>, Vec<_>) = commits
+    let tabular_ids_in_commit = commits
+        .iter()
+        .map(|c| c.new_metadata.uuid())
+        .collect::<HashSet<_>>();
+
+    let (location_metadata_pairs, table_change_operations): (Vec<_>, Vec<_>) = commits
         .into_iter()
         .map(|c| {
             let TableCommit {
                 new_metadata,
                 new_metadata_location,
+                previous_metadata_location,
                 updates,
                 diffs,
             } = c;
-            let t = (new_metadata, new_metadata_location);
-            (t, (updates, diffs))
+            (
+                TableMetadataTransition {
+                    previous_metadata_location,
+                    new_metadata,
+                    new_metadata_location,
+                },
+                (updates, diffs),
+            )
         })
         .unzip();
 
-    for ((updates, diffs), (meta, _)) in atomic.into_iter().zip(meta.iter()) {
+    for ((updates, diffs), TableMetadataTransition { new_metadata, .. }) in table_change_operations
+        .into_iter()
+        .zip(location_metadata_pairs.iter())
+    {
         let updates = TableUpdates::from(updates.as_slice());
-        handle_atomic_updates(transaction, updates, meta, diffs).await?;
+        apply_metadata_changes(transaction, updates, new_metadata, diffs).await?;
     }
 
-    let (mut query_meta_update, mut query_meta_location_update) = build_queries(n_commits, meta)?;
+    let (mut query_meta_update, mut query_meta_location_update) =
+        build_queries(location_metadata_pairs)?;
 
     // futures::try_join didn't work due to concurrent mutable borrow of transaction
-    let updated_meta = query_meta_update
+    let updated_tables = query_meta_update
         .build()
         .fetch_all(&mut **transaction)
         .await
         .map_err(|e| e.into_error_model("Error committing tablemetadata updates".to_string()))?;
+    let updated_tables_ids: HashSet<uuid::Uuid> =
+        updated_tables.into_iter().map(|row| row.get(0)).collect();
 
-    let updated_meta_location = query_meta_location_update
+    let updated_tabulars = query_meta_location_update
         .build()
         .fetch_all(&mut **transaction)
         .await
         .map_err(|e| {
             e.into_error_model("Error committing tablemetadata location updates".to_string())
         })?;
+    let updated_tabulars_ids: HashSet<uuid::Uuid> =
+        updated_tabulars.into_iter().map(|row| row.get(0)).collect();
 
-    check_post_conditions(updated_meta.len(), n_commits, updated_meta_location.len())?;
+    verify_commit_completeness(CommitVerificationData {
+        tabular_ids_in_commit,
+        updated_tables_ids,
+        updated_tabulars_ids,
+    })?;
 
     Ok(())
 }
 
+struct TableMetadataTransition {
+    previous_metadata_location: Option<Location>,
+    new_metadata: TableMetadata,
+    new_metadata_location: Location,
+}
+
+struct CommitVerificationData {
+    tabular_ids_in_commit: HashSet<uuid::Uuid>,
+    updated_tables_ids: HashSet<uuid::Uuid>,
+    updated_tabulars_ids: HashSet<uuid::Uuid>,
+}
+
 fn build_queries(
-    n_commits: usize,
-    meta: Vec<(TableMetadata, Location)>,
+    location_metadata_pairs: Vec<TableMetadataTransition>,
 ) -> Result<
     (
         sqlx::QueryBuilder<'static, Postgres>,
@@ -77,6 +113,7 @@ fn build_queries(
     ),
     ErrorModel,
 > {
+    let n_commits = location_metadata_pairs.len();
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
         UPDATE "table" as t
@@ -92,13 +129,21 @@ fn build_queries(
     let mut query_builder_tabular = sqlx::QueryBuilder::new(
         r#"
         UPDATE "tabular" as t
-        SET "metadata_location" = c."metadata_location",
+        SET "metadata_location" = c."new_metadata_location",
         "fs_location" = c."fs_location",
         "fs_protocol" = c."fs_protocol"
         FROM (VALUES
         "#,
     );
-    for (i, (new_metadata, new_metadata_location)) in meta.into_iter().enumerate() {
+    for (
+        i,
+        TableMetadataTransition {
+            previous_metadata_location,
+            new_metadata,
+            new_metadata_location,
+        },
+    ) in location_metadata_pairs.into_iter().enumerate()
+    {
         let (fs_protocol, fs_location) = split_location(new_metadata.location())?;
 
         query_builder_table.push("(");
@@ -126,6 +171,8 @@ fn build_queries(
         query_builder_tabular.push_bind(fs_location.to_string());
         query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(fs_protocol.to_string());
+        query_builder_tabular.push(", ");
+        query_builder_tabular.push_bind(previous_metadata_location.map(|l| l.to_string()));
         query_builder_tabular.push(")");
 
         if i != n_commits - 1 {
@@ -137,7 +184,7 @@ fn build_queries(
     query_builder_table
         .push(") as c(table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
     query_builder_tabular.push(
-        ") as c(table_id, metadata_location, fs_location, fs_protocol) WHERE c.table_id = t.tabular_id AND t.typ = 'table'",
+        ") as c(table_id, new_metadata_location, fs_location, fs_protocol, old_metadata_location) WHERE c.table_id = t.tabular_id AND t.typ = 'table' AND t.metadata_location IS NOT DISTINCT FROM c.old_metadata_location",
     );
 
     query_builder_table.push(" RETURNING t.table_id");
@@ -146,15 +193,32 @@ fn build_queries(
     Ok((query_builder_table, query_builder_tabular))
 }
 
-fn check_post_conditions(
-    updated_meta_len: usize,
-    n_commits: usize,
-    updated_meta_location_len: usize,
-) -> api::Result<()> {
-    if updated_meta_len != n_commits || updated_meta_location_len != n_commits {
+fn verify_commit_completeness(verification_data: CommitVerificationData) -> api::Result<()> {
+    let CommitVerificationData {
+        tabular_ids_in_commit,
+        updated_tables_ids,
+        updated_tabulars_ids,
+    } = verification_data;
+
+    if tabular_ids_in_commit != updated_tables_ids {
+        let missing_ids = tabular_ids_in_commit
+            .difference(&updated_tables_ids)
+            .collect_vec();
+        return Err(ErrorModel::bad_request(
+            format!("Concurrent updates to tables with IDs: {missing_ids:?}"),
+            CONCURRENT_UPDATE_ERROR_TYPE,
+            None,
+        )
+        .into());
+    }
+
+    if tabular_ids_in_commit != updated_tabulars_ids {
+        let missing_ids = tabular_ids_in_commit
+            .difference(&updated_tabulars_ids)
+            .collect_vec();
         return Err(ErrorModel::internal(
-            "Error committing table updates",
-            "CommitTableUpdateError",
+            format!("Failed to update tables with IDs: {missing_ids:?}"),
+            "FailedToUpdateTables".to_string(),
             None,
         )
         .into());
@@ -175,7 +239,7 @@ fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn handle_atomic_updates(
+async fn apply_metadata_changes(
     transaction: &mut Transaction<'_, Postgres>,
     table_updates: TableUpdates,
     new_metadata: &TableMetadata,
@@ -185,9 +249,7 @@ async fn handle_atomic_updates(
         snapshot_refs,
         properties,
     } = table_updates;
-    if !&diffs.removed_schemas.is_empty() {
-        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
-    }
+    // no dependencies
     if !diffs.added_schemas.is_empty() {
         common::insert_schemas(
             diffs
@@ -202,19 +264,12 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // must run after insert_schemas
     if let Some(schema_id) = diffs.new_current_schema_id {
         common::set_current_schema(schema_id, transaction, new_metadata.uuid()).await?;
     }
 
-    if !diffs.removed_partition_specs.is_empty() {
-        common::remove_partition_specs(
-            new_metadata.uuid(),
-            diffs.removed_partition_specs,
-            transaction,
-        )
-        .await?;
-    }
-
+    // No dependencies technically, could depend on columns in schema, so run after set_current_schema
     if !diffs.added_partition_specs.is_empty() {
         common::insert_partition_specs(
             diffs
@@ -229,16 +284,13 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_partition_specs
     if let Some(default_spec_id) = diffs.default_partition_spec_id {
         common::set_default_partition_spec(transaction, new_metadata.uuid(), default_spec_id)
             .await?;
     }
 
-    if !diffs.removed_sort_orders.is_empty() {
-        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
-            .await?;
-    }
-
+    // Should run after insert_schemas
     if !diffs.added_sort_orders.is_empty() {
         common::insert_sort_orders(
             diffs
@@ -253,15 +305,13 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_sort_orders
     if let Some(default_sort_order_id) = diffs.default_sort_order_id {
         common::set_default_sort_order(default_sort_order_id, transaction, new_metadata.uuid())
             .await?;
     }
 
-    if !diffs.removed_snapshots.is_empty() {
-        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
-    }
-
+    // Must run after insert_schemas
     if !diffs.added_snapshots.is_empty() {
         common::insert_snapshots(
             new_metadata.uuid(),
@@ -276,10 +326,12 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_snapshots
     if snapshot_refs {
         common::insert_snapshot_refs(new_metadata, transaction).await?;
     }
 
+    // Must run after insert_snapshots, technically not enforced
     if diffs.head_of_snapshot_log_changed {
         if let Some(snap) = new_metadata.history().last() {
             common::insert_snapshot_log([snap].into_iter(), transaction, new_metadata.uuid())
@@ -287,6 +339,7 @@ async fn handle_atomic_updates(
         }
     }
 
+    // no deps technically enforced
     if diffs.n_removed_snapshot_log > 0 {
         remove_snapshot_log_entries(
             diffs.n_removed_snapshot_log,
@@ -296,6 +349,7 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // no deps technically enforced
     if diffs.expired_metadata_logs > 0 {
         expire_metadata_log_entries(
             new_metadata.uuid(),
@@ -304,6 +358,7 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+    // no deps technically enforced
     if diffs.added_metadata_log > 0 {
         common::insert_metadata_log(
             new_metadata.uuid(),
@@ -319,6 +374,7 @@ async fn handle_atomic_updates(
         .await?;
     }
 
+    // Must run after insert_snapshots
     if !diffs.added_partition_stats.is_empty() {
         common::insert_partition_statistics(
             new_metadata.uuid(),
@@ -332,6 +388,7 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+    // Must run after insert_partition_statistics
     if !diffs.added_stats.is_empty() {
         common::insert_table_statistics(
             new_metadata.uuid(),
@@ -345,10 +402,12 @@ async fn handle_atomic_updates(
         )
         .await?;
     }
+    // Must run before remove_snapshots
     if !diffs.removed_stats.is_empty() {
         common::remove_table_statistics(new_metadata.uuid(), diffs.removed_stats, transaction)
             .await?;
     }
+    // Must run before remove_snapshots
     if !diffs.removed_partition_stats.is_empty() {
         common::remove_partition_statistics(
             new_metadata.uuid(),
@@ -356,6 +415,32 @@ async fn handle_atomic_updates(
             transaction,
         )
         .await?;
+    }
+
+    // Must run after insert_snapshots
+    if !diffs.removed_snapshots.is_empty() {
+        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
+    }
+
+    // Must run after set_default_partition_spec
+    if !diffs.removed_partition_specs.is_empty() {
+        common::remove_partition_specs(
+            new_metadata.uuid(),
+            diffs.removed_partition_specs,
+            transaction,
+        )
+        .await?;
+    }
+
+    // Must run after set_default_sort_order
+    if !diffs.removed_sort_orders.is_empty() {
+        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
+            .await?;
+    }
+
+    // Must run after remove_snapshots, and remove_partition_specs and remove_sort_orders
+    if !&diffs.removed_schemas.is_empty() {
+        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
     }
 
     if properties {

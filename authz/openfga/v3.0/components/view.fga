@@ -1,0 +1,31 @@
+module lakekeeper-view
+
+type view
+  relations
+    # ------------------ Relation Hierarchies ------------------
+    define parent: [namespace]
+
+    # ------------------ Special roles ------------------
+    define ownership: [user, role#assignee]
+
+    # ------------------ Assignable Privileges ------------------
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    define describe: [user, role#assignee] or ownership or modify or describe from parent
+    define modify: [user, role#assignee] or ownership or modify from parent
+
+    # ------------------ Actions ------------------
+    define can_drop: modify
+    define can_undrop: modify
+    define can_commit: modify
+    define can_get_metadata: describe
+    define can_rename: modify
+    define can_include_in_list: can_get_metadata
+    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_modify or can_change_ownership
+
+    # GRANT Permissions
+    define can_grant_pass_grants: manage_grants
+    define can_grant_manage_grants: manage_grants
+    define can_grant_describe: manage_grants or (describe and pass_grants)
+    define can_grant_modify: manage_grants or (modify and pass_grants)
+    define can_change_ownership: manage_grants

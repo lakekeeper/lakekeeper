@@ -1,15 +1,16 @@
 //! Contains Configuration of the service Module
-
 #![allow(clippy::ref_option)]
 
 use core::result::Result::Ok;
 use std::{
     collections::HashSet,
     convert::Infallible,
+    net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
     path::PathBuf,
     str::FromStr,
     sync::LazyLock,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
@@ -19,7 +20,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{service::task_queue::TaskQueueConfig, ProjectId, WarehouseIdent};
+use crate::{
+    service::{event_publisher::kafka::KafkaConfig, task_queue::TaskQueueConfig},
+    ProjectId, WarehouseIdent,
+};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -39,9 +43,14 @@ fn get_config() -> DynAppConfig {
     #[cfg(test)]
     let prefixes = &["LAKEKEEPER_TEST__"];
 
+    let file_keys = &["kafka_config"];
+
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        config = config.merge(figment::providers::Env::prefixed(prefix).split("__"));
+        let env = figment::providers::Env::prefixed(prefix).split("__");
+        config = config
+            .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
+            .merge(env);
     }
 
     let mut config = config
@@ -74,7 +83,7 @@ fn get_config() -> DynAppConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Deserialize, Serialize, PartialEq, Redact)]
+#[derive(Clone, Deserialize, Serialize, Redact)]
 /// Configuration of this Module
 pub struct DynAppConfig {
     /// Base URL for this REST Catalog.
@@ -85,6 +94,9 @@ pub struct DynAppConfig {
     pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
+    /// Bind IP the server listens on.
+    /// Defaults to 0.0.0.0
+    pub bind_ip: IpAddr,
     /// If true (default), the NIL uuid is used as default project id.
     pub enable_default_project: bool,
     /// Template to obtain the "prefix" for a warehouse,
@@ -110,6 +122,19 @@ pub struct DynAppConfig {
         serialize_with = "serialize_reserved_namespaces"
     )]
     pub reserved_namespaces: ReservedNamespaces,
+    // ------------- STORAGE OPTIONS -------------
+    /// If true, can create Warehouses with using System Identities.
+    pub(crate) enable_aws_system_credentials: bool,
+    /// If false, System Identities cannot be used directly to access files.
+    /// Instead, `assume_role_arn` must be provided by the user if `SystemIdentities` are used.
+    pub(crate) s3_enable_direct_system_credentials: bool,
+    /// If true, users must set `external_id` when using system identities with
+    /// `assume_role_arn`.
+    pub(crate) s3_require_external_id_for_system_credentials: bool,
+
+    /// Enable Azure System Identities
+    pub(crate) enable_azure_system_credentials: bool,
+
     // ------------- POSTGRES IMPLEMENTATION -------------
     #[redact]
     pub(crate) pg_encryption_key: String,
@@ -140,6 +165,10 @@ pub struct DynAppConfig {
     #[redact]
     pub nats_token: Option<String>,
 
+    // ------------- KAFKA CLOUDEVENTS -------------
+    pub kafka_topic: Option<String>,
+    pub kafka_config: Option<KafkaConfig>,
+
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
 
@@ -167,6 +196,9 @@ pub struct DynAppConfig {
         serialize_with = "serialize_audience"
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
+    /// Accept legacy k8s token without audience and issuer
+    /// set to kubernetes/serviceaccount
+    pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
     /// Claim to use in provided JWT tokens as the subject.
     pub openid_subject_claim: Option<String>,
 
@@ -199,6 +231,17 @@ pub struct DynAppConfig {
     )]
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
+    // ------------- Stats -------------
+    /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
+    ///
+    /// Accepts a string of format "{number}{ms|s}", e.g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub endpoint_stat_flush_interval: Duration,
+
     // ------------- Internal -------------
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
@@ -227,6 +270,32 @@ where
     S: serde::Serializer,
 {
     duration.num_seconds().to_string().serialize(serializer)
+}
+
+pub(crate) fn seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let buf = String::deserialize(deserializer)?;
+    Ok(if buf.ends_with("ms") {
+        Duration::from_millis(
+            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
+        )
+    } else if buf.ends_with('s') {
+        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
+    } else {
+        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
+    })
+}
+
+pub(crate) fn serialize_std_duration_as_ms<S>(
+    duration: &Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
 fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -317,6 +386,19 @@ pub struct OpenFGAConfig {
     /// Authentication configuration
     #[serde(default)]
     pub auth: OpenFGAAuth,
+    /// Explicitly set the Authorization model prefix.
+    /// Defaults to `collaboration` if not set.
+    /// We recommend to use this setting only in combination with
+    /// `authorization_model_version`
+    #[serde(default = "default_openfga_model_prefix")]
+    pub authorization_model_prefix: String,
+    /// Version of the model to use. If specified, the specified
+    /// model version must already exist.
+    /// This can be used to roll-back to previously applied model versions
+    /// or to connect to externally managed models.
+    /// Migration is disabled if the model version is set.
+    /// Version should have the format <major>.<minor>.
+    pub authorization_model_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -378,12 +460,18 @@ impl Default for DynAppConfig {
             pg_connection_max_lifetime: None,
             pg_read_pool_connections: 10,
             pg_write_pool_connections: 5,
+            enable_azure_system_credentials: false,
+            enable_aws_system_credentials: false,
+            s3_enable_direct_system_credentials: false,
+            s3_require_external_id_for_system_credentials: true,
             nats_address: None,
             nats_topic: None,
             nats_creds_file: None,
             nats_user: None,
             nats_password: None,
             nats_token: None,
+            kafka_config: None,
+            kafka_topic: None,
             log_cloudevents: None,
             openid_provider_uri: None,
             openid_audience: None,
@@ -391,8 +479,10 @@ impl Default for DynAppConfig {
             openid_scope: None,
             enable_kubernetes_authentication: false,
             kubernetes_authentication_audience: None,
+            kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             listen_port: 8181,
+            bind_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             health_check_frequency_seconds: 10,
             health_check_jitter_millis: 500,
             kv2: None,
@@ -401,6 +491,7 @@ impl Default for DynAppConfig {
             secret_backend: SecretBackend::Postgres,
             queue_config: TaskQueueConfig::default(),
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
+            endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
         }
     }
@@ -522,6 +613,9 @@ struct OpenFGAConfigSerde {
     /// Store Name - if not specified, `lakekeeper` is used.
     #[serde(default = "default_openfga_store_name")]
     store_name: String,
+    #[serde(default = "default_openfga_model_prefix")]
+    authorization_model_prefix: String,
+    authorization_model_version: Option<String>,
     /// API-Key. If client-id is specified, this is ignored.
     api_key: Option<String>,
     /// Client id
@@ -539,6 +633,10 @@ fn default_openfga_store_name() -> String {
     "lakekeeper".to_string()
 }
 
+fn default_openfga_model_prefix() -> String {
+    "collaboration".to_string()
+}
+
 fn deserialize_openfga_config<'de, D>(deserializer: D) -> Result<Option<OpenFGAConfig>, D::Error>
 where
     D: Deserializer<'de>,
@@ -551,6 +649,8 @@ where
         api_key,
         endpoint,
         store_name,
+        authorization_model_prefix,
+        authorization_model_version,
     }) = Option::<OpenFGAConfigSerde>::deserialize(deserializer)?
     else {
         return Ok(None);
@@ -581,6 +681,8 @@ where
         endpoint,
         store_name,
         auth,
+        authorization_model_prefix,
+        authorization_model_version,
     }))
 }
 
@@ -621,12 +723,16 @@ where
         api_key,
         endpoint: value.endpoint.clone(),
         store_name: value.store_name.clone(),
+        authorization_model_prefix: value.authorization_model_prefix.clone(),
+        authorization_model_version: value.authorization_model_version.clone(),
     }
     .serialize(serializer)
 }
 
 #[cfg(test)]
 mod test {
+    use std::net::Ipv6Addr;
+
     #[allow(unused_imports)]
     use super::*;
 
@@ -876,6 +982,76 @@ mod test {
                     scope: Some("openfga".to_string())
                 }
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v4_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "0.0.0.0");
+            let config = get_config();
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v4_localhost() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "127.0.0.1");
+            let config = get_config();
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_loopback() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::1");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_bind_ip_address_v6_all() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::");
+            let config = get_config();
+            assert_eq!(
+                config.bind_ip,
+                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_legacy_service_account_acceptance() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT",
+                "true",
+            );
+            let config = get_config();
+            assert!(config.kubernetes_authentication_accept_legacy_serviceaccount);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_s3_disable_system_credentials() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ENABLE_AWS_SYSTEM_CREDENTIALS", "true");
+            let config = get_config();
+            assert!(config.enable_aws_system_credentials);
+            assert!(!config.s3_enable_direct_system_credentials);
             Ok(())
         });
     }

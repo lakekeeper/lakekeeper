@@ -16,11 +16,14 @@ use crate::{
             types::{DropParams, Prefix},
             v1::namespace::{NamespaceIdentUrl, NamespaceParameters},
         },
+        management::v1::ProtectionResponse,
         ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
         CreateTableRequest, ListTablesResponse, LoadTableResult, RegisterTableRequest,
         RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
+    service::TableIdentUuid,
+    WarehouseIdent,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -36,6 +39,8 @@ pub struct ListTablesQuery {
     /// Default is false.
     #[serde(default)]
     pub return_uuids: bool,
+    #[serde(default)]
+    pub return_protection_status: bool,
 }
 
 impl From<ListTablesQuery> for PaginationQuery {
@@ -131,6 +136,14 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
+
+    async fn set_table_protection(
+        table_id: TableIdentUuid,
+        warehouse_id: WarehouseIdent,
+        protected: bool,
+        state: ApiContext<S>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ProtectionResponse>;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -199,7 +212,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // /{prefix}/namespaces/{namespace}/tables/{table}
         .route(
-            "/{prefix}/namespaces/{namespace}/tables/{namespace}",
+            "/{prefix}/namespaces/{namespace}/tables/{table}",
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
@@ -350,7 +363,7 @@ pub struct TableParameters {
 
 pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 // Modeled as a string to enable multiple values to be specified.
 pub struct DataAccess {
     pub vended_credentials: bool,

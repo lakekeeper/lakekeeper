@@ -1,8 +1,8 @@
-use std::{fmt::Debug, ops::Deref, str::FromStr, time::Duration};
+use std::{fmt::Debug, ops::Deref, time::Duration};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -59,6 +59,10 @@ impl TaskQueues {
         self.tabular_purge.enqueue(task).await
     }
 
+    /// Spawns the expiration and purge queues.
+    ///
+    /// # Errors
+    /// Fails if any of the queue handlers exit unexpectedly.
     pub async fn spawn_queues<C, S, A>(
         &self,
         catalog_state: C::State,
@@ -136,7 +140,10 @@ pub trait TaskQueue: Debug {
     fn config(&self) -> &TaskQueueConfig;
     fn queue_name(&self) -> &'static str;
 
-    async fn enqueue(&self, task: Self::Input) -> crate::api::Result<()>;
+    async fn enqueue_batch(&self, task: Vec<Self::Input>) -> crate::api::Result<()>;
+    async fn enqueue(&self, task: Self::Input) -> crate::api::Result<()> {
+        self.enqueue_batch(vec![task]).await
+    }
     async fn pick_new_task(&self) -> crate::api::Result<Option<Self::Task>>;
     async fn record_success(&self, id: Uuid) -> crate::api::Result<()>;
     async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()>;
@@ -218,36 +225,10 @@ pub struct TaskQueueConfig {
     )]
     pub max_age: chrono::Duration,
     #[serde(
-        deserialize_with = "seconds_to_std_duration",
-        serialize_with = "std_duration_to_seconds"
+        deserialize_with = "crate::config::seconds_to_std_duration",
+        serialize_with = "crate::config::serialize_std_duration_as_ms"
     )]
     pub poll_interval: Duration,
-}
-
-pub(crate) fn seconds_to_std_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
-    Ok(if buf.ends_with("ms") {
-        Duration::from_millis(
-            u64::from_str(&buf[..buf.len() - 2]).map_err(serde::de::Error::custom)?,
-        )
-    } else if buf.ends_with('s') {
-        Duration::from_secs(u64::from_str(&buf[..buf.len() - 1]).map_err(serde::de::Error::custom)?)
-    } else {
-        Duration::from_secs(u64::from_str(&buf).map_err(serde::de::Error::custom)?)
-    })
-}
-
-pub(crate) fn std_duration_to_seconds<S>(
-    duration: &Duration,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
 impl Default for TaskQueueConfig {
@@ -351,7 +332,7 @@ mod test {
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
             .await
             .unwrap();
-        let (_, _) = <PostgresCatalog as Catalog>::list_tabulars(
+        let _ = <PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
             None,
             ListFlags {
@@ -372,6 +353,7 @@ mod test {
             .unwrap();
         <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
             tab.table_id.into(),
+            false,
             trx.transaction(),
         )
         .await
@@ -392,7 +374,7 @@ mod test {
             .await
             .unwrap();
 
-        let (_, del) = <PostgresCatalog as Catalog>::list_tabulars(
+        let del = <PostgresCatalog as Catalog>::list_tabulars(
             warehouse,
             None,
             ListFlags {
@@ -406,7 +388,8 @@ mod test {
         .await
         .unwrap()
         .remove(&tab.table_id.into())
-        .unwrap();
+        .unwrap()
+        .deletion_details;
         del.unwrap();
         trx.commit().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1250)).await;

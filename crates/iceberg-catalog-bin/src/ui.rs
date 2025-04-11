@@ -1,5 +1,5 @@
 use core::result::Result::Err;
-use std::{cell::LazyCell, default::Default};
+use std::{cell::LazyCell, default::Default, str::FromStr, sync::LazyLock};
 
 use axum::{
     http::{header, StatusCode, Uri},
@@ -9,8 +9,7 @@ use iceberg_catalog::{AuthZBackend, CONFIG};
 use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
 
 // Static configuration for UI
-#[allow(clippy::declare_interior_mutable_const)]
-const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
+static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
     let default_config = LakekeeperConsoleConfig::default();
     LakekeeperConsoleConfig {
         idp_authority: std::env::var("LAKEKEEPER__UI__OPENID_PROVIDER_URI")
@@ -40,6 +39,9 @@ const UI_CONFIG: LazyCell<LakekeeperConsoleConfig> = LazyCell::new(|| {
     }
 });
 
+static MIME_TYPE_ICON: LazyLock<mime_guess::Mime> =
+    LazyLock::new(|| mime_guess::Mime::from_str("image/x-icon").unwrap());
+
 #[derive(Debug, Clone)]
 enum CacheItem {
     NotFound,
@@ -57,6 +59,10 @@ const FILE_CACHE: LazyCell<moka::sync::Cache<String, CacheItem>> =
 // page.
 pub async fn index_handler() -> impl IntoResponse {
     static_handler("/index.html".parse::<Uri>().unwrap()).await
+}
+
+pub async fn favicon_handler() -> impl IntoResponse {
+    static_handler("/favicon.ico".parse::<Uri>().unwrap()).await
 }
 
 // We use a wildcard matcher ("/dist/*file") to match against everything
@@ -78,7 +84,11 @@ async fn get_file_cached(file_path: &str) -> Response {
     if let Some(cache_item) = cached {
         cache_item.into_response()
     } else {
-        let mime = mime_guess::from_path(file_path).first_or_octet_stream();
+        let mime = if file_path.ends_with("favicon.ico") {
+            MIME_TYPE_ICON.clone()
+        } else {
+            mime_guess::from_path(file_path).first_or_octet_stream()
+        };
         let file_path_owned = file_path.to_string();
 
         let content =
@@ -127,5 +137,16 @@ mod test {
     async fn test_index_found() {
         let response = index_handler().await.into_response();
         assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_favicon() {
+        let file_path = "favicon.ico";
+        let file = get_file_cached(file_path).await;
+        assert_eq!(file.status(), 200);
+        assert_eq!(
+            file.headers().get(header::CONTENT_TYPE).unwrap(),
+            MIME_TYPE_ICON.as_ref()
+        );
     }
 }

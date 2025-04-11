@@ -23,7 +23,9 @@ pub struct LoadTableResult {
     /// May be null if the table is staged as part of a transaction
     pub metadata_location: Option<String>,
     pub metadata: TableMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<std::collections::HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credentials: Option<Vec<StorageCredential>>,
 }
 
@@ -64,6 +66,8 @@ pub struct ListTablesResponse {
     /// Lakekeeper IDs of the tables.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_uuids: Option<Vec<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protection_status: Option<Vec<bool>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

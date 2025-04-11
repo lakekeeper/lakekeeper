@@ -1,3 +1,5 @@
+mod drop_recursive;
+mod endpoint_stats;
 mod stats;
 
 use std::sync::Arc;
@@ -14,15 +16,15 @@ use crate::{
         iceberg::{
             types::Prefix,
             v1::{
-                namespace::Service as _, tables::TablesService, views::Service, DataAccess,
-                DropParams, NamespaceParameters, TableParameters,
+                namespace::{NamespaceDropFlags, NamespaceService as _},
+                tables::TablesService,
+                views::ViewService,
+                DataAccess, DropParams, NamespaceParameters, TableParameters,
             },
         },
         management::v1::{
             bootstrap::{BootstrapRequest, Service as _},
-            warehouse::{
-                CreateWarehouseRequest, CreateWarehouseResponse, Service as _, TabularDeleteProfile,
-            },
+            warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
             ApiServer,
         },
         ApiContext,
@@ -38,12 +40,13 @@ use crate::{
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
         storage::{
-            S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
+            s3::S3UrlStyleDetectionMode, S3Credential, S3Flavor, S3Profile, StorageCredential,
+            StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
-        State, UserId,
+        Catalog, SecretStore, State, UserId,
     },
-    CONFIG,
+    WarehouseIdent, CONFIG,
 };
 
 pub(crate) fn test_io_profile() -> StorageProfile {
@@ -65,9 +68,9 @@ pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
     let cred: StorageCredential = S3Credential::AccessKey {
         aws_access_key_id,
         aws_secret_access_key,
+        external_id: None,
     }
     .into();
-
     let mut profile: StorageProfile = S3Profile {
         bucket,
         key_prefix,
@@ -79,6 +82,7 @@ pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
         flavor: S3Flavor::S3Compat,
         sts_enabled: true,
         allow_alternative_protocols: None,
+        remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
     }
     .into();
 
@@ -106,16 +110,16 @@ pub(crate) async fn create_ns<T: Authorizer>(
 
 pub(crate) async fn create_table<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    prefix: &str,
-    ns_name: &str,
-    name: &str,
+    prefix: impl Into<String>,
+    ns_name: impl Into<String>,
+    name: impl Into<String>,
 ) -> crate::api::Result<LoadTableResult> {
     CatalogServer::create_table(
         NamespaceParameters {
-            prefix: Some(Prefix(prefix.to_string())),
-            namespace: NamespaceIdent::new(ns_name.to_string()),
+            prefix: Some(Prefix(prefix.into())),
+            namespace: NamespaceIdent::new(ns_name.into()),
         },
-        crate::catalog::tables::test::create_request(Some(name.to_string())),
+        crate::catalog::tables::test::create_request(Some(name.into())),
         DataAccess::none(),
         api_context,
         random_request_metadata(),
@@ -129,13 +133,17 @@ pub(crate) async fn drop_table<T: Authorizer>(
     ns_name: &str,
     name: &str,
     purge_requested: Option<bool>,
+    force: bool,
 ) -> crate::api::Result<()> {
     CatalogServer::drop_table(
         TableParameters {
             prefix: Some(Prefix(prefix.to_string())),
             table: TableIdent::new(NamespaceIdent::new(ns_name.to_string()), name.to_string()),
         },
-        DropParams { purge_requested },
+        DropParams {
+            purge_requested: purge_requested.unwrap_or_default(),
+            force,
+        },
         api_context,
         random_request_metadata(),
     )
@@ -162,6 +170,27 @@ pub(crate) async fn create_view<T: Authorizer>(
     .await
 }
 
+pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
+    api_context: ApiContext<State<A, C, S>>,
+    flags: NamespaceDropFlags,
+    namespace_parameters: NamespaceParameters,
+) -> crate::api::Result<()> {
+    CatalogServer::drop_namespace(
+        namespace_parameters,
+        flags,
+        api_context,
+        random_request_metadata(),
+    )
+    .await
+}
+
+#[derive(Debug)]
+pub struct TestWarehouseResponse {
+    pub warehouse_id: WarehouseIdent,
+    pub warehouse_name: String,
+    pub additional_warehouses: Vec<(WarehouseIdent, String)>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn setup<T: Authorizer>(
     pool: PgPool,
@@ -171,10 +200,16 @@ pub(crate) async fn setup<T: Authorizer>(
     delete_profile: TabularDeleteProfile,
     user_id: Option<UserId>,
     q_config: Option<TaskQueueConfig>,
+    number_of_warehouses: usize,
 ) -> (
     ApiContext<State<T, PostgresCatalog, SecretsState>>,
-    CreateWarehouseResponse,
+    TestWarehouseResponse,
 ) {
+    assert!(
+        number_of_warehouses > 0,
+        "Number of warehouses must be greater than 0",
+    );
+
     let api_context = get_api_context(&pool, authorizer, q_config);
 
     let metadata = if let Some(user_id) = user_id {
@@ -195,22 +230,46 @@ pub(crate) async fn setup<T: Authorizer>(
     )
     .await
     .unwrap();
-
+    let warehouse_name = format!("test-warehouse-{}", Uuid::now_v7());
     let warehouse = ApiServer::create_warehouse(
         CreateWarehouseRequest {
-            warehouse_name: format!("test-warehouse-{}", Uuid::now_v7()),
+            warehouse_name: warehouse_name.clone(),
             project_id: None,
             storage_profile,
             storage_credential,
             delete_profile,
         },
         api_context.clone(),
-        metadata,
+        metadata.clone(),
     )
     .await
     .unwrap();
-
-    (api_context, warehouse)
+    let mut additional_warehouses = vec![];
+    for i in 1..number_of_warehouses {
+        let warehouse_name = format!("test-warehouse-{}-{}", i, Uuid::now_v7());
+        let warehouse = ApiServer::create_warehouse(
+            CreateWarehouseRequest {
+                warehouse_name: warehouse_name.clone(),
+                project_id: None,
+                storage_profile: test_io_profile(),
+                storage_credential: None,
+                delete_profile,
+            },
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+        additional_warehouses.push((warehouse.warehouse_id, warehouse_name.clone()));
+    }
+    (
+        api_context,
+        TestWarehouseResponse {
+            warehouse_id: warehouse.warehouse_id,
+            warehouse_name,
+            additional_warehouses,
+        },
+    )
 }
 
 pub(crate) fn get_api_context<T: Authorizer>(

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM namespace\n            WHERE warehouse_id = $1\n            -- If recursive is true, delete all child namespaces...\n            AND (namespace_id = any($2) or namespace_id = $3)\n            AND warehouse_id IN (\n                SELECT warehouse_id FROM warehouse WHERE status = 'active'\n            )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "800a6abc3198b48cb315d3dd6d28f21f1bc43919f2ab4cdbee11f21478af7b40"
+}

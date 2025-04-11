@@ -49,7 +49,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
@@ -58,7 +58,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .require_view_action(
             &request_metadata,
             view_id,
-            &CatalogViewAction::CanGetMetadata,
+            CatalogViewAction::CanGetMetadata,
         )
         .await
         .map_err(set_not_found_status_code)?;
@@ -72,6 +72,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         storage_secret_id,
         status,
         tabular_delete_profile: _,
+        protected: _,
     } = C::require_warehouse(warehouse_id, t.transaction()).await?;
     require_active_warehouse(status)?;
 
@@ -84,7 +85,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     t.commit().await?;
 
-    let storage_secret: Option<StorageCredential> = if let Some(secret_id) = &storage_secret_id {
+    let storage_secret: Option<StorageCredential> = if let Some(secret_id) = storage_secret_id {
         Some(
             state
                 .v1_state
@@ -99,7 +100,7 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     let access = storage_profile
         .generate_table_config(
-            &data_access,
+            data_access,
             storage_secret.as_ref(),
             &view_location,
             // TODO: This should be a permission based on authz
@@ -138,7 +139,7 @@ pub(crate) mod test {
         api_context: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
         params: ViewParameters,
     ) -> crate::api::Result<LoadViewResult> {
-        <CatalogServer<PostgresCatalog, AllowAllAuthorizer, SecretsState> as views::Service<
+        <CatalogServer<PostgresCatalog, AllowAllAuthorizer, SecretsState> as views::ViewService<
             State<AllowAllAuthorizer, PostgresCatalog, SecretsState>,
         >>::load_view(
             params,

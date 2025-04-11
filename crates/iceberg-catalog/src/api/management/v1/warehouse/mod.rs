@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::default_page_size;
+use super::{default_page_size, DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
@@ -73,8 +73,8 @@ pub struct CreateWarehouseRequest {
     /// within a project and may not contain "/"
     pub warehouse_name: String,
     /// Project ID in which to create the warehouse.
-    /// If no default project is set for this server, this field is required.
-    #[schema(value_type=Option<uuid::Uuid>)]
+    /// Deprecated: Please use the `x-project-id` header instead.
+    #[schema(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
     /// Storage profile to use for the warehouse.
     pub storage_profile: StorageProfile,
@@ -168,9 +168,9 @@ pub struct ListWarehousesRequest {
     #[param(nullable = false, required = false)]
     pub warehouse_status: Option<Vec<WarehouseStatus>>,
     /// The project ID to list warehouses for.
-    /// Setting a warehouse is required.
+    /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
-    #[param(value_type=Option::<uuid::Uuid>)]
+    #[param(value_type=Option::<String>)]
     pub project_id: Option<ProjectId>,
 }
 
@@ -201,14 +201,17 @@ pub struct GetWarehouseResponse {
     pub id: uuid::Uuid,
     /// Name of the warehouse.
     pub name: String,
-    /// Project ID in which the warehouse is created.
-    pub project_id: uuid::Uuid,
+    /// Project ID in which the warehouse was created.
+    #[schema(value_type=String)]
+    pub project_id: ProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
     /// Delete profile used for the warehouse.
     pub delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is active.
     pub status: WarehouseStatus,
+    /// Whether the warehouse is protected from being deleted.
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
@@ -233,6 +236,7 @@ impl axum::response::IntoResponse for CreateWarehouseResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
 pub struct WarehouseStatistics {
     /// Timestamp of when these statistics are valid until
     ///
@@ -282,21 +286,22 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id = project_id
-            .or(*DEFAULT_PROJECT_ID)
-            .ok_or(ErrorModel::bad_request(
-                "project_id must be specified",
-                "CreateWarehouseProjectIdMissing",
-                None,
-            ))?;
+        let project_id =
+            project_id
+                .or(DEFAULT_PROJECT_ID.clone())
+                .ok_or(ErrorModel::bad_request(
+                    "project_id must be specified",
+                    "CreateWarehouseProjectIdMissing",
+                    None,
+                ))?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
-                &CatalogProjectAction::CanCreateWarehouse,
+                &project_id,
+                CatalogProjectAction::CanCreateWarehouse,
             )
             .await?;
 
@@ -322,7 +327,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         let warehouse_id = C::create_warehouse(
             warehouse_name,
-            project_id,
+            &project_id,
             storage_profile,
             delete_profile,
             secret_id,
@@ -330,7 +335,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         )
         .await?;
         authorizer
-            .create_warehouse(&request_metadata, warehouse_id, project_id)
+            .create_warehouse(&request_metadata, warehouse_id, &project_id)
             .await?;
 
         transaction.commit().await?;
@@ -350,8 +355,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         authorizer
             .require_project_action(
                 &request_metadata,
-                project_id,
-                &CatalogProjectAction::CanListWarehouses,
+                &project_id,
+                CatalogProjectAction::CanListWarehouses,
             )
             .await?;
 
@@ -359,14 +364,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
 
         let warehouses =
-            C::list_warehouses(project_id, request.warehouse_status, trx.transaction()).await?;
+            C::list_warehouses(&project_id, request.warehouse_status, trx.transaction()).await?;
         trx.commit().await?;
 
         let warehouses = futures::future::try_join_all(warehouses.iter().map(|w| {
             authorizer.is_allowed_warehouse_action(
                 &request_metadata,
                 w.id,
-                &CatalogWarehouseAction::CanIncludeInList,
+                CatalogWarehouseAction::CanIncludeInList,
             )
         }))
         .await?
@@ -395,7 +400,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanGetMetadata,
+                CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
 
@@ -418,7 +423,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanGetMetadata,
+                CatalogWarehouseAction::CanGetMetadata,
             )
             .await?;
 
@@ -433,6 +438,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
     async fn delete_warehouse(
         warehouse_id: WarehouseIdent,
+        query: DeleteWarehouseQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -442,13 +448,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanDelete,
+                CatalogWarehouseAction::CanDelete,
             )
             .await?;
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        C::delete_warehouse(warehouse_id, transaction.transaction()).await?;
+        C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
         authorizer
             .delete_warehouse(&request_metadata, warehouse_id)
             .await?;
@@ -456,6 +462,36 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         Ok(())
     }
+
+    async fn set_warehouse_protection(
+        warehouse_id: WarehouseIdent,
+        protection: bool,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<ProtectionResponse> {
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CatalogWarehouseAction::CanDelete,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        tracing::debug!(
+            "Setting protection for warehouse {} to {protection}",
+            warehouse_id
+        );
+        let status =
+            C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
+        transaction.commit().await?;
+
+        Ok(status)
+    }
+
     async fn rename_warehouse(
         warehouse_id: WarehouseIdent,
         request: RenameWarehouseRequest,
@@ -468,7 +504,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanRename,
+                CatalogWarehouseAction::CanRename,
             )
             .await?;
 
@@ -495,7 +531,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanModifySoftDeletion,
+                CatalogWarehouseAction::CanModifySoftDeletion,
             )
             .await?;
 
@@ -523,7 +559,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanDeactivate,
+                CatalogWarehouseAction::CanDeactivate,
             )
             .await?;
 
@@ -553,7 +589,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanActivate,
+                CatalogWarehouseAction::CanActivate,
             )
             .await?;
 
@@ -584,7 +620,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUpdateStorage,
+                CatalogWarehouseAction::CanUpdateStorage,
             )
             .await?;
 
@@ -654,7 +690,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUpdateStorageCredential,
+                CatalogWarehouseAction::CanUpdateStorageCredential,
             )
             .await?;
 
@@ -723,7 +759,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanUse,
+                CatalogWarehouseAction::CanUse,
             )
             .await?;
 
@@ -792,7 +828,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
-                &CatalogWarehouseAction::CanListDeletedTabulars,
+                CatalogWarehouseAction::CanListDeletedTabulars,
             )
             .await?;
 
@@ -833,12 +869,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
                                 (*id).into(),
-                                &crate::service::authz::CatalogViewAction::CanIncludeInList,
+                                crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
                             TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
                                 (*id).into(),
-                                &crate::service::authz::CatalogTableAction::CanIncludeInList,
+                                crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
                         }))
                         .await?
@@ -869,9 +905,9 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let tabulars = idents
             .into_iter()
             .zip(tabulars.into_iter())
-            .map(|(k, (ident, delete_opts))| {
-                let i = ident.into_inner();
-                let deleted = delete_opts.ok_or(ErrorModel::internal(
+            .map(|(k, info)| {
+                let i = info.table_ident.into_inner();
+                let deleted = info.deletion_details.ok_or(ErrorModel::internal(
                     "Expected delete options to be Some, but found None",
                     "InternalDatabaseError",
                     None,
@@ -915,10 +951,11 @@ impl From<crate::service::GetWarehouseResponse> for GetWarehouseResponse {
         Self {
             id: warehouse.id.to_uuid(),
             name: warehouse.name,
-            project_id: *warehouse.project_id,
+            project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
+            protected: warehouse.protected,
         }
     }
 }
@@ -991,7 +1028,9 @@ mod test {
         api::{
             iceberg::{
                 types::Prefix,
-                v1::{views::Service, DataAccess, DropParams, NamespaceParameters, ViewParameters},
+                v1::{
+                    views::ViewService, DataAccess, DropParams, NamespaceParameters, ViewParameters,
+                },
             },
             management::v1::{
                 warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
@@ -1002,10 +1041,7 @@ mod test {
         catalog::{test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
-        service::{
-            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-            State, UserId,
-        },
+        service::{authz::tests::HidingAuthorizer, State, UserId},
         WarehouseIdent,
     };
 
@@ -1014,19 +1050,18 @@ mod test {
         n_tabulars: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         WarehouseIdent,
     ) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
@@ -1070,7 +1105,8 @@ mod test {
                     },
                 },
                 DropParams {
-                    purge_requested: None,
+                    purge_requested: true,
+                    force: true,
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
@@ -1081,7 +1117,7 @@ mod test {
                 .iter()
                 .any(|(start, end)| i >= *start && i < *end)
             {
-                hiding_mock.hide(&format!("view:{}", v.metadata.uuid()));
+                authz.hide(&format!("view:{}", v.metadata.uuid()));
             }
         }
 
@@ -1101,14 +1137,13 @@ mod test {
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Soft {
                 expiration_seconds: chrono::Duration::seconds(10),
             },
@@ -1151,7 +1186,8 @@ mod test {
                     },
                 },
                 DropParams {
-                    purge_requested: None,
+                    purge_requested: true,
+                    force: false,
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
@@ -1261,7 +1297,7 @@ mod test {
         let mut ids = all.tabulars;
         ids.sort_by_key(|e| e.id);
         for t in ids.iter().take(6).skip(4) {
-            hiding_mock.hide(&format!("view:{}", t.id));
+            authz.hide(&format!("view:{}", t.id));
         }
 
         let page = ApiServer::list_soft_deleted_tabulars(

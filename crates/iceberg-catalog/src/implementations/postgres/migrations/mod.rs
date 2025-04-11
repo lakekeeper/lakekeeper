@@ -109,8 +109,8 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
                 if db.code().as_deref() == Some("42P01") {
                     tracing::debug!(?db, "No migrations have been applied.");
                     return Ok(MigrationState::NoMigrationsTable);
-                };
-            };
+                }
+            }
             // we discard the error here since sqlx prefixes db errors with "while executing
             // migrations" which is not what we are doing here.
             tracing::debug!(?e, "Error listing applied migrations, even though the error may say different things, we are not applying migrations here.");

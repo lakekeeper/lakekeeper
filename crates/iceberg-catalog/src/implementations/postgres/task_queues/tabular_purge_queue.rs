@@ -1,21 +1,28 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use super::{cancel_pending_tasks, TaskFilter};
+use super::{cancel_pending_tasks, queue_task_batch, InputTrait, TaskFilter};
 use crate::{
     api::management::v1::TabularType,
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::TabularType as DbTabularType,
-        task_queues::{pick_task, queue_task, record_failure, record_success},
+        task_queues::{pick_task, record_failure, record_success},
     },
     service::task_queue::{
         tabular_purge_queue::{TabularPurgeInput, TabularPurgeTask},
         TaskQueue, TaskQueueConfig,
     },
+    WarehouseIdent,
 };
 
 super::impl_pg_task_queue!(TabularPurgeQueue);
+
+impl InputTrait for TabularPurgeInput {
+    fn warehouse_ident(&self) -> WarehouseIdent {
+        self.warehouse_ident
+    }
+}
 
 #[async_trait]
 impl TaskQueue for TabularPurgeQueue {
@@ -82,17 +89,16 @@ impl TaskQueue for TabularPurgeQueue {
         .await
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn enqueue(
-        &self,
-        TabularPurgeInput {
-            tabular_location,
-            tabular_id,
-            warehouse_ident,
-            tabular_type,
-            parent_id,
-        }: TabularPurgeInput,
-    ) -> crate::api::Result<()> {
+    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
+        cancel_pending_tasks(&self.pg_queue, filter, self.queue_name()).await
+    }
+
+    #[tracing::instrument(skip(self, task))]
+    async fn enqueue_batch(&self, task: Vec<Self::Input>) -> crate::api::Result<()> {
+        let (idempotency2task, mut idempotency2specific) = super::preprocess_batch(task, |t| {
+            Uuid::new_v5(&t.warehouse_ident, t.tabular_id.as_bytes())
+        })?;
+
         let mut transaction = self
             .pg_queue
             .read_write
@@ -100,70 +106,71 @@ impl TaskQueue for TabularPurgeQueue {
             .begin()
             .await
             .map_err(|e| e.into_error_model("failed begin transaction to purge task"))?;
+        tracing::debug!("Queuing '{}' purges", idempotency2task.len());
+        let queued =
+            queue_task_batch(&mut transaction, self.queue_name(), &idempotency2task).await?;
 
-        tracing::info!(
-            "Queuing expiration for '{tabular_id}' of type: '{}' under warehouse: '{warehouse_ident}'",
-            tabular_type.to_string(),
-        );
+        let mut task_ids = Vec::with_capacity(queued.len());
+        let mut tabular_ids = Vec::with_capacity(queued.len());
+        let mut warehouse_idents = Vec::with_capacity(queued.len());
+        let mut tabular_types: Vec<DbTabularType> = Vec::with_capacity(queued.len());
+        let mut tabular_locations = Vec::with_capacity(queued.len());
 
-        let idempotency_key = Uuid::new_v5(&warehouse_ident, tabular_id.as_bytes());
-
-        let Some(task_id) = queue_task(
-            &mut transaction,
-            self.queue_name(),
-            parent_id,
-            idempotency_key,
-            warehouse_ident,
-            None,
-        )
-        .await?
-        else {
-            tracing::debug!("Task already exists");
-            transaction.commit().await.map_err(|e| {
-                tracing::error!(?e, "failed to commit");
-                e.into_error_model("failed commiting transaction")
-            })?;
-            return Ok(());
-        };
-
-        let it = sqlx::query!(
-            r#"INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location)
-               VALUES ($1, $2, $3, $4, $5)
-               -- we update tabular_location since it may have changed from the last time we enqueued
-               ON CONFLICT (task_id) DO UPDATE SET tabular_location = $5
-               RETURNING task_id"#,
-            task_id,
-            tabular_id,
-            *warehouse_ident,
-            match tabular_type {
-                TabularType::Table => DbTabularType::Table,
-                TabularType::View => DbTabularType::View,
-            } as _,
-            tabular_location,
-        )
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, "failed to insert into tabular_purges");
-            e.into_error_model("failed to insert into tabular purges")
-        })?;
-
-        if let Some(row) = it {
-            tracing::info!("Queued purge task: {:?}", row);
-        } else {
-            tracing::info!("Purge task already exists.");
+        for q in queued {
+            if let Some(TabularPurgeInput {
+                tabular_id,
+                warehouse_ident,
+                tabular_type,
+                tabular_location,
+                parent_id: _,
+            }) = idempotency2specific.remove(&q.idempotency_key)
+            {
+                task_ids.push(q.task_id);
+                tabular_ids.push(tabular_id);
+                warehouse_idents.push(*warehouse_ident);
+                tabular_types.push(match tabular_type {
+                    TabularType::Table => DbTabularType::Table,
+                    TabularType::View => DbTabularType::View,
+                });
+                tabular_locations.push(tabular_location);
+            }
+            tracing::debug!("Queued purge task: {:?}", q.task_id);
         }
 
-        transaction.commit().await.map_err(|e| {
-            tracing::error!(?e, "failed to commit");
-            e.into_error_model("failed to commit tabular purge task")
+        sqlx::query!(
+            r#"WITH input_rows AS (
+    SELECT unnest($1::uuid[]) as task_ids,
+           unnest($2::uuid[]) as tabular_ids,
+           unnest($3::uuid[]) as warehouse_idents,
+           unnest($4::tabular_type[]) as tabular_types,
+           unnest($5::text[]) as tabular_locations
+    )
+    INSERT INTO tabular_purges(task_id, tabular_id, warehouse_id, typ, tabular_location)
+SELECT i.task_ids,
+       i.tabular_ids,
+       i.warehouse_idents,
+       i.tabular_types,
+       i.tabular_locations
+       FROM input_rows i
+ON CONFLICT (task_id) DO UPDATE SET tabular_location = EXCLUDED.tabular_location
+RETURNING task_id"#,
+            &task_ids,
+            &tabular_ids,
+            &warehouse_idents,
+            &tabular_types as _,
+            &tabular_locations,
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|e| {
+            tracing::error!("failed to queue tasks: {e:?}");
+            e.into_error_model("failed queueing tasks")
         })?;
-
+        transaction.commit().await.map_err(|e| {
+            tracing::error!("failed to commit transaction: {e:?}");
+            e.into_error_model("failed to commit transaction")
+        })?;
         Ok(())
-    }
-
-    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
-        cancel_pending_tasks(&self.pg_queue, filter, self.queue_name()).await
     }
 }
 
@@ -177,6 +184,7 @@ mod test {
     };
 
     #[sqlx::test]
+    #[tracing_test::traced_test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let config = TaskQueueConfig::default();
         let pg_queue = setup(pool, config);

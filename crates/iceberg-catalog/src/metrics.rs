@@ -8,6 +8,8 @@ use axum_prometheus::{
 };
 use futures::TryFutureExt;
 
+use crate::CONFIG;
+
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
 /// Creates `PrometheusRecorder` and installs it as the global metrics recorder. Also creates a
@@ -29,7 +31,7 @@ pub fn get_axum_layer_and_install_recorder(
             ),
             utils::SECONDS_DURATION_BUCKETS,
         )?
-        .with_http_listener(([0, 0, 0, 0], metrics_port))
+        .with_http_listener((CONFIG.bind_ip, metrics_port))
         .build()?;
     let handle = recorder.handle();
     metrics::set_global_recorder(recorder)?;

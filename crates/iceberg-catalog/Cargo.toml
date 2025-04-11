@@ -1,7 +1,7 @@
 [package]
 name = "iceberg-catalog"
 resolver = "2"
-version = "0.7.3"
+version = "0.8.0"
 edition = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
@@ -12,14 +12,24 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
 [features]
-all = ["sqlx-postgres", "s3-signer", "router", "nats", "vendored-protoc"]
+all = [
+    "authz-openfga",
+    "sqlx-postgres",
+    "s3-signer",
+    "router",
+    "nats",
+    "vendored-protoc",
+    "kafka",
+]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
 s3-signer = ["dep:aws-sigv4", "dep:aws-credential-types"]
 router = ["dep:tower-http"]
 nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
-vendored-protoc = ["openfga-rs/vendored-protoc"]
+kafka = ["dep:rdkafka", "dep:openssl-src"]
+vendored-protoc = []
+authz-openfga = ["dep:openfga-client"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -31,6 +41,7 @@ aws-credential-types = { version = "^1.2", optional = true }
 aws-sdk-sts = { workspace = true }
 aws-sigv4 = { version = "^1.2", optional = true }
 aws-smithy-http = { workspace = true }
+aws-smithy-http-client = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true, features = ["typed-header"] }
 axum-prometheus = { workspace = true }
@@ -43,6 +54,7 @@ chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
 figment = { workspace = true }
+figment_file_provider_adapter = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
@@ -52,18 +64,20 @@ http = { workspace = true }
 http-body-util = { version = "~0.1" }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
+iso8601 = { workspace = true }
 itertools = { workspace = true }
 jsonwebtoken = "9.3.0"
 jwks_client_rs = { workspace = true }
-kube = { workspace = true }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
-openfga-rs = { workspace = true, optional = false }
+moka = { workspace = true }
+openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 rand = "0.9.0"
+rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -103,5 +117,12 @@ needs_env_var = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_urlencoded = "0.7.1"
 similar = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-test = "0.2.5"
+
+[build-dependencies]
+openssl-src = { version = "300.4.2", features = [
+    "force-engine",
+], default-features = false, optional = true }

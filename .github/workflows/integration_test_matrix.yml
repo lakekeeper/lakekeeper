@@ -64,6 +64,8 @@ jobs:
           - spark_minio_remote_signing-1.7.1
           - spark_minio_remote_signing-1.8.0
           - spark_minio_s3a-1.7.1
+          - spark_aws_system_identity_sts-1.8.0
+          - spark_aws_system_identity_remote_signing-1.8.0
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
         test_name: ${{ matrix.names }}

@@ -2,7 +2,7 @@
 
 pub(crate) mod az;
 mod error;
-mod gcs;
+pub(crate) mod gcs;
 pub(crate) mod s3;
 
 pub use az::{AdlsLocation, AdlsProfile, AzCredential};
@@ -34,6 +34,9 @@ use crate::{
     Debug, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From, utoipa::ToSchema,
 )]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(clippy::unsafe_derive_deserialize)]
+// tokio::join! uses unsafe code internally.
+// This is no problem since our constructor does not enforce any invariants relevant to the unsafe code. Deserialize is even the primary way of constructing `StorageProfile` since it is received via REST.
 pub enum StorageProfile {
     /// Azure storage profile
     #[serde(rename = "adls", alias = "azdls")]
@@ -96,7 +99,7 @@ impl StorageProfile {
                 CatalogConfig {
                     overrides: HashMap::default(),
                     defaults: HashMap::default(),
-                    endpoints: api::iceberg::supported_endpoints(),
+                    endpoints: api::iceberg::supported_endpoints().to_vec(),
                 }
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
@@ -132,19 +135,20 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the underlying storage profile's file IO creation fails.
-    pub fn file_io(
+    pub async fn file_io(
         &self,
         secret: Option<&StorageCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
         match self {
-            StorageProfile::S3(profile) => profile.file_io(
-                secret
-                    .map(|s| s.try_to_s3())
-                    .transpose()?
-                    .map(Into::into)
-                    .as_ref(),
-            ),
-            StorageProfile::Adls(prof) => prof.file_io(secret.map(|s| s.try_to_az()).transpose()?),
+            StorageProfile::S3(profile) => {
+                profile
+                    .file_io(secret.map(|s| s.try_to_s3()).transpose()?)
+                    .await
+            }
+            StorageProfile::Adls(prof) => {
+                prof.file_io(secret.map(|s| s.try_to_az()).transpose()?)
+                    .await
+            }
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
             StorageProfile::Gcs(prof) => {
@@ -209,7 +213,7 @@ impl StorageProfile {
     /// Fails if the underlying storage profile's generation fails.
     pub async fn generate_table_config(
         &self,
-        data_access: &DataAccess,
+        data_access: DataAccess,
         secret: Option<&StorageCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -290,7 +294,7 @@ impl StorageProfile {
         credential: Option<&StorageCredential>,
         location: Option<&Location>,
     ) -> Result<(), ValidationError> {
-        let file_io = self.file_io(credential)?;
+        let file_io = self.file_io(credential).await?;
 
         let ns_id = NamespaceIdentUuid::default();
         let table_id = TableIdentUuid::default();
@@ -300,9 +304,6 @@ impl StorageProfile {
             std::borrow::ToOwned::to_owned,
         );
         tracing::debug!("Validating direct read/write access to {test_location}");
-        // Validate direct read/write access
-        self.validate_read_write(&file_io, &test_location, false)
-            .await?;
 
         // Test vended-credentials access
         let test_vended_credentials = match self {
@@ -313,61 +314,28 @@ impl StorageProfile {
             StorageProfile::Test(_) => false,
         };
 
-        if test_vended_credentials {
-            tracing::debug!("Validating vended credentials access to: {test_location}");
-
-            let tbl_config = self
-                .generate_table_config(
-                    &DataAccess {
-                        remote_signing: false,
-                        vended_credentials: true,
-                    },
-                    credential,
-                    &test_location,
-                    StoragePermissions::ReadWriteDelete,
-                )
-                .await?;
-            match &self {
-                StorageProfile::S3(_) => {
-                    tracing::debug!("Getting s3 file io from table config for vended credentials.");
-                    let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
-                    tracing::debug!(
-                        "Validating read/write access to: {test_location} using vended credentials"
-                    );
-                    self.validate_read_write(&sts_file_io, &test_location, true)
-                        .await?;
-                }
-                StorageProfile::Adls(p) => {
-                    tracing::debug!(
-                        "Validating adls vended credentials access to: {test_location}"
-                    );
-                    let sts_file_io = az::get_file_io_from_table_config(
-                        &tbl_config.config,
-                        p.filesystem.to_string(),
-                    )?;
-                    self.validate_read_write(&sts_file_io, &test_location, true)
-                        .await?;
-                }
-                #[cfg(test)]
-                StorageProfile::Test(_) => {}
-                StorageProfile::Gcs(_) => {
-                    tracing::debug!(
-                        "Getting gcs file io from table config for vended credentials."
-                    );
-                    let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
-                    tracing::debug!("Validating gcs vended credentials access to: {test_location}");
-                    self.validate_read_write(&sts_file_io, &test_location, true)
-                        .await?;
-                }
+        // Run both validations in parallel
+        let direct_validation = self.validate_read_write(&file_io, &test_location, false);
+        let vended_validation = async {
+            if test_vended_credentials {
+                self.validate_vended_credentials_access(credential, &test_location)
+                    .await?;
             }
-        }
-        tracing::info!("Cleanup started");
+            Ok::<(), ValidationError>(())
+        };
+
+        let (direct_result, vended_result) = tokio::join!(direct_validation, vended_validation);
+
+        direct_result?;
+        vended_result?;
+
+        tracing::debug!("Cleanup started");
         // Cleanup
         crate::catalog::io::remove_all(&file_io, &test_location)
             .await
             .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
 
-        tracing::info!("Cleanup finished");
+        tracing::debug!("Cleanup finished");
         retry_fn(|| async {
             match check_location_is_empty(&file_io, &test_location, self, || {
                 ValidationError::InvalidLocation {
@@ -397,6 +365,62 @@ impl StorageProfile {
         })
         .await??;
         tracing::debug!("checked location is empty");
+        Ok(())
+    }
+
+    /// Validate access with vended credentials
+    ///
+    /// # Errors
+    /// Fails if a file cannot be written and deleted using vended credentials.
+    async fn validate_vended_credentials_access(
+        &self,
+        credential: Option<&StorageCredential>,
+        test_location: &Location,
+    ) -> Result<(), ValidationError> {
+        tracing::debug!("Validating vended credentials access to: {test_location}");
+
+        let tbl_config = self
+            .generate_table_config(
+                DataAccess {
+                    remote_signing: false,
+                    vended_credentials: true,
+                },
+                credential,
+                test_location,
+                StoragePermissions::ReadWriteDelete,
+            )
+            .await?;
+
+        match &self {
+            StorageProfile::S3(_) => {
+                tracing::debug!("Getting s3 file io from table config for vended credentials.");
+                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
+                tracing::debug!(
+                    "Validating read/write access to: {test_location} using vended credentials"
+                );
+                self.validate_read_write(&sts_file_io, test_location, true)
+                    .await?;
+            }
+            StorageProfile::Adls(p) => {
+                tracing::debug!("Validating adls vended credentials access to: {test_location}");
+                let sts_file_io = az::get_file_io_from_table_config(
+                    &tbl_config.config,
+                    p.filesystem.to_string(),
+                )?;
+                self.validate_read_write(&sts_file_io, test_location, true)
+                    .await?;
+            }
+            #[cfg(test)]
+            StorageProfile::Test(_) => {}
+            StorageProfile::Gcs(_) => {
+                tracing::debug!("Getting gcs file io from table config for vended credentials.");
+                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
+                tracing::debug!("Validating gcs vended credentials access to: {test_location}");
+                self.validate_read_write(&sts_file_io, test_location, true)
+                    .await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -840,6 +864,7 @@ mod tests {
                 wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
             "
             .to_string(),
+            external_id: Some("abctnFEMI".to_string()),
         }
         .into();
 
@@ -886,7 +911,8 @@ mod tests {
             secret,
             StorageCredential::S3(S3Credential::AccessKey {
                 aws_access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
-                aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()
+                aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                external_id: None
             })
         );
     }
@@ -973,6 +999,7 @@ mod tests {
                 let cred: StorageCredential = S3Credential::AccessKey {
                     aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
                     aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                    external_id: None,
                 }
                 .into();
 
@@ -990,6 +1017,21 @@ mod tests {
             },
             true,
         );
+    }
+
+    #[needs_env_var(TEST_AWS = 1)]
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_validate_aws() {
+        use super::s3::test::aws::get_storage_profile;
+
+        let (profile, credential) = get_storage_profile();
+        let profile: StorageProfile = profile.into();
+        let cred: StorageCredential = credential.into();
+        profile
+            .validate_access(Some(&cred), None)
+            .await
+            .expect("Failed to validate access");
     }
 
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
@@ -1023,7 +1065,7 @@ mod tests {
 
         let config1 = profile
             .generate_table_config(
-                &DataAccess {
+                DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
                 },
@@ -1036,7 +1078,7 @@ mod tests {
 
         let config2 = profile
             .generate_table_config(
-                &DataAccess {
+                DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
                 },
@@ -1123,6 +1165,7 @@ mod tests {
         // cleanup
         profile
             .file_io(Some(cred))
+            .await
             .unwrap()
             .remove_all(base_location.as_str())
             .await

@@ -14,7 +14,16 @@ rust-version = "1.80.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-async-nats = "0.39.0"
+rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd38d", default-features = false, features = [
+    "tokio",
+    "zstd",
+    "gssapi-vendored",
+    "curl-static",
+    "ssl-vendored",
+    "libz-static",
+    "cmake-build",
+] }
+async-nats = "0.40.0"
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
@@ -30,15 +39,17 @@ azure_identity = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
-aws-sdk-sts = "1.36.0"
-aws-smithy-http = "0.60.11"
+aws-sdk-sts = "1.65.0"
+aws-smithy-http = "0.62.0"
+aws-smithy-http-client = { version = "1.0.1" }
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
 google-cloud-auth = { package = "gcloud-auth", version = "1.0.0", features = [
     "rustls-tls",
 ], default-features = false }
-figment = { version = "0.10.19", features = ["env"] }
+figment = { version = "^0.10", features = ["env"] }
+figment_file_provider_adapter = "0.1.1"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"
@@ -50,12 +61,12 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "47850413", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "6aa537eca5bda98a7ea433ed79307c9082374efd", features = [
     "storage-all",
 ] }
-openfga-rs = { git = "https://github.com/c-thiel/openfga-rs.git", rev = "2623173bab4f9c59b70f599dbc80bd4fe344e1ed" }
+iso8601 = "0.6.2"
+openfga-client = { version = "0.2", features = ["auth-middle"] }
 typed-builder = "^0.20.0"
-strum_macros = "^0.27.0"
 async-trait = "0.1.83"
 axum = { version = "0.8.1" }
 axum-prometheus = { version = "0.8.0", features = ["http-listener"] }
@@ -77,13 +88,11 @@ http-body-util = "^0.1"
 jwks_client_rs = { version = "0.5.1", default-features = false, features = [
     "rustls-tls",
 ] }
-kube = { version = "0.98", default-features = false, features = [
-    "rustls-tls",
-    "client",
-] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
+moka = { version = "^0.12", features = ["sync"] }
 percent-encoding = "2.3.1"
-strum = { version = "^0.27.0", features = ["derive"] }
+strum = { version = "0.27.0", features = ["derive"] }
+strum_macros = "0.27.0"
 sqlx = { version = "^0.8.2", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -129,5 +138,5 @@ pretty_assertions = "~1.4"
 similar = "2.6.0"
 assert-json-diff = "2.0.2"
 maplit = "1.0.2"
-limes = { version = "0.1.4", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { version = "0.2.1", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }

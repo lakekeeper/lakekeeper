@@ -1,4 +1,6 @@
-use std::fmt::Display;
+// TODO: lift this from DB module?
+
+use std::{fmt::Display, str::FromStr};
 
 use base64::Engine;
 use chrono::Utc;
@@ -33,10 +35,10 @@ where
     }
 }
 
-impl<T, Z> TryFrom<&str> for PaginateToken<T>
+impl<T> TryFrom<&str> for PaginateToken<T>
 where
-    T: for<'a> TryFrom<&'a str, Error = Z> + Display,
-    Z: std::error::Error + Send + Sync + 'static,
+    T: FromStr + Display,
+    <T as FromStr>::Err: Display,
 {
     type Error = ErrorModel;
 
@@ -69,7 +71,13 @@ where
                         ts.parse().map_err(|e| parse_error(Some(Box::new(e))))?,
                     )
                     .ok_or(parse_error(None))?;
-                    let id = id.try_into().map_err(|e| parse_error(Some(Box::new(e))))?;
+                    let id = id.parse().map_err(|e| {
+                        parse_error(Some(Box::new(ErrorModel::bad_request(
+                            format!("Pagination id could not be parsed: {e}"),
+                            "PaginationTokenIdParseError".to_string(),
+                            None,
+                        ))))
+                    })?;
                     Ok(PaginateToken::V1(V1PaginateToken { created_at, id }))
                 }
                 _ => Err(parse_error(None)),
@@ -79,11 +87,11 @@ where
     }
 }
 
-fn parse_error(e: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> ErrorModel {
+fn parse_error(source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>) -> ErrorModel {
     ErrorModel::bad_request(
         "Invalid paginate token".to_string(),
         "PaginateTokenParseError".to_string(),
-        e,
+        source,
     )
 }
 

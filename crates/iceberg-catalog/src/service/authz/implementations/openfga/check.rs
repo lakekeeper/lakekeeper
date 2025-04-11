@@ -1,7 +1,7 @@
 use axum::{extract::State as AxumState, Extension, Json};
 use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
-use openfga_rs::CheckRequestTupleKey;
+use openfga_client::client::CheckRequestTupleKey;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -517,14 +517,14 @@ mod tests {
         use std::str::FromStr;
 
         use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
-        use openfga_rs::TupleKey;
+        use openfga_client::client::TupleKey;
         use strum::IntoEnumIterator;
         use uuid::Uuid;
 
         use super::super::{super::relations::*, *};
         use crate::{
             api::{
-                iceberg::v1::{namespace::Service, Prefix},
+                iceberg::v1::{namespace::NamespaceService, Prefix},
                 management::v1::{
                     role::{CreateRoleRequest, Service as RoleService},
                     warehouse::{CreateWarehouseResponse, TabularDeleteProfile},

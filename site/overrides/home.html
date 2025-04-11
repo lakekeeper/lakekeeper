@@ -63,25 +63,25 @@
       <div class="cs_counter_1_wrap">
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="600" class="odometer"></span>+
+            <span data-count-to="600" class="odometer" id="commits-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Commits</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="450" class="odometer"></span>+
+            <span data-count-to="550" class="odometer"></span>+
           </div>
           <p class="cs_counter_title mb-0">Stars</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="600" class="odometer"></span>+
+            <span data-count-to="700" class="odometer" id="pull-requests-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Pull Requests</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="25" class="odometer"></span>+
+            <span data-count-to="30" class="odometer"></span>+
           </div>
           <p class="cs_counter_title mb-0">Forks</p>
         </div>
@@ -497,34 +497,164 @@
     <div class="cs_height_120 cs_height_lg_80"></div>
     <div class="container">
       <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
-        <h2 class="cs_section_title mb-0">Learn More: Talks & Demos</h2>
+        <h2 id="learn" class="cs_section_title mb-0">Learn More: Talks & Demos</h2>
       </div>
       <div class="cs_height_50 cs_height_lg_50"></div>
       <div class="container">
         <div class="row cs_gap_y_24">
           <div class="container">
             <div class="row cs_gap_y_24">
-              <!-- First Post -->
-              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+              
+              
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
                 <div class="cs_post cs_style_1">
                   <div class="cs_post_inner">
-                    <a href="https://www.youtube.com/watch?v=p0nVQSolnuY" class="cs_post_thumbnail cs_zoom">
-                      <img src="assets/img/post_1.jpg" alt="Post Thumbnail" class="cs_zoom_in" />
-                    </a>
+                    <div class="cs_post_thumbnail cs_zoom">
+                      <iframe 
+                        width="100%" 
+                        height="200" 
+                        src="https://www.youtube.com/embed/fZhghCQq00I" 
+                        title="YouTube video player" 
+                        frameborder="0" 
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                        allowfullscreen>
+                      </iframe>
+                    </div>
                     <div class="cs_post_content">
                       <div class="cs_post_meta_wrapper">
-                        <div class="cs_post_meta cs_semibold">2024</div>
+                        <div class="cs_post_meta cs_semibold">2025 - 4</div>
                         <div class="cs_post_meta_separator"></div>
-                        <div class="cs_post_meta cs_semibold">BY Christian</div>
+                        <div class="cs_post_meta cs_semibold">dltHub</div>
                       </div>
                       <h3 class="cs_post_title cs_semibold mb-0">
-                        <a href="https://www.youtube.com/watch?v=p0nVQSolnuY">Lakekeeper: Rust based Iceberg Catalog</a>
+                        Upgrade your infrastructure to Iceberg with dlt + Lakekeeper
                       </h3>
                     </div>
                   </div>
                 </div>
               </div>
+            
+            <!-- 7th Post -->
+            <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+              <div class="cs_post cs_style_1">
+                <div class="cs_post_inner">
+                  <div class="cs_post_thumbnail cs_zoom">
+                    <iframe 
+                      width="100%" 
+                      height="200" 
+                      src="https://www.youtube.com/embed/cEnqipW4yHU" 
+                      title="YouTube video player" 
+                      frameborder="0" 
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                      allowfullscreen>
+                    </iframe>
+                  </div>
+                  <div class="cs_post_content">
+                    <div class="cs_post_meta_wrapper">
+                      <div class="cs_post_meta cs_semibold">2025 - 4</div>
+                      <div class="cs_post_meta_separator"></div>
+                      <div class="cs_post_meta cs_semibold">Crunchy Data</div>
+                    </div>
+                    <h3 class="cs_post_title cs_semibold mb-0">
+                      Building a Postgres data warehouse with Iceberg
+                    </h3>
+                  </div>
+                </div>
+              </div>
+            </div>
 
+            <!-- 6th Post -->
+            <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+              <div class="cs_post cs_style_1">
+                <div class="cs_post_inner">
+                  <div class="cs_post_thumbnail cs_zoom">
+                    <iframe 
+                      width="100%" 
+                      height="200" 
+                      src="https://www.youtube.com/embed/srCHK2aVYuE" 
+                      title="YouTube video player" 
+                      frameborder="0" 
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                      allowfullscreen>
+                    </iframe>
+                  </div>
+                  <div class="cs_post_content">
+                    <div class="cs_post_meta_wrapper">
+                      <div class="cs_post_meta cs_semibold">2025 - 4</div>
+                      <div class="cs_post_meta_separator"></div>
+                      <div class="cs_post_meta cs_semibold">Lakekeeper</div>
+                    </div>
+                    <h3 class="cs_post_title cs_semibold mb-0">
+                      Securing Shared Data in Apache Iceberg
+                    </h3>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+              <!-- 5th Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://techontherocks.show/16" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_5.png" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">By Tech on the Rocks</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://techontherocks.show/16">Tech on the Rocks: Episode 16</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 4th Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.4s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://youtu.be/vtwQc3hM6ng" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_4.png" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">By Lakekeeper Team</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://youtu.be/vtwQc3hM6ng">Lakekeeper: Advanced Features Overview</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+                     
+              <!-- Third Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://www.youtube.com/live/pe8_Q-xryAM" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_3.png" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">By Manfred, Cole, Viktor and Christian</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://www.youtube.com/live/pe8_Q-xryAM">Trino Community Broadcast</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
               <!-- Second Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
                 <div class="cs_post cs_style_1">
@@ -545,6 +675,29 @@
                   </div>
                 </div>
               </div>
+                     
+              <!-- First Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <a href="https://www.youtube.com/watch?v=p0nVQSolnuY" class="cs_post_thumbnail cs_zoom">
+                      <img src="assets/img/post_1.jpg" alt="Post Thumbnail" class="cs_zoom_in" />
+                    </a>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2024</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">BY Christian</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        <a href="https://www.youtube.com/watch?v=p0nVQSolnuY">Lakekeeper: Rust based Iceberg Catalog</a>
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              
             </div>
           </div>
         </div>
@@ -569,4 +722,6 @@
   </footer>
   <!-- End Footer Section -->
 </div>
+
+
 {% endblock %}

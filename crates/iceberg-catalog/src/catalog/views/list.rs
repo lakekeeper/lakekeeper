@@ -33,7 +33,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         .require_warehouse_action(
             &request_metadata,
             warehouse_id,
-            &CatalogWarehouseAction::CanUse,
+            CatalogWarehouseAction::CanUse,
         )
         .await?;
     let mut t: <C as Catalog>::Transaction =
@@ -44,7 +44,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         .require_namespace_action(
             &request_metadata,
             namespace_id,
-            &CatalogNamespaceAction::CanListViews,
+            CatalogNamespaceAction::CanListViews,
         )
         .await?;
 
@@ -68,10 +68,18 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
         .await?;
     t.commit().await?;
 
+    let mut idents = Vec::with_capacity(identifiers.len());
+    let mut protection_status = Vec::with_capacity(identifiers.len());
+    for ident in identifiers {
+        idents.push(ident.table_ident);
+        protection_status.push(ident.protected);
+    }
+
     Ok(ListTablesResponse {
         next_page_token,
-        identifiers,
+        identifiers: idents,
         table_uuids: return_uuids.then_some(view_uuids.into_iter().map(|id| *id).collect()),
+        protection_status: query.return_protection_status.then_some(protection_status),
     })
 }
 
@@ -84,7 +92,7 @@ mod test {
         api::{
             iceberg::{
                 types::{PageToken, Prefix},
-                v1::{views::Service, DataAccess, ListTablesQuery, NamespaceParameters},
+                v1::{views::ViewService, DataAccess, ListTablesQuery, NamespaceParameters},
             },
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
@@ -92,10 +100,7 @@ mod test {
         catalog::{test::impl_pagination_tests, CatalogServer},
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
-        service::{
-            authz::implementations::openfga::{tests::ObjectHidingMock, OpenFGAAuthorizer},
-            State, UserId,
-        },
+        service::{authz::tests::HidingAuthorizer, State, UserId},
     };
 
     async fn pagination_test_setup(
@@ -103,18 +108,17 @@ mod test {
         n_tables: usize,
         hidden_ranges: &[(usize, usize)],
     ) -> (
-        ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
+        ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
         let prof = crate::catalog::test::test_io_profile();
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -147,7 +151,7 @@ mod test {
             .unwrap();
             for (start, end) in hidden_ranges.iter().copied() {
                 if i >= start && i < end {
-                    hiding_mock.hide(&format!("view:{}", view.metadata.uuid()));
+                    authz.hide(&format!("view:{}", view.metadata.uuid()));
                 }
             }
         }
@@ -168,14 +172,13 @@ mod test {
     async fn test_view_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
-        let hiding_mock = ObjectHidingMock::new();
-        let authz = hiding_mock.to_authorizer();
+        let authz: HidingAuthorizer = HidingAuthorizer::new();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
-            authz,
+            authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
@@ -216,6 +219,7 @@ mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(11),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -231,6 +235,7 @@ mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(10),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -246,6 +251,7 @@ mod test {
                 page_token: PageToken::Present(all.next_page_token.unwrap()),
                 page_size: Some(10),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -262,6 +268,7 @@ mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -287,6 +294,7 @@ mod test {
                 page_token: PageToken::Present(first_six.next_page_token.unwrap()),
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -312,7 +320,7 @@ mod test {
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
-            hiding_mock.hide(&format!("view:{t}"));
+            authz.hide(&format!("view:{t}"));
         }
 
         let page = CatalogServer::list_views(
@@ -321,6 +329,7 @@ mod test {
                 page_token: PageToken::NotSpecified,
                 page_size: Some(5),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -347,6 +356,7 @@ mod test {
                 page_token: PageToken::Present(page.next_page_token.unwrap()),
                 page_size: Some(6),
                 return_uuids: true,
+                return_protection_status: true,
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),

@@ -44,7 +44,7 @@ jobs:
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
       - name: Install lakekeeper (wait 300s)
-        run: helm install -f tests/kube-auth/values.yaml my-lakekeeper lakekeeper/lakekeeper --version 0.3.0 && sleep 300
+        run: helm install -f tests/kube-auth/values.yaml --set catalog.image.repository=localhost/iceberg-catalog-local --set catalog.image.tag=amd64 my-lakekeeper lakekeeper/lakekeeper --version 0.4.4 && sleep 300
       - name: Run tests
         run: kubectl run bootstrap-test --image=curlimages/curl -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)"
       - name: bootstrap-logs
