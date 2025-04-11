@@ -45,9 +45,11 @@ aws-smithy-http-client = { version = "1.0.1" }
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
-google-cloud-auth = { package = "gcloud-auth", version = "1.0.0", features = [
+google-cloud-auth = { package = "gcloud-auth", version = "1.1.0", features = [
     "rustls-tls",
 ], default-features = false }
+google-cloud-token = { package = "token-source", version = "1.0" }
+gcloud-token = "1.0.0"
 figment = { version = "^0.10", features = ["env"] }
 figment_file_provider_adapter = "0.1.1"
 serde = { version = "^1.0", features = ["rc"] }

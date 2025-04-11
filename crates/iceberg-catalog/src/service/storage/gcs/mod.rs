@@ -1,13 +1,23 @@
 #![allow(clippy::module_name_repetitions)]
 
-use std::{collections::HashMap, str::FromStr, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 
 use base64::Engine;
+use google_cloud_auth::{
+    token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
+};
+use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
+use iceberg::io::{GCS_DISABLE_CONFIG_LOAD, GCS_DISABLE_VM_METADATA};
 use iceberg_ext::configs::{
     table::{gcs, TableProperties},
     Location,
 };
 use serde::{Deserialize, Serialize};
+use url::Url;
 use veil::Redact;
 
 use super::StorageType;
@@ -20,12 +30,19 @@ use crate::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
         StoragePermissions, TableConfig,
     },
-    WarehouseIdent,
+    WarehouseIdent, CONFIG,
 };
 
 mod sts;
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+const STS_URL_STR: &str = "https://sts.googleapis.com/v1/token";
+static STS_URL: LazyLock<Url> = LazyLock::new(|| {
+    STS_URL_STR
+        .parse::<Url>()
+        .expect("failed to parse a constant to a url")
+});
+const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -64,6 +81,13 @@ pub enum GcsCredential {
     /// The key is the JSON object obtained when creating a service account key in the GCP console.
     #[schema(title = "GcsCredentialServiceAccountKey")]
     ServiceAccountKey { key: GcsServiceKey },
+
+    /// GCP System Identity
+    ///
+    /// Use the service account that the application is running as.
+    /// This can be a Compute Engine default service account or a user-assigned service account.
+    #[schema(title = "GcsCredentialSystemIdentity")]
+    GcpSystemIdentity {},
 }
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -82,28 +106,59 @@ pub struct GcsServiceKey {
     pub universe_domain: String,
 }
 
+pub(crate) enum TokenSource {
+    GAuth(Arc<dyn GCloudAuthTokenSource>),
+    Token(Arc<dyn GCloudTokenSource>),
+}
+
+impl TokenSource {
+    pub(crate) async fn token(&self) -> Result<String, String> {
+        match self {
+            TokenSource::GAuth(ts) => ts
+                .token()
+                .await
+                .map(|t| t.access_token)
+                .map_err(|e| e.to_string()),
+            TokenSource::Token(ts) => ts.token().await.map_err(|e| e.to_string()),
+        }
+        .map(|t| t.trim_start_matches("Bearer ").to_string())
+    }
+}
+
 impl GcsProfile {
     /// Create a new `FileIO` instance for GCS.
     ///
     /// # Errors
     /// Fails if the `FileIO` instance cannot be created.
     #[allow(clippy::unused_self)]
-    pub fn file_io(
-        &self,
-        credential: Option<&GcsCredential>,
-    ) -> Result<iceberg::io::FileIO, FileIoError> {
+    pub fn file_io(&self, credential: &GcsCredential) -> Result<iceberg::io::FileIO, FileIoError> {
         let mut builder = iceberg::io::FileIOBuilder::new("gcs").with_client(HTTP_CLIENT.clone());
 
-        if let Some(GcsCredential::ServiceAccountKey { key }) = credential {
-            builder = builder.with_prop(
-                iceberg::io::GCS_CREDENTIALS_JSON,
-                // guess we're doing base64 now ¯\_(._.)_/¯
-                base64::prelude::BASE64_STANDARD.encode(
-                    serde_json::to_string(key)
-                        .map_err(CredentialsError::from)?
-                        .as_bytes(),
-                ),
-            );
+        match credential {
+            GcsCredential::ServiceAccountKey { key } => {
+                builder = builder
+                    .with_prop(
+                        iceberg::io::GCS_CREDENTIALS_JSON,
+                        base64::prelude::BASE64_STANDARD.encode(
+                            serde_json::to_string(key)
+                                .map_err(CredentialsError::from)?
+                                .as_bytes(),
+                        ),
+                    )
+                    .with_prop(GCS_DISABLE_VM_METADATA, "true")
+                    .with_prop(GCS_DISABLE_CONFIG_LOAD, "true");
+            }
+            GcsCredential::GcpSystemIdentity {} => {
+                if !CONFIG.enable_gcp_system_credentials {
+                    return Err(CredentialsError::Misconfiguration(
+                        "GCP System identity credentials are disabled in this Lakekeeper deployment."
+                            .to_string(),
+                    ).into());
+                }
+                builder = builder
+                    .with_prop(GCS_DISABLE_VM_METADATA, "false")
+                    .with_prop(GCS_DISABLE_CONFIG_LOAD, "false");
+            }
         }
 
         Ok(builder.build()?)
@@ -173,43 +228,94 @@ impl GcsProfile {
             })
     }
 
+    async fn get_token_source(
+        &self,
+        credential: &GcsCredential,
+    ) -> Result<(TokenSource, Option<String>), CredentialsError> {
+        let config = google_cloud_auth::project::Config::default()
+            .with_scopes(&[GOOGLE_CLOUD_PLATFORM_SCOPE]);
+
+        Ok(match credential {
+            GcsCredential::ServiceAccountKey { key } => {
+                let source = google_cloud_auth::project::create_token_source_from_credentials(
+                    &key.into(),
+                    &config,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "Failed to create gcp token source from credentials: {:?}",
+                        e
+                    );
+                    CredentialsError::Misconfiguration(
+                        "Failed to create gcp token source from credentials".to_string(),
+                    )
+                })?;
+                (
+                    TokenSource::GAuth(source.into()),
+                    Some(key.project_id.clone()),
+                )
+            }
+            GcsCredential::GcpSystemIdentity {} => {
+                if !CONFIG.enable_gcp_system_credentials {
+                    return Err(CredentialsError::Misconfiguration(
+                        "GCP System identity credentials are disabled in this Lakekeeper deployment."
+                            .to_string(),
+                    ));
+                }
+                let tsp = DefaultTokenSourceProvider::new(config).await.map_err(|e| {
+                    tracing::error!(
+                        "Failed to create gcp token source from system identity: {:?}",
+                        e
+                    );
+                    CredentialsError::Misconfiguration(
+                        "Failed to create gcp token source from system identity".to_string(),
+                    )
+                })?;
+                (TokenSource::Token(tsp.token_source()), tsp.project_id)
+            }
+        })
+    }
+
     /// Generate the table configuration for GCS.
     pub(crate) async fn generate_table_config(
         &self,
         _: DataAccess,
-        cred: Option<&GcsCredential>,
+        cred: &GcsCredential,
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
-        let mut creds = TableProperties::default();
-        if let Some(GcsCredential::ServiceAccountKey { key }) = cred {
-            let token = sts::downscope(
-                key,
-                &self.bucket,
-                table_location.clone(),
-                storage_permissions,
-            )
-            .await?;
+        let mut table_properties = TableProperties::default();
 
-            creds.insert(&gcs::Token(token.access_token));
-            creds.insert(&gcs::ProjectId(key.project_id.clone()));
+        let (source, project_id) = self.get_token_source(cred).await?;
+        let token = sts::downscope(
+            source,
+            &self.bucket,
+            table_location.clone(),
+            storage_permissions,
+        )
+        .await?;
 
-            if let Some(expiry) = token.expires_in {
-                creds.insert(&gcs::TokenExpiresAt(
-                    (std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis()
-                        + (expiry * 1000) as u128)
-                        .to_string(),
-                ));
-            }
+        table_properties.insert(&gcs::Token(token.access_token));
+        if let Some(ref project_id) = project_id {
+            table_properties.insert(&gcs::ProjectId(project_id.clone()));
+        }
+
+        if let Some(expiry) = token.expires_in {
+            table_properties.insert(&gcs::TokenExpiresAt(
+                (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+                    + (expiry * 1000) as u128)
+                    .to_string(),
+            ));
         }
 
         Ok(TableConfig {
             // Due to backwards compat reasons we still return creds within config too
-            config: creds.clone(),
-            creds,
+            config: table_properties.clone(),
+            creds: table_properties,
         })
     }
 
@@ -374,7 +480,6 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_GCS = 1)]
     pub(crate) mod cloud_tests {
-
         use crate::service::storage::{
             gcs::{GcsCredential, GcsProfile, GcsServiceKey},
             StorageCredential, StorageProfile,
@@ -404,6 +509,20 @@ pub(crate) mod test {
 
             profile.normalize().expect("Failed to normalize profile");
             profile.validate_access(Some(&cred), None).await.unwrap();
+        }
+
+        #[tokio::test]
+        #[needs_env_var::needs_env_var(LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS = 1)]
+        async fn test_system_identity_can_validate() {
+            let (profile, _credential) = get_storage_profile();
+            let mut profile: StorageProfile = profile.into();
+            profile.normalize().expect("failed to validate profile");
+            let credential = GcsCredential::GcpSystemIdentity {};
+            let credential: StorageCredential = credential.into();
+            profile
+                .validate_access(Some(&credential), None)
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
         }
     }
 }

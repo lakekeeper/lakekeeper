@@ -135,6 +135,9 @@ pub struct DynAppConfig {
     /// Enable Azure System Identities
     pub(crate) enable_azure_system_credentials: bool,
 
+    /// Enable GCP System Identities
+    pub(crate) enable_gcp_system_credentials: bool,
+
     // ------------- POSTGRES IMPLEMENTATION -------------
     #[redact]
     pub(crate) pg_encryption_key: String,
@@ -464,6 +467,7 @@ impl Default for DynAppConfig {
             enable_aws_system_credentials: false,
             s3_enable_direct_system_credentials: false,
             s3_require_external_id_for_system_credentials: true,
+            enable_gcp_system_credentials: false,
             nats_address: None,
             nats_topic: None,
             nats_creds_file: None,

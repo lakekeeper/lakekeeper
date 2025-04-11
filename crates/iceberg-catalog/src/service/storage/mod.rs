@@ -146,14 +146,22 @@ impl StorageProfile {
                     .await
             }
             StorageProfile::Adls(prof) => {
-                prof.file_io(secret.map(|s| s.try_to_az()).transpose()?)
-                    .await
+                prof.file_io(
+                    secret
+                        .map(|s| s.try_to_az())
+                        .transpose()?
+                        .ok_or_else(|| CredentialsError::MissingCredential(self.storage_type()))?,
+                )
+                .await
             }
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
-            StorageProfile::Gcs(prof) => {
-                Ok(prof.file_io(secret.map(|s| s.try_into_gcs()).transpose()?)?)
-            }
+            StorageProfile::Gcs(prof) => Ok(prof.file_io(
+                secret
+                    .map(|s| s.try_into_gcs())
+                    .transpose()?
+                    .ok_or_else(|| CredentialsError::MissingCredential(self.storage_type()))?,
+            )?),
         }
     }
 
@@ -252,7 +260,12 @@ impl StorageProfile {
                 profile
                     .generate_table_config(
                         data_access,
-                        secret.map(|s| s.try_into_gcs()).transpose()?,
+                        secret
+                            .map(|s| s.try_into_gcs())
+                            .transpose()?
+                            .ok_or_else(|| {
+                                CredentialsError::MissingCredential(self.storage_type())
+                            })?,
                         table_location,
                         storage_permissions,
                     )

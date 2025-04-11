@@ -182,10 +182,10 @@ impl AdlsProfile {
         &self,
         _: DataAccess,
         table_location: &Location,
-        creds: &AzCredential,
+        credential: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
-        let sas = match creds {
+        let sas = match credential {
             AzCredential::ClientCredentials {
                 client_id,
                 tenant_id,
@@ -285,7 +285,7 @@ impl AdlsProfile {
     /// Fails if the `FileIO` instance cannot be created.
     pub async fn file_io(
         &self,
-        credential: Option<&AzCredential>,
+        credential: &AzCredential,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
         let mut builder = iceberg::io::FileIOBuilder::new("azdls").with_client(HTTP_CLIENT.clone());
 
@@ -299,66 +299,62 @@ impl AdlsProfile {
                 ),
             )
             .with_prop(AzdlsConfigKeys::AccountName, self.account_name.clone())
-            .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.clone())
             .with_client(HTTP_CLIENT.clone());
 
         if let Some(authority_host) = &self.authority_host {
             builder = builder.with_prop(AzdlsConfigKeys::AuthorityHost, authority_host.to_string());
         }
 
-        if let Some(credential) = credential {
-            match credential {
-                AzCredential::ClientCredentials {
-                    client_id,
-                    tenant_id,
-                    client_secret,
-                } => {
-                    builder = builder
-                        .with_prop(
-                            AzdlsConfigKeys::ClientSecret.to_string(),
-                            client_secret.to_string(),
-                        )
-                        .with_prop(AzdlsConfigKeys::ClientId, client_id.to_string())
-                        .with_prop(AzdlsConfigKeys::TenantId, tenant_id.to_string());
-                }
-
-                AzCredential::SharedAccessKey { key } => {
-                    builder = builder.with_prop(AzdlsConfigKeys::AccountKey, key.to_string());
-                }
-                AzCredential::AzureSystemIdentity {} => {
-                    // ToDo: Use azure_identity to get token, then pass it to FileIO.
-                    // As of writing this is not supported in OpenDAL and iceberg-rust.
-                    if !CONFIG.enable_azure_system_credentials {
-                        return Err(CredentialsError::Misconfiguration(
+        match credential {
+            AzCredential::ClientCredentials {
+                client_id,
+                tenant_id,
+                client_secret,
+            } => {
+                builder = builder
+                    .with_prop(
+                        AzdlsConfigKeys::ClientSecret.to_string(),
+                        client_secret.to_string(),
+                    )
+                    .with_prop(AzdlsConfigKeys::ClientId, client_id.to_string())
+                    .with_prop(AzdlsConfigKeys::TenantId, tenant_id.to_string());
+            }
+            AzCredential::SharedAccessKey { key } => {
+                builder = builder.with_prop(AzdlsConfigKeys::AccountKey, key.to_string());
+            }
+            AzCredential::AzureSystemIdentity {} => {
+                // ToDo: Use azure_identity to get token, then pass it to FileIO.
+                // As of writing this is not supported in OpenDAL and iceberg-rust.
+                if !CONFIG.enable_azure_system_credentials {
+                    return Err(CredentialsError::Misconfiguration(
                         "Azure System identity credentials are disabled in this Lakekeeper deployment.".to_string(),
                     ).into());
-                    }
-                    let table_config = self
-                        .generate_table_config(
-                            DataAccess {
-                                vended_credentials: true,
-                                remote_signing: false,
-                            },
-                            self.base_location()
-                                .map_err(|e| CredentialsError::ShortTermCredential {
-                                    reason: "Failed to get base location for storage profile"
-                                        .to_string(),
-                                    source: Some(Box::new(e)),
-                                })?
-                                .without_trailing_slash(),
-                            credential,
-                            StoragePermissions::ReadWriteDelete,
-                        )
-                        .await
-                        .map_err(|e| CredentialsError::ShortTermCredential {
-                            reason: e.to_string(),
-                            source: Some(Box::new(e)),
-                        })?;
-
-                    builder = builder
-                        .with_props(table_config.config.inner())
-                        .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.to_string());
                 }
+                let table_config = self
+                    .generate_table_config(
+                        DataAccess {
+                            vended_credentials: true,
+                            remote_signing: false,
+                        },
+                        self.base_location()
+                            .map_err(|e| CredentialsError::ShortTermCredential {
+                                reason: "Failed to get base location for storage profile"
+                                    .to_string(),
+                                source: Some(Box::new(e)),
+                            })?
+                            .without_trailing_slash(),
+                        credential,
+                        StoragePermissions::ReadWriteDelete,
+                    )
+                    .await
+                    .map_err(|e| CredentialsError::ShortTermCredential {
+                        reason: e.to_string(),
+                        source: Some(Box::new(e)),
+                    })?;
+
+                builder = builder
+                    .with_props(table_config.config.inner())
+                    .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.to_string());
             }
         }
 

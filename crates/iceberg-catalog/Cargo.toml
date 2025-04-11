@@ -59,6 +59,7 @@ flate2 = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
 google-cloud-auth = { workspace = true }
+google-cloud-token = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }

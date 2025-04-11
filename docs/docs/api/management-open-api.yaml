@@ -2599,6 +2599,20 @@ components:
                 - service-account-key
             key:
               $ref: '#/components/schemas/GcsServiceKey'
+        - type: object
+          title: GcsCredentialSystemIdentity
+          description: |-
+            GCP System Identity
+
+            Use the service account that the application is running as.
+            This can be a Compute Engine default service account or a user-assigned service account.
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - gcp-system-identity
       description: |-
         GCS Credentials
 
@@ -3562,6 +3576,7 @@ components:
         - authz-backend
         - aws-system-identities-enabled
         - azure-system-identities-enabled
+        - gcp-system-identities-enabled
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
@@ -3580,6 +3595,9 @@ components:
             - string
             - 'null'
           description: Default Project ID. Null if not set
+        gcp-system-identities-enabled:
+          type: boolean
+          description: If using GCP system identities for GCS storage profiles are enabled.
         server-id:
           type: string
           format: uuid
