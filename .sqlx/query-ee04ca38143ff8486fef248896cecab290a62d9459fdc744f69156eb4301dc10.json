@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT protected, updated_at\n        FROM namespace\n        WHERE namespace_id = $1 AND warehouse_id IN (\n            SELECT warehouse_id FROM warehouse WHERE status = 'active'\n        )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "ee04ca38143ff8486fef248896cecab290a62d9459fdc744f69156eb4301dc10"
+}
