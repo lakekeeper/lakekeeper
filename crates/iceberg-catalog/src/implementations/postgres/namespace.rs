@@ -529,6 +529,41 @@ pub(crate) async fn set_namespace_protected(
     })
 }
 
+pub(crate) async fn get_namespace_protected(
+    namespace_id: NamespaceIdentUuid,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ProtectionResponse> {
+    let row = sqlx::query!(
+        r#"
+        SELECT protected, updated_at
+        FROM namespace
+        WHERE namespace_id = $1 AND warehouse_id IN (
+            SELECT warehouse_id FROM warehouse WHERE status = 'active'
+        )
+        "#,
+        *namespace_id
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::RowNotFound = e {
+            ErrorModel::not_found(
+                format!("Namespace {namespace_id} not found"),
+                "NamespaceNotFound",
+                None,
+            )
+        } else {
+            tracing::error!("Error getting namespace protection status: {e:?}");
+            e.into_error_model("Error getting namespace protection status".to_string())
+        }
+    })?;
+
+    Ok(ProtectionResponse {
+        protected: row.protected,
+        updated_at: row.updated_at,
+    })
+}
+
 pub(crate) async fn update_namespace_properties(
     warehouse_id: WarehouseIdent,
     namespace_id: NamespaceIdentUuid,

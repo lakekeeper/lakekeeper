@@ -25,7 +25,10 @@ mod test {
                     ListTablesQuery, NamespaceParameters,
                 },
             },
-            management::v1::warehouse::TabularDeleteProfile,
+            management::v1::{
+                namespace::NamespaceManagementService, table::TableManagementService as _,
+                view::ViewManagementService as _, warehouse::TabularDeleteProfile, ApiServer,
+            },
             RequestMetadata,
         },
         catalog::CatalogServer,
@@ -278,7 +281,7 @@ mod test {
         )
         .await
         .unwrap();
-        CatalogServer::set_view_protection(
+        ApiServer::set_view_protection(
             (*views.table_uuids.clone().unwrap().first().unwrap()).into(),
             warehouse.warehouse_id,
             true,
@@ -301,7 +304,7 @@ mod test {
         .unwrap_err();
         assert_eq!(e.error.code, 409, "{}", e.error);
 
-        CatalogServer::set_view_protection(
+        ApiServer::set_view_protection(
             (*views.table_uuids.as_deref().unwrap().first().unwrap()).into(),
             warehouse.warehouse_id,
             false,
@@ -383,7 +386,7 @@ mod test {
             .unwrap(),
         );
 
-        CatalogServer::set_namespace_protected(
+        ApiServer::set_namespace_protection(
             ns_id,
             warehouse.warehouse_id,
             true,
@@ -406,7 +409,7 @@ mod test {
         .unwrap_err();
         assert_eq!(e.error.code, 400, "{}", e.error);
 
-        CatalogServer::set_namespace_protected(
+        ApiServer::set_namespace_protection(
             ns_id,
             warehouse.warehouse_id,
             false,
@@ -458,7 +461,7 @@ mod test {
         .await
         .unwrap();
 
-        CatalogServer::set_table_protection(
+        ApiServer::set_table_protection(
             TableIdentUuid::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
             warehouse.warehouse_id,
             true,
@@ -481,7 +484,7 @@ mod test {
         .unwrap_err();
         assert_eq!(e.error.code, 409, "{}", e.error);
 
-        CatalogServer::set_table_protection(
+        ApiServer::set_table_protection(
             TableIdentUuid::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
             warehouse.warehouse_id,
             false,

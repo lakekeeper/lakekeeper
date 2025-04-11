@@ -144,13 +144,15 @@ mod test {
     use sqlx::PgPool;
 
     use crate::{
-        api::iceberg::{
-            types::{DropParams, Prefix},
-            v1::ViewParameters,
+        api::{
+            iceberg::{
+                types::{DropParams, Prefix},
+                v1::ViewParameters,
+            },
+            management::v1::{view::ViewManagementService, ApiServer as ManagementApiServer},
         },
         catalog::views::{
-            create::test::create_view, drop::drop_view, load::test::load_view,
-            protect::set_protect_view, test::setup,
+            create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
         request_metadata::RequestMetadata,
         tests::random_request_metadata,
@@ -246,7 +248,7 @@ mod test {
         .expect("View should be loadable");
         assert_eq!(loaded_view.metadata, created_view.metadata);
 
-        set_protect_view(
+        ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
             WarehouseIdent::from_str(prefix.as_str()).unwrap(),
             true,
@@ -273,7 +275,7 @@ mod test {
 
         assert_eq!(e.error.code, StatusCode::CONFLICT);
 
-        set_protect_view(
+        ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
             WarehouseIdent::from_str(prefix.as_str()).unwrap(),
             false,
@@ -342,7 +344,7 @@ mod test {
         .expect("View should be loadable");
         assert_eq!(loaded_view.metadata, created_view.metadata);
 
-        set_protect_view(
+        ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
             WarehouseIdent::from_str(prefix.as_str()).unwrap(),
             true,

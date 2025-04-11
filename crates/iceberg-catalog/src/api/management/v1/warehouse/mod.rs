@@ -481,10 +481,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        tracing::debug!(
-            "Setting protection for warehouse {} to {protection}",
-            warehouse_id
-        );
+        tracing::debug!("Setting protection for warehouse {warehouse_id} to {protection}");
         let status =
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;

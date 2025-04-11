@@ -39,11 +39,11 @@ use crate::{
     },
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
-        namespace::set_namespace_protected,
+        namespace::{get_namespace_protected, set_namespace_protected},
         role::search_role,
         tabular::{
-            clear_tabular_deleted_at, list_tabulars, mark_tabular_as_deleted,
-            set_tabular_protected,
+            clear_tabular_deleted_at, get_tabular_protected, list_tabulars,
+            mark_tabular_as_deleted, set_tabular_protected,
             table::{commit_table_transaction, create_table, load_storage_profile},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
@@ -661,12 +661,26 @@ impl Catalog for super::PostgresCatalog {
         set_tabular_protected(tabular_id, protect, transaction).await
     }
 
+    async fn get_tabular_protected(
+        tabular_id: TabularIdentUuid,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ProtectionResponse> {
+        get_tabular_protected(tabular_id, transaction).await
+    }
+
     async fn set_namespace_protected(
         namespace_id: NamespaceIdentUuid,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
         set_namespace_protected(namespace_id, protect, transaction).await
+    }
+
+    async fn get_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ProtectionResponse> {
+        get_namespace_protected(namespace_id, transaction).await
     }
 
     async fn set_warehouse_protected(

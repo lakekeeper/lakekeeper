@@ -4,7 +4,6 @@ mod drop;
 mod exists;
 mod list;
 mod load;
-mod protect;
 mod rename;
 
 use std::str::FromStr;
@@ -17,20 +16,16 @@ use iceberg_ext::{
 
 use super::{tables::validate_table_properties, CatalogServer};
 use crate::{
-    api::{
-        iceberg::{
-            types::DropParams,
-            v1::{
-                ApiContext, CommitViewRequest, CreateViewRequest, DataAccess, ListTablesQuery,
-                ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix,
-                RenameTableRequest, Result, ViewParameters,
-            },
+    api::iceberg::{
+        types::DropParams,
+        v1::{
+            ApiContext, CommitViewRequest, CreateViewRequest, DataAccess, ListTablesQuery,
+            ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RenameTableRequest,
+            Result, ViewParameters,
         },
-        management::v1::ProtectionResponse,
     },
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, Catalog, SecretStore, State, ViewIdentUuid},
-    WarehouseIdent,
+    service::{authz::Authorizer, Catalog, SecretStore, State},
 };
 
 #[async_trait::async_trait]
@@ -106,17 +101,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<()> {
         rename::rename_view(prefix, request, state, request_metadata).await
-    }
-
-    async fn set_view_protection(
-        view_id: ViewIdentUuid,
-        warehouse_ident: WarehouseIdent,
-        protected: bool,
-        state: ApiContext<State<A, C, S>>,
-        request_metadata: RequestMetadata,
-    ) -> Result<ProtectionResponse> {
-        protect::set_protect_view(view_id, warehouse_ident, protected, state, request_metadata)
-            .await
     }
 }
 

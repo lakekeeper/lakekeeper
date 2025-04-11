@@ -15,7 +15,7 @@ use crate::{
             GetNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters,
             Prefix, Result, UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
         },
-        management::v1::{warehouse::TabularDeleteProfile, ProtectionResponse, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, TabularType},
         set_not_found_status_code,
     },
     catalog,
@@ -422,37 +422,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         t.commit().await?;
         Ok(r)
     }
-
-    async fn set_namespace_protected(
-        namespace_id: NamespaceIdentUuid,
-        warehouse_id: WarehouseIdent,
-        protected: bool,
-        state: ApiContext<State<A, C, S>>,
-        metadata: RequestMetadata,
-    ) -> Result<ProtectionResponse> {
-        //  ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-
-        authorizer
-            .require_warehouse_action(&metadata, warehouse_id, CatalogWarehouseAction::CanUse)
-            .await?;
-        authorizer
-            .require_namespace_action(
-                &metadata,
-                Ok(Some(namespace_id)),
-                CatalogNamespaceAction::CanDelete,
-            )
-            .await
-            .map_err(set_not_found_status_code)?;
-        tracing::debug!(
-            "Setting protection status for namespace: {:?} to {protected}",
-            namespace_id
-        );
-        let status = C::set_namespace_protected(namespace_id, protected, t.transaction()).await?;
-        t.commit().await?;
-        Ok(status)
-    }
 }
 
 async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
@@ -730,7 +699,10 @@ mod tests {
                     NamespaceParameters,
                 },
             },
-            management::v1::warehouse::TabularDeleteProfile,
+            management::v1::{
+                namespace::NamespaceManagementService, warehouse::TabularDeleteProfile,
+                ApiServer as ManagementApiServer,
+            },
             ApiContext,
         },
         catalog::{test::impl_pagination_tests, CatalogServer},
@@ -850,7 +822,7 @@ mod tests {
             .first()
             .unwrap(),
         );
-        CatalogServer::set_namespace_protected(
+        ManagementApiServer::set_namespace_protection(
             ns_id,
             warehouse.warehouse_id,
             true,
@@ -878,7 +850,7 @@ mod tests {
 
         assert_eq!(e.error.code, http::StatusCode::CONFLICT);
 
-        CatalogServer::set_namespace_protected(
+        ManagementApiServer::set_namespace_protection(
             ns_id,
             warehouse.warehouse_id,
             false,

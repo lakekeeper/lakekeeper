@@ -764,9 +764,19 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
+    async fn get_tabular_protected(
+        tabular_id: TabularIdentUuid,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ProtectionResponse>;
+
     async fn set_namespace_protected(
         namespace_id: NamespaceIdentUuid,
         protect: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ProtectionResponse>;
+
+    async fn get_namespace_protected(
+        namespace_id: NamespaceIdentUuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 

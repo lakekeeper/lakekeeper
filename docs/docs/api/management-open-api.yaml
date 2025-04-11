@@ -1669,6 +1669,36 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
       deprecated: true
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
+    get:
+      tags:
+        - warehouse
+      operationId: get_namespace_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - warehouse
@@ -1881,6 +1911,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
+    get:
+      tags:
+        - warehouse
+      operationId: get_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - warehouse
@@ -1918,6 +1978,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
+    get:
+      tags:
+        - warehouse
+      operationId: get_view_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - warehouse
