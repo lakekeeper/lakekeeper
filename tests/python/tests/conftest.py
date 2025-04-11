@@ -142,6 +142,7 @@ def storage_config(request) -> dict:
                 "region": settings.s3_region,
                 "path-style-access": path_style_access,
                 "endpoint": settings.s3_endpoint,
+                "key-prefix": uuid.uuid4().hex,
                 "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
                 **extra_config,
@@ -157,7 +158,8 @@ def storage_config(request) -> dict:
         if settings.aws_s3_bucket is None or settings.aws_s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
 
-        aws_s3_key_prefix = filter_empty_str(settings.aws_s3_key_prefix)
+        aws_s3_key_prefix = filter_empty_str(settings.aws_s3_key_prefix) or ""
+        aws_s3_key_prefix = aws_s3_key_prefix.rstrip("/") + "/" + uuid.uuid4().hex
         assume_role_arn = filter_empty_str(settings.aws_s3_assume_role_arn)
         external_id = filter_empty_str(settings.aws_s3_assume_role_external_id)
         aws_s3_sts_role_arn = filter_empty_str(settings.aws_s3_sts_role_arn)
@@ -215,6 +217,7 @@ def storage_config(request) -> dict:
                 "type": "adls",
                 "account-name": settings.azure_storage_account_name,
                 "filesystem": settings.azure_storage_filesystem,
+                "key-prefix": uuid.uuid4().hex,
             },
             "storage-credential": {
                 "type": "az",
