@@ -47,6 +47,7 @@ pub struct BootstrapRequest {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServerInfo {
     /// Version of the server.
     pub version: String,
