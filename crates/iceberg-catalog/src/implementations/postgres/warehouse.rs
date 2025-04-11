@@ -562,7 +562,7 @@ pub(crate) async fn set_warehouse_protection(
                 "WarehouseNotFound",
                 Some(Box::new(e)),
             );
-        };
+        }
         e.into_error_model("Error setting warehouse protection")
     })?;
 

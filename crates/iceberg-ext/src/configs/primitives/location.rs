@@ -31,14 +31,14 @@ impl Location {
     pub fn with_trailing_slash(&mut self) -> &mut Self {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.pop_if_empty().push("");
-        };
+        }
         self
     }
 
     pub fn without_trailing_slash(&mut self) -> &mut Self {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.pop_if_empty();
-        };
+        }
         self
     }
 
@@ -58,7 +58,7 @@ impl Location {
     {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.extend(segments);
-        };
+        }
         self
     }
 
@@ -69,7 +69,7 @@ impl Location {
     pub fn push(&mut self, segment: &str) -> &mut Self {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.push(segment);
-        };
+        }
         self
     }
 
@@ -88,7 +88,7 @@ impl Location {
     pub fn pop(&mut self) -> &mut Self {
         if let Ok(mut path) = self.0.path_segments_mut() {
             path.pop();
-        };
+        }
         self
     }
 

@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::LazyLock};
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
@@ -31,13 +31,12 @@ use crate::{
     tracing::{MakeRequestUuid7, RestMakeSpan},
 };
 
-lazy_static::lazy_static! {
-    static ref ICEBERG_OPENAPI_SPEC_YAML: serde_json::Value = {
-        let mut yaml_str = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
-        yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
-        serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
-    };
-}
+static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    let mut yaml_str =
+        include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
+    yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
+    serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+});
 
 pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,

@@ -132,6 +132,9 @@ pub struct DynAppConfig {
     /// `assume_role_arn`.
     pub(crate) s3_require_external_id_for_system_credentials: bool,
 
+    /// Enable Azure System Identities
+    pub(crate) enable_azure_system_credentials: bool,
+
     // ------------- POSTGRES IMPLEMENTATION -------------
     #[redact]
     pub(crate) pg_encryption_key: String,
@@ -457,6 +460,7 @@ impl Default for DynAppConfig {
             pg_connection_max_lifetime: None,
             pg_read_pool_connections: 10,
             pg_write_pool_connections: 5,
+            enable_azure_system_credentials: false,
             enable_aws_system_credentials: false,
             s3_enable_direct_system_credentials: false,
             s3_require_external_id_for_system_credentials: true,

@@ -162,6 +162,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+          allow-no-subscriptions: true
+
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
         env:
@@ -170,8 +175,11 @@ jobs:
       - name: Setup cargo nextest
         run: cargo install --force cargo-nextest
 
-      - name: Setup cargo nextest
-        run: cargo install cargo-nextest
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az upgrade --yes --only-show-errors
+          az config set extension.use_dynamic_install=yes_without_prompt
 
       - name: Migrate database
         run: |
@@ -218,6 +226,8 @@ jobs:
           LAKEKEEPER_TEST__S3_ACCESS_KEY: minio-root-user
           LAKEKEEPER_TEST__S3_SECRET_KEY: minio-root-password
           LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:9000
+
+          LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
 
           TEST_OPENFGA: 1
           LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081

@@ -107,6 +107,13 @@ img {
   max-width: 100%;
   height: auto;
 }
+.cs_hero_thumb img {
+  border: 0;
+  max-width: 100%;
+  margin-top: 80px;
+  height: 70%;
+}
+
 #homepage a {
   color: inherit;
   text-decoration: none !important;
@@ -2100,6 +2107,9 @@ hr {
 }
 @media (max-width: 767px) {
   .cs_hero.cs_style_2 .cs_hero_img_1 {
+    display: none;
+  }
+  .cs_cta_img {
     display: none;
   }
 }

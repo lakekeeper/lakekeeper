@@ -59,6 +59,10 @@ impl TaskQueues {
         self.tabular_purge.enqueue(task).await
     }
 
+    /// Spawns the expiration and purge queues.
+    ///
+    /// # Errors
+    /// Fails if any of the queue handlers exit unexpectedly.
     pub async fn spawn_queues<C, S, A>(
         &self,
         catalog_state: C::State,

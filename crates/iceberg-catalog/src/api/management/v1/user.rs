@@ -275,7 +275,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             authorizer
                 .require_server_action(&request_metadata, CatalogServerAction::CanProvisionUsers)
                 .await?;
-        };
+        }
 
         // ------------------- Business Logic -------------------
         let update_if_exists = request.update_if_exists;

@@ -153,7 +153,6 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 );
                 // Short delay before retry to reduce contention
                 tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
-                continue;
             }
             Err(e) => return Err(e),
         }

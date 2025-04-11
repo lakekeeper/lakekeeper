@@ -18,13 +18,10 @@ use crate::{
                 DataAccess,
             },
         },
-        management::v1::ProtectionResponse,
         ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
         RenameTableRequest, Result,
     },
     request_metadata::RequestMetadata,
-    service::ViewIdentUuid,
-    WarehouseIdent,
 };
 
 #[async_trait]
@@ -88,14 +85,6 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
-
-    async fn set_view_protection(
-        view_id: ViewIdentUuid,
-        warehouse_ident: WarehouseIdent,
-        protected: bool,
-        state: ApiContext<S>,
-        request_metadata: RequestMetadata,
-    ) -> Result<ProtectionResponse>;
 }
 
 #[allow(clippy::too_many_lines)]

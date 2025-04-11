@@ -92,7 +92,7 @@ impl GcsProfile {
         &self,
         credential: Option<&GcsCredential>,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("gcs");
+        let mut builder = iceberg::io::FileIOBuilder::new("gcs").with_client(HTTP_CLIENT.clone());
 
         if let Some(GcsCredential::ServiceAccountKey { key }) = credential {
             builder = builder.with_prop(

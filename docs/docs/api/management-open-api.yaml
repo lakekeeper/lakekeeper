@@ -1669,6 +1669,36 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
       deprecated: true
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection:
+    get:
+      tags:
+        - warehouse
+      operationId: get_namespace_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - warehouse
@@ -1881,6 +1911,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
+    get:
+      tags:
+        - warehouse
+      operationId: get_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - warehouse
@@ -1918,6 +1978,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
+    get:
+      tags:
+        - warehouse
+      operationId: get_view_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - warehouse
@@ -2049,6 +2139,15 @@ components:
                 - shared-access-key
             key:
               type: string
+        - type: object
+          title: AzCredentialManagedIdentity
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - azure-system-identity
     BootstrapRequest:
       type: object
       required:
@@ -3462,6 +3561,7 @@ components:
         - server-id
         - authz-backend
         - aws-system-identities-enabled
+        - azure-system-identities-enabled
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
@@ -3469,6 +3569,9 @@ components:
         aws-system-identities-enabled:
           type: boolean
           description: If using AWS system identities for S3 storage profiles are enabled.
+        azure-system-identities-enabled:
+          type: boolean
+          description: If using Azure system identities for Azure storage profiles are enabled.
         bootstrapped:
           type: boolean
           description: Whether the catalog has been bootstrapped.
