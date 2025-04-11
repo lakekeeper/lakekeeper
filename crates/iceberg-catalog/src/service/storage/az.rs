@@ -299,6 +299,7 @@ impl AdlsProfile {
                 ),
             )
             .with_prop(AzdlsConfigKeys::AccountName, self.account_name.clone())
+            .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.clone())
             .with_client(HTTP_CLIENT.clone());
 
         if let Some(authority_host) = &self.authority_host {
