@@ -50,60 +50,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/default-project:
-    get:
-      tags:
-        - project
-      summary: Get the default project
-      operationId: get_default_project
-      responses:
-        '200':
-          description: Project details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetProjectResponse'
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-    delete:
-      tags:
-        - project
-      summary: Delete the default project
-      operationId: delete_default_project
-      responses:
-        '204':
-          description: Project deleted successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/default-project/rename:
-    post:
-      tags:
-        - project
-      summary: Rename the default project
-      operationId: rename_default_project
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RenameProjectRequest'
-        required: true
-      responses:
-        '200':
-          description: Project renamed successfully
-        4XX:
-          description: ''
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/endpoint-statistics:
     post:
       tags:
@@ -891,6 +837,24 @@ paths:
         '200':
           description: ''
   /management/v1/project:
+    get:
+      tags:
+        - project
+      summary: Get the default project
+      operationId: get_default_project
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
         - project
@@ -915,6 +879,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - project
+      summary: Delete the default project
+      operationId: delete_default_project
+      responses:
+        '204':
+          description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project-list:
     get:
       tags:
@@ -928,6 +906,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListProjectsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/rename:
+    post:
+      tags:
+        - project
+      summary: Rename the default project
+      operationId: rename_default_project
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameProjectRequest'
+        required: true
+      responses:
+        '200':
+          description: Project renamed successfully
         4XX:
           description: ''
           content:
@@ -1292,19 +1291,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/user/{id}:
+  /management/v1/user/{user_id}:
     get:
       tags:
         - user
       summary: Get a user by ID
       operationId: get_user
       parameters:
-        - name: id
+        - name: user_id
           in: path
           required: true
           schema:
             type: string
-            format: uuid
       responses:
         '200':
           description: User details
@@ -1326,12 +1324,11 @@ paths:
         If a field is not provided, it is set to `None`.
       operationId: update_user
       parameters:
-        - name: id
+        - name: user_id
           in: path
           required: true
           schema:
             type: string
-            format: uuid
       requestBody:
         content:
           application/json:
@@ -1356,12 +1353,11 @@ paths:
         if the user is re-registered.
       operationId: delete_user
       parameters:
-        - name: id
+        - name: user_id
           in: path
           required: true
           schema:
             type: string
-            format: uuid
       responses:
         '204':
           description: User deleted successfully

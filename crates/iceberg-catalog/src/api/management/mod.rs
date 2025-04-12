@@ -251,19 +251,19 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "user",
-        path = "/management/v1/user/{id}",
-        params(("id" = Uuid,)),
+        path = "/management/v1/user/{user_id}",
+        params(("user_id" = String,)),
         responses(
             (status = 200, description = "User details", body = User),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn get_user<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<UserId>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<User>)> {
-        ApiServer::<C, A, S>::get_user(api_context, metadata, id)
+        ApiServer::<C, A, S>::get_user(api_context, metadata, user_id)
             .await
             .map(|user| (StatusCode::OK, Json(user)))
     }
@@ -304,8 +304,8 @@ pub mod v1 {
     #[utoipa::path(
         put,
         tag = "user",
-        path = "/management/v1/user/{id}",
-        params(("id" = Uuid,)),
+        path = "/management/v1/user/{user_id}",
+        params(("user_id" = String,)),
         request_body = UpdateUserRequest,
         responses(
             (status = 200, description = "User details updated successfully"),
@@ -313,12 +313,12 @@ pub mod v1 {
         )
     )]
     async fn update_user<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<UserId>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateUserRequest>,
     ) -> Result<()> {
-        ApiServer::<C, A, S>::update_user(api_context, metadata, id, request).await
+        ApiServer::<C, A, S>::update_user(api_context, metadata, user_id, request).await
     }
 
     /// List users
@@ -347,19 +347,19 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "user",
-        path = "/management/v1/user/{id}",
-        params(("id" = Uuid,)),
+        path = "/management/v1/user/{user_id}",
+        params(("user_id" = String,)),
         responses(
             (status = 204, description = "User deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn delete_user<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<UserId>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
-        ApiServer::<C, A, S>::delete_user(api_context, metadata, id)
+        ApiServer::<C, A, S>::delete_user(api_context, metadata, user_id)
             .await
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
@@ -553,7 +553,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "project",
-        path = "/management/v1/default-project",
+        path = "/management/v1/project",
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -589,7 +589,7 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "project",
-        path = "/management/v1/default-project",
+        path = "/management/v1/project",
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -629,7 +629,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/default-project/rename",
+        path = "/management/v1/project/rename",
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1357,8 +1357,14 @@ pub mod v1 {
                     get(get_default_project).delete(delete_default_project),
                 )
                 .route("/default-project/rename", post(rename_default_project))
+                .route("/project/rename", post(rename_default_project))
                 // Create a new project
-                .route("/project", post(create_project))
+                .route(
+                    "/project",
+                    post(create_project)
+                        .get(get_default_project)
+                        .delete(delete_default_project),
+                )
                 .route(
                     "/project/{project_id}",
                     get(get_project_by_id).delete(delete_project_by_id),

@@ -54,4 +54,26 @@ mod test {
         sink.process_stats(Arc::new(stats)).await.unwrap();
         conn.commit().await.unwrap();
     }
+
+    // #[sqlx::test]
+    // todo!()
+    // async fn test_can_select_all_variants(pool: sqlx::PgPool) {
+    //     let conn = pool.begin().await.unwrap();
+    //     let (_api, warehouse) = crate::tests::setup(
+    //         pool.clone(),
+    //         crate::tests::test_io_profile(),
+    //         None,
+    //         AllowAllAuthorizer,
+    //         TabularDeleteProfile::Hard {},
+    //         None,
+    //         None,
+    //         1,
+    //     )
+    //     .await;
+
+    //     let rows = sqlx::query!("SELECT unnest(enum_range(NULL::api_endpoints)) as uri",)
+    //         .fetch_all(&conn)
+    //         .await
+    //         .unwrap();
+    // }
 }
