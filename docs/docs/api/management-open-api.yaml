@@ -50,6 +50,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/default-project:
+    get:
+      tags:
+        - project
+      summary: Get the default project. This Endpoint is deprecated.
+      operationId: get_default_project_deprecated
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
+    delete:
+      tags:
+        - project
+      summary: Delete the default project
+      operationId: delete_default_project_deprecated
+      responses:
+        '204':
+          description: Project deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
+  /management/v1/default-project/rename:
+    post:
+      tags:
+        - project
+      summary: |-
+        Rename the default project.
+        This Endpoint is deprecated, use `/v1/projects/default` instead.
+      operationId: rename_default_project_deprecated
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameProjectRequest'
+        required: true
+      responses:
+        '200':
+          description: Project renamed successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+      deprecated: true
   /management/v1/endpoint-statistics:
     post:
       tags:
@@ -916,7 +975,7 @@ paths:
     post:
       tags:
         - project
-      summary: Rename the default project
+      summary: Rename the default project.
       operationId: rename_default_project
       requestBody:
         content:
@@ -1084,14 +1143,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/role/{id}:
+  /management/v1/role/{role_id}:
     get:
       tags:
         - role
       summary: Get a role
       operationId: get_role
       parameters:
-        - name: id
+        - name: role_id
           in: path
           required: true
           schema:
@@ -1116,7 +1175,7 @@ paths:
       summary: Update a role
       operationId: update_role
       parameters:
-        - name: id
+        - name: role_id
           in: path
           required: true
           schema:
@@ -1148,7 +1207,7 @@ paths:
       description: All permissions of the role are permanently removed.
       operationId: delete_role
       parameters:
-        - name: id
+        - name: role_id
           in: path
           required: true
           schema:
@@ -1566,6 +1625,12 @@ paths:
       description: List all soft-deleted tabulars in the warehouse that are visible to you.
       operationId: list_deleted_tabulars
       parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
         - name: namespaceId
           in: query
           description: Filter by Namespace ID
@@ -1590,12 +1655,6 @@ paths:
           schema:
             type: integer
             format: int64
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
       responses:
         '200':
           description: List of soft-deleted tabulars
@@ -1829,12 +1888,6 @@ paths:
               - integer
               - 'null'
             format: int64
-        - name: warehouse_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
       responses:
         '200':
           description: Warehouse statistics
