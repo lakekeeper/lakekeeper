@@ -2074,6 +2074,12 @@ components:
         account-name:
           type: string
           description: Name of the azure storage account.
+        allow-alternative-protocols:
+          type: boolean
+          description: |-
+            Allow alternative protocols such as `wasbs://` in locations.
+            This is disabled by default. We do not recommend to use this setting
+            except for migration of old tables via the register endpoint.
         authority-host:
           type:
             - string

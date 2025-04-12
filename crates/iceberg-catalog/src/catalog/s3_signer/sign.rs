@@ -437,8 +437,8 @@ fn validate_uri(
     {
         return Err(SignError::RequestUriMismatch {
             request_uri: parsed_url.url.to_string(),
-            expected_location: table_location.to_string(),
-            actual_location: parsed_url.location.to_string(),
+            expected_location: table_location.into_normalized_location().to_string(),
+            actual_location: parsed_url.location.as_normalized_location().to_string(),
         }
         .into());
     }
@@ -688,6 +688,7 @@ mod test {
             let result = parse_s3_url(&uri, S3UrlStyleDetectionMode::Auto)
                 .unwrap_or_else(|_| panic!("Failed to parse {uri}"))
                 .location
+                .into_normalized_location()
                 .to_string();
             assert_eq!(result, expected);
         }

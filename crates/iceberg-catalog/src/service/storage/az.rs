@@ -22,6 +22,7 @@ use iceberg_ext::configs::{
     table::{custom, TableProperties},
     Location,
 };
+
 use lazy_regex::regex;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -56,6 +57,11 @@ pub struct AdlsProfile {
     pub host: Option<String>,
     /// The validity of the sas token in seconds. Default: 3600.
     pub sas_token_validity_seconds: Option<u64>,
+    /// Allow alternative protocols such as `wasbs://` in locations.
+    /// This is disabled by default. We do not recommend to use this setting
+    /// except for migration of old tables via the register endpoint.
+    #[serde(default)]
+    pub allow_alternative_protocols: bool,
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
@@ -70,10 +76,23 @@ static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
 
+pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
+const ADLS_PATH_PATTERN: LazyLock<&lazy_regex::Lazy<lazy_regex::Regex>> =
+    LazyLock::new(|| regex!("^(?<protocol>(abfss|wasbs)?://)[^/@]+@[^/]+(?<path>/.+)"));
+
 static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
     LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
 
 impl AdlsProfile {
+    /// Check if an Azure variant is allowed.
+    /// By default, only `abfss` is allowed.
+    /// If `allow_alternative_protocols` is set, `wasbs` is also allowed.
+    #[must_use]
+    pub fn is_allowed_schema(&self, schema: &str) -> bool {
+        schema == "abfss"
+            || (self.allow_alternative_protocols && ALTERNATIVE_PROTOCOLS.contains(&schema))
+    }
+
     /// Validate the Azure storage profile.
     ///
     /// # Errors
@@ -487,6 +506,7 @@ pub struct AdlsLocation {
     key: Vec<String>,
     // Redundant, but useful for failsafe access
     location: Location,
+    custom_prefix: Option<String>,
 }
 
 impl AdlsLocation {
@@ -499,6 +519,7 @@ impl AdlsLocation {
         filesystem: String,
         host: String,
         key: Vec<String>,
+        custom_prefix: Option<String>,
     ) -> Result<Self, ValidationError> {
         validate_filesystem_name(&filesystem)?;
         validate_account_name(&account_name)?;
@@ -526,6 +547,7 @@ impl AdlsLocation {
             endpoint_suffix,
             key,
             location,
+            custom_prefix,
         })
     }
 
@@ -548,21 +570,36 @@ impl AdlsLocation {
     pub fn endpoint_suffix(&self) -> &str {
         &self.endpoint_suffix
     }
-}
 
-impl std::fmt::Display for AdlsLocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.location.fmt(f)
-    }
-}
+    /// Create a new AdlsLocation from a Location.
+    ///
+    /// If `allow_variants` is set to true, `wasbs://` schemes are allowed.
+    ///
+    /// # Errors
+    /// - Fails if the location is not a valid ADLS location
+    pub fn try_from_location(
+        location: &Location,
+        allow_variants: bool,
+    ) -> Result<Self, ValidationError> {
+        let schema = location.url().scheme();
+        let is_custom_variant = ALTERNATIVE_PROTOCOLS.contains(&schema);
 
-impl TryFrom<Location> for AdlsLocation {
-    type Error = ValidationError;
+        // Protocol must be abfss or wasbs (if allowed)
+        if schema != "abfss" && !(allow_variants && is_custom_variant) {
+            let reason = if allow_variants {
+                format!(
+                    "ADLS location must use abfss or wasbs protocol. Found: {}",
+                    location.url().scheme()
+                )
+            } else {
+                format!(
+                    "ADLS location must use abfss protocol. Found: {}",
+                    location.url().scheme()
+                )
+            };
 
-    fn try_from(location: Location) -> Result<Self, Self::Error> {
-        if location.url().scheme() != "abfss" {
             return Err(ValidationError::InvalidLocation {
-                reason: "ADLS locations must use abfss protocol.".to_string(),
+                reason,
                 location: location.to_string(),
                 source: None,
                 storage_type: StorageType::Adls,
@@ -598,27 +635,24 @@ impl TryFrom<Location> for AdlsLocation {
                 segments.map(std::string::ToString::to_string).collect()
             });
 
+        let custom_prefix = if is_custom_variant {
+            Some(schema.to_string())
+        } else {
+            None
+        };
+
         Self::new(
             account_name.to_string(),
             filesystem,
             endpoint_suffix.to_string(),
             key,
+            custom_prefix,
         )
     }
-}
 
-impl FromStr for AdlsLocation {
-    type Err = ValidationError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let location = Location::from_str(s).map_err(|e| ValidationError::InvalidLocation {
-            reason: format!("Invalid Location: {e}"),
-            location: s.to_string(),
-            source: Some(Box::new(e)),
-            storage_type: StorageType::Adls,
-        })?;
-
-        Self::try_from(location)
+    /// Always returns `abfss://` prefixed location.
+    pub(crate) fn into_normalized_location(self) -> Location {
+        self.location
     }
 }
 
@@ -632,8 +666,7 @@ impl From<AdlsLocation> for Location {
 /// Keeps only the path and optionally the scheme.
 #[must_use]
 pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
-    let re = regex!("^(?<protocol>abfss?://)[^/@]+@[^/]+(?<path>/.+)");
-    if let Some(caps) = re.captures(path) {
+    if let Some(caps) = ADLS_PATH_PATTERN.captures(path) {
         let mut location = String::new();
         if only_path {
             caps.expand("$path", &mut location);
@@ -887,6 +920,7 @@ fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
 pub(crate) mod test {
     use std::str::FromStr;
 
+    use iceberg_ext::configs::Location;
     use needs_env_var::needs_env_var;
 
     use crate::service::{
@@ -903,12 +937,26 @@ pub(crate) mod test {
 
     #[test]
     fn test_reduce_scheme_string() {
+        // Test abfss protocol
         let path = "abfss://filesystem@dfs.windows.net/path/_test";
         let reduced_path = reduce_scheme_string(path, true);
         assert_eq!(reduced_path, "/path/_test");
 
         let reduced_path = reduce_scheme_string(path, false);
         assert_eq!(reduced_path, "abfss:///path/_test");
+
+        // Test wasbs protocol
+        let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
+        let reduced_wasbs_path = reduce_scheme_string(wasbs_path, true);
+        assert_eq!(reduced_wasbs_path, "/path/to/data");
+
+        let reduced_wasbs_path = reduce_scheme_string(wasbs_path, false);
+        assert_eq!(reduced_wasbs_path, "wasbs:///path/to/data");
+
+        // Test a non-matching path
+        let non_matching = "http://example.com/path";
+        assert_eq!(reduce_scheme_string(non_matching, true), non_matching);
+        assert_eq!(reduce_scheme_string(non_matching, false), non_matching);
     }
 
     #[needs_env_var(TEST_AZURE = 1)]
@@ -929,6 +977,7 @@ pub(crate) mod test {
                 authority_host: None,
                 host: None,
                 sas_token_validity_seconds: None,
+                allow_alternative_protocols: false,
             }
         }
 
@@ -1012,6 +1061,7 @@ pub(crate) mod test {
             authority_host: None,
             host: None,
             sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
         };
 
         let sp: StorageProfile = profile.clone().into();
@@ -1066,13 +1116,18 @@ pub(crate) mod test {
         ];
 
         for (location_str, account_name, filesystem, endpoint_suffix, key) in cases {
-            let adls_location = AdlsLocation::from_str(location_str).unwrap();
+            let adls_location =
+                AdlsLocation::try_from_location(&Location::from_str(location_str).unwrap(), false)
+                    .unwrap();
             assert_eq!(adls_location.account_name(), account_name);
             assert_eq!(adls_location.filesystem(), filesystem);
             assert_eq!(adls_location.endpoint_suffix(), endpoint_suffix);
             assert_eq!(adls_location.key, key);
             // Roundtrip
-            assert_eq!(adls_location.to_string(), location_str);
+            assert_eq!(
+                adls_location.into_normalized_location().to_string(),
+                location_str
+            );
         }
     }
 
@@ -1086,8 +1141,9 @@ pub(crate) mod test {
         ];
 
         for location in cases {
-            let parsed_location = AdlsLocation::from_str(location);
-            assert!(parsed_location.is_err(), "{}", parsed_location.unwrap());
+            let location = Location::from_str(location).unwrap();
+            let parsed_location = AdlsLocation::try_from_location(&location, false);
+            assert!(parsed_location.is_err(), "{:?}", parsed_location);
         }
     }
 
@@ -1184,5 +1240,86 @@ pub(crate) mod test {
         for path in &["path.", "path\\", "path/.", "path/\\"] {
             assert!(validate_path_segment(path).is_err(), "{}", path);
         }
+    }
+
+    #[test]
+    fn test_normalize_wasbs_location() {
+        let location =
+            Location::from_str("wasbs://filesystem@account0name.foo.com/path/to/data").unwrap();
+
+        let location = AdlsLocation::try_from_location(&location, true).unwrap();
+        assert_eq!(
+            location.into_normalized_location().to_string(),
+            "abfss://filesystem@account0name.foo.com/path/to/data",
+        );
+    }
+
+    #[test]
+    fn test_parse_wasbs_location() {
+        let location = "wasbs://filesystem@account0name.foo.com/path/to/data";
+
+        // Test with allow_variants = true
+        let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), true);
+
+        assert!(result.is_ok(), "Should parse with allow_variants = true");
+        let adls_location = result.unwrap();
+
+        // Check that it was normalized to abfss
+        assert_eq!(
+            adls_location.location().url().scheme(),
+            "abfss",
+            "Protocol should be normalized to abfss"
+        );
+
+        // Check that other properties were preserved
+        assert_eq!(adls_location.account_name(), "account0name");
+        assert_eq!(adls_location.filesystem(), "filesystem");
+        assert_eq!(adls_location.endpoint_suffix(), "foo.com");
+        assert_eq!(adls_location.key, vec!["path", "to", "data"]);
+
+        // Test with allow_variants = false
+        let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), false);
+        assert!(result.is_err(), "Should fail with allow_variants = false");
+    }
+
+    #[test]
+    fn test_allow_alternative_protocols() {
+        let profile = AdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: Some("test_prefix".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: true,
+        };
+
+        assert!(
+            profile.is_allowed_schema("abfss"),
+            "abfss should be allowed"
+        );
+        assert!(
+            profile.is_allowed_schema("wasbs"),
+            "wasbs should be allowed with flag set"
+        );
+
+        let profile = AdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: Some("test_prefix".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+        };
+
+        assert!(
+            profile.is_allowed_schema("abfss"),
+            "abfss should always be allowed"
+        );
+        assert!(
+            !profile.is_allowed_schema("wasbs"),
+            "wasbs should not be allowed with flag unset"
+        );
     }
 }
