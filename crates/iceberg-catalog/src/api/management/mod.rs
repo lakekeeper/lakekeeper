@@ -1002,8 +1002,7 @@ pub mod v1 {
         get,
         tag = "warehouse",
         path = ManagementV1Endpoint::GetWarehouseStatistics.path(),
-        params(("warehouse_id" = Uuid,)),
-        params(GetWarehouseStatisticsQuery),
+        params(("warehouse_id" = Uuid,), GetWarehouseStatisticsQuery),
         responses(
             (status = 200, description = "Warehouse statistics", body = WarehouseStatisticsResponse),
             (status = "4XX", body = IcebergErrorResponse),
