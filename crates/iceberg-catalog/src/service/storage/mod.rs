@@ -535,6 +535,27 @@ impl StorageProfile {
     }
 
     #[must_use]
+    /// Check whether the location of this storage profile is overlapping
+    /// with the given storage profile.
+    /// This check is only an indication and does not guarantee no overlap.
+    pub fn is_overlapping_location(&self, other: &StorageProfile) -> bool {
+        match (self, other) {
+            (StorageProfile::S3(profile), StorageProfile::S3(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
+            (StorageProfile::Adls(profile), StorageProfile::Adls(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
+            (StorageProfile::Gcs(profile), StorageProfile::Gcs(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
+            #[cfg(test)]
+            (StorageProfile::Test(_), StorageProfile::Test(_)) => false,
+            _ => false,
+        }
+    }
+
+    #[must_use]
     /// Check whether the location is allowed for the storage profile.
     ///
     /// Allowed locations are sublocation of the base location.
