@@ -166,6 +166,10 @@ jobs:
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
           allow-no-subscriptions: true
+      
+      - name: Write gcp credential to file
+        run: echo "${{ secrets.GCS_CREDENTIAL }}" > /tmp/gcs.json
+        shell: bash
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -228,9 +232,11 @@ jobs:
           LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:9000
 
           LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
+          LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
 
           TEST_OPENFGA: 1
           LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcs.json
 
           TEST_AZURE: ${{ secrets.TEST_AZURE }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}

@@ -1,67 +1,52 @@
-use std::sync::{LazyLock, OnceLock};
-
 use google_cloud_auth::credentials::CredentialsFile;
 use iceberg_ext::configs::Location;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
+use super::{TokenSource, HTTP_CLIENT, STS_URL};
 use crate::service::storage::{error::TableConfigError, gcs::GcsServiceKey, StoragePermissions};
 
-static STS_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-const STS_URL_STR: &str = "https://sts.googleapis.com/v1/token";
-static STS_URL: LazyLock<Url> = LazyLock::new(|| {
-    STS_URL_STR
-        .parse::<Url>()
-        .expect("failed to parse a constant to a url")
-});
-const GOOGLE_CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
-
 pub(crate) async fn downscope(
-    cred: impl Into<CredentialsFile>,
+    token_source: TokenSource,
     bucket: &str,
     table_location: Location,
     storage_permissions: StoragePermissions,
 ) -> Result<STSResponse, TableConfigError> {
-    let client = STS_CLIENT.get_or_init(reqwest::Client::new);
-    let sts_url = STS_URL.clone();
-
-    let c =
-        google_cloud_auth::project::Config::default().with_scopes(&[GOOGLE_CLOUD_PLATFORM_SCOPE]);
-    let source = google_cloud_auth::project::create_token_source_from_credentials(&cred.into(), &c)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                "Failed to create gcp token source from credentials: {:?}",
-                e
-            );
-            TableConfigError::FailedDependency(
-                "Failed to create gcp token source from credentials".to_string(),
-            )
-        })?;
-    let token = source.token().await.map_err(|e| {
+    let token = token_source.token().await.map_err(|e| {
         tracing::error!("Failed to get token from token source: {:?}", e);
         TableConfigError::FailedDependency("Failed to get gcp token from token source".to_string())
     })?;
 
-    client
-        .post(sts_url)
+    let sts_request = &STSRequest::from_token_and_options(
+        &token,
+        &Options::from_location_and_permissions(bucket, &table_location, storage_permissions),
+    )?;
+
+    let response = HTTP_CLIENT
+        .clone()
+        .post(STS_URL.clone())
         .header("Content-Type", "application/json")
-        .json(&STSRequest::from_token_and_options(
-            &token.access_token,
-            &Options::from_location_and_permissions(bucket, &table_location, storage_permissions),
-        )?)
+        .json(&sts_request)
         .send()
         .await
         .map_err(|e| {
             tracing::error!("Failed to send downscoping request: {:?}", e);
             TableConfigError::FailedDependency("Failed to send downscoping request".to_string())
         })?
-        .json::<STSResponse>()
+        .json::<serde_json::Value>()
         .await
         .map_err(|e| {
-            tracing::error!("Failed to parse downscoping response: {:?}", e);
+            tracing::error!(
+                "Downscoping did not return a JSON body: {e:?}. Request: {sts_request:?}",
+            );
             TableConfigError::FailedDependency("Failed to downscope.".to_string())
-        })
+        })?;
+
+    serde_json::from_value(response.clone()).map_err(|e| {
+        tracing::error!(
+            "Failed to parse downscoping response: {e:?}. Received Body: {response}. Request: {sts_request:?}",
+        );
+        TableConfigError::FailedDependency("Failed to downscope.".to_string())
+    })
 }
 
 #[derive(Deserialize, veil::Redact)]
@@ -72,7 +57,7 @@ pub(crate) struct STSResponse {
     token_type: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, veil::Redact)]
 struct STSRequest {
     // urn:ietf:params:oauth:grant-type:token-exchange
     pub grant_type: String,
@@ -91,6 +76,7 @@ struct STSRequest {
     pub scope: Option<String>,
     // urn:ietf:params:oauth:token-type:access_token
     pub requested_token_type: String,
+    #[redact(partial)]
     pub subject_token: String,
     pub subject_token_type: String,
     // serialized json string
