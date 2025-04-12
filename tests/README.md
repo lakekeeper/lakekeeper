@@ -14,6 +14,8 @@ export LAKEKEEPER_TEST__SERVER_IMAGE=localhost/iceberg-catalog-local:latest
 cd tests
 # Regular tests
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
+# Pyiceberg
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh pyiceberg"
 # S3a (alternative protocol)
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_s3a-1.7.1"
 # With Authorization

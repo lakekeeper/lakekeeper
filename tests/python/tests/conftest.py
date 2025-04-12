@@ -120,14 +120,11 @@ def filter_empty_str(s: Optional[str]) -> Optional[str]:
     return s
 
 
-@pytest.fixture(scope="session")
-def test_id() -> str:
-    return uuid.uuid4().hex
-
-
 @pytest.fixture(scope="session", params=STORAGE_CONFIGS)
-def storage_config(request, test_id) -> dict:
+def storage_config(request) -> dict:
     path_style_access = string_to_bool(settings.s3_path_style_access)
+
+    test_id = uuid.uuid4().hex
 
     if request.param["type"] == "s3":
         if settings.s3_bucket is None or settings.s3_bucket == "":
