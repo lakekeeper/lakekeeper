@@ -240,6 +240,7 @@ def storage_config(request, test_id) -> dict:
             "storage-profile": {
                 "type": "gcs",
                 "bucket": settings.gcs_bucket,
+                "key-prefix": test_id,
             },
             "storage-credential": {
                 "type": "gcs",
