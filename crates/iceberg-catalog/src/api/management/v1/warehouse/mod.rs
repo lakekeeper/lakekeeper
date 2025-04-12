@@ -1,7 +1,7 @@
 mod undrop;
 
 use futures::FutureExt;
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -308,9 +308,41 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&warehouse_name)?;
         storage_profile.normalize()?;
-        storage_profile
-            .validate_access(storage_credential.as_ref(), None)
-            .await?;
+
+        // Run validation and overlap check in parallel
+        let validation_future = storage_profile.validate_access(storage_credential.as_ref(), None);
+        let overlap_check_future = async {
+            let mut transaction =
+                C::Transaction::begin_read(context.v1_state.catalog.clone()).await?;
+            let warehouses =
+                C::list_warehouses(&project_id, None, transaction.transaction()).await?;
+            transaction.commit().await?;
+
+            for w in &warehouses {
+                if storage_profile.is_overlapping_location(&w.storage_profile) {
+                    return Err::<_, IcebergErrorResponse>(
+                        ErrorModel::bad_request(
+                            format!(
+                                "Storage profile overlaps with existing warehouse {}",
+                                w.name
+                            ),
+                            "CreateWarehouseStorageProfileOverlap",
+                            None,
+                        )
+                        .into(),
+                    );
+                }
+            }
+
+            Ok(())
+        };
+
+        let (validation_result, overlap_result) =
+            tokio::join!(validation_future, overlap_check_future);
+
+        // Check results from both operations
+        validation_result?;
+        overlap_result?;
 
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let secret_id = if let Some(storage_credential) = storage_credential {

@@ -474,6 +474,36 @@ impl AdlsProfile {
 
         Ok(())
     }
+
+    #[must_use]
+    /// Check whether the location of this storage profile is overlapping
+    /// with the given storage profile.
+    pub fn is_overlapping_location(&self, other: &Self) -> bool {
+        // Different filesystem, account_name, or host means no overlap
+        if self.filesystem != other.filesystem
+            || self.account_name != other.account_name
+            || self.host != other.host
+            || self.authority_host != other.authority_host
+        {
+            return false;
+        }
+
+        // If key prefixes are identical, they overlap
+        if self.key_prefix == other.key_prefix {
+            return true;
+        }
+
+        match (&self.key_prefix, &other.key_prefix) {
+            // Both have Some key_prefix values - check if one is a prefix of the other
+            (Some(key_prefix), Some(other_key_prefix)) => {
+                let kp1 = format!("{key_prefix}/");
+                let kp2 = format!("{other_key_prefix}/");
+                kp1.starts_with(&kp2) || kp2.starts_with(&kp1)
+            }
+            // If either has no key prefix, it can access the entire filesystem
+            (None, _) | (_, None) => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1181,5 +1211,130 @@ pub(crate) mod test {
         for path in &["path.", "path\\", "path/.", "path/\\"] {
             assert!(validate_path_segment(path).is_err(), "{}", path);
         }
+    }
+}
+
+#[cfg(test)]
+mod is_overlapping_location_tests {
+    use super::*;
+
+    fn create_profile(
+        filesystem: &str,
+        account_name: &str,
+        host: Option<&str>,
+        authority_host: Option<&str>,
+        key_prefix: Option<&str>,
+    ) -> AdlsProfile {
+        AdlsProfile {
+            filesystem: filesystem.to_string(),
+            account_name: account_name.to_string(),
+            host: host.map(ToString::to_string),
+            authority_host: authority_host.map(|url| url.parse().unwrap()),
+            key_prefix: key_prefix.map(ToString::to_string),
+            sas_token_validity_seconds: None,
+        }
+    }
+
+    #[test]
+    fn test_non_overlapping_different_filesystem() {
+        let profile1 = create_profile("filesystem1", "account", None, None, Some("prefix"));
+        let profile2 = create_profile("filesystem2", "account", None, None, Some("prefix"));
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_non_overlapping_different_account_name() {
+        let profile1 = create_profile("filesystem", "account1", None, None, Some("prefix"));
+        let profile2 = create_profile("filesystem", "account2", None, None, Some("prefix"));
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_non_overlapping_different_host() {
+        let profile1 = create_profile("filesystem", "account", Some("host1"), None, Some("prefix"));
+        let profile2 = create_profile("filesystem", "account", Some("host2"), None, Some("prefix"));
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_non_overlapping_different_authority_host() {
+        let profile1 = create_profile(
+            "filesystem",
+            "account",
+            None,
+            Some("https://login1.example.com"),
+            Some("prefix"),
+        );
+        let profile2 = create_profile(
+            "filesystem",
+            "account",
+            None,
+            Some("https://login2.example.com"),
+            Some("prefix"),
+        );
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_identical_key_prefix() {
+        let profile1 = create_profile("filesystem", "account", None, None, Some("prefix"));
+        let profile2 = create_profile("filesystem", "account", None, None, Some("prefix"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_one_prefix_of_other() {
+        let profile1 = create_profile("filesystem", "account", None, None, Some("prefix"));
+        let profile2 = create_profile("filesystem", "account", None, None, Some("prefix/subpath"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+        assert!(profile2.is_overlapping_location(&profile1)); // Test symmetry
+    }
+
+    #[test]
+    fn test_overlapping_no_key_prefix() {
+        let profile1 = create_profile("filesystem", "account", None, None, None);
+        let profile2 = create_profile("filesystem", "account", None, None, Some("prefix"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+        assert!(profile2.is_overlapping_location(&profile1)); // Test symmetry
+    }
+
+    #[test]
+    fn test_non_overlapping_unrelated_key_prefixes() {
+        let profile1 = create_profile("filesystem", "account", None, None, Some("prefix1"));
+        let profile2 = create_profile("filesystem", "account", None, None, Some("prefix2"));
+
+        // These don't overlap as neither is a prefix of the other
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_both_no_key_prefix() {
+        let profile1 = create_profile("filesystem", "account", None, None, None);
+        let profile2 = create_profile("filesystem", "account", None, None, None);
+
+        assert!(profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_complex_key_prefix_scenarios() {
+        // Prefix with similar characters but not a prefix relationship
+        let profile1 = create_profile("filesystem", "account", None, None, Some("prefix"));
+        let profile2 = create_profile("filesystem", "account", None, None, Some("prefix-extra"));
+
+        // Not overlapping since "prefix" is not a prefix of "prefix-extra"
+        assert!(!profile1.is_overlapping_location(&profile2));
+
+        // Actual prefix case
+        let profile3 = create_profile("filesystem", "account", None, None, Some("prefix"));
+        let profile4 = create_profile("filesystem", "account", None, None, Some("prefix/sub"));
+
+        assert!(profile3.is_overlapping_location(&profile4));
     }
 }

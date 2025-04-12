@@ -1,19 +1,17 @@
 import copy
-import json
 
 import conftest
 import pandas as pd
 import pytest
 import requests
-import pyiceberg.io as io
 import time
-import fsspec
 from conftest import settings
 
 
 @pytest.fixture(scope="session")
-def s3_warehouse_location(warehouse: conftest.Warehouse):
-    return f"s3://{settings.s3_bucket}"
+def s3_warehouse_location(warehouse: conftest.Warehouse, storage_config):
+    key_prefix = storage_config["storage-profile"]["key-prefix"]
+    return f"s3://{settings.s3_bucket}/{key_prefix}"
 
 
 def test_create_table_s3a(spark, warehouse: conftest.Warehouse, s3_warehouse_location):

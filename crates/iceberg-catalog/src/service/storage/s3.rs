@@ -185,6 +185,35 @@ impl S3Profile {
         schema == "s3" || (self.allow_alternate_schemes() && (schema == "s3a" || schema == "s3n"))
     }
 
+    #[must_use]
+    /// Check whether the location of this storage profile is overlapping
+    /// with the given storage profile.
+    pub fn is_overlapping_location(&self, other: &Self) -> bool {
+        // Different bucket, region, or endpoint means no overlap
+        if self.bucket != other.bucket
+            || self.region != other.region
+            || self.endpoint != other.endpoint
+        {
+            return false;
+        }
+
+        // If key prefixes are identical, they overlap
+        if self.key_prefix == other.key_prefix {
+            return true;
+        }
+
+        match (&self.key_prefix, &other.key_prefix) {
+            // both have Some key_prefix values - check if one is a prefix of the other
+            (Some(key_prefix), Some(other_key_prefix)) => {
+                let kp1 = format!("{key_prefix}/");
+                let kp2 = format!("{other_key_prefix}/");
+                kp1.starts_with(&kp2) || kp2.starts_with(&kp1)
+            }
+            // If either has no key prefix, it can access the entire bucket
+            (None, _) | (_, None) => true,
+        }
+    }
+
     /// Create a new `FileIO` instance for S3.
     ///
     /// # Errors
@@ -1385,5 +1414,125 @@ pub(crate) mod test {
             let printed = location.to_string();
             assert_eq!(printed, case);
         }
+    }
+}
+
+#[cfg(test)]
+mod is_overlapping_location_tests {
+    use super::*;
+
+    fn create_profile(
+        bucket: &str,
+        region: &str,
+        endpoint: Option<&str>,
+        key_prefix: Option<&str>,
+    ) -> S3Profile {
+        S3Profile {
+            bucket: bucket.to_string(),
+            key_prefix: key_prefix.map(ToString::to_string),
+            region: region.to_string(),
+            endpoint: endpoint.map(|e| e.parse().unwrap()),
+            assume_role_arn: None,
+            path_style_access: None,
+            sts_role_arn: None,
+            sts_enabled: false,
+            flavor: S3Flavor::Aws,
+            allow_alternative_protocols: None,
+            remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+        }
+    }
+
+    #[test]
+    fn test_non_overlapping_different_bucket() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+        let profile2 = create_profile("bucket2", "us-east-1", None, Some("prefix"));
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_non_overlapping_different_region() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+        let profile2 = create_profile("bucket1", "us-west-1", None, Some("prefix"));
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_non_overlapping_different_endpoint() {
+        let profile1 = create_profile(
+            "bucket1",
+            "us-east-1",
+            Some("http://endpoint1.com"),
+            Some("prefix"),
+        );
+        let profile2 = create_profile(
+            "bucket1",
+            "us-east-1",
+            Some("http://endpoint2.com"),
+            Some("prefix"),
+        );
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_identical_key_prefix() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+        let profile2 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_one_prefix_of_other() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+        let profile2 = create_profile("bucket1", "us-east-1", None, Some("prefix/subpath"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+        assert!(profile2.is_overlapping_location(&profile1)); // Test symmetry
+    }
+
+    #[test]
+    fn test_overlapping_no_key_prefix() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, None);
+        let profile2 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+        assert!(profile2.is_overlapping_location(&profile1)); // Test symmetry
+    }
+
+    #[test]
+    fn test_non_overlapping_unrelated_key_prefixes() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, Some("prefix1"));
+        let profile2 = create_profile("bucket1", "us-east-1", None, Some("prefix2"));
+
+        // These don't overlap as neither is a prefix of the other
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_both_no_key_prefix() {
+        let profile1 = create_profile("bucket1", "us-east-1", None, None);
+        let profile2 = create_profile("bucket1", "us-east-1", None, None);
+
+        assert!(profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_complex_key_prefix_scenarios() {
+        // Prefix with slash at the end should be handled the same
+        let profile1 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+        let profile2 = create_profile("bucket1", "us-east-1", None, Some("prefix-extra"));
+
+        // Not overlapping since "prefix" is not a prefix of "prefix-extra"
+        // (they share characters but one is not a prefix of the other)
+        assert!(!profile1.is_overlapping_location(&profile2));
+
+        // Actual prefix case
+        let profile3 = create_profile("bucket1", "us-east-1", None, Some("prefix"));
+        let profile4 = create_profile("bucket1", "us-east-1", None, Some("prefix/sub"));
+
+        assert!(profile3.is_overlapping_location(&profile4));
     }
 }

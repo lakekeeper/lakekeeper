@@ -1,6 +1,5 @@
 import dataclasses
 import json
-import os
 import urllib
 import uuid
 from typing import Optional
@@ -12,7 +11,7 @@ import pytest
 import requests
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import Field, SecretStr
 
 
 class Secret(SecretStr, str):
@@ -124,6 +123,8 @@ def filter_empty_str(s: Optional[str]) -> Optional[str]:
 def storage_config(request) -> dict:
     path_style_access = string_to_bool(settings.s3_path_style_access)
 
+    test_id = uuid.uuid4().hex
+
     if request.param["type"] == "s3":
         if settings.s3_bucket is None or settings.s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__S3_BUCKET is not set")
@@ -142,6 +143,7 @@ def storage_config(request) -> dict:
                 "region": settings.s3_region,
                 "path-style-access": path_style_access,
                 "endpoint": settings.s3_endpoint,
+                "key-prefix": test_id,
                 "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
                 **extra_config,
@@ -157,7 +159,8 @@ def storage_config(request) -> dict:
         if settings.aws_s3_bucket is None or settings.aws_s3_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__AWS_S3_BUCKET is not set")
 
-        aws_s3_key_prefix = filter_empty_str(settings.aws_s3_key_prefix)
+        aws_s3_key_prefix = filter_empty_str(settings.aws_s3_key_prefix) or ""
+        aws_s3_key_prefix = aws_s3_key_prefix.rstrip("/") + "/" + test_id
         assume_role_arn = filter_empty_str(settings.aws_s3_assume_role_arn)
         external_id = filter_empty_str(settings.aws_s3_assume_role_external_id)
         aws_s3_sts_role_arn = filter_empty_str(settings.aws_s3_sts_role_arn)
@@ -215,6 +218,7 @@ def storage_config(request) -> dict:
                 "type": "adls",
                 "account-name": settings.azure_storage_account_name,
                 "filesystem": settings.azure_storage_filesystem,
+                "key-prefix": test_id,
             },
             "storage-credential": {
                 "type": "az",
@@ -232,6 +236,7 @@ def storage_config(request) -> dict:
             "storage-profile": {
                 "type": "gcs",
                 "bucket": settings.gcs_bucket,
+                "key-prefix": test_id,
             },
             "storage-credential": {
                 "type": "gcs",

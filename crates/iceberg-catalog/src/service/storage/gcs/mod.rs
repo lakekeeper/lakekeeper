@@ -350,6 +350,32 @@ impl GcsProfile {
         }
         Ok(())
     }
+
+    #[must_use]
+    /// Check whether the location of this storage profile is overlapping
+    /// with the given storage profile.
+    pub fn is_overlapping_location(&self, other: &Self) -> bool {
+        // Different bucket means no overlap
+        if self.bucket != other.bucket {
+            return false;
+        }
+
+        // If key prefixes are identical, they overlap
+        if self.key_prefix == other.key_prefix {
+            return true;
+        }
+
+        match (&self.key_prefix, &other.key_prefix) {
+            // Both have Some key_prefix values - check if one is a prefix of the other
+            (Some(key_prefix), Some(other_key_prefix)) => {
+                let kp1 = format!("{key_prefix}/");
+                let kp2 = format!("{other_key_prefix}/");
+                kp1.starts_with(&kp2) || kp2.starts_with(&kp1)
+            }
+            // If either has no key prefix, it can access the entire bucket
+            (None, _) | (_, None) => true,
+        }
+    }
 }
 
 pub(super) fn get_file_io_from_table_config(
@@ -524,5 +550,84 @@ pub(crate) mod test {
                 .await
                 .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
         }
+    }
+}
+
+#[cfg(test)]
+mod is_overlapping_location_tests {
+    use super::*;
+
+    fn create_profile(bucket: &str, key_prefix: Option<&str>) -> GcsProfile {
+        GcsProfile {
+            bucket: bucket.to_string(),
+            key_prefix: key_prefix.map(ToString::to_string),
+        }
+    }
+
+    #[test]
+    fn test_non_overlapping_different_bucket() {
+        let profile1 = create_profile("bucket1", Some("prefix"));
+        let profile2 = create_profile("bucket2", Some("prefix"));
+
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_identical_key_prefix() {
+        let profile1 = create_profile("bucket1", Some("prefix"));
+        let profile2 = create_profile("bucket1", Some("prefix"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_one_prefix_of_other() {
+        let profile1 = create_profile("bucket1", Some("prefix"));
+        let profile2 = create_profile("bucket1", Some("prefix/subpath"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+        assert!(profile2.is_overlapping_location(&profile1)); // Test symmetry
+    }
+
+    #[test]
+    fn test_overlapping_no_key_prefix() {
+        let profile1 = create_profile("bucket1", None);
+        let profile2 = create_profile("bucket1", Some("prefix"));
+
+        assert!(profile1.is_overlapping_location(&profile2));
+        assert!(profile2.is_overlapping_location(&profile1)); // Test symmetry
+    }
+
+    #[test]
+    fn test_non_overlapping_unrelated_key_prefixes() {
+        let profile1 = create_profile("bucket1", Some("prefix1"));
+        let profile2 = create_profile("bucket1", Some("prefix2"));
+
+        // These don't overlap as neither is a prefix of the other
+        assert!(!profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_overlapping_both_no_key_prefix() {
+        let profile1 = create_profile("bucket1", None);
+        let profile2 = create_profile("bucket1", None);
+
+        assert!(profile1.is_overlapping_location(&profile2));
+    }
+
+    #[test]
+    fn test_complex_key_prefix_scenarios() {
+        // Prefix with similar characters but not a prefix relationship
+        let profile1 = create_profile("bucket1", Some("prefix"));
+        let profile2 = create_profile("bucket1", Some("prefix-extra"));
+
+        // Not overlapping since "prefix" is not a prefix of "prefix-extra"
+        assert!(!profile1.is_overlapping_location(&profile2));
+
+        // Actual prefix case
+        let profile3 = create_profile("bucket1", Some("prefix"));
+        let profile4 = create_profile("bucket1", Some("prefix/sub"));
+
+        assert!(profile3.is_overlapping_location(&profile4));
     }
 }
