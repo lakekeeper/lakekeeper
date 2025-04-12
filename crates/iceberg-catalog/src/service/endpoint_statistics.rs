@@ -266,10 +266,9 @@ impl EndpointStatisticsTracker {
             return;
         };
 
-        let Some(uri) = Endpoint::from_method_and_matched_path(
-            request_metadata.request_method(),
-            matched_path,
-        ) else {
+        let Some(uri) =
+            Endpoint::from_method_and_matched_path(request_metadata.request_method(), matched_path)
+        else {
             tracing::error!(
                             "Could not parse endpoint from matched path: '{} {}'. This is likely a bug which will affect the statistics collection.",
                             request_metadata.request_method(),

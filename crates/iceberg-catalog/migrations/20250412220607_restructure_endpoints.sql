@@ -128,13 +128,13 @@ RENAME value 'management-post-warehouse-deleted-tabulars-undrop2' TO 'management
 ALTER TYPE api_endpoints
 RENAME value 'management-post-warehouse-delete-profile' TO 'management-v1-update-warehouse-delete-profile';
 ALTER TYPE api_endpoints
-RENAME value 'management-get-permissions' TO 'permission-v1-get-permissions';
+RENAME value 'management-get-permissions' TO 'permission-v1-get';
 ALTER TYPE api_endpoints
-RENAME value 'management-post-permissions' TO 'permission-v1-post-permissions';
+RENAME value 'management-post-permissions' TO 'permission-v1-post';
 ALTER TYPE api_endpoints
-RENAME value 'management-head-permissions' TO 'permission-v1-head-permissions';
+RENAME value 'management-head-permissions' TO 'permission-v1-head';
 ALTER TYPE api_endpoints
-RENAME value 'management-delete-permissions' TO 'permission-v1-delete-permissions';
+RENAME value 'management-delete-permissions' TO 'permission-v1-delete';
 ALTER TYPE api_endpoints
 RENAME value 'management-post-warehouse-protection' TO 'management-v1-set-warehouse-protection';
 ALTER TYPE api_endpoints
@@ -166,6 +166,6 @@ ADD VALUE 'management-v1-get-default-project-deprecated';
 ALTER TYPE api_endpoints
 ADD VALUE 'management-v1-delete-default-project-deprecated';
 ALTER TYPE api_endpoints
-ADD VALUE 'permission-v1-put-permissions';
+ADD VALUE 'permission-v1-put';
 ALTER TYPE api_endpoints
 ADD VALUE 'management-v1-rename-project-by-id';

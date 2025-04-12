@@ -221,11 +221,11 @@ generate_endpoints! {
     }
 
     enum PermissionV1 {
-        GetPermissions(GET, "/management/v1/permissions"),
-        PostPermissions(POST, "/management/v1/permissions"),
-        HeadPermissions(HEAD, "/management/v1/permissions"),
-        DeletePermissions(DELETE, "/management/v1/permissions"),
-        PutPermissions(PUT, "/management/v1/permissions"),
+        Get(GET, "/management/v1/permissions"),
+        Post(POST, "/management/v1/permissions"),
+        Head(HEAD, "/management/v1/permissions"),
+        Delete(DELETE, "/management/v1/permissions"),
+        Put(PUT, "/management/v1/permissions"),
     }
 }
 
@@ -233,11 +233,11 @@ impl Endpoint {
     pub fn from_method_and_matched_path(method: &Method, inp: &str) -> Option<Self> {
         if inp.starts_with("/management/v1/permissions") {
             return match *method {
-                Method::GET => Some(PermissionV1Endpoint::GetPermissions.into()),
-                Method::POST => Some(PermissionV1Endpoint::PostPermissions.into()),
-                Method::HEAD => Some(PermissionV1Endpoint::HeadPermissions.into()),
-                Method::DELETE => Some(PermissionV1Endpoint::DeletePermissions.into()),
-                Method::PUT => Some(PermissionV1Endpoint::PutPermissions.into()),
+                Method::GET => Some(PermissionV1Endpoint::Get.into()),
+                Method::POST => Some(PermissionV1Endpoint::Post.into()),
+                Method::HEAD => Some(PermissionV1Endpoint::Head.into()),
+                Method::DELETE => Some(PermissionV1Endpoint::Delete.into()),
+                Method::PUT => Some(PermissionV1Endpoint::Put.into()),
                 _ => None,
             };
         }
@@ -273,14 +273,15 @@ static ROUTE_MAP: LazyLock<HashMap<(Method, &'static str), Endpoint>> = LazyLock
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use itertools::Itertools;
     use strum::IntoEnumIterator;
+
+    use super::*;
 
     #[test]
     fn test_as_http_route_is_unique() {
         let mut routes = Endpoint::iter().map(Endpoint::as_http_route).collect_vec();
-        routes.sort();
+        routes.sort_unstable();
         routes.dedup();
         assert_eq!(routes.len(), Endpoint::iter().count());
     }
@@ -296,7 +297,7 @@ mod test {
                 .iter()
                 .collect::<std::collections::HashSet<_>>()
                 .len()
-        )
+        );
     }
 
     #[test]
@@ -348,11 +349,13 @@ mod test {
 
     #[test]
     fn test_endpoint_completeness() {
-        use crate::api::endpoints::Endpoint;
+        use std::collections::HashSet;
+
         use itertools::Itertools;
         use serde_yaml::Value;
-        use std::collections::HashSet;
         use strum::IntoEnumIterator;
+
+        use crate::api::endpoints::Endpoint;
 
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
@@ -394,7 +397,7 @@ mod test {
                         let method_str = method.as_str().expect("Method is not a string");
                         // Skip parameters entry which isn't an HTTP method
                         if method_str != "parameters" {
-                            let normalized_path = format!("catalog{}", path_str);
+                            let normalized_path = format!("catalog{path_str}");
                             expected_endpoints.insert((method_str.to_uppercase(), normalized_path));
                         }
                     }
@@ -437,10 +440,10 @@ mod test {
             let missing_formatted = missing_endpoints
                 .iter()
                 .sorted()
-                .map(|(method, path)| format!("{} /{}", method, path))
+                .map(|(method, path)| format!("{method} /{path}"))
                 .join("\n");
 
-            panic!("The following endpoints are in the OpenAPI YAML but missing from the Endpoints enum:\n{}", missing_formatted);
+            panic!("The following endpoints are in the OpenAPI YAML but missing from the Endpoints enum:\n{missing_formatted}");
         }
 
         // Find extra endpoints
@@ -450,10 +453,10 @@ mod test {
             let extra_formatted = extra_endpoints
                 .iter()
                 .sorted()
-                .map(|(method, path)| format!("{} /{}", method, path))
+                .map(|(method, path)| format!("{method} /{path}"))
                 .join("\n");
 
-            panic!("The following endpoints are in the Endpoints enum but missing from the OpenAPI YAML:\n{}", extra_formatted);
+            panic!("The following endpoints are in the Endpoints enum but missing from the OpenAPI YAML:\n{extra_formatted}");
         }
     }
 

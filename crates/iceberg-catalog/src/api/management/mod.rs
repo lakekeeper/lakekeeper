@@ -583,7 +583,7 @@ pub mod v1 {
             )
         )]
     #[deprecated(
-        since = "0.8",
+        since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
     )]
     async fn get_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -642,7 +642,7 @@ pub mod v1 {
             )
         )]
     #[deprecated(
-        since = "0.8",
+        since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
     )]
     async fn delete_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -705,7 +705,7 @@ pub mod v1 {
             )
         )]
     #[deprecated(
-        since = "0.8",
+        since = "0.8.0",
         note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
     )]
     async fn rename_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
@@ -1125,7 +1125,10 @@ pub mod v1 {
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    #[deprecated = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."]
+    #[deprecated(
+        since = "0.7.0",
+        note = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."
+    )]
     async fn undrop_tabulars_deprecated<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,

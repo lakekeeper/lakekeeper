@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT unnest(enum_range(NULL::api_endpoints)) as \"api_endpoints!: EndpointFlat\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "api_endpoints!: EndpointFlat",
+        "type_info": {
+          "Custom": {
+            "name": "api_endpoints",
+            "kind": {
+              "Enum": [
+                "sign-s3-request-global",
+                "sign-s3-request-prefix",
+                "catalog-v1-get-config",
+                "catalog-v1-list-namespaces",
+                "catalog-v1-create-namespace",
+                "catalog-v1-load-namespace-metadata",
+                "catalog-v1-namespace-exists",
+                "catalog-v1-fetch-scan-tasks",
+                "catalog-v1-drop-namespace",
+                "catalog-v1-update-namespace-properties",
+                "catalog-v1-list-tables",
+                "catalog-v1-create-table",
+                "catalog-v1-load-table",
+                "catalog-v1-update-table",
+                "catalog-v1-drop-table",
+                "catalog-v1-table-exists",
+                "catalog-v1-load-credentials",
+                "catalog-v1-rename-table",
+                "catalog-v1-register-table",
+                "catalog-v1-report-metrics",
+                "catalog-v1-commit-transaction",
+                "catalog-v1-create-view",
+                "catalog-v1-list-views",
+                "catalog-v1-load-view",
+                "catalog-v1-replace-view",
+                "catalog-v1-drop-view",
+                "catalog-v1-view-exists",
+                "catalog-v1-rename-view",
+                "management-v1-server-info",
+                "management-v1-bootstrap",
+                "management-v1-create-role",
+                "management-v1-list-role",
+                "management-v1-update-role",
+                "management-v1-get-role",
+                "management-v1-delete-role",
+                "management-v1-search-role",
+                "management-v1-whoami",
+                "management-v1-search-user",
+                "management-v1-update-user",
+                "management-v1-get-user",
+                "management-v1-delete-user",
+                "management-v1-create-user",
+                "management-v1-list-user",
+                "management-v1-create-project",
+                "management-v1-get-default-project",
+                "management-v1-delete-default-project",
+                "management-v1-rename-default-project",
+                "management-v1-get-default-project-by-id",
+                "management-v1-load-endpoint-statistics",
+                "management-v1-delete-project-by-id",
+                "management-v1-create-warehouse",
+                "management-v1-list-warehouses",
+                "management-v1-list-projects",
+                "management-v1-get-warehouse",
+                "management-v1-delete-warehouse",
+                "management-v1-rename-warehouse",
+                "management-v1-deactivate-warehouse",
+                "management-v1-activate-warehouse",
+                "management-v1-update-storage-profile",
+                "management-v1-update-storage-credential",
+                "management-v1-get-warehouse-statistics",
+                "management-v1-list-deleted-tabulars",
+                "management-v1-undrop-tabulars-deprecated",
+                "management-v1-undrop-tabulars",
+                "management-v1-update-warehouse-delete-profile",
+                "permission-v1-get",
+                "permission-v1-post",
+                "permission-v1-head",
+                "permission-v1-delete",
+                "management-v1-set-warehouse-protection",
+                "management-v1-set-namespace-protection",
+                "management-v1-set-table-protection",
+                "management-v1-set-view-protection",
+                "catalog-v1-cancel-planning",
+                "catalog-v1-fetch-planning-result",
+                "catalog-v1-plan-table-scan",
+                "management-v1-get-view-protection",
+                "management-v1-get-table-protection",
+                "management-v1-get-namespace-protection",
+                "management-v1-rename-default-project-deprecated",
+                "management-v1-get-default-project-deprecated",
+                "management-v1-delete-default-project-deprecated",
+                "permission-v1-put",
+                "management-v1-rename-project-by-id"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3f118743d59e0e035f57c9106816533c092fead83b8420cdab3149b040664910"
+}
