@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     azure_tenant_id: Optional[Secret] = None
     azure_storage_account_name: Optional[str] = None
     azure_storage_filesystem: Optional[str] = None
+    azure_allow_alternative_protocols: Optional[bool] = None
     gcs_credential: Optional[Secret] = None
     gcs_bucket: Optional[str] = None
     openid_provider_uri: Optional[str] = None
@@ -210,11 +211,16 @@ def storage_config(request) -> dict:
         ):
             pytest.skip("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM is not set")
 
+        extra_config = {}
+        if settings.azure_allow_alternative_protocols:
+            extra_config["allow-alternative-protocols"] = True
+
         return {
             "storage-profile": {
                 "type": "adls",
                 "account-name": settings.azure_storage_account_name,
                 "filesystem": settings.azure_storage_filesystem,
+                **extra_config,
             },
             "storage-credential": {
                 "type": "az",

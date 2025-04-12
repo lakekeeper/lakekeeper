@@ -14,6 +14,12 @@ export LAKEKEEPER_TEST__SERVER_IMAGE=localhost/iceberg-catalog-local:latest
 cd tests
 # Regular tests
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
+# S3a (alternative protocol)
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_minio_s3a-1.7.1"
+# ADLS 
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_adls-1.8.0"
+# WASBS (alternative protocol)
+docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_wasbs-1.8.1"
 # With Authorization
 docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_openfga-1.7.1"
 # Starrocks only

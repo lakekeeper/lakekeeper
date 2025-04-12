@@ -556,6 +556,17 @@ impl StorageProfile {
             }
         }
 
+        if let StorageProfile::Adls(profile) = self {
+            let other_scheme = other.scheme();
+            if !profile.is_allowed_schema(other_scheme) {
+                tracing::debug!("Scheme {other_scheme} is not allowed for ADLS profile.",);
+                return false;
+            }
+            if other_scheme != base_location.scheme() {
+                base_location.set_scheme_mut(other_scheme);
+            }
+        }
+
         base_location.with_trailing_slash();
         if other == &base_location {
             return false;
@@ -931,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_allowed_location() {
+    fn test_is_allowed_location_s3() {
         let profile = StorageProfile::S3(
             S3Profile::builder()
                 .bucket("my.bucket".to_string())
@@ -953,6 +964,40 @@ mod tests {
             // Exact path should not be accepted
             ("s3://my.bucket/my/subpath", false),
             ("s3://my.bucket/my/subpath/", false),
+        ];
+
+        for (sublocation, expected_result) in cases {
+            let sublocation = Location::from_str(sublocation).unwrap();
+            assert_eq!(
+                profile.is_allowed_location(&sublocation),
+                expected_result,
+                "Base Location: {}, Maybe sublocation: {sublocation}",
+                profile.base_location().unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_allowed_location_wasbs() {
+        let profile = StorageProfile::Adls(AdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: Some("test_prefix".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: true,
+        });
+
+        let cases = vec![
+            (
+                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/ns/t",
+                true,
+            ),
+            (
+                "wasbs://filesystem@account.dfs.core.windows.net/test_prefix/ns/t",
+                true,
+            ),
         ];
 
         for (sublocation, expected_result) in cases {

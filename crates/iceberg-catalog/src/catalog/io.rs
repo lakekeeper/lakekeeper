@@ -1,14 +1,17 @@
-use super::compression_codec::CompressionCodec;
-use crate::service::storage::az::ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS;
-use crate::{
-    api::{ErrorModel, Result},
-    retry::retry_fn,
-    service::storage::az::reduce_scheme_string as reduce_azure_scheme,
-};
 use futures::{stream::BoxStream, StreamExt};
 use iceberg::{io::FileIO, spec::TableMetadata};
 use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
 use serde::Serialize;
+
+use super::compression_codec::CompressionCodec;
+use crate::{
+    api::{ErrorModel, Result},
+    retry::retry_fn,
+    service::storage::az::{
+        reduce_scheme_string as reduce_azure_scheme,
+        ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
+    },
+};
 
 fn normalize_location(location: &Location) -> String {
     if location.as_str().starts_with("abfs")

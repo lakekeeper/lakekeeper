@@ -22,8 +22,7 @@ use iceberg_ext::configs::{
     table::{custom, TableProperties},
     Location,
 };
-
-use lazy_regex::regex;
+use lazy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use url::{Host, Url};
@@ -77,8 +76,10 @@ const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
 
 pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
-const ADLS_PATH_PATTERN: LazyLock<&lazy_regex::Lazy<lazy_regex::Regex>> =
-    LazyLock::new(|| regex!("^(?<protocol>(abfss|wasbs)?://)[^/@]+@[^/]+(?<path>/.+)"));
+static ADLS_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("^(?<protocol>(abfss|wasbs)?://)[^/@]+@[^/]+(?<path>/.+)")
+        .expect("ADLS path regex is valid")
+});
 
 static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
     LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
@@ -568,7 +569,7 @@ impl AdlsLocation {
         &self.endpoint_suffix
     }
 
-    /// Create a new AdlsLocation from a Location.
+    /// Create a new `AdlsLocation` from a Location.
     ///
     /// If `allow_variants` is set to true, `wasbs://` schemes are allowed.
     ///
@@ -647,6 +648,7 @@ impl AdlsLocation {
         )
     }
 
+    #[cfg(test)]
     /// Always returns `abfss://` prefixed location.
     pub(crate) fn into_normalized_location(self) -> Location {
         self.location
@@ -1140,7 +1142,7 @@ pub(crate) mod test {
         for location in cases {
             let location = Location::from_str(location).unwrap();
             let parsed_location = AdlsLocation::try_from_location(&location, false);
-            assert!(parsed_location.is_err(), "{:?}", parsed_location);
+            assert!(parsed_location.is_err(), "{parsed_location:?}");
         }
     }
 
