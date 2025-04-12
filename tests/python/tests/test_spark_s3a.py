@@ -1,13 +1,10 @@
 import copy
-import json
 
 import conftest
 import pandas as pd
 import pytest
 import requests
-import pyiceberg.io as io
 import time
-import fsspec
 from conftest import settings
 
 

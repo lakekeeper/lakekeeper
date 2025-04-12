@@ -1,6 +1,5 @@
 import dataclasses
 import json
-import os
 import urllib
 import uuid
 from typing import Optional
@@ -12,7 +11,7 @@ import pytest
 import requests
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import Field, SecretStr
 
 
 class Secret(SecretStr, str):
