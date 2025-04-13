@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.8.1](https://github.com/lakekeeper/lakekeeper/compare/v0.8.0...v0.8.1) (2025-04-13)
+
+
+### Features
+
+* Add Protection for Tables, Views, Namespaces and Warehouses ([fa8c678](https://github.com/lakekeeper/lakekeeper/commit/fa8c67879ead468ba6b9c6808898875965db35de))
+* Add recursive & force deletes ([fa8c678](https://github.com/lakekeeper/lakekeeper/commit/fa8c67879ead468ba6b9c6808898875965db35de))
+* Azure Managed Identities ([#999](https://github.com/lakekeeper/lakekeeper/issues/999)) ([faee35e](https://github.com/lakekeeper/lakekeeper/commit/faee35e6282b7ee7a67086c8b5caa6459696d353))
+* Best-Effort checks on unique Warehouse Locations within Projects ([#996](https://github.com/lakekeeper/lakekeeper/issues/996)) ([b571947](https://github.com/lakekeeper/lakekeeper/commit/b5719470fb73d0393980e828aae93635c7203c6d))
+* Faster Storage Profile validation ([#989](https://github.com/lakekeeper/lakekeeper/issues/989)) ([8278c5f](https://github.com/lakekeeper/lakekeeper/commit/8278c5f7e2998a49747e406dac4a917d5fbd1b35))
+* Recursive Deletes and Force Deletes ([#891](https://github.com/lakekeeper/lakekeeper/issues/891)) ([9762d52](https://github.com/lakekeeper/lakekeeper/commit/9762d525758d9fbc5346f09dab4db7dacfc07eec))
+* Support for GCP Managed Identities ([#1009](https://github.com/lakekeeper/lakekeeper/issues/1009)) ([9a8d36e](https://github.com/lakekeeper/lakekeeper/commit/9a8d36e545ff09a930ed8e594d68731976739d82))
+* Support WASBS locations for ADLS ([#1010](https://github.com/lakekeeper/lakekeeper/issues/1010)) ([008064a](https://github.com/lakekeeper/lakekeeper/commit/008064a1d0c4275c51d6e60e7d40f8b9a2e8337f))
+
+
+### Bug Fixes
+
+* Missing Endpoints in Endpoint Statistic ([76bf004](https://github.com/lakekeeper/lakekeeper/commit/76bf004b39484997d562b2910d8cadace0a366e3))
+* Properly deprecate /default-project endpoints. Use /project instead. ([76bf004](https://github.com/lakekeeper/lakekeeper/commit/76bf004b39484997d562b2910d8cadace0a366e3))
+* undercount table counts in statistics / can't drop table ([#990](https://github.com/lakekeeper/lakekeeper/issues/990)) ([ba3dda0](https://github.com/lakekeeper/lakekeeper/commit/ba3dda0ea792da479f20cc868c047c9a6ecbf8b9))
+
+
+### Miscellaneous Chores
+
+* release 0.8.1 ([0c66884](https://github.com/lakekeeper/lakekeeper/commit/0c668848152d15c97ddbae4eea23a4ee7ca15cdb))
+
 ## [0.8.0](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0) (2025-04-08)
 
 
