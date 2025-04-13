@@ -1,5 +1,7 @@
 use std::sync::LazyLock;
 
+use strum::IntoEnumIterator as _;
+
 pub mod types;
 
 pub mod v1 {
@@ -207,8 +209,8 @@ pub mod v1 {
 }
 
 static SUPPORTED_ENDPOINTS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    crate::api::endpoints::Endpoints::catalog()
-        .iter()
+    crate::api::endpoints::CatalogV1Endpoint::iter()
+        .filter(|s| !s.unimplemented())
         .map(|s| s.as_http_route().replace(" /catalog/", " /"))
         .collect()
 });
@@ -234,6 +236,7 @@ mod test {
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}",
             "/v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks",
         ];
+        // Check that openapi endpoints are in the supported endpoints
         paths
             .into_iter()
             .filter(|(path, _)| !unsupported.contains(&path.as_str()))
@@ -247,6 +250,14 @@ mod test {
                         assert!(super::supported_endpoints().contains(&route), "{route}");
                     });
             });
+
+        // Check that none of the unsupported endpoint strings is contained in any of the supported endpoints
+        for endpoint in super::supported_endpoints() {
+            assert!(
+                !unsupported.iter().any(|s| endpoint.contains(s)),
+                "endpoint {endpoint} is unsupported endpoint"
+            );
+        }
     }
 
     #[test]

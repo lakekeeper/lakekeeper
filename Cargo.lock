@@ -3131,6 +3131,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "serde_yaml",
  "serde_yml",
  "similar",
  "sqlx",

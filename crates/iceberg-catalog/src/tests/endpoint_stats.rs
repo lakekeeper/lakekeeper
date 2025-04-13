@@ -34,7 +34,7 @@ mod test {
 
     use crate::{
         api::{
-            endpoints::Endpoints,
+            endpoints::{CatalogV1Endpoint, Endpoint},
             management::v1::{
                 project::{
                     GetEndpointStatisticsRequest, Service as OtherService, TimeWindowSelector,
@@ -74,7 +74,7 @@ mod test {
         .unwrap();
         assert_eq!(stats.timestamps.len(), 1);
         assert_eq!(stats.called_endpoints.len(), 1);
-        assert_eq!(stats.called_endpoints[0].len(), Endpoints::iter().count());
+        assert_eq!(stats.called_endpoints[0].len(), Endpoint::iter().count());
 
         for s in &stats.called_endpoints[0] {
             assert_eq!(s.count, 1, "{s:?}");
@@ -84,7 +84,7 @@ mod test {
             .iter()
             .map(|s| s.http_route.clone())
             .collect::<HashSet<_>>();
-        let expected = Endpoints::iter()
+        let expected = Endpoint::iter()
             .map(|e| e.as_http_route().to_string())
             .collect::<HashSet<_>>();
         assert_eq!(
@@ -305,7 +305,7 @@ mod test {
         let setup = super::setup_stats_test(pool, FlushMode::Automatic, 1).await;
 
         // Send endpoints data with OK status
-        for ep in Endpoints::iter() {
+        for ep in Endpoint::iter() {
             let (method, path) = ep.as_http_route().split_once(' ').unwrap();
             let method = Method::from_str(method).unwrap();
             let request_metadata = RequestMetadata::new_test(
@@ -332,7 +332,7 @@ mod test {
         }
 
         // Send endpoints data with 404 status
-        for ep in Endpoints::iter().take(3) {
+        for ep in Endpoint::iter().take(3) {
             let (method, path) = ep.as_http_route().split_once(' ').unwrap();
             let method = Method::from_str(method).unwrap();
             let request_metadata = RequestMetadata::new_test(
@@ -419,7 +419,7 @@ mod test {
     #[sqlx::test]
     async fn test_not_existing_project_is_not_recorded(pg_pool: PgPool) {
         let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 1).await;
-        let ep = Endpoints::CatalogDeleteNamespaceTable;
+        let ep: Endpoint = CatalogV1Endpoint::DropTable.into();
         let (method, path) = ep.as_http_route().split_once(' ').unwrap();
         let method = Method::from_str(method).unwrap();
         let request_metadata = RequestMetadata::new_test(
@@ -476,7 +476,7 @@ mod test {
     #[sqlx::test]
     async fn test_with_multiple_warehouses(pg_pool: PgPool) {
         let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 3).await;
-        let ep = Endpoints::CatalogDeleteNamespaceTable;
+        let ep: Endpoint = CatalogV1Endpoint::DropTable.into();
 
         let request_metadata = RequestMetadata::new_test(
             None,
@@ -580,7 +580,7 @@ mod test {
 
     async fn send_all_endpoints(setup: &StatsSetup) {
         // send each endpoint once
-        for ep in Endpoints::iter() {
+        for ep in Endpoint::iter() {
             let (method, path) = ep.as_http_route().split_once(' ').unwrap();
             let method = Method::from_str(method).unwrap();
             let request_metadata = RequestMetadata::new_test(

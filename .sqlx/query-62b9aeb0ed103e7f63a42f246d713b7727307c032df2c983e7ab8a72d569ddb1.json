@@ -1,13 +1,17 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count, timestamp)\n                        SELECT\n                            project_id,\n                            warehouse,\n                            uri,\n                            status_code,\n                            cnt,\n                            get_stats_date_default()\n                        FROM (\n                            SELECT\n                                unnest($1::text[]) as project_id,\n                                unnest($2::UUID[]) as warehouse,\n                                unnest($3::api_endpoints[]) as uri,\n                                unnest($4::INT[]) as status_code,\n                                unnest($5::BIGINT[]) as cnt\n                        ) t\n                        ON CONFLICT (project_id, warehouse_id, matched_path, status_code, timestamp)\n                            DO UPDATE SET count = endpoint_statistics.count + EXCLUDED.count",
+  "query": "\n        SELECT timestamp,\n               array_agg(matched_path) as \"matched_path!: Vec<EndpointFlat>\",\n               array_agg(status_code) as \"status_code!\",\n               array_agg(count) as \"count!\",\n               array_agg(es.warehouse_id) as \"warehouse_id!: Vec<Option<Uuid>>\",\n               array_agg(warehouse_name) as \"warehouse_name!: Vec<Option<String>>\",\n               array_agg(es.created_at) as \"created_at!\",\n               array_agg(es.updated_at) as \"updated_at!: Vec<Option<chrono::DateTime<Utc>>>\"\n        FROM endpoint_statistics es\n        LEFT JOIN warehouse w ON es.warehouse_id = w.warehouse_id\n        WHERE es.project_id = $1\n            AND (es.warehouse_id = $2 OR $3)\n            AND (status_code = ANY($4) OR $4 IS NULL)\n            AND timestamp >  (date_trunc(get_stats_interval_unit(), $5::timestamptz) + get_stats_interval())\n            AND timestamp <= (date_trunc(get_stats_interval_unit(), $6::timestamptz) + get_stats_interval())\n        group by timestamp\n        order by timestamp desc\n        ",
   "describe": {
-    "columns": [],
-    "parameters": {
-      "Left": [
-        "TextArray",
-        "UuidArray",
-        {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "matched_path!: Vec<EndpointFlat>",
+        "type_info": {
           "Custom": {
             "name": "api_endpoints[]",
             "kind": {
@@ -106,12 +110,59 @@
               }
             }
           }
-        },
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status_code!",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 4,
+        "name": "warehouse_id!: Vec<Option<Uuid>>",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "warehouse_name!: Vec<Option<String>>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at!",
+        "type_info": "TimestamptzArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at!: Vec<Option<chrono::DateTime<Utc>>>",
+        "type_info": "TimestamptzArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Bool",
         "Int4Array",
-        "Int8Array"
+        "Timestamptz",
+        "Timestamptz"
       ]
     },
-    "nullable": []
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
   },
-  "hash": "4b50d3e32f0c04a20c82ed3dd5c93fd5bb2ebaf4e10a15cd387987423c7b6d1c"
+  "hash": "62b9aeb0ed103e7f63a42f246d713b7727307c032df2c983e7ab8a72d569ddb1"
 }

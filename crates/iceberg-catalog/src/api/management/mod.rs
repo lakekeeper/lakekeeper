@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 pub mod v1 {
     pub mod bootstrap;
     pub mod namespace;
@@ -46,6 +48,7 @@ pub mod v1 {
 
     use crate::{
         api::{
+            endpoints::ManagementV1Endpoint,
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
@@ -92,11 +95,13 @@ pub mod v1 {
             create_warehouse,
             deactivate_warehouse,
             delete_default_project,
+            delete_default_project_deprecated,
             delete_project_by_id,
             delete_role,
             delete_user,
             delete_warehouse,
             get_default_project,
+            get_default_project_deprecated,
             get_endpoint_statistics,
             get_project_by_id,
             get_role,
@@ -110,6 +115,7 @@ pub mod v1 {
             list_user,
             list_warehouses,
             rename_default_project,
+            rename_default_project_deprecated,
             rename_project_by_id,
             rename_warehouse,
             search_role,
@@ -162,7 +168,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "server",
-        path = "/management/v1/info",
+        path = ManagementV1Endpoint::ServerInfo.path(),
         responses(
             (status = 200, description = "Server info", body = ServerInfo),
             (status = "4XX", body = IcebergErrorResponse),
@@ -184,7 +190,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "server",
-        path = "/management/v1/bootstrap",
+        path = ManagementV1Endpoint::Bootstrap.path(),
         request_body = BootstrapRequest,
         responses(
             (status = 204, description = "Server bootstrapped successfully"),
@@ -207,7 +213,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "user",
-        path = "/management/v1/user",
+        path = ManagementV1Endpoint::CreateUser.path(),
         request_body = CreateUserRequest,
         responses(
             (status = 200, description = "User updated", body = User),
@@ -232,7 +238,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "user",
-        path = "/management/v1/search/user",
+        path = ManagementV1Endpoint::SearchUser.path(),
         request_body = SearchUserRequest,
         responses(
             (status = 200, description = "List of users", body = SearchUserResponse),
@@ -251,19 +257,19 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "user",
-        path = "/management/v1/user/{id}",
-        params(("id" = Uuid,)),
+        path = ManagementV1Endpoint::GetUser.path(),
+        params(("user_id" = String,)),
         responses(
             (status = 200, description = "User details", body = User),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn get_user<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<UserId>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<User>)> {
-        ApiServer::<C, A, S>::get_user(api_context, metadata, id)
+        ApiServer::<C, A, S>::get_user(api_context, metadata, user_id)
             .await
             .map(|user| (StatusCode::OK, Json(user)))
     }
@@ -272,7 +278,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "user",
-        path = "/management/v1/whoami",
+        path = ManagementV1Endpoint::Whoami.path(),
         responses(
             (status = 200, description = "User details", body = User),
             (status = "4XX", body = IcebergErrorResponse),
@@ -304,8 +310,8 @@ pub mod v1 {
     #[utoipa::path(
         put,
         tag = "user",
-        path = "/management/v1/user/{id}",
-        params(("id" = Uuid,)),
+        path = ManagementV1Endpoint::UpdateUser.path(),
+        params(("user_id" = String,)),
         request_body = UpdateUserRequest,
         responses(
             (status = 200, description = "User details updated successfully"),
@@ -313,19 +319,19 @@ pub mod v1 {
         )
     )]
     async fn update_user<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<UserId>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateUserRequest>,
     ) -> Result<()> {
-        ApiServer::<C, A, S>::update_user(api_context, metadata, id, request).await
+        ApiServer::<C, A, S>::update_user(api_context, metadata, user_id, request).await
     }
 
     /// List users
     #[utoipa::path(
         get,
         tag = "user",
-        path = "/management/v1/user",
+        path = ManagementV1Endpoint::ListUser.path(),
         params(ListUsersQuery),
         responses(
             (status = 200, description = "List of users", body = ListUsersResponse),
@@ -347,19 +353,19 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "user",
-        path = "/management/v1/user/{id}",
-        params(("id" = Uuid,)),
+        path =  ManagementV1Endpoint::DeleteUser.path(),
+        params(("user_id" = String,)),
         responses(
             (status = 204, description = "User deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn delete_user<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<UserId>,
+        Path(user_id): Path<UserId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
-        ApiServer::<C, A, S>::delete_user(api_context, metadata, id)
+        ApiServer::<C, A, S>::delete_user(api_context, metadata, user_id)
             .await
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
@@ -368,7 +374,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "role",
-        path = "/management/v1/role",
+        path = ManagementV1Endpoint::CreateRole.path(),
         request_body = CreateRoleRequest,
         responses(
             (status = 201, description = "Role successfully created", body = Role),
@@ -390,7 +396,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "role",
-        path = "/management/v1/search/role",
+        path = ManagementV1Endpoint::SearchRole.path(),
         request_body = SearchRoleRequest,
         responses(
             (status = 200, description = "List of users", body = SearchRoleResponse),
@@ -409,7 +415,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "role",
-        path = "/management/v1/role",
+        path = ManagementV1Endpoint::ListRole.path(),
         params(ListRolesQuery),
         responses(
             (status = 200, description = "List of roles", body = ListRolesResponse),
@@ -430,19 +436,19 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "role",
-        path = "/management/v1/role/{id}",
-        params(("id" = Uuid,)),
+        path = ManagementV1Endpoint::DeleteRole.path(),
+        params(("role_id" = Uuid,)),
         responses(
             (status = 204, description = "Role deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn delete_role<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<RoleId>,
+        Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, ())> {
-        ApiServer::<C, A, S>::delete_role(api_context, metadata, id)
+        ApiServer::<C, A, S>::delete_role(api_context, metadata, role_id)
             .await
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
@@ -451,19 +457,19 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "role",
-        path = "/management/v1/role/{id}",
-        params(("id" = Uuid,)),
+        path = ManagementV1Endpoint::GetRole.path(),
+        params(("role_id" = Uuid,)),
         responses(
             (status = 200, description = "Role details", body = Role),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
     async fn get_role<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<RoleId>,
+        Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
     ) -> Result<(StatusCode, Json<Role>)> {
-        ApiServer::<C, A, S>::get_role(api_context, metadata, id)
+        ApiServer::<C, A, S>::get_role(api_context, metadata, role_id)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
     }
@@ -472,8 +478,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "role",
-        path = "/management/v1/role/{id}",
-        params(("id" = Uuid,)),
+        path = ManagementV1Endpoint::UpdateRole.path(),
+        params(("role_id" = Uuid,)),
         request_body = UpdateRoleRequest,
         responses(
             (status = 200, description = "Role updated successfully", body = Role),
@@ -481,12 +487,12 @@ pub mod v1 {
         )
     )]
     async fn update_role<C: Catalog, A: Authorizer, S: SecretStore>(
-        Path(id): Path<RoleId>,
+        Path(role_id): Path<RoleId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
         Json(request): Json<UpdateRoleRequest>,
     ) -> Result<(StatusCode, Json<Role>)> {
-        ApiServer::<C, A, S>::update_role(api_context, metadata, id, request)
+        ApiServer::<C, A, S>::update_role(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
     }
@@ -499,7 +505,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse",
+        path = ManagementV1Endpoint::CreateWarehouse.path(),
         request_body = CreateWarehouseRequest,
         responses(
             (status = 201, description = "Warehouse created successfully", body = CreateWarehouseResponse),
@@ -518,7 +524,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "project",
-        path = "/management/v1/project-list",
+        path = ManagementV1Endpoint::ListProjects.path(),
         responses(
             (status = 200, description = "List of projects", body = ListProjectsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -535,7 +541,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/project",
+        path = ManagementV1Endpoint::CreateProject.path(),
         responses(
             (status = 201, description = "Project created successfully", body = CreateProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -553,7 +559,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "project",
-        path = "/management/v1/default-project",
+        path = ManagementV1Endpoint::GetDefaultProject.path(),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -566,11 +572,32 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 
+    /// Get the default project. This Endpoint is deprecated.
+    #[utoipa::path(
+            get,
+            tag = "project",
+            path = ManagementV1Endpoint::GetDefaultProjectDeprecated.path(),
+            responses(
+                (status = 200, description = "Project details", body = GetProjectResponse),
+                (status = "4XX", body = IcebergErrorResponse),
+            )
+        )]
+    #[deprecated(
+        since = "0.8.0",
+        note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
+    )]
+    async fn get_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<GetProjectResponse> {
+        ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
+    }
+
     /// Get a specific project by id
     #[utoipa::path(
         get,
         tag = "project",
-        path = "/management/v1/project/{project_id}",
+        path = ManagementV1Endpoint::GetDefaultProjectById.path(),
         params(("project_id" = String,)),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
@@ -589,7 +616,7 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "project",
-        path = "/management/v1/default-project",
+        path = ManagementV1Endpoint::DeleteDefaultProject.path(),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -604,11 +631,34 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
+    /// Delete the default project
+    #[utoipa::path(
+            delete,
+            tag = "project",
+            path = ManagementV1Endpoint::DeleteDefaultProjectDeprecated .path(),
+            responses(
+                (status = 204, description = "Project deleted successfully"),
+                (status = "4XX", body = IcebergErrorResponse),
+            )
+        )]
+    #[deprecated(
+        since = "0.8.0",
+        note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
+    )]
+    async fn delete_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_project(None, api_context, metadata)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
     /// Delete a project by ID
     #[utoipa::path(
         delete,
         tag = "project",
-        path = "/management/v1/project/{project_id}",
+        path = ManagementV1Endpoint::DeleteProjectById.path(),
         params(("project_id" = String,)),
         responses(
             (status = 204, description = "Project deleted successfully"),
@@ -625,11 +675,11 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Rename the default project
+    /// Rename the default project.
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/default-project/rename",
+        path = ManagementV1Endpoint::RenameDefaultProject.path(),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -643,11 +693,34 @@ pub mod v1 {
         ApiServer::<C, A, S>::rename_project(None, request, api_context, metadata).await
     }
 
+    /// Rename the default project.
+    /// This Endpoint is deprecated, use `/v1/projects/default` instead.
+    #[utoipa::path(
+            post,
+            tag = "project",
+            path = ManagementV1Endpoint::RenameDefaultProjectDeprecated.path(),
+            responses(
+                (status = 200, description = "Project renamed successfully"),
+                (status = "4XX", body = IcebergErrorResponse),
+            )
+        )]
+    #[deprecated(
+        since = "0.8.0",
+        note = "This endpoint is deprecated and will be removed in a future version. Use `/v1/projects/default` instead."
+    )]
+    async fn rename_default_project_deprecated<C: Catalog, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<RenameProjectRequest>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::rename_project(None, request, api_context, metadata).await
+    }
+
     /// Rename project by id
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/project/{project_id}/rename",
+        path = ManagementV1Endpoint::RenameProjectById.path(),
         params(("project_id" = String,)),
         responses(
             (status = 200, description = "Project renamed successfully"),
@@ -670,7 +743,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse",
+        path = ManagementV1Endpoint::ListWarehouses.path(),
         params(ListWarehousesRequest),
         responses(
             (status = 200, description = "List of warehouses", body = ListWarehousesResponse),
@@ -689,7 +762,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}",
+        path = ManagementV1Endpoint::GetWarehouse.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 200, description = "Warehouse details", body = GetWarehouseResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -716,7 +790,8 @@ pub mod v1 {
     #[utoipa::path(
         delete,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}",
+        path = ManagementV1Endpoint::DeleteWarehouse.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 204, description = "Warehouse deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -737,7 +812,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/rename",
+        path = ManagementV1Endpoint::RenameWarehouse.path(),
+        params(("warehouse_id" = Uuid,)),
         request_body = RenameWarehouseRequest,
         responses(
             (status = 200, description = "Warehouse renamed successfully"),
@@ -756,15 +832,16 @@ pub mod v1 {
 
     /// Update the Deletion Profile (soft-delete) of a warehouse.
     #[utoipa::path(
-            post,
-            tag = "warehouse",
-            path = "/management/v1/warehouse/{warehouse_id}/delete-profile",
-            request_body = UpdateWarehouseDeleteProfileRequest,
-            responses(
-                (status = 200, description = "Deletion Profile updated successfully"),
-            (status = "4XX", body = IcebergErrorResponse),
-            )
-        )]
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::UpdateWarehouseDeleteProfile.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = UpdateWarehouseDeleteProfileRequest,
+        responses(
+            (status = 200, description = "Deletion Profile updated successfully"),
+        (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
     async fn update_warehouse_delete_profile<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -784,7 +861,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/deactivate",
+        path = ManagementV1Endpoint::DeactivateWarehouse.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 200, description = "Warehouse deactivated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -802,7 +880,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/activate",
+        path = ManagementV1Endpoint::ActivateWarehouse.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 200, description = "Warehouse activated successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -820,7 +899,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/storage",
+        path = ManagementV1Endpoint::UpdateStorageProfile.path(),
+        params(("warehouse_id" = Uuid,)),
         request_body = UpdateWarehouseStorageRequest,
         responses(
             (status = 200, description = "Storage profile updated successfully"),
@@ -842,7 +922,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/storage-credential",
+        path = ManagementV1Endpoint::UpdateStorageCredential.path(),
+        params(("warehouse_id" = Uuid,)),
         request_body = UpdateWarehouseCredentialRequest,
         responses(
             (status = 200, description = "Storage credential updated successfully"),
@@ -920,8 +1001,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/statistics",
-        params(GetWarehouseStatisticsQuery),
+        path = ManagementV1Endpoint::GetWarehouseStatistics.path(),
+        params(("warehouse_id" = Uuid,), GetWarehouseStatisticsQuery),
         responses(
             (status = 200, description = "Warehouse statistics", body = WarehouseStatisticsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -988,7 +1069,7 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "project",
-        path = "/management/v1/endpoint-statistics",
+        path = ManagementV1Endpoint::LoadEndpointStatistics.path(),
         request_body = GetEndpointStatisticsRequest,
         responses(
             (status = 200, description = "Endpoint statistics", body = EndpointStatisticsResponse),
@@ -1011,8 +1092,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/deleted-tabulars",
-        params(ListDeletedTabularsQuery),
+        path = ManagementV1Endpoint::ListDeletedTabulars.path(),
+        params(("warehouse_id" = Uuid,), ListDeletedTabularsQuery),
         responses(
             (status = 200, description = "List of soft-deleted tabulars", body = ListDeletedTabularsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1037,13 +1118,17 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/deleted_tabulars/undrop",
+        path = ManagementV1Endpoint::UndropTabularsDeprecated.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 204, description = "Tabular undropped successfully"),
             (status = "4XX", body = IcebergErrorResponse),
         )
     )]
-    #[deprecated = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."]
+    #[deprecated(
+        since = "0.7.0",
+        note = "This endpoint is deprecated and will be removed soon, please use /management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop instead."
+    )]
     async fn undrop_tabulars_deprecated<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         Path(warehouse_id): Path<uuid::Uuid>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
@@ -1063,7 +1148,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/deleted-tabulars/undrop",
+        path = ManagementV1Endpoint::UndropTabulars.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 204, description = "Tabular undropped successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1102,7 +1188,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection",
+        path = ManagementV1Endpoint::GetTableProtection.path(),
+        params(("warehouse_id" = Uuid,),("table_id" = Uuid,)),
         responses(
             (status = 200, body =  ProtectionResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1125,7 +1212,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/table/{table_id}/protection",
+        path = ManagementV1Endpoint::SetTableProtection.path(),
+        params(("warehouse_id" = Uuid,),("table_id" = Uuid,)),
         responses(
             (status = 200, body =  ProtectionResponse, description = "Table protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1150,7 +1238,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection",
+        path = ManagementV1Endpoint::GetViewProtection.path(),
+        params(("warehouse_id" = Uuid,),("view_id" = Uuid,)),
         responses(
             (status = 200, body = ProtectionResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1173,7 +1262,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection",
+        path = ManagementV1Endpoint::SetViewProtection.path(),
+        params(("warehouse_id" = Uuid,),("view_id" = Uuid,)),
         responses(
             (status = 200, body = ProtectionResponse, description = "View protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1198,7 +1288,8 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
+        path = ManagementV1Endpoint::GetNamespaceProtection.path(),
+        params(("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
         responses(
             (status = 200, body = ProtectionResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1221,7 +1312,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection",
+        path = ManagementV1Endpoint::SetNamespaceProtection.path(),
+        params(("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
         responses(
             (status = 200, body = ProtectionResponse, description = "Namespace protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1246,7 +1338,8 @@ pub mod v1 {
     #[utoipa::path(
         post,
         tag = "warehouse",
-        path = "/management/v1/warehouse/{warehouse_id}/protection",
+        path = ManagementV1Endpoint::SetWarehouseProtection.path(),
+        params(("warehouse_id" = Uuid,)),
         responses(
             (status = 200, body = ProtectionResponse, description = "Warehouse protection set successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1339,7 +1432,7 @@ pub mod v1 {
                 // Role management
                 .route("/role", get(list_roles).post(create_role))
                 .route(
-                    "/role/{id}",
+                    "/role/{role_id}",
                     get(get_role).post(update_role).delete(delete_role),
                 )
                 .route("/search/role", post(search_role))
@@ -1354,11 +1447,20 @@ pub mod v1 {
                 // Default project
                 .route(
                     "/default-project",
-                    get(get_default_project).delete(delete_default_project),
+                    get(get_default_project_deprecated).delete(delete_default_project_deprecated),
                 )
-                .route("/default-project/rename", post(rename_default_project))
+                .route(
+                    "/default-project/rename",
+                    post(rename_default_project_deprecated),
+                )
+                .route("/project/rename", post(rename_default_project))
                 // Create a new project
-                .route("/project", post(create_project))
+                .route(
+                    "/project",
+                    post(create_project)
+                        .get(get_default_project)
+                        .delete(delete_default_project),
+                )
                 .route(
                     "/project/{project_id}",
                     get(get_project_by_id).delete(delete_project_by_id),

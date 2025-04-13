@@ -117,6 +117,7 @@ mockall = { workspace = true }
 needs_env_var = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_urlencoded = "0.7.1"
+serde_yaml = { workspace = true }
 similar = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }

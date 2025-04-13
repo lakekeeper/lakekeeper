@@ -18,7 +18,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
-    api::endpoints::Endpoints, request_metadata::RequestMetadata, ProjectId, WarehouseIdent,
+    api::endpoints::Endpoint, request_metadata::RequestMetadata, ProjectId, WarehouseIdent,
 };
 
 /// Middleware for tracking endpoint statistics.
@@ -107,7 +107,7 @@ impl ProjectStatistics {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EndpointIdentifier {
-    pub uri: Endpoints,
+    pub uri: Endpoint,
     pub status_code: StatusCode,
     pub warehouse: Option<WarehouseIdent>,
     // probably only relevant for config calls
@@ -266,10 +266,9 @@ impl EndpointStatisticsTracker {
             return;
         };
 
-        let Some(uri) = Endpoints::from_method_and_matched_path(
-            request_metadata.request_method(),
-            matched_path,
-        ) else {
+        let Some(uri) =
+            Endpoint::from_method_and_matched_path(request_metadata.request_method(), matched_path)
+        else {
             tracing::error!(
                             "Could not parse endpoint from matched path: '{} {}'. This is likely a bug which will affect the statistics collection.",
                             request_metadata.request_method(),

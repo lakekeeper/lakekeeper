@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        endpoints::Endpoints,
+        endpoints::{Endpoint, EndpointFlat},
         management::v1::project::{
             EndpointStatistic, EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter,
         },
@@ -48,7 +48,7 @@ pub(crate) async fn list_statistics(
     let row = sqlx::query!(
         r#"
         SELECT timestamp,
-               array_agg(matched_path) as "matched_path!: Vec<Endpoints>",
+               array_agg(matched_path) as "matched_path!: Vec<EndpointFlat>",
                array_agg(status_code) as "status_code!",
                array_agg(count) as "count!",
                array_agg(es.warehouse_id) as "warehouse_id!: Vec<Option<Uuid>>",
@@ -103,7 +103,7 @@ pub(crate) async fn list_statistics(
                     updated_at,
                 )| EndpointStatistic {
                     count,
-                    http_route: uri.as_http_route().to_string(),
+                    http_route: Endpoint::from(uri).as_http_route().to_string(),
                     status_code: status_code
                         .clamp(i32::from(u16::MIN), i32::from(u16::MAX))
                         .try_into()

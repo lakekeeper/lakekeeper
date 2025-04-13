@@ -6,6 +6,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
+    api::endpoints::EndpointFlat,
     implementations::postgres::dbutils::DBErrorHandler,
     service::endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
     ProjectId,
@@ -112,7 +113,7 @@ impl PostgresStatisticsSink {
             ) in endpoints
             {
                 projects.push(project.to_string());
-                uris.push(*uri);
+                uris.push(EndpointFlat::from(*uri));
                 status_codes.push(i32::from(status_code.as_u16()));
                 counts.push(*count);
 
@@ -130,7 +131,6 @@ impl PostgresStatisticsSink {
 
         tracing::debug!("Inserting stats batch");
 
-        // TODO: when to start batching the inserts?
         sqlx::query!(r#"INSERT INTO endpoint_statistics (project_id, warehouse_id, matched_path, status_code, count, timestamp)
                         SELECT
                             project_id,
