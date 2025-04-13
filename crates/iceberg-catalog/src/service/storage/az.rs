@@ -1371,6 +1371,7 @@ mod is_overlapping_location_tests {
             authority_host: authority_host.map(|url| url.parse().unwrap()),
             key_prefix: key_prefix.map(ToString::to_string),
             sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
         }
     }
 

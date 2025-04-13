@@ -11,8 +11,9 @@ from conftest import settings
 
 
 @pytest.fixture(scope="session")
-def adls_warehouse_location(warehouse: conftest.Warehouse):
-    return f"abfss://{settings.azure_storage_filesystem}@{settings.azure_storage_account_name}.dfs.core.windows.net"
+def adls_warehouse_location(warehouse: conftest.Warehouse, storage_config):
+    key_prefix = storage_config["storage-profile"]["key-prefix"]
+    return f"abfss://{settings.azure_storage_filesystem}@{settings.azure_storage_account_name}.dfs.core.windows.net/{key_prefix}"
 
 
 def test_create_table_wasbs(
