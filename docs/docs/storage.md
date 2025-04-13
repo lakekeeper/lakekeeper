@@ -10,6 +10,21 @@ Currently, we support the following storages:
 
 When creating a Warehouse or updating storage information, Lakekeeper validates the configuration.
 
+By default, Lakekeeper Warehouses enforce specific URI schemas for tables and views to ensure compatibility with most query engines:
+
+* **S3 / AWS Warehouses**: Must start with `s3://`
+* **Azure / ADLS Warehouses**: Must start with `abfss://`
+* **GCP Warehouses**: Must start with `gs://`
+
+When a new table is created without an explicitly specified location, Lakekeeper automatically assigns the appropriate protocol based on the storage type. If a location is explicitly provided by the client, it must adhere to the required schema.
+
+### Allowing Alternative Protocols (s3a, s3n, wasbs)
+
+For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additional protocols. To enable these, activate the "Allow Alternative Protocols" flag in the storage profile of the Warehouse. When enabled, the following additional protocols are accepted for table creation or registration:
+
+* **S3 / AWS Warehouses**: Supports `s3a://` and `s3n://` in addition to `s3://`
+* **Azure Warehouses**: Supports `wasbs://` in addition to `abfss://`
+
 ## S3
 
 We support remote signing and vended-credentials with Minio & AWS. Both provide a secure way to access data on S3:
@@ -297,6 +312,26 @@ A POST request to `/management/v1/warehouse` would expects the following body:
 }
 ```
 
+#### Azure System Identity
+
+Azure system identities can be used to authenticate Lakekeeper to ADLS Gen 2, without specifying credentials explicitly on Warehouse creation. This feature is disabled by default and must be explicitly enabled system-wide by setting the following environment variable:
+
+```bash
+LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true
+```
+
+When enabled, Lakekeeper will use the managed identity of the virtual machine or application it is running on to access ADLS. Ensure that the managed identity has the necessary permissions to access the storage account and container. For example, assign the `Storage Blob Data Contributor` and `Storage Blob Delegator` roles to the managed identity for the relevant storage account as described above.
+
+!!! warning
+    Enabling Azure system identities allows Lakekeeper to access any storage location that the managed identity has permissions for. To minimize security risks, ensure the managed identity is restricted to only the necessary resources. Additionally, limit Warehouse creation permissions to users who are authorized to access all locations that the system identity can access.
+
+#### Best Practices
+
+- **Use with Care**: System identities provide a convenient way to manage credentials, but they also increase the risk of unintended access if not properly scoped. Always review and limit the permissions of the managed identity or service account.
+- **Enable Explicitly**: These features are disabled by default to prevent accidental access. Enable them only if you fully understand the implications and have configured the identities securely.
+- **Monitor Access**: Regularly audit the permissions and access logs of the managed identities or service accounts to ensure compliance with your security policies.
+
+
 ## GCS
 
 For GCS, the used bucket needs to disable hierarchical namespaces and should have the storage admin role.
@@ -330,3 +365,16 @@ A sample storage profile could look like this.
   }
 }
 ```
+
+#### GCP System Identity
+
+GCP system identities allow Lakekeeper to authenticate using the service account that the application is running as. This can be either a Compute Engine default service account or a user-assigned service account. To enable this feature system-wide, set the following environment variable:
+
+```bash
+LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS=true
+```
+
+When enabled, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, as described above.
+
+!!! warning
+    Enabling GCP system identities grants Lakekeeper access to any storage location the service account has permissions for. Carefully review and limit the permissions of the service account to avoid unintended access to sensitive resources. Additionally, limit Warehouse creation permissions to users who are authorized to access all locations that the system identity can access.
