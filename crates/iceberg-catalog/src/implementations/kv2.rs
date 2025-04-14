@@ -260,7 +260,7 @@ mod tests {
     mod kv2 {
         use super::super::*;
         use crate::{
-            service::storage::{S3Credential, StorageCredential},
+            service::storage::{s3::S3AccessKeyCredential, S3Credential, StorageCredential},
             CONFIG,
         };
 
@@ -270,11 +270,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            let secret: StorageCredential = S3Credential::AccessKey {
+            let secret: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: "my access key".to_string(),
                 aws_secret_access_key: "my secret key".to_string(),
                 external_id: None,
-            }
+            })
             .into();
 
             let secret_id = state.create_secret(secret.clone()).await.unwrap();
@@ -293,11 +293,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            let secret: StorageCredential = S3Credential::AccessKey {
+            let secret: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: "my access key".to_string(),
                 aws_secret_access_key: "my secret key".to_string(),
                 external_id: None,
-            }
+            })
             .into();
 
             let secret_id = state
