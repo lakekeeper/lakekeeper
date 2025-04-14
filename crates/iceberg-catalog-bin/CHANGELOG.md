@@ -2,6 +2,18 @@
 
 
 
+## [0.8.1](https://github.com/lakekeeper/lakekeeper/compare/v0.8.0...v0.8.1) (2025-04-13)
+
+
+### Features
+
+* Update UI to 0.7.0 ([#1012](https://github.com/lakekeeper/lakekeeper/issues/1012)) ([103adf9](https://github.com/lakekeeper/lakekeeper/commit/103adf91fcd15ba5608e77b74b13b7c53b900ed2))
+
+
+### Miscellaneous Chores
+
+* release 0.8.1 ([0c66884](https://github.com/lakekeeper/lakekeeper/commit/0c668848152d15c97ddbae4eea23a4ee7ca15cdb))
+
 ## [0.8.0](https://github.com/lakekeeper/lakekeeper/compare/v0.7.4...v0.8.0) (2025-04-08)
 
 
