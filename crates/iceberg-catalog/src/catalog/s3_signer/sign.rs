@@ -244,7 +244,7 @@ async fn sign(
     sign_settings.percent_encoding_mode = aws_sigv4::http_request::PercentEncodingMode::Single;
     sign_settings.payload_checksum_kind = aws_sigv4::http_request::PayloadChecksumKind::XAmzSha256;
     let aws_credentials = storage_profile
-        .get_credentials_for_assume_role(credentials)
+        .get_aws_credentials_with_assumed_role(credentials)
         .await?
         .ok_or_else(|| {
             ErrorModel::precondition_failed(

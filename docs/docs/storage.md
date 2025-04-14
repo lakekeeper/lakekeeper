@@ -265,6 +265,52 @@ An warehouse create call could look like this:
 }
 ```
 
+### Cloudflare R2
+Lakekeeper supports Cloudflare R2 storage with all S3 compatible clients, including vended credentials via the `/accounts/{account_id}/r2/temp-access-credentials` Endpoint.
+
+First we create a new Bucket. In the cloudflare UI, Select "R2 Object Storage" -> "Overview" and select "+ Create Bucket". We call our bucket `lakekeeper-dev`. Click on the bucket, select the "Settings" tab, and note down the "S3 API" displayed.
+
+Secondly, we create an API Token for Lakekeeper as follows:
+
+1. Go back to the Overview Page ("R2 Object Storage" -> "Overview") and select "Manage API tokens" in the "{} API" dropdown.
+1. In the R2 token page select "Create Account API token". Give the token any name. Select the "Admin Read & Write" permission, this is unfortunately required at the time of writing, as the `/accounts/{account_id}/r2/temp-access-credentials` does not accept other tokens. Click "Create Account API Token".
+1. Note down the "Token value", "Access Key ID" and "Secret Access Key"
+
+Finally, we can create the Warehouse in Lakekeeper via the UI or API. A POST request to `/management/v1/warehouse` expects the following body:
+
+```json
+{
+  "warehouse-name": "r2_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential":
+    {
+        "credential-type": "cloudflare-r2",
+        "account-id": "<Cloudflare Account ID, typically the long alphanumeric string before the first dot in the S3 API URL> ",
+        "access-key-id": "access-key-id-from-above",
+        "secret-access-key": "secret-access-key-from-above",
+        "token": "token-from-above",
+    },
+  "storage-profile":
+    {
+        "type": "s3",
+        "bucket": "<name of your cloudflare r2 bucket, lakekeeper-dev in our example>",
+        "region": "<your cloudflare region, i.e. eu>",
+        "key-prefix": "path/to/my/warehouse",
+        "endpoint": "<S3 API Endpoint, i.e. https://<account-id>.eu.r2.cloudflarestorage.com>"
+    },
+}
+```
+
+For cloudflare R2 credentials, the following parameters are automatically set:
+
+* `assume-role-arn` is set to None, as this is not supported
+* `sts-enabled` is set to `true`
+* `flavor` is set to `s3-compat`
+
+It is required to specify the `endpoint`
+
+
+
 ## Azure Data Lake Storage Gen 2
 To add a Warehouse backed by ADLS, we need two Azure objects: The Storage Account itself and an App Registration which Lakekeeper can use to access it and delegate access to compute engines.
 

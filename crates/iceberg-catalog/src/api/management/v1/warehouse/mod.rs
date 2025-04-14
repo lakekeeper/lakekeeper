@@ -307,7 +307,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         validate_warehouse_name(&warehouse_name)?;
-        storage_profile.normalize()?;
+        storage_profile.normalize(storage_credential.as_ref())?;
 
         // Run validation and overlap check in parallel
         let validation_future = storage_profile.validate_access(storage_credential.as_ref(), None);
@@ -659,7 +659,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
         } = request;
 
-        storage_profile.normalize()?;
+        storage_profile.normalize(storage_credential.as_ref())?;
         storage_profile
             .validate_access(storage_credential.as_ref(), None)
             .await?;

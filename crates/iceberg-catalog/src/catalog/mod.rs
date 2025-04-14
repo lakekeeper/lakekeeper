@@ -265,7 +265,8 @@ pub(crate) mod test {
             contract_verification::ContractVerifiers,
             event_publisher::CloudEventsPublisher,
             storage::{
-                S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
+                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
+                StorageProfile, TestProfile,
             },
             task_queue::TaskQueues,
             State, UserId,
@@ -277,7 +278,7 @@ pub(crate) mod test {
         TestProfile::default().into()
     }
 
-    pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
+    pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
         let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
         let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
         let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
@@ -288,11 +289,11 @@ pub(crate) mod test {
             .parse()
             .unwrap();
 
-        let cred: StorageCredential = S3Credential::AccessKey {
+        let cred: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
             aws_access_key_id,
             aws_secret_access_key,
             external_id: None,
-        }
+        })
         .into();
 
         let mut profile: StorageProfile = S3Profile::builder()
@@ -307,7 +308,7 @@ pub(crate) mod test {
             .build()
             .into();
 
-        profile.normalize().unwrap();
+        profile.normalize(Some(&cred)).unwrap();
         (profile, cred)
     }
 

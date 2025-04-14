@@ -38,6 +38,9 @@ static STS_HTTP_CLIENT: LazyLock<aws_sdk_sts::config::SharedHttpClient> = LazyLo
 static AWS_IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
     LazyLock::new(|| IdentityCache::lazy().build());
 
+const DEFAULT_STS_TOKEN_VALIDITY_SECONDS: u64 = 3600;
+const DEFAULT_STS_TOKEN_VALIDITY_SECONDS_I32: i32 = 3600;
+
 #[derive(
     Debug,
     Eq,
@@ -80,6 +83,9 @@ pub struct S3Profile {
     #[builder(default, setter(strip_option))]
     pub sts_role_arn: Option<String>,
     pub sts_enabled: bool,
+    /// The validity of the sts tokens in seconds. Default: 3600.
+    #[builder(default, setter(strip_option))]
+    pub sts_token_validity_seconds: Option<u64>,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -132,39 +138,74 @@ pub enum S3Flavor {
     Aws,
     #[serde(alias = "minio")]
     S3Compat,
+    // CloudflareR2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "credential-type", rename_all = "kebab-case")]
+pub enum S3Credential {
+    /// Authenticate to AWS using access-key and secret-key.
+    AccessKey(S3AccessKeyCredential),
+    /// Authenticate to AWS using the identity configured on the system
+    ///  that runs lakekeeper. The AWS SDK is used to load the credentials.
+    AwsSystemIdentity(S3AwsSystemIdentityCredential),
+    CloudflareR2(S3CloudflareR2Credential),
 }
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(tag = "credential-type", rename_all = "kebab-case")]
-pub enum S3Credential {
-    #[serde(rename_all = "kebab-case")]
-    #[schema(title = "S3CredentialAccessKey")]
-    /// Authenticate to AWS using access-key and secret-key.
-    AccessKey {
-        aws_access_key_id: String,
-        #[redact(partial)]
-        aws_secret_access_key: String,
-        #[redact(partial)]
-        external_id: Option<String>,
-    },
-    #[serde(rename_all = "kebab-case")]
-    #[schema(title = "S3CredentialSystemIdentity")]
-    /// Authenticate to AWS using the identity configured on the system
-    ///  that runs lakekeeper. The AWS SDK is used to load the credentials.
-    AwsSystemIdentity {
-        #[redact(partial)]
-        external_id: Option<String>,
-    },
+#[serde(rename_all = "kebab-case")]
+#[schema(title = "S3CredentialAccessKey")]
+pub struct S3AccessKeyCredential {
+    pub aws_access_key_id: String,
+    #[redact(partial)]
+    pub aws_secret_access_key: String,
+    #[redact(partial)]
+    pub external_id: Option<String>,
 }
 
-impl S3Credential {
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schema(title = "S3CredentialSystemIdentity")]
+pub struct S3AwsSystemIdentityCredential {
+    #[redact(partial)]
+    pub external_id: Option<String>,
+}
+
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schema(title = "CloudflareR2Credential")]
+pub struct S3CloudflareR2Credential {
+    /// Access key ID used for IO operations of Lakekeeper
+    pub access_key_id: String,
+    #[redact(partial)]
+    /// Secret key associated with the access key ID.
+    pub secret_access_key: String,
+    #[redact(partial)]
+    /// Token associated with the access key ID.
+    /// This is used to fetch downscoped temporary credentials for vended credentials.
+    pub token: String,
+    /// Cloudflare account ID, used to determine the temporary credentials endpoint.
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+enum STSCapableCredential {
+    /// Access key credentials
+    AccessKey(S3AccessKeyCredential),
+    /// System identity credentials
+    AwsSystemIdentity(S3AwsSystemIdentityCredential),
+}
+
+impl STSCapableCredential {
     /// Get the external ID for the credential.
     /// Returns `None` if the credential is not an access key.
     #[must_use]
-    pub fn external_id(&self) -> Option<&str> {
+    fn external_id(&self) -> Option<&str> {
         match self {
-            S3Credential::AccessKey { external_id, .. }
-            | S3Credential::AwsSystemIdentity { external_id, .. } => external_id.as_deref(),
+            STSCapableCredential::AccessKey(S3AccessKeyCredential { external_id, .. })
+            | STSCapableCredential::AwsSystemIdentity(S3AwsSystemIdentityCredential {
+                external_id,
+            }) => external_id.as_deref(),
         }
     }
 }
@@ -242,7 +283,9 @@ impl S3Profile {
             self.path_style_access.unwrap_or_default(),
         );
 
-        let credentials = self.get_credentials_for_assume_role(credential).await?;
+        let credentials = self
+            .get_aws_credentials_with_assumed_role(credential)
+            .await?;
         let builder = if let Some(credentials) = credentials {
             let builder = builder
                 .with_prop(iceberg::io::S3_ACCESS_KEY_ID, credentials.access_key_id())
@@ -276,13 +319,20 @@ impl S3Profile {
     /// - Fails if the key prefix is too long.
     /// - Fails if the region or endpoint is missing.
     /// - Fails if the endpoint is not a valid URL.
-    pub(super) fn normalize(&mut self) -> Result<(), ValidationError> {
+    pub(super) fn normalize(
+        &mut self,
+        s3_credential: Option<&S3Credential>,
+    ) -> Result<(), ValidationError> {
         validate_bucket_name(&self.bucket)?;
         validate_region(&self.region)?;
         self.normalize_key_prefix()?;
         self.normalize_endpoint()?;
         self.normalize_assume_role_arn();
         self.normalize_sts_role_arn();
+
+        if let Some(S3Credential::CloudflareR2(cloudflare_r2_credential)) = s3_credential {
+            self.normalize_r2(cloudflare_r2_credential)?;
+        }
 
         if self.sts_enabled
             && matches!(self.flavor, S3Flavor::Aws)
@@ -400,25 +450,53 @@ impl S3Profile {
         }
 
         if vended_credentials {
-            if self.sts_enabled {
+            if self.sts_enabled | matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
                 let aws_sdk_sts::types::Credentials {
                     access_key_id,
                     secret_access_key,
                     session_token,
                     expiration: _,
                     ..
-                } = if let Some(arn) = self.sts_role_arn.as_ref().or(self.assume_role_arn.as_ref())
-                {
-                    self.get_aws_sts_token(table_location, s3_credential, arn, storage_permissions)
+                } = match s3_credential.cloned() {
+                    Some(S3Credential::CloudflareR2(c)) => {
+                        self.get_cloudflare_r2_temporary_credentials(
+                            table_location,
+                            c,
+                            storage_permissions,
+                        )
                         .await?
-                } else if S3Flavor::S3Compat == self.flavor {
-                    self.get_minio_sts_token(table_location, s3_credential, storage_permissions)
-                        .await?
-                } else {
-                    return Err(TableConfigError::Misconfiguration(
-                        "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
-                    ));
+                    }
+                    c @ (Some(
+                        S3Credential::AccessKey(..) | S3Credential::AwsSystemIdentity(..),
+                    )
+                    | None) => {
+                        let c_sts = match c {
+                            None => None,
+                            Some(S3Credential::AccessKey(k)) => {
+                                Some(STSCapableCredential::AccessKey(k))
+                            }
+                            Some(S3Credential::AwsSystemIdentity(k)) => {
+                                Some(STSCapableCredential::AwsSystemIdentity(k))
+                            }
+                            Some(S3Credential::CloudflareR2(..)) => unreachable!(),
+                        };
+
+                        if let Some(arn) =
+                            self.sts_role_arn.as_ref().or(self.assume_role_arn.as_ref())
+                        {
+                            self.get_aws_sts_token(table_location, c_sts, arn, storage_permissions)
+                                .await?
+                        } else if S3Flavor::S3Compat == self.flavor {
+                            self.get_s3_compat_sts_token(table_location, c_sts, storage_permissions)
+                                .await?
+                        } else {
+                            return Err(TableConfigError::Misconfiguration(
+                                "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
+                            ));
+                        }
+                    }
                 };
+
                 config.insert(&s3::AccessKeyId(access_key_id.clone()));
                 config.insert(&s3::SecretAccessKey(secret_access_key.clone()));
                 config.insert(&s3::SessionToken(session_token.clone()));
@@ -442,10 +520,112 @@ impl S3Profile {
         Ok(TableConfig { creds, config })
     }
 
+    async fn get_cloudflare_r2_temporary_credentials(
+        &self,
+        table_location: &Location,
+        cred: S3CloudflareR2Credential,
+        storage_permissions: StoragePermissions,
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
+        let table_location = S3Location::try_from_location(table_location, true).map_err(|e| {
+            CredentialsError::ShortTermCredential {
+                source: None,
+                reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}").to_string(),
+            }
+        })?;
+
+        let bucket_name = table_location.bucket_name();
+        let key = format!("{}/", table_location.key().join("/"));
+
+        // Prepare the request payload for Cloudflare R2 API
+        let permission = match storage_permissions {
+            StoragePermissions::Read => "object-read-only",
+            StoragePermissions::ReadWrite | StoragePermissions::ReadWriteDelete => {
+                "object-read-write"
+            }
+        };
+
+        let ttl_seconds = self
+            .sts_token_validity_seconds
+            .unwrap_or(DEFAULT_STS_TOKEN_VALIDITY_SECONDS);
+        let payload = serde_json::json!({
+            "bucket": bucket_name,
+            "prefixes": [key],
+            "permission": permission,
+            "ttlSeconds": ttl_seconds,
+            "parentAccessKeyId": cred.access_key_id,
+        });
+
+        // Make the API request to Cloudflare R2
+        let client = S3_HTTP_CLIENT.clone();
+        let response = client
+            .post(format!(
+                "https://api.cloudflare.com/client/v4/accounts/{}/r2/temp-access-credentials",
+                cred.account_id
+            ))
+            .header("Authorization", format!("Bearer {}", cred.token))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                source: Some(Box::new(e)),
+                reason: "Failed to request temporary credentials from Cloudflare R2 temp-access-credentials Endpoint".to_string(),
+            })?;
+
+        // Parse the response
+        if !response.status().is_success() {
+            let status_code = response.status();
+            let error_message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            tracing::debug!(
+                "Failed to get temporary credentials from Cloudflare R2 ({status_code}): {error_message}",
+            );
+            return Err(CredentialsError::ShortTermCredential {
+                source: None,
+                reason: format!(
+                    "Failed to get temporary credentials from Cloudflare R2 ({status_code}): {error_message}",
+                ),
+            });
+        }
+
+        let credentials: serde_json::Value =
+            response
+                .json()
+                .await
+                .map_err(|e| CredentialsError::ShortTermCredential {
+                    source: Some(Box::new(e)),
+                    reason:
+                        "Failed to parse temporary credentials response from Cloudflare R2 as json."
+                            .to_string(),
+                })?;
+
+        // Extract credentials from the response
+        let tmp_credentials: R2TemporaryCredentialsResponse = serde_json::from_value(credentials)
+            .map_err(|e| {
+            CredentialsError::ShortTermCredential {
+                source: Some(Box::new(e)),
+                reason: "Failed to parse temporary credentials response from Cloudflare R2."
+                    .to_string(),
+            }
+        })?;
+
+        // Return the credentials
+        Ok(aws_sdk_sts::types::Credentials::builder()
+            .access_key_id(tmp_credentials.result.access_key_id)
+            .secret_access_key(tmp_credentials.result.secret_access_key)
+            .session_token(tmp_credentials.result.session_token)
+            .expiration(
+                (std::time::SystemTime::now() + std::time::Duration::from_secs(ttl_seconds)).into(),
+            )
+            .build()
+            .unwrap())
+    }
+
     async fn get_aws_sts_token(
         &self,
         table_location: &Location,
-        cred: Option<&S3Credential>,
+        cred: Option<STSCapableCredential>,
         arn: &str,
         storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
@@ -453,26 +633,43 @@ impl S3Profile {
             .await
     }
 
-    async fn get_minio_sts_token(
+    async fn get_s3_compat_sts_token(
         &self,
         table_location: &Location,
-        cred: Option<&S3Credential>,
+        cred: Option<STSCapableCredential>,
         storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
         self.get_sts_token(table_location, cred, None, storage_permissions)
             .await
     }
 
+    async fn get_sts_token(
+        &self,
+        table_location: &Location,
+        s3_credential: Option<STSCapableCredential>,
+        role_arn: Option<&str>,
+        storage_permissions: StoragePermissions,
+    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
+        let policy = Self::get_aws_policy_string(table_location, storage_permissions)?;
+        self.assume_role_with_sts(s3_credential, role_arn, Some(policy))
+            .await
+    }
+
     async fn assume_role_with_sts(
         &self,
-        s3_credentials: Option<&S3Credential>,
+        s3_credentials: Option<STSCapableCredential>,
         role_arn: Option<&str>,
         policy: Option<String>,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        let external_id = s3_credentials.and_then(|c| c.external_id());
+        let external_id = s3_credentials
+            .as_ref()
+            .and_then(|c| c.external_id().map(ToString::to_string));
 
         if role_arn.is_none()
-            && matches!(s3_credentials, Some(S3Credential::AwsSystemIdentity { .. }))
+            && matches!(
+                s3_credentials,
+                Some(STSCapableCredential::AwsSystemIdentity { .. })
+            )
             && !CONFIG.s3_enable_direct_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
@@ -484,7 +681,10 @@ impl S3Profile {
         if external_id.is_none()
             && role_arn.is_some()
             && CONFIG.s3_require_external_id_for_system_credentials
-            && matches!(s3_credentials, Some(S3Credential::AwsSystemIdentity { .. }))
+            && matches!(
+                s3_credentials,
+                Some(STSCapableCredential::AwsSystemIdentity { .. })
+            )
         {
             return Err(CredentialsError::Misconfiguration(
                 "An `external-id` is required when using `assume-role-arn`.".to_string(),
@@ -493,10 +693,15 @@ impl S3Profile {
 
         let sdk_config = self.get_aws_sdk_config(s3_credentials).await?;
 
-        // ToDo: Test caching
         let assume_role_builder = aws_sdk_sts::Client::new(&sdk_config)
             .assume_role()
-            .role_session_name("lakekeeper-sts");
+            .role_session_name("lakekeeper-sts")
+            .duration_seconds(
+                self.sts_token_validity_seconds
+                    .map_or(DEFAULT_STS_TOKEN_VALIDITY_SECONDS_I32, |v| {
+                        i32::try_from(v).unwrap_or(DEFAULT_STS_TOKEN_VALIDITY_SECONDS_I32)
+                    }),
+            );
 
         // Attach policy if provided
         let assume_role_builder = if let Some(policy) = policy {
@@ -537,25 +742,15 @@ impl S3Profile {
         })
     }
 
-    async fn get_sts_token(
-        &self,
-        table_location: &Location,
-        s3_credential: Option<&S3Credential>,
-        role_arn: Option<&str>,
-        storage_permissions: StoragePermissions,
-    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        let policy = Self::get_aws_policy_string(table_location, storage_permissions)?;
-        self.assume_role_with_sts(s3_credential, role_arn, Some(policy))
-            .await
-    }
-
     /// Load the native AWS SDK config without assuming any role.
     async fn get_aws_sdk_config(
         &self,
-        s3_credential: Option<&S3Credential>,
+        s3_credential: Option<STSCapableCredential>,
     ) -> Result<SdkConfig, CredentialsError> {
-        if matches!(s3_credential, Some(S3Credential::AwsSystemIdentity { .. }))
-            && !CONFIG.enable_aws_system_credentials
+        if matches!(
+            &s3_credential,
+            Some(STSCapableCredential::AwsSystemIdentity(..))
+        ) && !CONFIG.enable_aws_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
                 "System identity credentials are disabled in this Lakekeeper deployment."
@@ -564,11 +759,11 @@ impl S3Profile {
         }
 
         let loader = match s3_credential {
-            Some(S3Credential::AccessKey {
+            Some(STSCapableCredential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id,
                 aws_secret_access_key,
                 external_id: _,
-            }) => {
+            })) => {
                 let aws_credentials = aws_credential_types::Credentials::new(
                     aws_access_key_id,
                     aws_secret_access_key,
@@ -578,7 +773,9 @@ impl S3Profile {
                 );
                 aws_config::ConfigLoader::default().credentials_provider(aws_credentials)
             }
-            Some(S3Credential::AwsSystemIdentity { external_id: _ }) => aws_config::from_env(),
+            Some(STSCapableCredential::AwsSystemIdentity(S3AwsSystemIdentityCredential {
+                external_id: _,
+            })) => aws_config::from_env(),
             None => aws_config::from_env().no_credentials(),
         }
         .region(Some(aws_config::Region::new(
@@ -597,13 +794,27 @@ impl S3Profile {
         Ok(loader.load().await)
     }
 
-    pub(crate) async fn get_credentials_for_assume_role(
+    pub(crate) async fn get_aws_credentials_with_assumed_role(
         &self,
         s3_credential: Option<&S3Credential>,
     ) -> Result<Option<aws_credential_types::Credentials>, CredentialsError> {
+        let s3_credentials_owned = s3_credential.cloned();
+
         if let Some(assume_role_arn) = &self.assume_role_arn {
+            let s3_credentials_owned: Option<STSCapableCredential> = match s3_credentials_owned {
+                Some(S3Credential::AccessKey(c)) => Some(STSCapableCredential::AccessKey(c)),
+                Some(S3Credential::AwsSystemIdentity(c)) => {
+                    Some(STSCapableCredential::AwsSystemIdentity(c))
+                }
+                Some(S3Credential::CloudflareR2(..)) => {
+                    return Err(CredentialsError::Misconfiguration(
+                        "Cloudflare R2 credentials are not supported for assume role.".to_string(),
+                    ))
+                }
+                None => None,
+            };
             let aws_sts_credential = self
-                .assume_role_with_sts(s3_credential, Some(assume_role_arn), None)
+                .assume_role_with_sts(s3_credentials_owned, Some(assume_role_arn), None)
                 .await?;
             let aws_credential = aws_credential_types::Credentials::new(
                 aws_sts_credential.access_key_id(),
@@ -616,12 +827,20 @@ impl S3Profile {
             );
             Ok(Some(aws_credential))
         } else {
-            match s3_credential {
-                Some(S3Credential::AccessKey {
-                    aws_access_key_id,
-                    aws_secret_access_key,
-                    external_id: _,
-                }) => {
+            match s3_credentials_owned {
+                Some(
+                    S3Credential::AccessKey(S3AccessKeyCredential {
+                        aws_access_key_id,
+                        aws_secret_access_key,
+                        external_id: _,
+                    })
+                    | S3Credential::CloudflareR2(S3CloudflareR2Credential {
+                        access_key_id: aws_access_key_id,
+                        secret_access_key: aws_secret_access_key,
+                        account_id: _,
+                        token: _,
+                    }),
+                ) => {
                     let aws_credential = aws_credential_types::Credentials::new(
                         aws_access_key_id,
                         aws_secret_access_key,
@@ -631,8 +850,11 @@ impl S3Profile {
                     );
                     Ok(Some(aws_credential))
                 }
-                Some(S3Credential::AwsSystemIdentity { external_id: _ }) | None => {
-                    let sdk_config = self.get_aws_sdk_config(s3_credential).await?;
+                c @ (Some(S3Credential::AwsSystemIdentity(..)) | None) => {
+                    // Should never fail, as AwsSystemIdentityCredentials are STS capable
+                    let sts_credential = c.map(STSCapableCredential::try_from).transpose()?;
+
+                    let sdk_config = self.get_aws_sdk_config(sts_credential).await?;
                     let Some(provider) = sdk_config.credentials_provider() else {
                         return Ok(None);
                     };
@@ -677,8 +899,7 @@ impl S3Profile {
             "arn:aws:s3:::{}",
             table_location.bucket_name().trim_end_matches('/')
         );
-        let key = table_location.key().join("/");
-        let key = format!("{key}/");
+        let key = format!("{}/", table_location.key().join("/"));
 
         Ok(format!(
             r#"{{
@@ -750,6 +971,19 @@ impl S3Profile {
                 });
             }
 
+            // If the storage endpoint path is equal to the bucket name, remove it.
+            // This is common as in the UI, cloudflare shows the S3 API with the bucket name at the end.
+            if endpoint.path().ends_with(&self.bucket) {
+                // Remove the bucket from the end of the path
+                let path = endpoint.path();
+                let new_path = path
+                    .strip_suffix(&self.bucket)
+                    .unwrap_or(path)
+                    .trim_end_matches('/')
+                    .to_string();
+                endpoint.set_path(&new_path);
+            }
+
             // If a non-empty path is provided, it must be a single slash which we remove.
             if !endpoint.path().is_empty() {
                 if endpoint.path() != "/" {
@@ -782,6 +1016,43 @@ impl S3Profile {
             }
         }
     }
+
+    fn normalize_r2(
+        &mut self,
+        _credentials: &S3CloudflareR2Credential,
+    ) -> Result<(), ValidationError> {
+        // No assume role ARNs are supported, set them to None
+        self.assume_role_arn = None;
+        self.sts_role_arn = None;
+        self.sts_enabled = true;
+        self.flavor = S3Flavor::S3Compat;
+
+        // If an endpoint is specified and ends with the bucket, remove the bucket from the endpoint.
+        // This is common as in the UI, cloudflare shows the S3 API with the bucket name at the end.
+        if self.endpoint.is_none() {
+            return Err(ValidationError::InvalidProfile {
+                source: None,
+                reason: "Parameter `endpoint` is required for Cloudflare R2.".to_string(),
+                entity: "endpoint".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct R2TemporaryCredentialsResponse {
+    result: R2TemporaryCredentialsResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct R2TemporaryCredentialsResult {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: String,
 }
 
 pub(super) fn get_file_io_from_table_config(
@@ -1030,6 +1301,35 @@ impl S3Location {
     }
 }
 
+impl From<STSCapableCredential> for S3Credential {
+    fn from(sts_capable_credential: STSCapableCredential) -> Self {
+        match sts_capable_credential {
+            STSCapableCredential::AccessKey(k) => S3Credential::AccessKey(k),
+            STSCapableCredential::AwsSystemIdentity(k) => S3Credential::AwsSystemIdentity(k),
+        }
+    }
+}
+
+impl From<S3CloudflareR2Credential> for S3Credential {
+    fn from(cloudflare_credential: S3CloudflareR2Credential) -> Self {
+        S3Credential::CloudflareR2(cloudflare_credential)
+    }
+}
+
+impl TryFrom<S3Credential> for STSCapableCredential {
+    type Error = CredentialsError;
+
+    fn try_from(credential: S3Credential) -> Result<Self, Self::Error> {
+        match credential {
+            S3Credential::AccessKey(k) => Ok(STSCapableCredential::AccessKey(k)),
+            S3Credential::AwsSystemIdentity(k) => Ok(STSCapableCredential::AwsSystemIdentity(k)),
+            S3Credential::CloudflareR2(_) => Err(CredentialsError::Misconfiguration(
+                "Cloudflare R2 credentials do not support STS".to_string(),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use needs_env_var::needs_env_var;
@@ -1042,6 +1342,49 @@ pub(crate) mod test {
     };
 
     #[test]
+    fn test_deserialize_flavor() {
+        let flavor: S3Flavor = serde_json::from_value(serde_json::json!("aws")).unwrap();
+        assert_eq!(flavor, S3Flavor::Aws);
+
+        let flavor: S3Flavor = serde_json::from_value(serde_json::json!("s3-compat")).unwrap();
+        assert_eq!(flavor, S3Flavor::S3Compat);
+    }
+
+    #[test]
+    fn test_deserialize_r2_temporary_credentials_response() {
+        let response = serde_json::json!({
+          "errors": [
+            {
+              "code": 1000,
+              "message": "message",
+              "documentation_url": "documentation_url",
+              "source": {
+                "pointer": "pointer"
+              }
+            }
+          ],
+          "messages": [
+            "string"
+          ],
+          "result": {
+            "accessKeyId": "example-access-key-id",
+            "secretAccessKey": "example-secret-key",
+            "sessionToken": "example-session-token"
+          },
+          "success": true
+        });
+        let response: R2TemporaryCredentialsResponse = serde_json::from_value(response).unwrap();
+        let expected = R2TemporaryCredentialsResponse {
+            result: R2TemporaryCredentialsResult {
+                access_key_id: "example-access-key-id".to_string(),
+                secret_access_key: "example-secret-key".to_string(),
+                session_token: "example-session-token".to_string(),
+            },
+        };
+        assert_eq!(response, expected);
+    }
+
+    #[test]
     fn test_storage_secret_deserialization_access_key_1() {
         let secret = serde_json::json!(
             {
@@ -1051,11 +1394,11 @@ pub(crate) mod test {
             }
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
-        let expected = S3Credential::AccessKey {
+        let expected = S3Credential::AccessKey(S3AccessKeyCredential {
             aws_access_key_id: "foo".to_string(),
             aws_secret_access_key: "bar".to_string(),
             external_id: None,
-        };
+        });
         assert_eq!(credential, expected);
     }
 
@@ -1070,11 +1413,11 @@ pub(crate) mod test {
             }
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
-        let expected = S3Credential::AccessKey {
+        let expected = S3Credential::AccessKey(S3AccessKeyCredential {
             aws_access_key_id: "foo".to_string(),
             aws_secret_access_key: "bar".to_string(),
             external_id: Some("baz".to_string()),
-        };
+        });
         assert_eq!(credential, expected);
     }
 
@@ -1086,7 +1429,8 @@ pub(crate) mod test {
             }
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
-        let expected = S3Credential::AwsSystemIdentity { external_id: None };
+        let expected =
+            S3Credential::AwsSystemIdentity(S3AwsSystemIdentityCredential { external_id: None });
         assert_eq!(credential, expected);
     }
 
@@ -1099,9 +1443,30 @@ pub(crate) mod test {
             }
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
-        let expected = S3Credential::AwsSystemIdentity {
+        let expected = S3Credential::AwsSystemIdentity(S3AwsSystemIdentityCredential {
             external_id: Some("baz".to_string()),
-        };
+        });
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_r2() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "cloudflare-r2",
+                "account-id": "foo",
+                "access-key-id": "bar",
+                "secret-access-key": "baz",
+                "token": "qux",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::CloudflareR2(S3CloudflareR2Credential {
+            account_id: "foo".to_string(),
+            access_key_id: "bar".to_string(),
+            secret_access_key: "baz".to_string(),
+            token: "qux".to_string(),
+        });
         assert_eq!(credential, expected);
     }
 
@@ -1151,6 +1516,7 @@ pub(crate) mod test {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+            sts_token_validity_seconds: None,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -1192,6 +1558,7 @@ pub(crate) mod test {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+            sts_token_validity_seconds: None,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1210,11 +1577,12 @@ pub(crate) mod test {
     }
 
     #[needs_env_var(TEST_MINIO = 1)]
-    pub(crate) mod minio {
+    pub(crate) mod s3_compat {
         use std::sync::LazyLock;
 
         use crate::service::storage::{
-            S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile,
+            s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
+            StorageProfile,
         };
 
         static TEST_BUCKET: LazyLock<String> =
@@ -1242,12 +1610,13 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                sts_token_validity_seconds: None,
             };
-            let cred = S3Credential::AccessKey {
+            let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
                 aws_secret_access_key: TEST_SECRET_KEY.clone(),
                 external_id: None,
-            };
+            });
 
             (profile, cred)
         }
@@ -1265,7 +1634,7 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
                     let cred: StorageCredential = cred.into();
 
-                    profile.normalize().unwrap();
+                    profile.normalize(Some(&cred)).unwrap();
                     profile.validate_access(Some(&cred), None).await.unwrap();
                 },
                 true,
@@ -1292,12 +1661,13 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                sts_token_validity_seconds: None,
             };
-            let cred = S3Credential::AccessKey {
+            let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
                 aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
                 external_id: None,
-            };
+            });
 
             (profile, cred)
         }
@@ -1314,7 +1684,63 @@ pub(crate) mod test {
                     let cred: StorageCredential = cred.into();
                     let mut profile: StorageProfile = profile.into();
 
-                    profile.normalize().unwrap();
+                    profile.normalize(Some(&cred)).unwrap();
+                    profile.validate_access(Some(&cred), None).await.unwrap();
+                },
+                true,
+            );
+        }
+    }
+
+    #[needs_env_var(TEST_R2 = 1)]
+    pub(crate) mod r2 {
+        use super::super::*;
+        use crate::service::storage::{StorageCredential, StorageProfile};
+
+        pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
+            let profile = S3Profile {
+                bucket: std::env::var("LAKEKEEPER_TEST__R2_BUCKET").unwrap(),
+                key_prefix: Some(uuid::Uuid::now_v7().to_string()),
+                assume_role_arn: None,
+                endpoint: Some(
+                    std::env::var("LAKEKEEPER_TEST__R2_ENDPOINT")
+                        .unwrap()
+                        .parse()
+                        .unwrap(),
+                ),
+                region: "auto".to_string(),
+                path_style_access: Some(true),
+                sts_role_arn: None,
+                flavor: S3Flavor::S3Compat,
+                sts_enabled: true,
+                allow_alternative_protocols: Some(false),
+                remote_signing_url_style:
+                    crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                sts_token_validity_seconds: None,
+            };
+            let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
+                access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),
+                secret_access_key: std::env::var("LAKEKEEPER_TEST__R2_SECRET_ACCESS_KEY").unwrap(),
+                token: std::env::var("LAKEKEEPER_TEST__R2_TOKEN").unwrap(),
+                account_id: std::env::var("LAKEKEEPER_TEST__R2_ACCOUNT_ID").unwrap(),
+            });
+
+            (profile, cred)
+        }
+
+        #[test]
+        fn test_can_validate() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let cred: StorageCredential = cred.into();
+                    let mut profile: StorageProfile = profile.into();
+
+                    profile.normalize(Some(&cred)).unwrap();
                     profile.validate_access(Some(&cred), None).await.unwrap();
                 },
                 true,
@@ -1438,6 +1864,7 @@ mod is_overlapping_location_tests {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+            sts_token_validity_seconds: None,
         }
     }
 

@@ -1029,13 +1029,14 @@ pub(crate) mod test {
 
         #[tokio::test]
         async fn test_can_validate() {
-            let prof = azure_profile();
-            let mut prof: StorageProfile = prof.into();
-            prof.normalize().expect("failed to validate profile");
             for (cred, typ) in [
                 (client_creds(), "client-creds"),
                 (shared_key(), "shared-key"),
             ] {
+                let prof = azure_profile();
+                let mut prof: StorageProfile = prof.into();
+                prof.normalize(Some(&cred.clone().into()))
+                    .expect("failed to validate profile");
                 let cred: StorageCredential = cred.into();
                 prof.validate_access(Some(&cred), None)
                     .await

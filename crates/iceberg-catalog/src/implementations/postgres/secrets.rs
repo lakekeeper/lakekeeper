@@ -176,17 +176,17 @@ impl SecretStore for SecretsState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::storage::{S3Credential, StorageCredential};
+    use crate::service::storage::{s3::S3AccessKeyCredential, S3Credential, StorageCredential};
 
     #[sqlx::test]
     async fn test_write_read_secret(pool: sqlx::PgPool) {
         let state = SecretsState::from_pools(pool.clone(), pool);
 
-        let secret: StorageCredential = S3Credential::AccessKey {
+        let secret: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
             aws_access_key_id: "my access key".to_string(),
             aws_secret_access_key: "my secret key".to_string(),
             external_id: None,
-        }
+        })
         .into();
 
         let secret_id = state.create_secret(secret.clone()).await.unwrap();
@@ -203,11 +203,11 @@ mod tests {
     async fn test_delete_secret(pool: sqlx::PgPool) {
         let state = SecretsState::from_pools(pool.clone(), pool);
 
-        let secret: StorageCredential = S3Credential::AccessKey {
+        let secret: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
             aws_access_key_id: "my access key".to_string(),
             aws_secret_access_key: "my secret key".to_string(),
             external_id: None,
-        }
+        })
         .into();
 
         let secret_id = state.create_secret(secret.clone()).await.unwrap();

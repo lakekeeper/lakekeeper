@@ -3389,44 +3389,92 @@ components:
       enum:
         - assignee
         - ownership
+    S3AccessKeyCredential:
+      type: object
+      title: S3CredentialAccessKey
+      required:
+        - aws-access-key-id
+        - aws-secret-access-key
+      properties:
+        aws-access-key-id:
+          type: string
+        aws-secret-access-key:
+          type: string
+        external-id:
+          type:
+            - string
+            - 'null'
+    S3AwsSystemIdentityCredential:
+      type: object
+      title: S3CredentialSystemIdentity
+      properties:
+        external-id:
+          type:
+            - string
+            - 'null'
+    S3CloudflareR2Credential:
+      type: object
+      title: CloudflareR2Credential
+      required:
+        - access-key-id
+        - secret-access-key
+        - token
+        - account-id
+      properties:
+        access-key-id:
+          type: string
+          description: Access key ID used for IO operations of Lakekeeper
+        account-id:
+          type: string
+          description: Cloudflare account ID, used to determine the temporary credentials endpoint.
+        secret-access-key:
+          type: string
+          description: Secret key associated with the access key ID.
+        token:
+          type: string
+          description: |-
+            Token associated with the access key ID.
+            This is used to fetch downscoped temporary credentials for vended credentials.
     S3Credential:
       oneOf:
-        - type: object
-          title: S3CredentialAccessKey
+        - allOf:
+            - $ref: '#/components/schemas/S3AccessKeyCredential'
+              description: Authenticate to AWS using access-key and secret-key.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - access-key
           description: Authenticate to AWS using access-key and secret-key.
-          required:
-            - aws-access-key-id
-            - aws-secret-access-key
-            - credential-type
-          properties:
-            aws-access-key-id:
-              type: string
-            aws-secret-access-key:
-              type: string
-            credential-type:
-              type: string
-              enum:
-                - access-key
-            external-id:
-              type:
-                - string
-                - 'null'
-        - type: object
-          title: S3CredentialSystemIdentity
+        - allOf:
+            - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+              description: |-
+                Authenticate to AWS using the identity configured on the system
+                 that runs lakekeeper. The AWS SDK is used to load the credentials.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - aws-system-identity
           description: |-
             Authenticate to AWS using the identity configured on the system
              that runs lakekeeper. The AWS SDK is used to load the credentials.
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - aws-system-identity
-            external-id:
-              type:
-                - string
-                - 'null'
+        - allOf:
+            - $ref: '#/components/schemas/S3CloudflareR2Credential'
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - cloudflare-r2
     S3Flavor:
       type: string
       enum:
@@ -3517,6 +3565,13 @@ components:
             Optional role ARN to assume for sts vended-credentials.
             If not provided, `assume_role_arn` is used.
             Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
+        sts-token-validity-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: 'The validity of the sts tokens in seconds. Default: 3600.'
+          minimum: 0
     S3UrlStyleDetectionMode:
       type: string
       enum:
