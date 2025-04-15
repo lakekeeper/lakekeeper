@@ -5,8 +5,8 @@ def test_create_namespace(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA test_create_namespace_trino")
     assert (
-               "test_create_namespace_trino",
-           ) in warehouse.pyiceberg_catalog.list_namespaces()
+        "test_create_namespace_trino",
+    ) in warehouse.pyiceberg_catalog.list_namespaces()
     schemas = cur.execute("SHOW SCHEMAS").fetchall()
     assert ["test_create_namespace_trino"] in schemas
 
@@ -25,20 +25,20 @@ def test_namespace_create_if_not_exists(trino, warehouse: conftest.Warehouse):
     cur.execute("CREATE SCHEMA IF NOT EXISTS test_namespace_create_if_not_exists_trino")
     cur.execute("CREATE SCHEMA IF NOT EXISTS test_namespace_create_if_not_exists_trino")
     assert (
-               "test_namespace_create_if_not_exists_trino",
-           ) in warehouse.pyiceberg_catalog.list_namespaces()
+        "test_namespace_create_if_not_exists_trino",
+    ) in warehouse.pyiceberg_catalog.list_namespaces()
 
 
 def test_drop_namespace(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA test_drop_namespace_trino")
     assert (
-               "test_drop_namespace_trino",
-           ) in warehouse.pyiceberg_catalog.list_namespaces()
+        "test_drop_namespace_trino",
+    ) in warehouse.pyiceberg_catalog.list_namespaces()
     cur.execute("DROP SCHEMA test_drop_namespace_trino")
     assert (
-               "test_drop_namespace_trino",
-           ) not in warehouse.pyiceberg_catalog.list_namespaces()
+        "test_drop_namespace_trino",
+    ) not in warehouse.pyiceberg_catalog.list_namespaces()
 
 
 def test_create_table(trino, warehouse: conftest.Warehouse):
@@ -87,9 +87,9 @@ def test_nested_schema(trino, warehouse: conftest.Warehouse):
     cur.execute("CREATE SCHEMA test_nested_schema_trino")
     cur.execute('CREATE SCHEMA "test_nested_schema_trino.nested"')
     assert (
-               "test_nested_schema_trino",
-               "nested",
-           ) in warehouse.pyiceberg_catalog.list_namespaces(
+        "test_nested_schema_trino",
+        "nested",
+    ) in warehouse.pyiceberg_catalog.list_namespaces(
         "test_nested_schema_trino",
     )
 
@@ -115,9 +115,9 @@ def test_rename_table(trino, warehouse: conftest.Warehouse):
         "ALTER TABLE test_rename_table_trino.my_table RENAME TO test_rename_table_trino.my_table_renamed"
     )
     assert (
-               "test_rename_table_trino",
-               "my_table_renamed",
-           ) in warehouse.pyiceberg_catalog.list_tables("test_rename_table_trino")
+        "test_rename_table_trino",
+        "my_table_renamed",
+    ) in warehouse.pyiceberg_catalog.list_tables("test_rename_table_trino")
 
 
 def test_create_view(trino, warehouse: conftest.Warehouse):
@@ -129,7 +129,9 @@ def test_create_view(trino, warehouse: conftest.Warehouse):
     cur.execute(
         "CREATE OR REPLACE VIEW test_create_view_trino.my_view AS SELECT strings FROM test_create_view_trino.my_table"
     )
-    assert ["my_view"] in cur.execute(f"SHOW TABLES IN test_create_view_trino").fetchall()
+    assert ["my_view"] in cur.execute(
+        f"SHOW TABLES IN test_create_view_trino"
+    ).fetchall()
 
     # Insert data and query view
     cur.execute(
@@ -151,9 +153,28 @@ def test_replace_view(trino):
     )
     assert ["my_view"] in cur.execute(f"SHOW TABLES IN {ns}").fetchall()
     # Insert data and query view
+    cur.execute(f"INSERT INTO {ns}.my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')")
+    r = cur.execute(f"SELECT * FROM {ns}.my_view").fetchall()
+    assert r == [["a"], ["b"]]
+
     cur.execute(
-        f"INSERT INTO {ns}.my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')"
+        f"CREATE OR REPLACE VIEW {ns}.my_view AS SELECT strings FROM {ns}.my_table"
     )
+
+
+def test_reuse_original_view_version(trino):
+    ns = "test_reuse_original_view_version"
+    cur = trino.cursor()
+    cur.execute(f"CREATE SCHEMA {ns}")
+    cur.execute(
+        f"CREATE TABLE {ns}.my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(
+        f"CREATE OR REPLACE VIEW {ns}.my_view AS SELECT strings FROM {ns}.my_table"
+    )
+    assert ["my_view"] in cur.execute(f"SHOW TABLES IN {ns}").fetchall()
+    # Insert data and query view
+    cur.execute(f"INSERT INTO {ns}.my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')")
     r = cur.execute(f"SELECT * FROM {ns}.my_view").fetchall()
     assert r == [["a"], ["b"]]
 

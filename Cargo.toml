@@ -64,7 +64,7 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "6aa537eca5bda98a7ea433ed79307c9082374efd", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "ddfa5f7dd206609f35fd6bea92d1336503996bb1", features = [
     "storage-all",
 ] }
 iso8601 = "0.6.2"

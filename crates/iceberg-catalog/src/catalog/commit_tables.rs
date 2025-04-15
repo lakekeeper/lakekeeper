@@ -108,5 +108,6 @@ fn table_update_as_str(update: &TableUpdate) -> &str {
         TableUpdate::RemoveStatistics { .. } => "remove_statistics",
         TableUpdate::SetPartitionStatistics { .. } => "set_partition_statistics",
         TableUpdate::RemovePartitionStatistics { .. } => "remove_partition_statistics",
+        TableUpdate::RemoveSchemas { .. } => "remove_schemas",
     }
 }
