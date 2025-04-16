@@ -72,7 +72,55 @@ Projects can contain multiple Roles, allowing Roles to be reused in all Warehous
 Currently all tables stored in Lakekeeper are assumed to be managed by Lakekeeper. The concept of "external" tables will follow in a later release. When managed tables are dropped, Lakekeeper defaults to setting `purgeRequested` parameter of the `dropTable` endpoint to true unless explicitly set to false. Currently most query engines do not set this flag, which defaults to enabling purge. If purge is enabled for a drop, all files of the table are removed.
 
 ## Soft Deletion
-In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse. The expiration delay is determined at the time of dropping the table, that means changing the delay in the warehouse settings will only affect newly dropped tables. If you want "soft-deleted" tables to be gone faster, undrop the tables, change the expiration delay and re-drop them.
+In Lakekeeper, warehouses can enable soft deletion. If soft deletion is enabled for a warehouse, when a table or view is dropped, it is not immediately deleted from the catalog. Instead, it is marked as dropped and a job for its cleanup is scheduled. The table is then deleted after the warehouse specific expiration delay has passed. This will allow for a recovery of tables that have been dropped by accident. "Undropping" a table is only possible if soft-deletes are enabled for a Warehouse. The expiration delay is determined at the time of dropping the table, that means changing the delay in the warehouse settings will only affect newly dropped tables.
+
+Soft-Deletion only works properly if Clients do not delete files on S3 when dropping a table. The correct client client behaviour is:
+
+1. `DROP TABLE xyz`: Do not remove any files, call the `dropTable` endpoint without the `purgeRequested` flag. Lakekeeper will remove files for default managed tables, as described in [Dropping Tables](#dropping-tables).
+1. `DROP TABLE xyz PURGE`: Do not remove any files, call the `dropTable` endpoint with the `purgeRequested` flag. Lakekeeper will remove files for managed tables and also for unmanaged tables (not implemented yet).
+
+Sadly, some java based query engines such as Spark do not follow the behaviour described in 2., but instead immediately remove files, rendering soft-deletion obsolete. This behaviour is not desired, but cannot easily be changed without a breaking change. The Community [Agreed to change the behaviour in Iceberg 2.0](https://github.com/apache/iceberg/pull/11317#issuecomment-2604912801), which is still some way out. In future Iceberg `1.X` versions, we are working towards a new `io.client-side.purge-enabled` flag to enable correct purge behaviour.
+
+It is thus important that **`DROP TABLE xyz PURGE`** is never used with a client such as spark that immediately removes files if soft-deletion is enabled!
+
+For S3 based storages, Lakekeeper offers an optional configuration option in storage profiles: `push-s3-delete-disabled`. Setting this flag to `true` is a safe option that prevents clients from ever deleting files, as it pushes the `s3.delete-enabled: false` flag to clients. Thus, even if `PURGE` is specified on drop, Soft-Deletion still works as expected. This flag however also affects `expire_snapshots` and other procedures that are supposed to delete files. When setting `push-s3-delete-disabled: true` for a Warehouse, and running a table maintenance procedure that must remove files, ensure that the client configuration includes `s3.delete-enabled: true`. For spark this would be:
+
+  ```python
+  import pyspark
+  import pyspark.sql
+
+  pyspark_version = pyspark.__version__
+  pyspark_version = ".".join(pyspark_version.split(".")[:2]) # Strip patch version
+  iceberg_version = "1.8.1"
+
+  # Disable the jars which are not needed
+  spark_jars_packages = (
+      f"org.apache.iceberg:iceberg-spark-runtime-{pyspark_version}_2.12:{iceberg_version},"
+      f"org.apache.iceberg:iceberg-aws-bundle:{iceberg_version},"
+  )
+
+  catalog_name = "lakekeeper"
+  configuration = {
+      "spark.jars.packages": spark_jars_packages,
+      "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+      "spark.sql.defaultCatalog": catalog_name,
+      f"spark.sql.catalog.{catalog_name}": "org.apache.iceberg.spark.SparkCatalog",
+      f"spark.sql.catalog.{catalog_name}.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
+      f"spark.sql.catalog.{catalog_name}.uri": "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
+      # ... Additional configuration options
+      # Enabling s3 deletion explicitly - this overrides any Lakekeeper setting
+      f"spark.sql.catalog.{catalog_name}.s3.delete-enabled": "true",
+  }
+
+  spark_conf = pyspark.SparkConf().setMaster("local[*]")
+
+  for k, v in configuration.items():
+      spark_conf = spark_conf.set(k, v)
+  
+  spark = pyspark.sql.SparkSession.builder.config(conf=spark_conf).getOrCreate()
+  spark.sql(f"USE {catalog_name}")
+  ```
+
 
 ## Protection and Deletion Mechanisms in Lakekeeper
 Lakekeeper provides several complementary mechanisms for protecting data assets and managing their deletion while balancing flexibility and data governance.
