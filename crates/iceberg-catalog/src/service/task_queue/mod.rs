@@ -110,22 +110,22 @@ impl TaskQueues {
                 if let Err(e) = res {
                     tracing::error!("Tabular expiration worker {index} panicked: {e}");
                     return Err(anyhow::anyhow!("Tabular expiration worker {index} panicked: {e}"));
-                } else {
-                    tracing::error!("Tabular expiration worker {index} exited unexpectedly");
-                    return Err(anyhow::anyhow!("Tabular expiration worker {index} exited unexpectedly"));
                 }
+                tracing::error!("Tabular expiration worker {index} exited unexpectedly");
+                Err(anyhow::anyhow!("Tabular expiration worker {index} exited unexpectedly"))
+
             }
             res = futures::future::select_all(purge_handlers) => {
                 let (res, index, _) = res;
                 if let Err(e) = res {
                     tracing::error!("Tabular purge worker {index} panicked: {e}");
                     return Err(anyhow::anyhow!("Tabular purge worker {index} panicked: {e}"));
-                } else {
-                    tracing::error!("Tabular purge worker {index} exited unexpectedly");
-                    return Err(anyhow::anyhow!("Tabular purge worker {index} exited unexpectedly"));
                 }
+                tracing::error!("Tabular purge worker {index} exited unexpectedly");
+                Err(anyhow::anyhow!("Tabular purge worker {index} exited unexpectedly"))
+
             }
-        };
+        }
     }
 }
 
@@ -270,7 +270,7 @@ impl Default for TaskQueueConfig {
     }
 }
 
-/// Generate random duration between 1 and 15ms
+/// Generate random duration between 1 and 30ms
 pub(crate) fn random_ms_duration() -> std::time::Duration {
     let random_duration = rng().random_range(1..=30);
     std::time::Duration::from_millis(random_duration)
