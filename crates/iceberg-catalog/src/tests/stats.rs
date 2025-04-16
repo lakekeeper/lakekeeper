@@ -163,6 +163,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
             max_retries: 1,
             max_age: chrono::Duration::seconds(60),
             poll_interval: std::time::Duration::from_secs(10),
+            num_workers: 2,
         }),
         1,
     )

@@ -67,15 +67,16 @@ Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatib
 | <nobr>`LAKEKEEPER__KV2__SECRET_MOUNT`</nobr> | `kv/data/iceberg`     | Path to the secret mount in the KV2 backend |
 
 
-### Task queues
+### Task Queues
 
 Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge tabular files. The following global configuration options are available:
 
-| Variable                                  | Example                   | Description |
-|-------------------------------------------|---------------------------|------|
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`   | 5                         | Number of retries before a task is considered failed  Default: 5 |
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`       | 3600                      | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600 |
-| `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL` | 3600ms/30s/30(deprecated) | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| Variable                                         | Example    | Description  |
+|--------------------------------------------------|------------|--------------|
+| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`          | 5          | Number of retries before a task is considered failed  Default: 5 |
+| <nobr>`LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`</nobr> | 3600       | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600 |
+| `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL`        | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
+| `LAKEKEEPER__QUEUE_CONFIG__NUM_WORKERS`          | 2          | Number of workers launched for each queue. Default: 2 |
 
 ### Nats
 
@@ -107,11 +108,11 @@ This means that all features of [librdkafka](https://github.com/confluentinc/lib
 
 To publish events to Kafka, set the following environment variables:
 
-| Variable                        | Example                                                                   | Description |
-|---------------------------------|---------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__KAFKA_TOPIC`       | `lakekeeper`                                                              | The topic to which events are published |
-| `LAKEKEEPER__KAFKA_CONFIG`      | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
-| `LAKEKEEPER__KAFKA_CONFIG_FILE` | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below |
+| Variable                                     | Example                                                                   | Description |
+|----------------------------------------------|---------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__KAFKA_TOPIC`                    | `lakekeeper`                                                              | The topic to which events are published |
+| `LAKEKEEPER__KAFKA_CONFIG`                   | `{"bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}` | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) as "Dictionary". Note that you cannot use "JSON-Style-Syntax". Also see notes below |
+| <nobr>`LAKEKEEPER__KAFKA_CONFIG_FILE`</nobr> | `/path/to/config_file`                                                    | [librdkafka Configuration](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) to be loaded from a file. Also see notes below |
 
 #### Notes
 

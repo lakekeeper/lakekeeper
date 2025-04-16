@@ -2,16 +2,21 @@ use std::{fmt::Debug, ops::Deref, time::Duration};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use rand::{rng, Rng as _};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::{authz::Authorizer, WarehouseIdent};
-use crate::service::{
-    task_queue::{
-        tabular_expiration_queue::TabularExpirationInput, tabular_purge_queue::TabularPurgeInput,
+use crate::{
+    service::{
+        task_queue::{
+            tabular_expiration_queue::TabularExpirationInput,
+            tabular_purge_queue::TabularPurgeInput,
+        },
+        Catalog, SecretStore,
     },
-    Catalog, SecretStore,
+    CONFIG,
 };
 
 pub mod tabular_expiration_queue;
@@ -74,31 +79,53 @@ impl TaskQueues {
         S: SecretStore,
         A: Authorizer,
     {
-        let expiration_queue_handler =
-            tokio::task::spawn(tabular_expiration_queue::tabular_expiration_task::<C, A>(
-                self.tabular_expiration.clone(),
+        let num_workers_per_queue = CONFIG.queue_config.num_workers;
+
+        let mut expiration_handlers = Vec::with_capacity(num_workers_per_queue);
+        let mut purge_handlers = Vec::with_capacity(num_workers_per_queue);
+
+        // Spawn the specified number of workers for each queue
+        for _ in 0..num_workers_per_queue {
+            let expiration_handler =
+                tokio::task::spawn(tabular_expiration_queue::tabular_expiration_task::<C, A>(
+                    self.tabular_expiration.clone(),
+                    self.tabular_purge.clone(),
+                    catalog_state.clone(),
+                    authorizer.clone(),
+                ));
+            expiration_handlers.push(expiration_handler);
+
+            let purge_handler = tokio::task::spawn(tabular_purge_queue::purge_task::<C, S>(
                 self.tabular_purge.clone(),
                 catalog_state.clone(),
-                authorizer.clone(),
+                secret_store.clone(),
             ));
+            purge_handlers.push(purge_handler);
+        }
 
-        let purge_queue_handler = tokio::task::spawn(tabular_purge_queue::purge_task::<C, S>(
-            self.tabular_purge.clone(),
-            catalog_state.clone(),
-            secret_store,
-        ));
-
-        tokio::select!(
-            _ = expiration_queue_handler => {
-                tracing::error!("Tabular expiration queue handler exited unexpectedly");
-                Err(anyhow::anyhow!("Tabular expiration queue handler exited unexpectedly"))
-            },
-            _ = purge_queue_handler => {
-                tracing::error!("Tabular purge queue handler exited unexpectedly");
-                Err(anyhow::anyhow!("Tabular purge queue handler exited unexpectedly"))
-            },
-        )?;
-        Ok(())
+        // Wait for any task to exit and report the error
+        tokio::select! {
+            res = futures::future::select_all(expiration_handlers) => {
+                let (res, index, _) = res;
+                if let Err(e) = res {
+                    tracing::error!("Tabular expiration worker {index} panicked: {e}");
+                    return Err(anyhow::anyhow!("Tabular expiration worker {index} panicked: {e}"));
+                } else {
+                    tracing::error!("Tabular expiration worker {index} exited unexpectedly");
+                    return Err(anyhow::anyhow!("Tabular expiration worker {index} exited unexpectedly"));
+                }
+            }
+            res = futures::future::select_all(purge_handlers) => {
+                let (res, index, _) = res;
+                if let Err(e) = res {
+                    tracing::error!("Tabular purge worker {index} panicked: {e}");
+                    return Err(anyhow::anyhow!("Tabular purge worker {index} panicked: {e}"));
+                } else {
+                    tracing::error!("Tabular purge worker {index} exited unexpectedly");
+                    return Err(anyhow::anyhow!("Tabular purge worker {index} exited unexpectedly"));
+                }
+            }
+        };
     }
 }
 
@@ -229,6 +256,7 @@ pub struct TaskQueueConfig {
         serialize_with = "crate::config::serialize_std_duration_as_ms"
     )]
     pub poll_interval: Duration,
+    pub num_workers: usize,
 }
 
 impl Default for TaskQueueConfig {
@@ -237,8 +265,15 @@ impl Default for TaskQueueConfig {
             max_retries: 5,
             max_age: valid_max_age(3600),
             poll_interval: Duration::from_secs(10),
+            num_workers: 2,
         }
     }
+}
+
+/// Generate random duration between 1 and 15ms
+pub(crate) fn random_ms_duration() -> std::time::Duration {
+    let random_duration = rng().random_range(1..=30);
+    std::time::Duration::from_millis(random_duration)
 }
 
 const fn valid_max_age(num: i64) -> chrono::Duration {
@@ -277,6 +312,7 @@ mod test {
             max_retries: 5,
             max_age: chrono::Duration::seconds(3600),
             poll_interval: std::time::Duration::from_millis(100),
+            num_workers: 1,
         };
 
         let rw =

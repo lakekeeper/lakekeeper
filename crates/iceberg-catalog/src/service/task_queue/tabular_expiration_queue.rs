@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use tracing::Instrument;
 use uuid::Uuid;
 
+use super::random_ms_duration;
 use crate::{
     api::{
         management::v1::{DeleteKind, TabularType},
@@ -34,7 +35,7 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
     authorizer: A,
 ) {
     loop {
-        tokio::time::sleep(fetcher.config().poll_interval).await;
+        tokio::time::sleep(random_ms_duration()).await;
 
         let expiration = match fetcher.pick_new_task().await {
             Ok(expiration) => expiration,
@@ -47,6 +48,7 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
         };
 
         let Some(expiration) = expiration else {
+            tokio::time::sleep(fetcher.config().poll_interval).await;
             continue;
         };
 

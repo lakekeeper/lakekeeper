@@ -842,6 +842,20 @@ mod test {
     }
 
     #[test]
+    fn test_queue_config() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5s");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__NUM_WORKERS", "137");
+            let config = get_config();
+            assert_eq!(config.queue_config.poll_interval, Duration::from_secs(5));
+            assert_eq!(config.queue_config.max_retries, 5);
+            assert_eq!(config.queue_config.num_workers, 137);
+            Ok(())
+        });
+    }
+
+    #[test]
     fn reserved_namespaces_should_contains_default_values() {
         assert!(CONFIG.reserved_namespaces.contains("system"));
         assert!(CONFIG.reserved_namespaces.contains("examples"));

@@ -7,6 +7,7 @@ use iceberg_ext::{
 use tracing::Instrument;
 use uuid::Uuid;
 
+use super::random_ms_duration;
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
@@ -28,8 +29,7 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
 ) {
     loop {
         // add some jitter to avoid syncing with other queues
-        // TODO: probably should have a random number here
-        tokio::time::sleep(fetcher.config().poll_interval + Duration::from_millis(13)).await;
+        tokio::time::sleep(random_ms_duration()).await;
 
         let purge_task = match fetcher.pick_new_task().await {
             Ok(expiration) => expiration,
@@ -42,6 +42,7 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
         };
 
         let Some(purge_task) = purge_task else {
+            tokio::time::sleep(fetcher.config().poll_interval).await;
             continue;
         };
 
