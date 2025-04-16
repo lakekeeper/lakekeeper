@@ -40,8 +40,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
         storage::{
-            s3::S3UrlStyleDetectionMode, S3Credential, S3Flavor, S3Profile, StorageCredential,
-            StorageProfile, TestProfile,
+            S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
         Catalog, SecretStore, State, UserId,
@@ -55,7 +54,7 @@ pub(crate) fn test_io_profile() -> StorageProfile {
 
 #[allow(dead_code)]
 pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
-    let key_prefix = Some(format!("test_prefix-{}", Uuid::now_v7()));
+    let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
     let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
     let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
     let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
@@ -71,20 +70,16 @@ pub(crate) fn minio_profile() -> (StorageProfile, StorageCredential) {
         external_id: None,
     }
     .into();
-    let mut profile: StorageProfile = S3Profile {
-        bucket,
-        key_prefix,
-        assume_role_arn: None,
-        endpoint: Some(endpoint),
-        region,
-        path_style_access: Some(true),
-        sts_role_arn: None,
-        flavor: S3Flavor::S3Compat,
-        sts_enabled: true,
-        allow_alternative_protocols: None,
-        remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
-    }
-    .into();
+    let mut profile: StorageProfile = S3Profile::builder()
+        .bucket(bucket)
+        .key_prefix(key_prefix)
+        .endpoint(endpoint)
+        .path_style_access(true)
+        .flavor(S3Flavor::S3Compat)
+        .region(region)
+        .sts_enabled(true)
+        .build()
+        .into();
 
     profile.normalize().unwrap();
     (profile, cred)

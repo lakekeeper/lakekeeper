@@ -83,10 +83,12 @@ pub(super) async fn get_config_for_warehouse(
     catalog_state: CatalogState,
     request_metadata: &RequestMetadata,
 ) -> Result<Option<CatalogConfig>> {
-    let storage_profile = sqlx::query_scalar!(
+    let row = sqlx::query!(
         r#"
             SELECT
-                storage_profile as "storage_profile: Json<StorageProfile>"
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds
             FROM warehouse
             WHERE warehouse_id = $1
             AND status = 'active'
@@ -97,7 +99,19 @@ pub(super) async fn get_config_for_warehouse(
     .await
     .map_err(map_select_warehouse_err)?;
 
-    Ok(storage_profile.map(|p| p.generate_catalog_config(warehouse_id, request_metadata)))
+    if let Some(row) = row {
+        let delete_profile = db_to_api_tabular_delete_profile(
+            row.tabular_delete_mode,
+            row.tabular_expiration_seconds,
+        )?;
+        Ok(Some(row.storage_profile.generate_catalog_config(
+            warehouse_id,
+            request_metadata,
+            delete_profile,
+        )))
+    } else {
+        Ok(None)
+    }
 }
 
 pub(crate) async fn create_warehouse(
@@ -332,20 +346,10 @@ pub(crate) async fn list_warehouses<
     warehouses
         .into_iter()
         .map(|warehouse| {
-            let tabular_delete_profile = match warehouse.tabular_delete_mode {
-                DbTabularDeleteProfile::Soft => TabularDeleteProfile::Soft {
-                    expiration_seconds: chrono::Duration::seconds(
-                        warehouse
-                            .tabular_expiration_seconds
-                            .ok_or(ErrorModel::internal(
-                                "Tabular expiration seconds not found",
-                                "TabularExpirationSecondsNotFound",
-                                None,
-                            ))?,
-                    ),
-                },
-                DbTabularDeleteProfile::Hard => TabularDeleteProfile::Hard {},
-            };
+            let tabular_delete_profile = db_to_api_tabular_delete_profile(
+                warehouse.tabular_delete_mode,
+                warehouse.tabular_expiration_seconds,
+            )?;
 
             Ok(GetWarehouseResponse {
                 id: warehouse.warehouse_id.into(),
@@ -386,20 +390,10 @@ pub(crate) async fn get_warehouse(
     .map_err(map_select_warehouse_err)?;
 
     if let Some(warehouse) = warehouse {
-        let tabular_delete_profile = match warehouse.tabular_delete_mode {
-            DbTabularDeleteProfile::Soft => TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(
-                    warehouse
-                        .tabular_expiration_seconds
-                        .ok_or(ErrorModel::internal(
-                            "Tabular expiration seconds not found",
-                            "TabularExpirationSecondsNotFound",
-                            None,
-                        ))?,
-                ),
-            },
-            DbTabularDeleteProfile::Hard => TabularDeleteProfile::Hard {},
-        };
+        let tabular_delete_profile = db_to_api_tabular_delete_profile(
+            warehouse.tabular_delete_mode,
+            warehouse.tabular_expiration_seconds,
+        )?;
 
         Ok(Some(GetWarehouseResponse {
             id: warehouse_id,
@@ -630,6 +624,26 @@ impl From<TabularDeleteProfile> for DbTabularDeleteProfile {
             TabularDeleteProfile::Soft { .. } => DbTabularDeleteProfile::Soft,
             TabularDeleteProfile::Hard {} => DbTabularDeleteProfile::Hard,
         }
+    }
+}
+
+/// Convert a database tabular delete profile to the API tabular delete profile
+fn db_to_api_tabular_delete_profile(
+    mode: DbTabularDeleteProfile,
+    expiration_seconds: Option<i64>,
+) -> Result<TabularDeleteProfile> {
+    match mode {
+        DbTabularDeleteProfile::Soft => {
+            let seconds = expiration_seconds.ok_or(ErrorModel::internal(
+                "Tabular expiration seconds not found",
+                "TabularExpirationSecondsNotFound",
+                None,
+            ))?;
+            Ok(TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::Duration::seconds(seconds),
+            })
+        }
+        DbTabularDeleteProfile::Hard => Ok(TabularDeleteProfile::Hard {}),
     }
 }
 

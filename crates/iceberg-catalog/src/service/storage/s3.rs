@@ -17,6 +17,7 @@ use super::StorageType;
 use crate::{
     api::{
         iceberg::{supported_endpoints, v1::DataAccess},
+        management::v1::warehouse::TabularDeleteProfile,
         CatalogConfig,
     },
     request_metadata::RequestMetadata,
@@ -110,6 +111,24 @@ pub struct S3Profile {
     #[serde(default, alias = "s3-url-detection-mode")]
     #[builder(default)]
     pub remote_signing_url_style: S3UrlStyleDetectionMode,
+    /// Controls whether the `s3.delete-enabled=false` flag is sent to clients.
+    ///
+    /// In all Iceberg 1.x versions, when Spark executes `DROP TABLE xxx PURGE`, it directly
+    /// deletes files from S3, bypassing the catalog's soft-deletion mechanism.
+    /// Other query engines properly delegate this operation to the catalog.
+    /// This Spark behavior is expected to change in Iceberg 2.0 (see
+    /// https://github.com/apache/iceberg/pull/11317#issuecomment-2604912801).
+    ///
+    /// Setting this to `true` pushes the `s3.delete-enabled=false` flag to clients,
+    /// which discourages Spark from directly deleting files during `DROP TABLE xxx PURGE` operations.
+    /// Note that clients may override this setting, and it affects other Spark operations
+    /// that require file deletion, such as removing snapshots.
+    ///
+    /// For more details, refer to Lakekeeper's Soft-Deletion documentation.
+    /// This flag has no effect if Soft-Deletion is disabled for the warehouse.
+    #[serde(default = "default_push_s3_delete_disabled_flag")]
+    #[builder(default)]
+    pub push_s3_delete_disabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
@@ -333,12 +352,19 @@ impl S3Profile {
         &self,
         warehouse_id: WarehouseIdent,
         request_metadata: &RequestMetadata,
+        delete_profile: TabularDeleteProfile,
     ) -> CatalogConfig {
+        let mut defaults = HashMap::new();
+
+        // Only push s3.delete-enabled=false if flag is set
+        if self.push_s3_delete_disabled
+            && matches!(delete_profile, TabularDeleteProfile::Soft { .. })
+        {
+            defaults.insert("s3.delete-enabled".to_string(), "false".to_string());
+        }
+
         CatalogConfig {
-            // ToDo: s3.delete-enabled?
-            // if we don't do this, icebergs spark s3 attempts to sign a link that looks like /bucket?delete
-            // when DROP ... PURGE-ing a table.
-            defaults: HashMap::from_iter([("s3.delete-enabled".to_string(), "false".to_string())]),
+            defaults,
             overrides: HashMap::from_iter(vec![(
                 configs::table::s3::SignerUri::KEY.to_string(),
                 request_metadata
@@ -1151,6 +1177,7 @@ pub(crate) mod test {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+            push_s3_delete_disabled: false,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -1192,6 +1219,7 @@ pub(crate) mod test {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+            push_s3_delete_disabled: false,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1242,6 +1270,7 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                push_s3_delete_disabled: false,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1292,6 +1321,7 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                push_s3_delete_disabled: false,
             };
             let cred = S3Credential::AccessKey {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1438,6 +1468,7 @@ mod is_overlapping_location_tests {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
+            push_s3_delete_disabled: true,
         }
     }
 
@@ -1534,4 +1565,8 @@ mod is_overlapping_location_tests {
 
         assert!(profile3.is_overlapping_location(&profile4));
     }
+}
+
+fn default_push_s3_delete_disabled_flag() -> bool {
+    true
 }

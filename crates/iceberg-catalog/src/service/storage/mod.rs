@@ -21,7 +21,9 @@ use uuid::Uuid;
 
 use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
 use crate::{
-    api::{iceberg::v1::DataAccess, CatalogConfig},
+    api::{
+        iceberg::v1::DataAccess, management::v1::warehouse::TabularDeleteProfile, CatalogConfig,
+    },
     catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
     retry::retry_fn,
@@ -86,10 +88,11 @@ impl StorageProfile {
         &self,
         warehouse_id: WarehouseIdent,
         request_metadata: &RequestMetadata,
+        delete_profile: TabularDeleteProfile,
     ) -> CatalogConfig {
         match self {
             StorageProfile::S3(profile) => {
-                profile.generate_catalog_config(warehouse_id, request_metadata)
+                profile.generate_catalog_config(warehouse_id, request_metadata, delete_profile)
             }
             #[cfg(test)]
             StorageProfile::Test(_) => {
