@@ -841,7 +841,7 @@ pub(crate) async fn drop_tabular(
     })?;
 
     tracing::trace!(
-        "{}, {:?}. {:?}",
+        "Dropped Tabular with ID {tabular_id}. Protected: {}, Location: {:?}, Protocol: {:?}",
         location.protected,
         location.fs_location,
         location.fs_protocol
