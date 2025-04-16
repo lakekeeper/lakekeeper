@@ -3023,7 +3023,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.4.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=6aa537eca5bda98a7ea433ed79307c9082374efd#6aa537eca5bda98a7ea433ed79307c9082374efd"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=ddfa5f7dd206609f35fd6bea92d1336503996bb1#ddfa5f7dd206609f35fd6bea92d1336503996bb1"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3038,7 +3038,6 @@ dependencies = [
  "arrow-string",
  "async-trait",
  "bimap",
- "bitvec",
  "bytes",
  "chrono",
  "derive_builder 0.20.2",
