@@ -3578,11 +3578,9 @@ components:
             If not provided, `assume_role_arn` is used.
             Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
         sts-token-validity-seconds:
-          type:
-            - integer
-            - 'null'
+          type: integer
           format: int64
-          description: 'The validity of the sts tokens in seconds. Default: 3600.'
+          description: The validity of the sts tokens in seconds. Default is 3600
           minimum: 0
     S3UrlStyleDetectionMode:
       type: string
