@@ -25,8 +25,12 @@ use crate::{
     WarehouseIdent,
 };
 
-const READ_METHODS: &[&str] = &["GET", "HEAD"];
-const WRITE_METHODS: &[&str] = &["PUT", "POST", "DELETE"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    Read,
+    Write,
+    Delete,
+}
 
 #[async_trait::async_trait]
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
@@ -62,9 +66,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // Include staged tables as this might be a commit
         let include_staged = true;
 
-        let parsed_url = s3_utils::parse_s3_url(
+        let (parsed_url, operation) = s3_utils::parse_s3_url(
             &request_url,
             s3_url_style_detection::<C>(state.v1_state.catalog.clone(), warehouse_id).await?,
+            &request_method,
+            request_body.as_deref(),
         )?;
 
         // Unfortunately there is currently no way to pass information about warehouse_id & table_id
@@ -104,9 +110,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 )
                 .await?
         } else {
+            let first_location = parsed_url.locations.first().ok_or_else(|| {
+                ErrorModel::internal(
+                    "Request URI does not contain a location",
+                    "UriNoLocation",
+                    None,
+                )
+            })?;
             let metadata = C::get_table_metadata_by_s3_location(
                 warehouse_id,
-                parsed_url.location.location(),
+                first_location.location(),
                 ListFlags {
                     include_staged,
                     // spark iceberg drops the table and then checks for existence of metadata files
@@ -129,8 +142,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        validate_table_method::<A>(&request_method, &request_metadata, table_id, authorizer)
-            .await?;
+        authorize_operation::<A>(operation, &request_metadata, table_id, authorizer).await?;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -383,39 +395,33 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
     Ok(())
 }
 
-async fn validate_table_method<A: Authorizer>(
-    method: &http::Method,
+async fn authorize_operation<A: Authorizer>(
+    method: Operation,
     metadata: &RequestMetadata,
     table_id: TableIdentUuid,
     authorizer: A,
 ) -> Result<()> {
     // First check - fail fast if requested table is not allowed.
     // We also need to check later if the path matches the table location.
-    if WRITE_METHODS.contains(&method.as_str()) {
-        // We specify namespace as none for AuthZ check because we don't want to grant access to
-        // locations not known to the catalog.
-        authorizer
-            .require_table_action(
-                metadata,
-                Ok(Some(table_id)),
-                CatalogTableAction::CanWriteData,
-            )
-            .await?;
-    } else if READ_METHODS.contains(&method.as_str()) {
-        authorizer
-            .require_table_action(
-                metadata,
-                Ok(Some(table_id)),
-                CatalogTableAction::CanReadData,
-            )
-            .await?;
-    } else {
-        return Err(ErrorModel::builder()
-            .code(http::StatusCode::METHOD_NOT_ALLOWED.into())
-            .message("Method not allowed".to_string())
-            .r#type("MethodNotAllowed".to_string())
-            .build()
-            .into());
+    match method {
+        Operation::Read => {
+            authorizer
+                .require_table_action(
+                    metadata,
+                    Ok(Some(table_id)),
+                    CatalogTableAction::CanReadData,
+                )
+                .await?;
+        }
+        Operation::Write | Operation::Delete => {
+            authorizer
+                .require_table_action(
+                    metadata,
+                    Ok(Some(table_id)),
+                    CatalogTableAction::CanWriteData,
+                )
+                .await?;
+        }
     }
 
     Ok(())
@@ -424,23 +430,24 @@ async fn validate_table_method<A: Authorizer>(
 #[allow(clippy::too_many_lines)]
 fn validate_uri(
     // i.e. https://bucket.s3.region.amazonaws.com/key
-    parsed_url: &s3_utils::ParsedS3Url,
+    parsed_url: &s3_utils::ParsedSignRequest,
     // i.e. s3://bucket/key
     table_location: &str,
 ) -> Result<()> {
     let table_location = S3Location::try_from_str(table_location, false)?;
-    let url_location = &parsed_url.location;
 
-    if !url_location
-        .location()
-        .is_sublocation_of(table_location.location())
-    {
-        return Err(SignError::RequestUriMismatch {
-            request_uri: parsed_url.url.to_string(),
-            expected_location: table_location.into_normalized_location().to_string(),
-            actual_location: parsed_url.location.as_normalized_location().to_string(),
+    for url_location in &parsed_url.locations {
+        if !url_location
+            .location()
+            .is_sublocation_of(table_location.location())
+        {
+            return Err(SignError::RequestUriMismatch {
+                request_uri: parsed_url.url.to_string(),
+                expected_location: table_location.into_normalized_location().to_string(),
+                actual_location: url_location.as_normalized_location().to_string(),
+            }
+            .into());
         }
-        .into());
     }
 
     Ok(())
@@ -448,14 +455,15 @@ fn validate_uri(
 
 pub(super) mod s3_utils {
     use lazy_regex::regex;
+    use serde::{Deserialize, Serialize};
 
-    use super::{ErrorModel, Result};
+    use super::{ErrorModel, Operation, Result};
     use crate::service::storage::{s3::S3UrlStyleDetectionMode, S3Location};
 
-    #[derive(Debug)]
-    pub(super) struct ParsedS3Url {
+    #[derive(Debug, Clone)]
+    pub(super) struct ParsedSignRequest {
         pub(super) url: url::Url,
-        pub(super) location: S3Location,
+        pub(super) locations: Vec<S3Location>,
         // Used endpoint without the bucket
         #[allow(dead_code)]
         pub(super) endpoint: String,
@@ -463,11 +471,72 @@ pub(super) mod s3_utils {
         pub(super) port: u16,
     }
 
+    /// Represents the top-level S3 Delete request structure
+    #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename = "Delete", rename_all = "PascalCase")]
+    pub(super) struct DeleteObjectsRequest {
+        #[serde(rename = "Object")]
+        pub(super) objects: Vec<ObjectIdentifier>,
+        #[serde(rename = "Quiet")]
+        pub(super) quiet: Option<bool>,
+    }
+
+    /// Individual object to delete from S3
+    #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+    #[serde(rename_all = "PascalCase")]
+    pub(super) struct ObjectIdentifier {
+        /// Object key
+        pub(super) key: String,
+        /// Optional version ID for versioned objects
+        #[serde(rename = "VersionId")]
+        pub(super) version_id: Option<String>,
+    }
+
+    /// Errors that can occur during S3 delete XML parsing
+    #[derive(thiserror::Error, Debug)]
+    pub(super) enum S3DeleteParseError {
+        #[error("XML Body parsing error: {0}")]
+        Xml(#[from] quick_xml::Error),
+
+        #[error("XML Body deserialization error: {0}")]
+        Deserialization(#[from] quick_xml::DeError),
+
+        #[error("No objects found in delete request")]
+        NoObjects,
+    }
+
+    /// Parse S3 `DeleteObjects` XML and extract all keys
+    ///
+    /// # Arguments
+    /// * `xml` - Raw XML string from S3 `DeleteObjects` request
+    ///
+    /// # Returns
+    /// * `Result<Vec<String>, S3DeleteParseError>` - List of object keys or an error
+    pub(super) fn parse_s3_delete_xml(xml: &str) -> Result<Vec<String>, S3DeleteParseError> {
+        // Approach 1: Full deserialization using serde
+        let delete_request: DeleteObjectsRequest = quick_xml::de::from_str(xml)?;
+
+        if delete_request.objects.is_empty() {
+            return Err(S3DeleteParseError::NoObjects);
+        }
+
+        let keys = delete_request
+            .objects
+            .into_iter()
+            .map(|obj| obj.key)
+            .collect();
+
+        Ok(keys)
+    }
+
     pub(super) fn parse_s3_url(
         uri: &url::Url,
         s3_url_style_detection: S3UrlStyleDetectionMode,
-    ) -> Result<ParsedS3Url> {
+        method: &http::Method,
+        body: Option<&str>,
+    ) -> Result<(ParsedSignRequest, Operation)> {
         let err = |t: &str, m: &str| ErrorModel::bad_request(m, t, None);
+
         // Require https or http
         if !matches!(uri.scheme(), "https" | "http") {
             return Err(err(
@@ -477,28 +546,96 @@ pub(super) mod s3_utils {
             .into());
         }
 
-        match s3_url_style_detection {
-            S3UrlStyleDetectionMode::VirtualHost => virtual_host_style(uri),
-            S3UrlStyleDetectionMode::Path => path_style(uri),
+        // Determine operation type based on method
+        let (operation, is_post_delete_operation) = match *method {
+            http::Method::GET | http::Method::HEAD => (Operation::Read, false),
+            http::Method::POST | http::Method::PUT => {
+                // Handle special case: DeleteObjects operation (POST with ?delete and XML body)
+                if method == http::Method::POST && uri.query().is_some_and(|q| q.contains("delete"))
+                {
+                    (Operation::Delete, true)
+                } else {
+                    (Operation::Write, false)
+                }
+            }
+            http::Method::DELETE => (Operation::Delete, false),
+            _ => {
+                return Err(ErrorModel::builder()
+                    .code(http::StatusCode::METHOD_NOT_ALLOWED.into())
+                    .message("Method not allowed".to_string())
+                    .r#type("MethodNotAllowed".to_string())
+                    .build()
+                    .into());
+            }
+        };
+
+        // Parse the base URL
+        let mut parsed_request = match s3_url_style_detection {
+            S3UrlStyleDetectionMode::VirtualHost => {
+                virtual_host_style(uri, is_post_delete_operation)?
+            }
+            S3UrlStyleDetectionMode::Path => path_style(uri, is_post_delete_operation)?,
             S3UrlStyleDetectionMode::Auto => {
-                if let Ok(parsed) = virtual_host_style(uri) {
-                    return Ok(parsed);
+                if let Ok(parsed) = virtual_host_style(uri, is_post_delete_operation) {
+                    parsed
+                } else if let Ok(parsed) = path_style(uri, is_post_delete_operation) {
+                    parsed
+                } else {
+                    return Err(err("UriNotS3", "URI does not match S3 host or path style").into());
                 }
-                if let Ok(parsed) = path_style(uri) {
-                    return Ok(parsed);
+            }
+        };
+
+        // For DeleteObjects operation, parse the XML body for object keys
+        if is_post_delete_operation {
+            if let Some(xml_body) = body {
+                // Get bucket from the original parsed URL
+                let bucket = parsed_request
+                    .locations
+                    .first()
+                    .ok_or_else(|| {
+                        // Should not happen, as both virtual & path style set a location
+                        ErrorModel::internal(
+                            "URI to sign does not have a location",
+                            "UriNoLocation",
+                            None,
+                        )
+                    })?
+                    .bucket_name()
+                    .to_string();
+
+                // Parse XML body to get deletion keys
+                let keys = parse_s3_delete_xml(xml_body)
+                    .map_err(|e| err("InvalidDeleteBody", &format!("{e}")))?;
+
+                // Create S3 locations for each key
+                let mut locations = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let location = S3Location::new(
+                        bucket.clone(),
+                        key.split('/').map(ToString::to_string).collect(),
+                        None,
+                    )?;
+                    locations.push(location);
                 }
-                Err(err("UriNotS3", "URI does not match S3 host or path style").into())
+
+                // Replace the locations in the parsed request
+                parsed_request.locations = locations;
+            } else {
+                return Err(err("DeleteWithoutBody", "Delete requests require a body").into());
             }
         }
+
+        Ok((parsed_request, operation))
     }
 
-    fn virtual_host_style(uri: &url::Url) -> Result<ParsedS3Url> {
-        let re_host_pattern = regex!(r"^((.+)\.)?(s3[.-]([a-z0-9-]+)\..*)");
+    fn virtual_host_style(uri: &url::Url, allow_no_key: bool) -> Result<ParsedSignRequest> {
+        let re_host_pattern = regex!(r"^((.+)\.)?(s3[.-]([a-z0-9-]+)(\..*)?)");
 
         let host = uri.host().ok_or_else(|| {
             ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
         })?;
-        let path_segments = get_path_segments(uri)?;
+        let path_segments = get_path_segments(uri, allow_no_key)?;
 
         if let Some((Some(bucket), Some(used_endpoint))) =
             re_host_pattern.captures(&host.to_string()).map(|captures| {
@@ -509,9 +646,9 @@ pub(super) mod s3_utils {
             })
         {
             // Host Style Case
-            Ok(ParsedS3Url {
+            Ok(ParsedSignRequest {
                 url: uri.clone(),
-                location: S3Location::new(bucket.to_string(), path_segments, None)?,
+                locations: vec![S3Location::new(bucket.to_string(), path_segments, None)?],
                 endpoint: used_endpoint.to_string(),
                 port: uri.port_or_known_default().unwrap_or(443),
             })
@@ -523,46 +660,161 @@ pub(super) mod s3_utils {
         }
     }
 
-    fn path_style(uri: &url::Url) -> Result<ParsedS3Url> {
-        let path_segments = get_path_segments(uri)?;
+    fn path_style(uri: &url::Url, allow_no_key: bool) -> Result<ParsedSignRequest> {
+        let path_segments = get_path_segments(uri, allow_no_key)?;
 
-        if path_segments.len() < 2 {
+        let min_path_segments = if allow_no_key { 1 } else { 2 };
+
+        if path_segments.len() < min_path_segments {
             return Err(ErrorModel::bad_request(
-                "Path style uri needs at least 2 path segments",
+                format!("Path style uri needs at least {min_path_segments} path segments"),
                 "UriNotS3",
                 None,
             )
             .into());
         }
 
-        Ok(ParsedS3Url {
+        Ok(ParsedSignRequest {
             url: uri.clone(),
-            location: S3Location::new(
+            locations: vec![S3Location::new(
                 path_segments[0].to_string(),
-                path_segments[1..].to_vec(),
+                if path_segments.len() > 1 {
+                    path_segments[1..].to_vec()
+                } else {
+                    vec![]
+                },
                 None,
-            )?,
-            endpoint: uri.host_str().unwrap().to_string(),
+            )?],
+            endpoint: uri
+                .host_str()
+                .ok_or_else(|| {
+                    ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
+                })?
+                .to_string(),
             port: uri.port_or_known_default().unwrap_or(443),
         })
     }
 
-    fn get_path_segments(uri: &url::Url) -> Result<Vec<String>> {
-        uri.path_segments()
-            .map(|segments| segments.map(std::string::ToString::to_string).collect())
-            .ok_or_else(|| {
-                ErrorModel::bad_request(
-                    "URI to sign does not have a path. Expected a path to an object",
-                    "UriNoPath",
-                    None,
-                )
-                .into()
-            })
+    fn get_path_segments(uri: &url::Url, allow_no_segments: bool) -> Result<Vec<String>> {
+        let segments = uri
+            .path_segments()
+            .map(|segments| segments.map(std::string::ToString::to_string).collect());
+
+        if let Some(segments) = segments {
+            Ok(segments)
+        } else if allow_no_segments {
+            Ok(vec![])
+        } else {
+            Err(
+                ErrorModel::bad_request("URI to sign does not have a path", "UriNoPath", None)
+                    .into(),
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_delete_body_deserialization {
+    use std::collections::HashSet;
+
+    use super::s3_utils::{parse_s3_delete_xml, DeleteObjectsRequest};
+
+    const TEST_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    <Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+        <Object>
+            <Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file1.avro</Key>
+        </Object>
+        <Object>
+            <Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file2.avro</Key>
+        </Object>
+        <Object>
+            <Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file3.avro</Key>
+            <VersionId>version-id-1</VersionId>
+        </Object>
+    </Delete>"#;
+
+    #[test]
+    fn test_parse_s3_delete_xml() {
+        let keys = parse_s3_delete_xml(TEST_XML).unwrap();
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(
+            &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file1.avro"
+                .to_string()
+        ));
+        assert!(keys.contains(
+            &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file2.avro"
+                .to_string()
+        ));
+        assert!(keys.contains(
+            &"initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file3.avro"
+                .to_string()
+        ));
+    }
+
+    #[test]
+    fn test_full_deserialize_2() {
+        let keys = parse_s3_delete_xml("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-8699614565852557623-1-15f84829-fee3-4cd6-8691-7ea967e4f15c.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-7686961691068480281-1-d204b9d8-6b72-454a-9f67-37a6d5e6d4a5.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-1836869532246818762-1-aebc0c21-c6ac-4ef2-abd0-5a17647a4f78.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-5189981498526175103-1-91703d93-aa16-4f0f-835e-606656746aa5.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-2371629502487233412-1-9ec13408-f2a0-4f30-8560-ac7ab26611b5.avro</Key></Object></Delete>").unwrap();
+        let keys = HashSet::<String>::from_iter(keys);
+        let expected = HashSet::from_iter(
+            vec![
+                "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-8699614565852557623-1-15f84829-fee3-4cd6-8691-7ea967e4f15c.avro".to_string(),
+                "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-7686961691068480281-1-d204b9d8-6b72-454a-9f67-37a6d5e6d4a5.avro".to_string(),
+                "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-1836869532246818762-1-aebc0c21-c6ac-4ef2-abd0-5a17647a4f78.avro".to_string(),
+                "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-5189981498526175103-1-91703d93-aa16-4f0f-835e-606656746aa5.avro".to_string(),
+                "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-2371629502487233412-1-9ec13408-f2a0-4f30-8560-ac7ab26611b5.avro".to_string(),
+            ]
+        );
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn test_full_deserialize() {
+        let request: DeleteObjectsRequest = quick_xml::de::from_str(TEST_XML).unwrap();
+        assert_eq!(request.objects.len(), 3);
+
+        // Check both key and version are preserved
+        assert_eq!(
+            request.objects[2].key,
+            "initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/metadata/file3.avro"
+        );
+        assert_eq!(
+            request.objects[2].version_id,
+            Some("version-id-1".to_string())
+        );
+
+        // First object has no version
+        assert_eq!(request.objects[0].version_id, None);
+    }
+
+    #[test]
+    fn test_empty_delete_request() {
+        let empty_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+            </Delete>"#;
+
+        assert!(parse_s3_delete_xml(empty_xml).is_err());
+    }
+
+    #[test]
+    fn test_malformed_xml() {
+        let malformed_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <Object>
+                    <Key>file1.avro</Key>
+                </Object>
+                <Object>
+                    <Key>file2.avro
+                </Object>
+            </Delete>"#;
+
+        assert!(parse_s3_delete_xml(malformed_xml).is_err());
     }
 }
 
 #[cfg(test)]
 mod test {
+    use itertools::Itertools as _;
+
     use super::*;
     use crate::{catalog::s3_signer::sign::s3_utils::parse_s3_url, service::storage::S3Flavor};
 
@@ -571,16 +823,19 @@ mod test {
         request_uri: &'static str,
         table_location: &'static str,
         #[allow(dead_code)]
-        region: &'static str,
-        #[allow(dead_code)]
         endpoint: Option<&'static str>,
         expected_outcome: bool,
     }
 
     fn run_validate_uri_test(test_case: &TC) {
         let request_uri = url::Url::parse(test_case.request_uri).unwrap();
-        let request_uri =
-            s3_utils::parse_s3_url(&request_uri, S3UrlStyleDetectionMode::Auto).unwrap();
+        let (request_uri, _operation) = s3_utils::parse_s3_url(
+            &request_uri,
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::GET,
+            None,
+        )
+        .unwrap();
         let table_location = test_case.table_location;
         let result = validate_uri(&request_uri, table_location);
         assert_eq!(
@@ -592,22 +847,26 @@ mod test {
 
     #[test]
     fn test_parse_s3_url_config_path_style() {
-        let parsed = parse_s3_url(
+        let (parsed, _operation) = parse_s3_url(
             &url::Url::parse("https://not-a-bucket.s3.region.amazonaws.com/bucket/key").unwrap(),
             S3UrlStyleDetectionMode::Path,
+            &http::Method::GET,
+            None,
         )
         .unwrap();
-        assert_eq!(parsed.location.bucket_name(), "bucket");
+        assert_eq!(parsed.locations[0].bucket_name(), "bucket");
     }
 
     #[test]
     fn test_parse_s3_url_config_virtual_style() {
-        let parsed = parse_s3_url(
+        let (parsed, _operation) = parse_s3_url(
             &url::Url::parse("https://bucket.s3.region.amazonaws.com/key").unwrap(),
             S3UrlStyleDetectionMode::VirtualHost,
+            &http::Method::GET,
+            None,
         )
         .unwrap();
-        assert_eq!(parsed.location.bucket_name(), "bucket");
+        assert_eq!(parsed.locations[0].bucket_name(), "bucket");
     }
 
     #[test]
@@ -685,12 +944,70 @@ mod test {
 
         for (uri, expected) in cases {
             let uri = url::Url::parse(uri).unwrap();
-            let result = parse_s3_url(&uri, S3UrlStyleDetectionMode::Auto)
-                .unwrap_or_else(|_| panic!("Failed to parse {uri}"))
-                .location
+            let (parsed, _operation) = parse_s3_url(
+                &uri,
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::GET,
+                None,
+            )
+            .unwrap_or_else(|_| panic!("Failed to parse {uri}"));
+            let result = parsed.locations[0]
+                .clone()
                 .into_normalized_location()
                 .to_string();
             assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_s3_url_delete() {
+        let cases = vec![
+            (
+                "http://my-host:9000/examples?delete",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-8699614565852557623-1-15f84829-fee3-4cd6-8691-7ea967e4f15c.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-7686961691068480281-1-d204b9d8-6b72-454a-9f67-37a6d5e6d4a5.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-1836869532246818762-1-aebc0c21-c6ac-4ef2-abd0-5a17647a4f78.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-5189981498526175103-1-91703d93-aa16-4f0f-835e-606656746aa5.avro</Key></Object><Object><Key>initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-2371629502487233412-1-9ec13408-f2a0-4f30-8560-ac7ab26611b5.avro</Key></Object></Delete>",
+                vec![
+                    "s3://examples/initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-8699614565852557623-1-15f84829-fee3-4cd6-8691-7ea967e4f15c.avro",
+                    "s3://examples/initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-7686961691068480281-1-d204b9d8-6b72-454a-9f67-37a6d5e6d4a5.avro",
+                    "s3://examples/initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-1836869532246818762-1-aebc0c21-c6ac-4ef2-abd0-5a17647a4f78.avro",
+                    "s3://examples/initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-5189981498526175103-1-91703d93-aa16-4f0f-835e-606656746aa5.avro",
+                    "s3://examples/initial-warehouse/01963de0-99d9-79e2-8e95-24b11d0d334c/01963e34-84b6-7313-aba0-04694cd1c8c6/metadata/snap-2371629502487233412-1-9ec13408-f2a0-4f30-8560-ac7ab26611b5.avro",
+                ],
+            ),
+            (
+                "http://examples.s3.my-host:9000/?delete",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>a/b/c.parquet</Key></Object><Object><Key>a/b/d.parquet</Key></Object></Delete>",
+                vec![
+                    "s3://examples/a/b/c.parquet",
+                    "s3://examples/a/b/d.parquet",
+                ],
+            ),
+            (
+                "http://examples.s3.my-host:9000?delete",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Object><Key>a/b/c.parquet</Key></Object><Object><Key>a/b/d.parquet</Key></Object></Delete>",
+                vec![
+                    "s3://examples/a/b/c.parquet",
+                    "s3://examples/a/b/d.parquet",
+                ],
+            )
+        ];
+
+        for (uri, body, expected) in cases {
+            let uri = url::Url::parse(uri).unwrap();
+            let (parsed, operation) = parse_s3_url(
+                &uri,
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::POST,
+                Some(body),
+            )
+            .unwrap_or_else(|e| panic!("Failed to parse {uri}: {e:?}"));
+
+            let result = parsed
+                .locations
+                .iter()
+                .map(|location| location.clone().into_normalized_location().to_string())
+                .collect_vec();
+            assert_eq!(result, expected);
+            assert_eq!(operation, Operation::Delete);
         }
     }
 
@@ -701,7 +1018,20 @@ mod test {
             TC {
                 request_uri: "https://bucket.s3.my-region.amazonaws.com/key",
                 table_location: "s3://bucket/key",
-                region: "my-region",
+                endpoint: None,
+                expected_outcome: true,
+            },
+            // No region
+            TC {
+                request_uri: "https://bucket.s3.amazonaws.com/key",
+                table_location: "s3://bucket/key",
+                endpoint: None,
+                expected_outcome: true,
+            },
+            // TLD
+            TC {
+                request_uri: "https://bucket.s3.my-service/key",
+                table_location: "s3://bucket/key",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -709,7 +1039,6 @@ mod test {
             TC {
                 request_uri: "https://bucket.s3.my-region.amazonaws.com/key/foo/file.parquet",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -718,7 +1047,6 @@ mod test {
                 request_uri:
                     "https://bucket.s3.my-region.amazonaws.com/key/with-special-chars%20/foo",
                 table_location: "s3://bucket/key/with-special-chars%20/foo",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -726,7 +1054,6 @@ mod test {
             TC {
                 request_uri: "https://bucket.s3.my-region.amazonaws.com/key-2",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: false,
             },
@@ -734,7 +1061,6 @@ mod test {
             TC {
                 request_uri: "https://bucket-2.s3.my-region.amazonaws.com/key",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: false,
             },
@@ -742,7 +1068,6 @@ mod test {
             TC {
                 request_uri: "https://bucket.with.point.s3.my-region.amazonaws.com/key",
                 table_location: "s3://bucket.with.point/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -760,7 +1085,6 @@ mod test {
             TC {
                 request_uri: "https://s3.my-region.amazonaws.com/bucket/key",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -768,7 +1092,6 @@ mod test {
             TC {
                 request_uri: "https://s3.my-region.amazonaws.com/bucket/key/foo/file.parquet",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -777,7 +1100,6 @@ mod test {
                 request_uri:
                     "https://s3.my-region.amazonaws.com/bucket/key/with-special-chars%20/foo",
                 table_location: "s3://bucket/key/with-special-chars%20/foo",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -785,7 +1107,6 @@ mod test {
             TC {
                 request_uri: "https://s3.my-region.amazonaws.com/bucket/key-2",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: false,
             },
@@ -793,7 +1114,6 @@ mod test {
             TC {
                 request_uri: "https://s3.my-region.amazonaws.com/bucket-2/key",
                 table_location: "s3://bucket/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: false,
             },
@@ -801,7 +1121,6 @@ mod test {
             TC {
                 request_uri: "https://s3.my-region.amazonaws.com/bucket.with.point/key",
                 table_location: "s3://bucket.with.point/key",
-                region: "my-region",
                 endpoint: None,
                 expected_outcome: true,
             },
@@ -817,6 +1136,8 @@ mod test {
         parse_s3_url(
             &url::Url::parse("https://s3.my-region.amazonaws.com/key").unwrap(),
             S3UrlStyleDetectionMode::Auto,
+            &http::Method::GET,
+            None,
         )
         .unwrap_err();
     }
@@ -828,7 +1149,6 @@ mod test {
             TC {
                 request_uri: "https://bucket.with.point.s3.my-service.example.com/key",
                 table_location: "s3://bucket.with.point/key",
-                region: "my-region",
                 endpoint: Some("https://s3.my-service.example.com"),
                 expected_outcome: true,
             },

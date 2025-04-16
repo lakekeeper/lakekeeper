@@ -2153,9 +2153,7 @@ components:
           type:
             - string
             - 'null'
-          description: |-
-            Subpath in the filesystem to use.
-            The same prefix can be used for multiple warehouses.
+          description: Subpath in the filesystem to use.
         sas-token-validity-seconds:
           type:
             - integer
@@ -2706,9 +2704,7 @@ components:
           type:
             - string
             - 'null'
-          description: |-
-            Subpath in the bucket to use.
-            The same prefix can be used for multiple warehouses.
+          description: Subpath in the bucket to use.
     GcsServiceKey:
       type: object
       required:
@@ -3475,9 +3471,7 @@ components:
           type:
             - string
             - 'null'
-          description: |-
-            Subpath in the bucket to use.
-            The same prefix can be used for multiple warehouses.
+          description: Subpath in the bucket to use.
         path-style-access:
           type:
             - boolean
@@ -3485,6 +3479,24 @@ components:
           description: |-
             Path style access for S3 requests.
             If the underlying S3 supports both, we recommend to not set `path_style_access`.
+        push-s3-delete-disabled:
+          type: boolean
+          description: |-
+            Controls whether the `s3.delete-enabled=false` flag is sent to clients.
+
+            In all Iceberg 1.x versions, when Spark executes `DROP TABLE xxx PURGE`, it directly
+            deletes files from S3, bypassing the catalog's soft-deletion mechanism.
+            Other query engines properly delegate this operation to the catalog.
+            This Spark behavior is expected to change in Iceberg 2.0.
+
+            Setting this to `true` pushes the `s3.delete-enabled=false` flag to clients,
+            which discourages Spark from directly deleting files during `DROP TABLE xxx PURGE` operations.
+            Note that clients may override this setting, and it affects other Spark operations
+            that require file deletion, such as removing snapshots.
+
+            For more details, refer to Lakekeeper's
+            [Soft-Deletion documentation](https://docs.lakekeeper.io/docs/nightly/concepts/#soft-deletion).
+            This flag has no effect if Soft-Deletion is disabled for the warehouse.
         region:
           type: string
           description: Region to use for S3 requests.

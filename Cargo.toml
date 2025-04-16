@@ -57,6 +57,7 @@ serde_derive = "^1.0"
 serde_with = "^3.4"
 serde_json = { version = "^1.0", features = ["raw_value"] }
 serde_yaml = "0.9.34"
+quick-xml = "0.37.4"
 url = { version = "^2.5", features = ["serde"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 reqwest = { version = "^0.12", default-features = false, features = [

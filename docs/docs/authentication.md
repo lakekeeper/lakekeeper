@@ -43,7 +43,7 @@ The lifetime of this token is specified in the corresponding application in your
 ### Keycloak
 We are creating two Client: The first client with a "public" profile for the Lakekeeper API & UI and the second client for a machine client (e.g. Spark). Repeat step 2 for each machine client that is needed.
 
-#### Client 1: Lakekeeper
+##### Client 1: Lakekeeper
 
 1. Create a new "Client":
     - **Client Type**: choose "OpenID Connect"
@@ -72,7 +72,7 @@ LAKEKEEPER__UI__OPENID_CLIENT_ID="lakekeeper" (ID of Client 1)
 # LAKEKEEPER__UI__OPENID_SCOPE="lakekeeper" (Name of the created scope, not required if scope was added as default)
 ```
 
-#### Client 2: Machine User
+##### Client 2: Machine User
 
 Repeat this process for each query engine / machine user that is required:
 
@@ -145,7 +145,7 @@ If Authorization is enabled, the client will throw an error as no permissions ha
 ### Entra-ID (Azure)
 We are creating three App-Registrations: The first for Lakekeeper itself, the second for the Lakekeeper UI the third for a machine client (e.g. Spark) to access Lakekeeper. Repeat step 3 for each machine client that is needed. While App-Registrations can also be shared, the recommended setup we propose here offers more flexibility and better security.
 
-#### App 1: Lakekeeper UI Application
+##### App 1: Lakekeeper UI Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper-UI`
@@ -153,7 +153,7 @@ We are creating three App-Registrations: The first for Lakekeeper itself, the se
 1. In the "Overview" page of the "App Registration" note down the `Application (client) ID`. Also note the `Directory (tenant) ID`.
 1. Finally we recommend to set a policy for tokens to expire in 12 hours instead of the default ~1 hour. Please follow the [Microsoft Tutorial](https://learn.microsoft.com/en-us/entra/identity-platform/configure-token-lifetimes#create-a-policy-and-assign-it-to-an-app) to assign a corresponding policy to the Application. (If you find a good way to do this via the UI, please let us know so that we can update this documentation page!)
 
-#### App 2: Lakekeeper Application
+##### App 2: Lakekeeper Application
 
 1. Create a new "App Registration"
     - **Name**: choose any, for this example we choose `Lakekeeper`
@@ -185,7 +185,7 @@ LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
 
 Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
 
-#### App 3: Machine User
+##### App 3: Machine User
 Repeat this process for each query engine / machine user that is required:
 
 1. Create a new "App Registration"
