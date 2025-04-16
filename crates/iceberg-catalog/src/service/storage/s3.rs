@@ -127,7 +127,7 @@ pub struct S3Profile {
     /// [Soft-Deletion documentation](https://docs.lakekeeper.io/docs/nightly/concepts/#soft-deletion).
     /// This flag has no effect if Soft-Deletion is disabled for the warehouse.
     #[serde(default = "fn_true")]
-    #[builder(default)]
+    #[builder(default = true)]
     pub push_s3_delete_disabled: bool,
 }
 
