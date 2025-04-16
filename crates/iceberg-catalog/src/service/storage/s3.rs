@@ -117,7 +117,7 @@ pub struct S3Profile {
     /// deletes files from S3, bypassing the catalog's soft-deletion mechanism.
     /// Other query engines properly delegate this operation to the catalog.
     /// This Spark behavior is expected to change in Iceberg 2.0 (see
-    /// https://github.com/apache/iceberg/pull/11317#issuecomment-2604912801).
+    /// <https://github.com/apache/iceberg/pull/11317#issuecomment-2604912801>).
     ///
     /// Setting this to `true` pushes the `s3.delete-enabled=false` flag to clients,
     /// which discourages Spark from directly deleting files during `DROP TABLE xxx PURGE` operations.
@@ -126,7 +126,7 @@ pub struct S3Profile {
     ///
     /// For more details, refer to Lakekeeper's Soft-Deletion documentation.
     /// This flag has no effect if Soft-Deletion is disabled for the warehouse.
-    #[serde(default = "default_push_s3_delete_disabled_flag")]
+    #[serde(default = "fn_true")]
     #[builder(default)]
     pub push_s3_delete_disabled: bool,
 }
@@ -899,6 +899,10 @@ fn insert_pyiceberg_hack(config: &mut TableProperties) {
     });
 }
 
+fn fn_true() -> bool {
+    true
+}
+
 // S3Location exists as part of aws_sdk_s3::types, however we don't depend on it yet
 // and there is no parse() function available. The prefix is also represented as a
 // String, which makes it harder to work with.
@@ -1565,8 +1569,4 @@ mod is_overlapping_location_tests {
 
         assert!(profile3.is_overlapping_location(&profile4));
     }
-}
-
-fn default_push_s3_delete_disabled_flag() -> bool {
-    true
 }

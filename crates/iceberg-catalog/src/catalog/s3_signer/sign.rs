@@ -70,7 +70,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &request_url,
             s3_url_style_detection::<C>(state.v1_state.catalog.clone(), warehouse_id).await?,
             &request_method,
-            request_body.as_ref().map(String::as_str),
+            request_body.as_deref(),
         )?;
 
         // Unfortunately there is currently no way to pass information about warehouse_id & table_id
@@ -455,10 +455,10 @@ fn validate_uri(
 
 pub(super) mod s3_utils {
     use lazy_regex::regex;
+    use serde::{Deserialize, Serialize};
 
     use super::{ErrorModel, Operation, Result};
     use crate::service::storage::{s3::S3UrlStyleDetectionMode, S3Location};
-    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone)]
     pub(super) struct ParsedSignRequest {
@@ -505,10 +505,10 @@ pub(super) mod s3_utils {
         NoObjects,
     }
 
-    /// Parse S3 DeleteObjects XML and extract all keys
+    /// Parse S3 `DeleteObjects` XML and extract all keys
     ///
     /// # Arguments
-    /// * `xml` - Raw XML string from S3 DeleteObjects request
+    /// * `xml` - Raw XML string from S3 `DeleteObjects` request
     ///
     /// # Returns
     /// * `Result<Vec<String>, S3DeleteParseError>` - List of object keys or an error
@@ -563,8 +563,7 @@ pub(super) mod s3_utils {
             http::Method::GET | http::Method::HEAD => (Operation::Read, false),
             http::Method::POST | http::Method::PUT => {
                 // Handle special case: DeleteObjects operation (POST with ?delete and XML body)
-                if method == http::Method::POST
-                    && uri.query().map_or(false, |q| q.contains("delete"))
+                if method == http::Method::POST && uri.query().is_some_and(|q| q.contains("delete"))
                 {
                     (Operation::Delete, true)
                 } else {
