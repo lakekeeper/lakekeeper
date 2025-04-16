@@ -36,9 +36,29 @@ Remote signing works natively with all S3 storages that support the default `AWS
 
 Remote signing relies on identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
 
+### Configuration Parameters
+
+The following table describes all configuration parameters for an S3 storage profile:
+
+| Parameter                     | Type    | Required | Default                    | Description |
+|-------------------------------|---------|----------|----------------------------|-----|
+| `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
+| `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
+| `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
+| `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
+| `endpoint`                    | URL     | No       | None                       | Optional endpoint URL for S3 requests. If not provided, the region will be used to determine the endpoint. If both are provided, the endpoint takes precedence. Example: `http://s3-de.my-domain.com:9000` |
+| `flavor`                      | String  | No       | `aws`                      | S3 flavor to use. Options: `aws` (Amazon S3) or `s3-compat` (for S3-compatible solutions like MinIO). |
+| `assume-role-arn`             | String  | No       | None                       | Optional ARN to assume when accessing the bucket from Lakekeeper. This is also used as the default for `sts-role-arn` if that is not specified. |
+| `sts-role-arn`                | String  | No       | Value of `assume-role-arn` | Optional role ARN to assume for STS vended-credentials. Either `assume-role-arn` or `sts-role-arn` must be provided if `sts-enabled` is true and `flavor` is `aws`. |
+| `path-style-access`           | Boolean | No       | `false`                    | Whether to use path style access for S3 requests. If the underlying S3 supports both virtual host and path styles, we recommend not setting this option. |
+| `allow-alternative-protocols` | Boolean | No       | `false`                    | Whether to allow `s3a://` and `s3n://` in locations. This is disabled by default and should only be enabled for migrating legacy Hadoop-based tables via the register endpoint. Tables with `s3a` paths are not accessible outside the Java ecosystem. |
+| `remote-signing-url-style`    | String  | No       | `auto`                     | S3 URL style detection mode for remote signing. Options: `auto`, `path-style`, or `virtual-host`. When set to `auto`, Lakekeeper tries virtual-host style first, then path style. |
+| `push-s3-delete-disabled`     | Boolean | No       | `true`                     | Controls whether the `s3.delete-enabled=false` flag is sent to clients. Only has an effect if "soft-deletion" is enabled for this Warehouse. This prevents clients like Spark from directly deleting files during operations like `DROP TABLE xxx PURGE`, ensuring soft-deletion works properly. However, it also affects operations like `expire_snapshots` that require file deletion. For more information, please check the [Soft Deletion Documentation](./concepts.md#soft-deletion). |
+
+
 ### AWS
 
-#### Direct File-Access with Access Key
+###### Direct File-Access with Access Key
 First create a new S3 bucket for the warehouse. Buckets can be re-used for multiple Warehouses as long as the `key-prefix` is different. We recommend to block all public access.
 
 Secondly we need to create an AWS role that can access and delegate access to the bucket. We start by creating a new Policy that allows access to data in the bucket. We call this policy `LakekeeperWarehouseDev`:
@@ -128,7 +148,7 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 ```
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
 
-#### System Identities / Managed Identities
+##### System Identities / Managed Identities
 Since Lakekeeper version 0.8, credentials for S3 access can also be loaded directly from the environment. Lakekeeper integrates with the AWS SDK to support standard environment-based authentication, including all common configuration options through AWS_* environment variables.
 
 !!! note
@@ -266,7 +286,23 @@ An warehouse create call could look like this:
 ```
 
 ## Azure Data Lake Storage Gen 2
+
 To add a Warehouse backed by ADLS, we need two Azure objects: The Storage Account itself and an App Registration which Lakekeeper can use to access it and delegate access to compute engines.
+
+### Configuration Parameters
+
+The following table describes all configuration parameters for an ADLS storage profile:
+
+| Parameter                     | Type    | Required | Default                             | Description |
+|-------------------------------|---------|----------|-------------------------------------|-----|
+| `account-name`                | String  | Yes      | -                                   | Name of the Azure storage account. |
+| `filesystem`                  | String  | Yes      | -                                   | Name of the ADLS filesystem, in blob storage also known as container. |
+| `key-prefix`                  | String  | No       | None                                | Subpath in the filesystem to use. |
+| `allow-alternative-protocols` | Boolean | No       | `false`                             | Whether to allow `wasbs://` in locations in addition to `abfss://`. This is disabled by default and should only be enabled for migrating legacy Hadoop-based tables via the register endpoint. |
+| `host`                        | String  | No       | `dfs.core.windows.net`              | The host to use for the storage account. |
+| `authority-host`              | URL     | No       | `https://login.microsoftonline.com` | The authority host to use for authentication. |
+| `sas-token-validity-seconds`  | Integer | No       | `3600`                              | The validity period of the SAS token in seconds. |
+
 
 Lets start by creating a new "App Registration":
 
@@ -312,7 +348,7 @@ A POST request to `/management/v1/warehouse` would expects the following body:
 }
 ```
 
-#### Azure System Identity
+##### Azure System Identity
 
 !!! warning
     Enabling Azure system identities allows Lakekeeper to access any storage location that the managed identity has permissions for. To minimize security risks, ensure the managed identity is restricted to only the necessary resources. Additionally, limit Warehouse creation permission in Lakekeeper to users who are authorized to access all locations that the system identity can access.
@@ -326,11 +362,28 @@ LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true
 When enabled, Lakekeeper will use the managed identity of the virtual machine or application it is running on to access ADLS. Ensure that the managed identity has the necessary permissions to access the storage account and container. For example, assign the `Storage Blob Data Contributor` and `Storage Blob Delegator` roles to the managed identity for the relevant storage account as described above.
 
 
-## GCS
+## Google Cloud Storage
 
-For GCS, the used bucket needs to disable hierarchical namespaces and should have the storage admin role.
+Google Cloud Storage can be used to store Iceberg tables through the `gs://` protocol.
 
-A sample storage profile could look like this.
+### Configuration Parameters
+
+The following table describes all configuration parameters for a GCS storage profile:
+
+| Parameter    | Type   | Required | Default | Description                     |
+|--------------|--------|----------|---------|---------------------------------|
+| `bucket`     | String | Yes      | -       | Name of the GCS bucket.         |
+| `key-prefix` | String | No       | None    | Subpath in the bucket to use for this warehouse. |
+
+For GCS, the bucket should have hierarchical namespaces disabled and the service account should have appropriate permissions (such as Storage Admin role) on the bucket.
+
+### Authentication Options
+
+Lakekeeper supports two primary authentication methods for GCS:
+
+##### Service Account Key
+
+You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
 
 ```json
 {
@@ -360,7 +413,9 @@ A sample storage profile could look like this.
 }
 ```
 
-#### GCP System Identity
+The service account key should be created in the Google Cloud Console and should have the necessary permissions to access the bucket (typically Storage Admin role on the bucket).
+
+##### GCP System Identity
 
 !!! warning
     Enabling GCP system identities grants Lakekeeper access to any storage location the service account has permissions for. Carefully review and limit the permissions of the service account to avoid unintended access to sensitive resources. Additionally, limit Warehouse creation permissions in Lakekeeper to users who are authorized to access all locations that the system identity can access.
@@ -370,5 +425,4 @@ GCP system identities allow Lakekeeper to authenticate using the service account
 ```bash
 LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS=true
 ```
-
-When enabled, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, as described above.
+When using system identity, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, such as the Storage Admin role on the target bucket.

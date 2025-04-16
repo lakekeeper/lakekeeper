@@ -54,7 +54,6 @@ pub struct S3Profile {
     /// Name of the S3 bucket
     pub bucket: String,
     /// Subpath in the bucket to use.
-    /// The same prefix can be used for multiple warehouses.
     #[builder(default, setter(strip_option))]
     pub key_prefix: Option<String>,
     #[serde(default)]

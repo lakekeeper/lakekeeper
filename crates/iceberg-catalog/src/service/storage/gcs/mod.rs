@@ -50,7 +50,6 @@ pub struct GcsProfile {
     /// Name of the GCS bucket
     pub bucket: String,
     /// Subpath in the bucket to use.
-    /// The same prefix can be used for multiple warehouses.
     pub key_prefix: Option<String>,
 }
 

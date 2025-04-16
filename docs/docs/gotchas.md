@@ -10,7 +10,7 @@ Check out [our routing guide](./configuration.md#routing-and-base-url), both the
 
 ### Examples
 
-#### Local
+##### Local
 
 ```ssh
 k port-forward services/my-lakekeeper 7777:8181
@@ -24,7 +24,7 @@ catalog:
     ICEBERG_REST__BASE_URI: "http://localhost:7777"
 ```
 
-#### Public
+##### Public
 
 ```yaml
 catalog:
