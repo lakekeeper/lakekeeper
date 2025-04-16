@@ -411,6 +411,7 @@ When enabled, Lakekeeper will use the managed identity of the virtual machine or
 
 ## Google Cloud Storage
 
+<<<<<<< HEAD
 Google Cloud Storage can be used to store Iceberg tables through the `gs://` protocol.
 
 ### Configuration Parameters
@@ -431,6 +432,35 @@ Lakekeeper supports two primary authentication methods for GCS:
 ##### Service Account Key
 
 You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
+=======
+When configuring a GCS warehouse, ensure the Service Account (SA) used has sufficient permissions (e.g., `roles/storage.objectAdmin` or potentially a custom role, often granted at the bucket or project level).
+
+**Note on Hierarchical Namespace (HNS):** Using GCS buckets with HNS enabled can cause permission errors with Lakekeeper's default credential downscoping mechanism due to issues authorizing implicit folder creation. A workaround flag is available (see below), but the most compatible setup currently is to use buckets with HNS disabled if prefix-scoped credentials are required.
+
+### GCS STS Downscoping and HNS Compatibility
+
+By default, Lakekeeper uses Google's Security Token Service (STS) to create downscoped, prefix-limited credentials when vending credentials for GCS (`vended_credentials: true` in data access requests). This enhances security by limiting the token's access to the specific `key-prefix` defined in the storage profile.
+
+However, a known issue exists where this downscoping mechanism may fail on **HNS-enabled buckets**. This typically occurs during operations like writing initial table metadata, which can implicitly require folder creation within the HNS structure. The failure often manifests as a `403 Forbidden` error citing missing `storage.folders.create` permission, even if the source SA has adequate privileges.
+
+**Workaround: `disable-sts-downscoping` Flag**
+
+To enable the use of HNS buckets as a **short-term workaround**, you can add an optional flag to the GCS storage profile:
+
+* `disable-sts-downscoping` (boolean, optional, JSON name: `disable-sts-downscoping`, defaults to `false`): If set to `true`, Lakekeeper will bypass the STS downscoping process for this warehouse. It will instead acquire a standard OAuth 2.0 token directly from the configured source credential (SA Key or System Identity) and vend that token.
+
+!!! warning
+    Setting `disable-sts-downscoping: true` **disables the prefix-level security restrictions** provided by STS for this specific warehouse. The credentials vended to clients will have the broader permissions of the source credential (e.g., the SA used by Lakekeeper) applicable to the **entire GCS bucket**, not just the warehouse's `key-prefix`.
+
+    Use this flag with extreme caution only if:
+    1. You are experiencing the HNS-related downscoping permission errors.
+    2. You understand and accept the security trade-off of losing prefix-level credential isolation for this warehouse.
+    3. The source credential used by Lakekeeper already follows the principle of least privilege as much as possible (e.g., scoped to necessary buckets rather than project-wide admin roles).
+
+    The recommended long-term solution involves resolving the underlying STS `availabilityCondition` incompatibility with HNS. Please consult Lakekeeper community resources or GCP support for potential updates on this issue.
+
+A sample storage profile could look like this (see flag description below):
+>>>>>>> a24e40f3 (docs(gcs): Add documentation for disable_sts_downscoping flag)
 
 ```json
 {
@@ -438,7 +468,8 @@ You can provide a service account key directly when creating a warehouse. This i
   "storage-profile": {
     "type": "gcs",
     "bucket": "...",
-    "key-prefix": "..."
+    "key-prefix": "...",
+    "disable-sts-downscoping": false
   },
   "storage-credential": {
     "type": "gcs",
