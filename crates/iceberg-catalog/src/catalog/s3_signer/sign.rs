@@ -512,18 +512,6 @@ pub(super) mod s3_utils {
     ///
     /// # Returns
     /// * `Result<Vec<String>, S3DeleteParseError>` - List of object keys or an error
-    ///
-    /// # Example
-    /// ```
-    /// let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-    ///   <Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-    ///     <Object><Key>path/to/file1.avro</Key></Object>
-    ///     <Object><Key>path/to/file2.avro</Key></Object>
-    ///   </Delete>"#;
-    ///
-    /// let keys = parse_s3_delete_xml(xml)?;
-    /// assert_eq!(keys.len(), 2);
-    /// ```
     pub(super) fn parse_s3_delete_xml(xml: &str) -> Result<Vec<String>, S3DeleteParseError> {
         // Approach 1: Full deserialization using serde
         let delete_request: DeleteObjectsRequest = quick_xml::de::from_str(xml)?;
