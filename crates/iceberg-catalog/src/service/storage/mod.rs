@@ -53,7 +53,7 @@ pub enum StorageProfile {
     Test(TestProfile),
     #[serde(rename = "gcs")]
     #[schema(title = "StorageProfileGcs")]
-    Gcs(GcsProfile),
+    Gcs(#[schema(inline)] GcsProfile),
 }
 
 #[derive(Debug, Clone, strum_macros::Display)]

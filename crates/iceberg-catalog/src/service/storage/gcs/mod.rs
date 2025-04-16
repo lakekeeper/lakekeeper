@@ -8,6 +8,7 @@ use std::{
 
 use base64::Engine;
 use google_cloud_auth::{
+    credentials::CredentialsFile,
     token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
@@ -51,6 +52,10 @@ pub struct GcsProfile {
     pub bucket: String,
     /// Subpath in the bucket to use.
     pub key_prefix: Option<String>,
+    /// If true, bypass STS downscoping and use broader credentials. Defaults to false.
+    #[serde(default)]
+    #[schema(default = false)]
+    pub disable_sts_downscoping: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -171,7 +176,7 @@ impl GcsProfile {
     pub(super) fn normalize(&mut self) -> Result<(), ValidationError> {
         validate_bucket_name(&self.bucket)?;
         self.normalize_key_prefix()?;
-
+        self.disable_sts_downscoping = Some(self.disable_sts_downscoping.unwrap_or(false));
         Ok(())
     }
 
@@ -286,29 +291,46 @@ impl GcsProfile {
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
-        let (source, project_id) = self.get_token_source(cred).await?;
-        let token = sts::downscope(
-            source,
-            &self.bucket,
-            table_location.clone(),
-            storage_permissions,
-        )
-        .await?;
+        let (token_source, project_id) = self.get_token_source(cred).await?;
+        let should_bypass_downscoping = self.disable_sts_downscoping.unwrap_or(false);
 
-        table_properties.insert(&gcs::Token(token.access_token));
-        if let Some(ref project_id) = project_id {
-            table_properties.insert(&gcs::ProjectId(project_id.clone()));
-        }
+        if should_bypass_downscoping {
+            tracing::warn!(bucket=%self.bucket, prefix=%self.key_prefix.as_deref().unwrap_or("N/A"), "STS downscoping is disabled for this GCS profile. Using broader credentials.");
+            let token_string = token_source.token().await.map_err(|e_str| {
+                tracing::error!("Failed to get non-downscoped token from token source: {}", e_str);
+                TableConfigError::FailedDependency(
+                    "Failed to get non-downscoped gcp token from token source".to_string(),
+                )
+            })?;
 
-        if let Some(expiry) = token.expires_in {
-            table_properties.insert(&gcs::TokenExpiresAt(
-                (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
-                    + (expiry * 1000) as u128)
-                    .to_string(),
-            ));
+            table_properties.insert(&gcs::Token(token_string));
+            if let Some(ref proj_id) = project_id {
+                table_properties.insert(&gcs::ProjectId(proj_id.clone()));
+            }
+        } else {
+            tracing::debug!(bucket=%self.bucket, prefix=%self.key_prefix.as_deref().unwrap_or("N/A"), "Performing STS downscoping for GCS profile.");
+            let token_response = sts::downscope(
+                token_source,
+                &self.bucket,
+                table_location.clone(),
+                storage_permissions,
+            )
+            .await?;
+
+            table_properties.insert(&gcs::Token(token_response.access_token));
+            if let Some(ref proj_id) = project_id {
+                table_properties.insert(&gcs::ProjectId(proj_id.clone()));
+            }
+
+            if let Some(expiry) = token_response.expires_in {
+                let now_millis = std::time::SystemTime::now()
+                       .duration_since(std::time::UNIX_EPOCH)
+                       .unwrap_or_default()
+                       .as_millis();
+                // Use saturating_add to prevent panic on potential overflow with large expiry values
+                let expiry_millis = now_millis.saturating_add((expiry as u128) * 1000);
+               table_properties.insert(&gcs::TokenExpiresAt(expiry_millis.to_string()));
+           }
         }
 
         Ok(TableConfig {
@@ -518,6 +540,7 @@ pub(crate) mod test {
             let profile = GcsProfile {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
+                disable_sts_downscoping: Some(false),
             };
             (profile, cred)
         }
@@ -525,11 +548,9 @@ pub(crate) mod test {
         #[tokio::test]
         async fn test_can_validate() {
             let (profile, cred) = get_storage_profile();
-
             let cred: StorageCredential = cred.into();
             let s = &serde_json::to_string(&cred).unwrap();
             serde_json::from_str::<StorageCredential>(s).expect("json roundtrip failed");
-
             let mut profile: StorageProfile = profile.into();
 
             profile
@@ -562,6 +583,7 @@ mod is_overlapping_location_tests {
         GcsProfile {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
+            disable_sts_downscoping: Some(false),
         }
     }
 
