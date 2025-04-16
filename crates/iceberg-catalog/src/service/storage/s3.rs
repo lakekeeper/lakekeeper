@@ -39,9 +39,6 @@ static STS_HTTP_CLIENT: LazyLock<aws_sdk_sts::config::SharedHttpClient> = LazyLo
 static AWS_IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
     LazyLock::new(|| IdentityCache::lazy().build());
 
-const DEFAULT_STS_TOKEN_VALIDITY_SECONDS: u64 = 3600;
-const DEFAULT_STS_TOKEN_VALIDITY_SECONDS_I32: i32 = 3600;
-
 #[derive(
     Debug,
     Eq,
@@ -83,9 +80,10 @@ pub struct S3Profile {
     #[builder(default, setter(strip_option))]
     pub sts_role_arn: Option<String>,
     pub sts_enabled: bool,
-    /// The validity of the sts tokens in seconds. Default: 3600.
-    #[builder(default, setter(strip_option))]
-    pub sts_token_validity_seconds: Option<u64>,
+    /// The validity of the sts tokens in seconds. Default is 3600
+    #[builder(default = 3600)]
+    #[serde(default = "fn_3600")]
+    pub sts_token_validity_seconds: u64,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -569,9 +567,7 @@ impl S3Profile {
             }
         };
 
-        let ttl_seconds = self
-            .sts_token_validity_seconds
-            .unwrap_or(DEFAULT_STS_TOKEN_VALIDITY_SECONDS);
+        let ttl_seconds = self.sts_token_validity_seconds;
         let payload = serde_json::json!({
             "bucket": bucket_name,
             "prefixes": [key],
@@ -721,12 +717,7 @@ impl S3Profile {
         let assume_role_builder = aws_sdk_sts::Client::new(&sdk_config)
             .assume_role()
             .role_session_name("lakekeeper-sts")
-            .duration_seconds(
-                self.sts_token_validity_seconds
-                    .map_or(DEFAULT_STS_TOKEN_VALIDITY_SECONDS_I32, |v| {
-                        i32::try_from(v).unwrap_or(DEFAULT_STS_TOKEN_VALIDITY_SECONDS_I32)
-                    }),
-            );
+            .duration_seconds(i32::try_from(self.sts_token_validity_seconds).unwrap_or(3600));
 
         // Attach policy if provided
         let assume_role_builder = if let Some(policy) = policy {
@@ -1173,6 +1164,10 @@ fn fn_true() -> bool {
     true
 }
 
+fn fn_3600() -> u64 {
+    3600
+}
+
 // S3Location exists as part of aws_sdk_s3::types, however we don't depend on it yet
 // and there is no parse() function available. The prefix is also represented as a
 // String, which makes it harder to work with.
@@ -1545,7 +1540,7 @@ pub(crate) mod test {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
-            sts_token_validity_seconds: None,
+            sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: false,
         };
         let sp: StorageProfile = profile.clone().into();
@@ -1588,7 +1583,7 @@ pub(crate) mod test {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
-            sts_token_validity_seconds: None,
+            sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: false,
         };
 
@@ -1641,7 +1636,7 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
-                sts_token_validity_seconds: None,
+                sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
@@ -1693,7 +1688,7 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
-                sts_token_validity_seconds: None,
+                sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
@@ -1749,7 +1744,8 @@ pub(crate) mod test {
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
-                sts_token_validity_seconds: None,
+                sts_token_validity_seconds: 3600,
+                push_s3_delete_disabled: false,
             };
             let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),
@@ -1897,7 +1893,7 @@ mod is_overlapping_location_tests {
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
-            sts_token_validity_seconds: None,
+            sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: true,
         }
     }

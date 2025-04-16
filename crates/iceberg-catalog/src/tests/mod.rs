@@ -40,9 +40,8 @@ use crate::{
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
         storage::{
-
-            s3::{S3AccessKeyCredential, S3UrlStyleDetectionMode},
-            S3Credential, S3Flavor, S3Profile, StorageCredential, StorageProfile, TestProfile,
+            s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
+            StorageProfile, TestProfile,
         },
         task_queue::{TaskQueueConfig, TaskQueues},
         Catalog, SecretStore, State, UserId,

@@ -572,11 +572,11 @@ pub(super) mod s3_utils {
         // Parse the base URL
         let mut parsed_request = match s3_url_style_detection {
             S3UrlStyleDetectionMode::VirtualHost => {
-                virtual_host_style(uri, is_post_delete_operation)?
+                virtual_host_style(uri, is_post_delete_operation, true)?
             }
             S3UrlStyleDetectionMode::Path => path_style(uri, is_post_delete_operation)?,
             S3UrlStyleDetectionMode::Auto => {
-                if let Ok(parsed) = virtual_host_style(uri, is_post_delete_operation) {
+                if let Ok(parsed) = virtual_host_style(uri, is_post_delete_operation, false) {
                     parsed
                 } else if let Ok(parsed) = path_style(uri, is_post_delete_operation) {
                     parsed
@@ -629,35 +629,63 @@ pub(super) mod s3_utils {
         Ok((parsed_request, operation))
     }
 
-    fn virtual_host_style(uri: &url::Url, allow_no_key: bool) -> Result<ParsedSignRequest> {
-        let re_host_pattern = regex!(r"^((.+)\.)?(s3[.-]([a-z0-9-]+)(\..*)?)");
-
+    fn virtual_host_style(
+        uri: &url::Url,
+        allow_no_key: bool,
+        is_known: bool,
+    ) -> Result<ParsedSignRequest> {
         let host = uri.host().ok_or_else(|| {
             ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
         })?;
         let path_segments = get_path_segments(uri, allow_no_key)?;
+        let port = uri.port_or_known_default().unwrap_or(443);
 
-        if let Some((Some(bucket), Some(used_endpoint))) =
-            re_host_pattern.captures(&host.to_string()).map(|captures| {
+        let host_str = host.to_string();
+
+        let re_host_pattern = regex!(r"^((.+)\.)?(s3[.-]([a-z0-9-]+)(\..*)?)");
+        let (bucket, used_endpoint) = if is_known || host_str.ends_with(".r2.cloudflarestorage.com")
+        {
+            known_host_style(&host_str)?
+        } else if let Some((Some(bucket), Some(used_endpoint))) =
+            re_host_pattern.captures(&host_str).map(|captures| {
                 (
                     captures.get(2).map(|m| m.as_str()),
                     captures.get(3).map(|m| m.as_str()),
                 )
             })
         {
-            // Host Style Case
-            Ok(ParsedSignRequest {
-                url: uri.clone(),
-                locations: vec![S3Location::new(bucket.to_string(), path_segments, None)?],
-                endpoint: used_endpoint.to_string(),
-                port: uri.port_or_known_default().unwrap_or(443),
-            })
+            (bucket, used_endpoint)
         } else {
-            Err(
-                ErrorModel::bad_request("URI does not match S3 host style", "UriNotS3", None)
-                    .into(),
+            return Err(ErrorModel::bad_request(
+                "URI does not match S3 host style",
+                "UriNotS3",
+                None,
             )
-        }
+            .into());
+        };
+
+        Ok(ParsedSignRequest {
+            url: uri.clone(),
+            locations: vec![S3Location::new(
+                bucket.to_string(),
+                path_segments,
+                Some(used_endpoint.to_string()),
+            )?],
+            endpoint: used_endpoint.to_string(),
+            port,
+        })
+    }
+
+    /// Returns bucket, string
+    fn known_host_style(host: &str) -> Result<(&str, &str)> {
+        let (bucket, endpoint) = host.split_once('.').ok_or_else(|| {
+            ErrorModel::bad_request(
+                "Invalid virtual-host style URL: Expected at least one point in hostname",
+                "InvalidHostStyleURL",
+                None,
+            )
+        })?;
+        Ok((bucket, endpoint))
     }
 
     fn path_style(uri: &url::Url, allow_no_key: bool) -> Result<ParsedSignRequest> {
@@ -870,6 +898,18 @@ mod test {
     }
 
     #[test]
+    fn test_parse_s3_url_config_virtual_style_minimal() {
+        let (parsed, _operation) = parse_s3_url(
+            &url::Url::parse("https://bucket.s3-service/key").unwrap(),
+            S3UrlStyleDetectionMode::VirtualHost,
+            &http::Method::GET,
+            None,
+        )
+        .unwrap();
+        assert_eq!(parsed.locations[0].bucket_name(), "bucket");
+    }
+
+    #[test]
     fn test_parse_s3_url() {
         let cases = vec![
             (
@@ -938,6 +978,15 @@ mod test {
             ),
             (
                 "https://bucket.s3-accesspoint.dualstack.us-gov-west-1.amazonaws.com/file",
+                "s3://bucket/file",
+            ),
+            // Cloudflare R2
+            (
+                "https://bucket.accountid123.r2.cloudflarestorage.com/file",
+                "s3://bucket/file",
+            ),
+            (
+                "https://bucket.accountid123.eu.r2.cloudflarestorage.com/file",
                 "s3://bucket/file",
             ),
         ];
