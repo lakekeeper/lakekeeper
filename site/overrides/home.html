@@ -1,5 +1,5 @@
 {% extends "main.html" %} {% block tabs %} {{ super() }}
-<!--Lakekeeper documetation-->
+<!--Lakekeeper documentation-->
 
 <!-- disable side bars for home page -->
 <style>
@@ -40,8 +40,8 @@
       <div class="cs_hero_in wow fadeInLeft" data-wow-duration="1s" data-wow-delay="0.35s">
         <h1 class="cs_hero_title">Lakekeeper</h1>
         <p class="cs_hero_subtitle">
-          This is Lakekeeper: An Apache-Licensed, secure, fast and easy to use
-          Apache Iceberg REST Catalog written in Rust.
+          This is Lakekeeper: A secure, fast, and user-friendly Apache Iceberg REST Catalog
+          built with Rust and available under the Apache License.
         </p>
         <div class="cs_hero_btns">
           <a href="/getting-started/" class="cs_btn cs_style_1"><span>Get Started</span></a>
@@ -63,9 +63,9 @@
       <div class="cs_counter_1_wrap">
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="600" class="odometer" id="commits-counter"></span>+
+            <span data-count-to="20000" class="odometer" id="download-counter"></span>+
           </div>
-          <p class="cs_counter_title mb-0">Commits</p>
+          <p class="cs_counter_title mb-0">Monthly Downloads</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
@@ -176,7 +176,7 @@
               <h3 class="cs_iconbox_title">Open Data Governance</h3>
               <p class="cs_iconbox_subtitle mb-0">
                 Lakekeeper connects to open external permission systems
-                like OpenFGA and can exposes permissions via Open Policy Agent (OPA).
+                like OpenFGA and can expose permissions via Open Policy Agent (OPA).
                 This enables best-in-class integration with query engines like trino that support external permission
                 systems.
               </p>
@@ -198,7 +198,7 @@
               <p class="cs_iconbox_subtitle mb-0">
                 Use your own identity provider for authentication.
                 Lakekeeper never generates (API)-tokens itself. You already have an IdP.
-                Lets use it!
+                Let's use it!
               </p>
             </div>
           </div>
@@ -237,7 +237,7 @@
               <h3 class="cs_iconbox_title">Easy to Use</h3>
               <p class="cs_iconbox_subtitle mb-0">
                 Single binary executable for all major platforms; no JVM or
-                Python env required. Native Kubernetes deployments with Helm
+                Python environment required. Native Kubernetes deployments with Helm
                 chart or k8s operator. UI and batteries included.
               </p>
             </div>
@@ -302,7 +302,7 @@
           </div>
         </div>
 
-        <!-- Feature 9: High Available & Horizontally Scalable -->
+        <!-- Feature 9: Highly Available & Horizontally Scalable -->
         <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.1s">
           <div class="cs_iconbox_inner">
             <div class="cs_iconbox_header">
@@ -313,7 +313,7 @@
             </div>
             <div class="cs_iconbox_text">
               <h3 class="cs_iconbox_title">
-                High Available & Horizontally Scalable
+                Highly Available & Horizontally Scalable
               </h3>
               <p class="cs_iconbox_subtitle mb-0">
                 There is no local state - the catalog can be scaled horizontally
@@ -333,7 +333,7 @@
               <div class="cs_iconbox_index">11</div>
             </div>
             <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">Extendable</h3>
+              <h3 class="cs_iconbox_title">Extensible</h3>
               <p class="cs_iconbox_subtitle mb-0">
                 See something that's missing? Build it! Lakekeeper is meant to
                 be extended through. And because Lakekeeper is written in Rust,
@@ -429,7 +429,7 @@
               <div class="cs_iconbox_index cs_center">Trino</div>
               <div class="cs_iconbox_header">
                 <h3 class="cs_iconbox_title mb-0">
-                  Trino announces compatability
+                  Trino announces compatibility
                 </h3>
               </div>
               <hr />
@@ -504,19 +504,15 @@
         <div class="row cs_gap_y_24">
           <div class="container">
             <div class="row cs_gap_y_24">
-              
-              
+
+
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
                 <div class="cs_post cs_style_1">
                   <div class="cs_post_inner">
                     <div class="cs_post_thumbnail cs_zoom">
-                      <iframe 
-                        width="100%" 
-                        height="200" 
-                        src="https://www.youtube.com/embed/fZhghCQq00I" 
-                        title="YouTube video player" 
-                        frameborder="0" 
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                      <iframe width="100%" height="200" src="https://www.youtube.com/embed/fZhghCQq00I"
+                        title="YouTube video player" frameborder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                         allowfullscreen>
                       </iframe>
                     </div>
@@ -533,64 +529,56 @@
                   </div>
                 </div>
               </div>
-            
-            <!-- 7th Post -->
-            <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
-              <div class="cs_post cs_style_1">
-                <div class="cs_post_inner">
-                  <div class="cs_post_thumbnail cs_zoom">
-                    <iframe 
-                      width="100%" 
-                      height="200" 
-                      src="https://www.youtube.com/embed/cEnqipW4yHU" 
-                      title="YouTube video player" 
-                      frameborder="0" 
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                      allowfullscreen>
-                    </iframe>
-                  </div>
-                  <div class="cs_post_content">
-                    <div class="cs_post_meta_wrapper">
-                      <div class="cs_post_meta cs_semibold">2025 - 4</div>
-                      <div class="cs_post_meta_separator"></div>
-                      <div class="cs_post_meta cs_semibold">Crunchy Data</div>
-                    </div>
-                    <h3 class="cs_post_title cs_semibold mb-0">
-                      Building a Postgres data warehouse with Iceberg
-                    </h3>
-                  </div>
-                </div>
-              </div>
-            </div>
 
-            <!-- 6th Post -->
-            <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
-              <div class="cs_post cs_style_1">
-                <div class="cs_post_inner">
-                  <div class="cs_post_thumbnail cs_zoom">
-                    <iframe 
-                      width="100%" 
-                      height="200" 
-                      src="https://www.youtube.com/embed/srCHK2aVYuE" 
-                      title="YouTube video player" 
-                      frameborder="0" 
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                      allowfullscreen>
-                    </iframe>
-                  </div>
-                  <div class="cs_post_content">
-                    <div class="cs_post_meta_wrapper">
-                      <div class="cs_post_meta cs_semibold">2025 - 4</div>
-                      <div class="cs_post_meta_separator"></div>
-                      <div class="cs_post_meta cs_semibold">Lakekeeper</div>
+              <!-- 7th Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <div class="cs_post_thumbnail cs_zoom">
+                      <iframe width="100%" height="200" src="https://www.youtube.com/embed/cEnqipW4yHU"
+                        title="YouTube video player" frameborder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowfullscreen>
+                      </iframe>
                     </div>
-                    <h3 class="cs_post_title cs_semibold mb-0">
-                      Securing Shared Data in Apache Iceberg
-                    </h3>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025 - 4</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">Crunchy Data</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        Building a Postgres data warehouse with Iceberg
+                      </h3>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+
+              <!-- 6th Post -->
+              <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+                <div class="cs_post cs_style_1">
+                  <div class="cs_post_inner">
+                    <div class="cs_post_thumbnail cs_zoom">
+                      <iframe width="100%" height="200" src="https://www.youtube.com/embed/srCHK2aVYuE"
+                        title="YouTube video player" frameborder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowfullscreen>
+                      </iframe>
+                    </div>
+                    <div class="cs_post_content">
+                      <div class="cs_post_meta_wrapper">
+                        <div class="cs_post_meta cs_semibold">2025 - 4</div>
+                        <div class="cs_post_meta_separator"></div>
+                        <div class="cs_post_meta cs_semibold">Lakekeeper</div>
+                      </div>
+                      <h3 class="cs_post_title cs_semibold mb-0">
+                        Securing Shared Data in Apache Iceberg
+                      </h3>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
               <!-- 5th Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
@@ -612,7 +600,7 @@
                   </div>
                 </div>
               </div>
-              
+
               <!-- 4th Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.4s">
                 <div class="cs_post cs_style_1">
@@ -633,7 +621,7 @@
                   </div>
                 </div>
               </div>
-                     
+
               <!-- Third Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
                 <div class="cs_post cs_style_1">
@@ -654,7 +642,7 @@
                   </div>
                 </div>
               </div>
-              
+
               <!-- Second Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
                 <div class="cs_post cs_style_1">
@@ -675,7 +663,7 @@
                   </div>
                 </div>
               </div>
-                     
+
               <!-- First Post -->
               <div class="col-lg-4 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
                 <div class="cs_post cs_style_1">
@@ -696,8 +684,8 @@
                   </div>
                 </div>
               </div>
-              
-              
+
+
             </div>
           </div>
         </div>

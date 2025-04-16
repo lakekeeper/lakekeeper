@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds\n            FROM warehouse\n            WHERE warehouse_id = $1\n            AND status = 'active'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_profile: Json<StorageProfile>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_delete_mode: DbTabularDeleteProfile",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tabular_expiration_seconds",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f03f99482c51e3ca3c4df6bd7e7d62d7f033833bbcc0907e3be294f870342329"
+}

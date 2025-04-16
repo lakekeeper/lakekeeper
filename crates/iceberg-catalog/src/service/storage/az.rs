@@ -46,7 +46,6 @@ pub struct AdlsProfile {
     /// Name of the adls filesystem, in blobstorage also known as container.
     pub filesystem: String,
     /// Subpath in the filesystem to use.
-    /// The same prefix can be used for multiple warehouses.
     pub key_prefix: Option<String>,
     /// Name of the azure storage account.
     pub account_name: String,
