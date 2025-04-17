@@ -423,7 +423,7 @@ The following table describes all configuration parameters for a GCS storage pro
 | `bucket`     | String | Yes      | -       | Name of the GCS bucket.         |
 | `key-prefix` | String | No       | None    | Subpath in the bucket to use for this warehouse. |
 
-For GCS, the bucket should have hierarchical namespaces disabled and the service account should have appropriate permissions (such as Storage Admin role) on the bucket.
+The service account should have appropriate permissions (such as Storage Admin role) on the bucket. Since Lakekeeper Version 0.8.2, hierarchical Namespaces are supported.
 
 ### Authentication Options
 

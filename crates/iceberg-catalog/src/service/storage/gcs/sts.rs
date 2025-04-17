@@ -24,7 +24,6 @@ pub(crate) async fn downscope(
     let response = HTTP_CLIENT
         .clone()
         .post(STS_URL.clone())
-        .header("Content-Type", "application/json")
         .json(&sts_request)
         .send()
         .await
@@ -126,18 +125,24 @@ impl Options {
                         "//storage.googleapis.com/projects/_/buckets/{bucket}",
                     ),
                     available_permissions: match storage_permissions {
-                        StoragePermissions::Read => vec!["inRole:roles/storage.objectViewer".to_string()],
-                        StoragePermissions::ReadWrite => vec!["inRole:roles/storage.objectViewer".to_string(),
-                                                              "inRole:roles/storage.objectCreator".to_string()],
-                        StoragePermissions::ReadWriteDelete => vec!["inRole:roles/storage.objectUser".to_string()]
+                        StoragePermissions::Read => {
+                            vec!["inRole:roles/storage.objectViewer".to_string()]
+                        }
+                        StoragePermissions::ReadWrite => vec![
+                            "inRole:roles/storage.objectViewer".to_string(),
+                            "inRole:roles/storage.objectCreator".to_string(),
+                        ],
+                        StoragePermissions::ReadWriteDelete => vec![
+                            "inRole:roles/storage.objectAdmin".to_string(),
+                        ],
                     },
                     availability_condition: AvailabilityCondition {
                         title: "obj-prefixes".to_string(),
                         // need the getAttribute to allow Listing operations
                         expression: format!(
-                            "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefixless_location}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefixless_location}')",
+                            "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefixless_location}') || resource.name.startsWith('projects/_/buckets/{bucket}/folders/{prefixless_location}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefixless_location}')",
                         ),
-                    },
+                    }.into(),
                 }],
             },
         }
@@ -156,7 +161,8 @@ struct AccessBoundaryRule {
     available_resource: String,
     #[serde(rename = "availablePermissions")]
     available_permissions: Vec<String>,
-    availability_condition: AvailabilityCondition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    availability_condition: Option<AvailabilityCondition>,
 }
 
 #[derive(Serialize, Debug, Deserialize)]
