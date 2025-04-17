@@ -132,6 +132,10 @@ pub struct S3Profile {
     #[serde(default = "fn_true")]
     #[builder(default = true)]
     pub push_s3_delete_disabled: bool,
+    /// ARN of the KMS key used to encrypt the S3 bucket, if any.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub aws_kms_key_arn: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, ToSchema)]
@@ -671,7 +675,7 @@ impl S3Profile {
         role_arn: Option<&str>,
         storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        let policy = Self::get_aws_policy_string(table_location, storage_permissions)?;
+        let policy = self.get_aws_policy_string(table_location, storage_permissions)?;
         self.assume_role_with_sts(s3_credential, role_arn, Some(policy))
             .await
     }
@@ -902,6 +906,7 @@ impl S3Profile {
     }
 
     fn get_aws_policy_string(
+        &self,
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<String, CredentialsError> {
@@ -917,10 +922,8 @@ impl S3Profile {
         );
         let key = format!("{}/", table_location.key().join("/"));
 
-        Ok(format!(
-            r#"{{
-        "Version": "2012-10-17",
-        "Statement": [
+        let mut statements = format!(
+            r#"
             {{
                 "Sid": "TableAccess",
                 "Effect": "Allow",
@@ -943,9 +946,35 @@ impl S3Profile {
                     }}
                 }}
             }}
-        ]
-    }}"#,
+        "#,
             Self::permission_to_actions(storage_permissions),
+        )
+        .replace('\n', "")
+        .replace(' ', "");
+
+        if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            statements = format!(
+                r#"
+                {statements},
+                {{
+                    "Sid": "KmsAccess",
+                    "Effect": "Allow",
+                    "Action": [
+                        "kms:Decrypt",
+                        "kms:GenerateDataKey"
+                    ],
+                    "Resource": "{kms_key_arn}"
+                }}"#
+            );
+        }
+
+        Ok(format!(
+            r#"{{
+        "Version": "2012-10-17",
+        "Statement": [
+            {statements}
+        ]
+        }}"#
         )
         .replace('\n', "")
         .replace(' ', ""))
@@ -1542,6 +1571,7 @@ pub(crate) mod test {
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
             sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: false,
+            aws_kms_key_arn: None,
         };
         let sp: StorageProfile = profile.clone().into();
 
@@ -1585,6 +1615,7 @@ pub(crate) mod test {
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
             sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: false,
+            aws_kms_key_arn: None,
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
@@ -1638,6 +1669,7 @@ pub(crate) mod test {
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
+                aws_kms_key_arn: None,
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: TEST_ACCESS_KEY.clone(),
@@ -1690,6 +1722,59 @@ pub(crate) mod test {
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
+                aws_kms_key_arn: None,
+            };
+            let cred = S3Credential::AccessKey(S3AccessKeyCredential {
+                aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
+                aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                external_id: None,
+            });
+
+            (profile, cred)
+        }
+
+        #[test]
+        fn test_can_validate() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let cred: StorageCredential = cred.into();
+                    let mut profile: StorageProfile = profile.into();
+
+                    profile.normalize(Some(&cred)).unwrap();
+                    profile.validate_access(Some(&cred), None).await.unwrap();
+                },
+                true,
+            );
+        }
+    }
+
+    #[needs_env_var(TEST_AWS_KMS = 1)]
+    pub(crate) mod aws_kms {
+        use super::super::*;
+        use crate::service::storage::{StorageCredential, StorageProfile};
+
+        pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
+            let profile = S3Profile {
+                bucket: std::env::var("AWS_KMS_S3_BUCKET").unwrap(),
+                key_prefix: Some(uuid::Uuid::now_v7().to_string()),
+                assume_role_arn: Some(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap()),
+                endpoint: None,
+                region: std::env::var("AWS_S3_REGION").unwrap(),
+                path_style_access: Some(true),
+                sts_role_arn: None,
+                flavor: S3Flavor::Aws,
+                sts_enabled: true,
+                allow_alternative_protocols: Some(false),
+                remote_signing_url_style:
+                    crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
+                sts_token_validity_seconds: 3600,
+                push_s3_delete_disabled: false,
+                aws_kms_key_arn: Some(std::env::var("AWS_S3_KMS_ARN").unwrap()),
             };
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
                 aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
@@ -1746,6 +1831,7 @@ pub(crate) mod test {
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
                 sts_token_validity_seconds: 3600,
                 push_s3_delete_disabled: false,
+                aws_kms_key_arn: None,
             };
             let cred = S3Credential::CloudflareR2(S3CloudflareR2Credential {
                 access_key_id: std::env::var("LAKEKEEPER_TEST__R2_ACCESS_KEY_ID").unwrap(),
@@ -1834,11 +1920,20 @@ pub(crate) mod test {
     #[test]
     fn policy_string_is_json() {
         let table_location = "s3://bucket-name/path/to/table";
-        let policy = S3Profile::get_aws_policy_string(
-            &table_location.parse().unwrap(),
-            StoragePermissions::ReadWriteDelete,
-        )
-        .unwrap();
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_aws_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        println!("Policy: {policy}");
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }
 
@@ -1895,6 +1990,7 @@ mod is_overlapping_location_tests {
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
             sts_token_validity_seconds: 3600,
             push_s3_delete_disabled: true,
+            aws_kms_key_arn: None,
         }
     }
 
