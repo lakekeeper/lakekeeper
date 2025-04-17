@@ -252,6 +252,9 @@ jobs:
           AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
           AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
           AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
+          TEST_AWS_KMS: 1
+          AWS_KMS_S3_BUCKET: ${{ secrets.AWS_KMS_S3_BUCKET }}
+          AWS_S3_KMS_ARN: ${{ secrets.AWS_S3_KMS_ARN }}
 
           TEST_R2: 1
           LAKEKEEPER_TEST__R2_BUCKET: ${{ secrets.LAKEKEEPER_TEST__R2_BUCKET }}
