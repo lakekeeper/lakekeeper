@@ -133,7 +133,7 @@ impl Options {
                             "inRole:roles/storage.objectCreator".to_string(),
                         ],
                         StoragePermissions::ReadWriteDelete => vec![
-                            "inRole:roles/storage.objectAdmin".to_string(),
+                            "inRole:roles/storage.objectUser".to_string(),
                         ],
                     },
                     availability_condition: AvailabilityCondition {
