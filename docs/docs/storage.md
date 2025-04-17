@@ -422,20 +422,11 @@ The following table describes all configuration parameters for a GCS storage pro
 | `bucket`     | String | Yes      | -       | Name of the GCS bucket.         |
 | `key-prefix` | String | No       | None    | Subpath in the bucket to use for this warehouse. |
 
-For GCS, the bucket should have hierarchical namespaces disabled and the service account should have appropriate permissions (such as Storage Admin role) on the bucket.
+For GCS, the bucket should have hierarchical namespaces (HNS) disabled and the service account (SA) should have appropriate permissions (such as Storage Admin role) on the bucket.
 
-### Authentication Options
+**Note on (HNS):** Using GCS buckets with HNS enabled can cause permission errors with Lakekeeper's default credential downscoping mechanism due to issues authorizing implicit folder creation. A workaround flag is available (see below), but the most compatible setup currently is to use buckets with HNS disabled if prefix-scoped credentials are required.
 
-Lakekeeper supports two primary authentication methods for GCS:
-
-##### Service Account Key
-
-You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
-When configuring a GCS warehouse, ensure the Service Account (SA) used has sufficient permissions (e.g., `roles/storage.objectAdmin` or potentially a custom role, often granted at the bucket or project level).
-
-**Note on Hierarchical Namespace (HNS):** Using GCS buckets with HNS enabled can cause permission errors with Lakekeeper's default credential downscoping mechanism due to issues authorizing implicit folder creation. A workaround flag is available (see below), but the most compatible setup currently is to use buckets with HNS disabled if prefix-scoped credentials are required.
-
-### GCS STS Downscoping and HNS Compatibility
+#### GCS STS Downscoping and HNS Compatibility
 
 By default, Lakekeeper uses Google's Security Token Service (STS) to create downscoped, prefix-limited credentials when vending credentials for GCS (`vended_credentials: true` in data access requests). This enhances security by limiting the token's access to the specific `key-prefix` defined in the storage profile.
 
@@ -456,6 +447,15 @@ To enable the use of HNS buckets as a **short-term workaround**, you can add an 
     3. The source credential used by Lakekeeper already follows the principle of least privilege as much as possible (e.g., scoped to necessary buckets rather than project-wide admin roles).
 
     The recommended long-term solution involves resolving the underlying STS `availabilityCondition` incompatibility with HNS. Please consult Lakekeeper community resources or GCP support for potential updates on this issue.
+
+### Authentication Options
+
+Lakekeeper supports two primary authentication methods for GCS:
+
+##### Service Account Key
+
+You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
+When configuring a GCS warehouse, ensure the Service Account (SA) used has sufficient permissions (e.g., `roles/storage.objectAdmin` or potentially a custom role, often granted at the bucket or project level).
 
 A sample storage profile could look like this (see flag description below):
 
