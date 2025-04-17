@@ -6,7 +6,7 @@ Currently, we support the following storages:
 
 - S3 (tested with AWS & Minio)
 - Azure Data Lake Storage Gen 2
-- Google Cloud Storage
+- Google Cloud Storage (with and without hierarchical namespaces)
 
 When creating a Warehouse or updating storage information, Lakekeeper validates the configuration.
 
