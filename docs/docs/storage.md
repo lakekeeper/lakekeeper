@@ -411,7 +411,6 @@ When enabled, Lakekeeper will use the managed identity of the virtual machine or
 
 ## Google Cloud Storage
 
-<<<<<<< HEAD
 Google Cloud Storage can be used to store Iceberg tables through the `gs://` protocol.
 
 ### Configuration Parameters
@@ -432,7 +431,6 @@ Lakekeeper supports two primary authentication methods for GCS:
 ##### Service Account Key
 
 You can provide a service account key directly when creating a warehouse. This is the most straightforward way to give Lakekeeper access to your GCS bucket:
-=======
 When configuring a GCS warehouse, ensure the Service Account (SA) used has sufficient permissions (e.g., `roles/storage.objectAdmin` or potentially a custom role, often granted at the bucket or project level).
 
 **Note on Hierarchical Namespace (HNS):** Using GCS buckets with HNS enabled can cause permission errors with Lakekeeper's default credential downscoping mechanism due to issues authorizing implicit folder creation. A workaround flag is available (see below), but the most compatible setup currently is to use buckets with HNS disabled if prefix-scoped credentials are required.
@@ -460,7 +458,6 @@ To enable the use of HNS buckets as a **short-term workaround**, you can add an 
     The recommended long-term solution involves resolving the underlying STS `availabilityCondition` incompatibility with HNS. Please consult Lakekeeper community resources or GCP support for potential updates on this issue.
 
 A sample storage profile could look like this (see flag description below):
->>>>>>> a24e40f3 (docs(gcs): Add documentation for disable_sts_downscoping flag)
 
 ```json
 {
