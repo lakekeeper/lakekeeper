@@ -2,6 +2,18 @@
 
 
 
+## [0.8.2](https://github.com/lakekeeper/lakekeeper/compare/v0.8.1...v0.8.2) (2025-04-17)
+
+
+### Features
+
+* Update UI (Pagination, R2, JSON Warehouses) ([#1032](https://github.com/lakekeeper/lakekeeper/issues/1032)) ([fc83a1f](https://github.com/lakekeeper/lakekeeper/commit/fc83a1ff10167ee844fb62b8f124ebbac24a8451))
+
+
+### Miscellaneous Chores
+
+* release 0.8.2 ([26572c8](https://github.com/lakekeeper/lakekeeper/commit/26572c8be6565f5d349baf348a95dafce5b25885))
+
 ## [0.8.1](https://github.com/lakekeeper/lakekeeper/compare/v0.8.0...v0.8.1) (2025-04-13)
 
 

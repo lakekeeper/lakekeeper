@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.8.2](https://github.com/lakekeeper/lakekeeper/compare/v0.8.1...v0.8.2) (2025-04-17)
+
+
+### Features
+
+* Cloudflare R2 support ([#1016](https://github.com/lakekeeper/lakekeeper/issues/1016)) ([6cdd408](https://github.com/lakekeeper/lakekeeper/commit/6cdd408577394d5a0952292ff0e58767a8cf4cde))
+* Make "s3.delete-enabled" option configurable in Warehouses ([c449e26](https://github.com/lakekeeper/lakekeeper/commit/c449e269eb1d23d769210a7fa7eaf32bd51ec3f6))
+* Remote signing for delete operations ([c449e26](https://github.com/lakekeeper/lakekeeper/commit/c449e269eb1d23d769210a7fa7eaf32bd51ec3f6))
+* Support for AWS S3 Buckets with KMS ([#1029](https://github.com/lakekeeper/lakekeeper/issues/1029)) ([922b86d](https://github.com/lakekeeper/lakekeeper/commit/922b86dee0b4270fa901d125c461f3ea98f77571))
+* Support GCS Buckets with Hierarchical Namespaces ([#1030](https://github.com/lakekeeper/lakekeeper/issues/1030)) ([ba14495](https://github.com/lakekeeper/lakekeeper/commit/ba14495dc37d90d5aa423bf9d7b44c9c13844265))
+
+
+### Bug Fixes
+
+* Re-using old ViewVersions fails due to reused timestamps ([#1019](https://github.com/lakekeeper/lakekeeper/issues/1019)) ([f8d76e9](https://github.com/lakekeeper/lakekeeper/commit/f8d76e99443fe46785a7ed7c041710e2d3c2c7bd))
+* Task Queues should not wait poll-interval after success ([#1025](https://github.com/lakekeeper/lakekeeper/issues/1025)) ([beb62d5](https://github.com/lakekeeper/lakekeeper/commit/beb62d5210236c9476db42a916daf4faa32711a3))
+
+
+### Miscellaneous Chores
+
+* release 0.8.2 ([26572c8](https://github.com/lakekeeper/lakekeeper/commit/26572c8be6565f5d349baf348a95dafce5b25885))
+
 ## [0.8.1](https://github.com/lakekeeper/lakekeeper/compare/v0.8.0...v0.8.1) (2025-04-13)
 
 
