@@ -6,8 +6,7 @@ Currently, we support the following storages:
 
 - S3 (tested with AWS & Minio)
 - Azure Data Lake Storage Gen 2
-- Google Cloud Storage (with and without hierarchical namespaces)
-
+- Google Cloud Storage (with and without Hierarchical Namespaces)
 When creating a Warehouse or updating storage information, Lakekeeper validates the configuration.
 
 By default, Lakekeeper Warehouses enforce specific URI schemas for tables and views to ensure compatibility with most query engines:
