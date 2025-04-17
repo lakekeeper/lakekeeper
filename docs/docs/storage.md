@@ -55,6 +55,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | `allow-alternative-protocols` | Boolean | No       | `false`                    | Whether to allow `s3a://` and `s3n://` in locations. This is disabled by default and should only be enabled for migrating legacy Hadoop-based tables via the register endpoint. Tables with `s3a` paths are not accessible outside the Java ecosystem. |
 | `remote-signing-url-style`    | String  | No       | `auto`                     | S3 URL style detection mode for remote signing. Options: `auto`, `path-style`, or `virtual-host`. When set to `auto`, Lakekeeper tries virtual-host style first, then path style. |
 | `push-s3-delete-disabled`     | Boolean | No       | `true`                     | Controls whether the `s3.delete-enabled=false` flag is sent to clients. Only has an effect if "soft-deletion" is enabled for this Warehouse. This prevents clients like Spark from directly deleting files during operations like `DROP TABLE xxx PURGE`, ensuring soft-deletion works properly. However, it also affects operations like `expire_snapshots` that require file deletion. For more information, please check the [Soft Deletion Documentation](./concepts.md#soft-deletion). |
+| `aws-kms-key-arn`             | String  | No       | None                       | ARN of the AWS KMS Key that is used to encrypt the bucket. Vended Credentials is granted `kms:Decrypt` and `kms:GenerateDataKey` on the key. |
 
 
 ### AWS

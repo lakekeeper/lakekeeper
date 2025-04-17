@@ -3497,6 +3497,11 @@ components:
             - string
             - 'null'
           description: Optional ARN to assume when accessing the bucket from Lakekeeper.
+        aws-kms-key-arn:
+          type:
+            - string
+            - 'null'
+          description: ARN of the KMS key used to encrypt the S3 bucket, if any.
         bucket:
           type: string
           description: Name of the S3 bucket
