@@ -22,6 +22,8 @@ pub struct HdfsProfile {
 }
 
 impl HdfsProfile {
+    #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::unused_self)]
     pub fn generate_table_config(
         &self,
         _data_access: DataAccess,
@@ -34,6 +36,8 @@ impl HdfsProfile {
         })
     }
 
+    #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::unused_self)]
     pub fn normalize(&mut self) -> Result<(), ValidationError> {
         Ok(())
     }

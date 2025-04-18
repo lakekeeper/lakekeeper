@@ -378,7 +378,10 @@ impl AdlsProfile {
             }
         }
 
-        Ok(builder.build()?)
+        builder.build().map_err(|e| {
+            tracing::info!("Failed to create FileIO: {e}");
+            FileIoError::FileIoCreationFailed(Box::new(e))
+        })
     }
 
     async fn sas_via_delegation_key(

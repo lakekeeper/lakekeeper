@@ -1,12 +1,3 @@
-use super::compression_codec::CompressionCodec;
-use crate::{
-    api::{ErrorModel, Result},
-    retry::retry_fn,
-    service::storage::az::{
-        reduce_scheme_string as reduce_azure_scheme,
-        ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
-    },
-};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use hdfs_native_object_store::HdfsObjectStore;
 use iceberg::{io::FileIO as IcebergFileIO, spec::TableMetadata};
@@ -18,7 +9,10 @@ use super::compression_codec::CompressionCodec;
 use crate::{
     api::{ErrorModel, Result},
     retry::retry_fn,
-    service::storage::az::reduce_scheme_string as reduce_azure_scheme,
+    service::storage::az::{
+        reduce_scheme_string as reduce_azure_scheme,
+        ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -65,7 +59,7 @@ impl LakekeeperFileIO {
             tracing::info!(
                 ?e,
                 "Failed to delete table metadata from `{metadata_location}`"
-            )
+            );
         })?;
         Ok(())
     }
@@ -107,8 +101,8 @@ impl LakekeeperFileIO {
 
         let content = if file.as_str().ends_with(".gz.metadata.json") {
             let codec = CompressionCodec::Gzip;
-            let content = codec.decompress(content).await?;
-            content
+
+            codec.decompress(content).await?
         } else {
             content
         };
@@ -120,7 +114,7 @@ impl LakekeeperFileIO {
         .unwrap_or_else(|e| Err(IoError::JoinError(e)))
     }
 
-    pub async fn delete_all(&self, location: &Location) -> Result<(), IoError> {
+    pub async fn remove_all(&self, location: &Location) -> Result<(), IoError> {
         let location = normalize_location(location.clone().with_trailing_slash());
 
         match self {
@@ -142,7 +136,13 @@ impl LakekeeperFileIO {
                 let v = delete_stream.try_collect::<Vec<_>>().await;
                 match v {
                     Ok(_) => Ok(()),
-                    Err(e) => Err(IoError::FileDelete(Box::new(e))),
+                    Err(e) => Err(IoError::FileDelete(
+                        iceberg::Error::new(
+                            iceberg::ErrorKind::RequirementFailed,
+                            format!("Failed to delete hdfs file: {e}"),
+                        )
+                        .with_source(e),
+                    )),
                 }
             }
         }
@@ -150,7 +150,7 @@ impl LakekeeperFileIO {
     }
 
     pub async fn delete_file(&self, location: &Location) -> Result<(), IoError> {
-        let location = normalize_location(&location);
+        let location = normalize_location(location);
         match self {
             LakekeeperFileIO::IcebergFileIO(file_io) => {
                 retry_fn(|| async {
@@ -158,14 +158,22 @@ impl LakekeeperFileIO {
                         .clone()
                         .delete(&location)
                         .await
-                        .map_err(|e| IoError::FileDelete(Box::new(e)))
+                        .map_err(IoError::FileDelete)
                 })
                 .await
             }
             LakekeeperFileIO::HdfsNative(hdfs) => hdfs
                 .delete(&object_store::path::Path::from(location.clone()))
                 .await
-                .map_err(|e| IoError::FileDelete(Box::new(e))),
+                .map_err(|e| {
+                    IoError::FileDelete(
+                        iceberg::Error::new(
+                            iceberg::ErrorKind::RequirementFailed,
+                            format!("Failed to delete hdfs file: {e}"),
+                        )
+                        .with_source(e),
+                    )
+                }),
         }
         .inspect_err(|e| tracing::info!(?e, "Failed to delete file `{location}`"))
     }
@@ -184,7 +192,7 @@ impl LakekeeperFileIO {
                     file_io
                         .list_paginated(location.clone().as_str(), true, size)
                         .await
-                        .map_err(|e| IoError::List(Box::new(e)))
+                        .map_err(IoError::List)
                 })
                 .await?
                 .map(|res| match res {
@@ -192,7 +200,7 @@ impl LakekeeperFileIO {
                         .into_iter()
                         .map(|it| it.path().to_string())
                         .collect()),
-                    Err(e) => Err(IoError::List(Box::new(e))),
+                    Err(e) => Err(IoError::List(e)),
                 });
                 Ok(entries.boxed())
             }
@@ -203,7 +211,15 @@ impl LakekeeperFileIO {
                 .map(|c| {
                     c.into_iter()
                         .collect::<Result<Vec<String>, _>>()
-                        .map_err(|e| IoError::List(Box::new(e)))
+                        .map_err(|e| {
+                            IoError::List(
+                                iceberg::Error::new(
+                                    iceberg::ErrorKind::RequirementFailed,
+                                    format!("Failed to list hdfs file: {e}"),
+                                )
+                                .with_source(e),
+                            )
+                        })
                 })
                 .boxed()),
         }
@@ -224,7 +240,8 @@ fn normalize_location(location: &Location) -> String {
             prefix.push_str(&host.to_string());
         }
         if let Some(port) = location.url().port() {
-            prefix.push_str(&format!(":{port}"));
+            prefix.push(':');
+            prefix.push_str(&port.to_string());
         }
         location
             .as_str()
@@ -275,6 +292,8 @@ pub enum IoError {
         "Failed to remove all files in location. Please check the storage credentials: {}", .0
     )]
     FileRemoveAll(#[source] iceberg::Error),
+    #[error("Failed to list files in location. Please check the storage credentials: {}", .0)]
+    List(#[source] iceberg::Error),
     #[error("Failed to join thread.")]
     JoinError(#[source] tokio::task::JoinError),
 }
@@ -310,6 +329,18 @@ impl From<IoError> for IcebergErrorResponse {
                 ErrorModel::bad_request(format!("{message} {e}"), typ, Some(boxed)).into()
             }
         }
+    }
+}
+
+impl From<IcebergFileIO> for LakekeeperFileIO {
+    fn from(file_io: IcebergFileIO) -> Self {
+        LakekeeperFileIO::IcebergFileIO(file_io)
+    }
+}
+
+impl From<HdfsObjectStore> for LakekeeperFileIO {
+    fn from(file_io: HdfsObjectStore) -> Self {
+        LakekeeperFileIO::HdfsNative(file_io)
     }
 }
 
@@ -376,7 +407,7 @@ mod tests {
         assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
 
         // Remove folder 1 - file 2 should still be here:
-        file_io.delete_all(&folder_1).await.unwrap();
+        file_io.remove_all(&folder_1).await.unwrap();
         assert!(file_io.read_file(&file_2).await.is_ok());
 
         let list = list_simple(&file_io, &location).await.unwrap();
@@ -389,7 +420,7 @@ mod tests {
         assert!(list_simple(&file_io, &folder_1).await.is_none());
 
         // Cleanup
-        file_io.delete_all(&folder_2).await.unwrap();
+        file_io.remove_all(&folder_2).await.unwrap();
     }
 
     #[needs_env_var(TEST_AWS = 1)]

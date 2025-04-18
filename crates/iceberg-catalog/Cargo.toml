@@ -60,6 +60,8 @@ futures = { workspace = true }
 fxhash = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-token = { workspace = true }
+hdfs-native = { workspace = true }
+hdfs-native-object-store = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
@@ -74,10 +76,8 @@ lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
 moka = { workspace = true }
-openfga-client = { workspace = true, optional = true }
 object_store = { workspace = true }
-hdfs-native = { workspace = true }
-hdfs-native-object-store = { workspace = true }
+openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }

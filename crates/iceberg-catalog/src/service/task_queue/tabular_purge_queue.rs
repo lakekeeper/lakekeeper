@@ -157,7 +157,7 @@ where
             Some(Box::new(e)),
         )
     })?;
-    file_io.delete_all(&tabular_location).await.map_err(|e| {
+    file_io.remove_all(&tabular_location).await.map_err(|e| {
         tracing::error!(
             ?e,
             "Failed to purge '{tabular_id}' at location: '{tabular_location}'",

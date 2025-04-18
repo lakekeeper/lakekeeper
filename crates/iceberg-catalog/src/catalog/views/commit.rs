@@ -238,7 +238,8 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         None
     };
 
-    let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
+    // Write metadata file
+    let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
     file_io
         .write_metadata_file(
             &metadata_location,
@@ -266,7 +267,8 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     // Handle file cleanup after transaction is committed
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
         tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
-        let _ = remove_all(&file_io, before_update_view_location)
+        let _ = file_io
+            .remove_all(before_update_view_location)
             .await
             .inspect(|()| tracing::trace!("Deleted old view location"))
             .inspect_err(|e| tracing::error!("Failed to delete old view location: {e:?}"));

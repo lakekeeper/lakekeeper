@@ -27,7 +27,7 @@ use crate::{
     api::{
         iceberg::v1::DataAccess, management::v1::warehouse::TabularDeleteProfile, CatalogConfig,
     },
-    catalog::{compression_codec::CompressionCodec, io::list_location},
+    catalog::{compression_codec::CompressionCodec, io::LakekeeperFileIO},
     request_metadata::RequestMetadata,
     retry::retry_fn,
     service::{
@@ -121,7 +121,7 @@ impl StorageProfile {
             StorageProfile::Hdfs(_prof) => CatalogConfig {
                 overrides: HashMap::default(),
                 defaults: HashMap::default(),
-                endpoints: api::iceberg::supported_endpoints().to_vec(),
+                endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
             },
         }
     }
@@ -175,7 +175,8 @@ impl StorageProfile {
             #[cfg(test)]
             StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file")
                 .build()
-                .map(LakekeeperFileIO::IcebergFileIO)?),
+                .map(LakekeeperFileIO::IcebergFileIO)
+                .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))?),
             StorageProfile::Gcs(prof) => Ok(prof
                 .file_io(
                     secret
@@ -382,7 +383,7 @@ impl StorageProfile {
         tracing::debug!("Cleanup started");
         // Cleanup
         file_io
-            .delete_all(&test_location)
+            .remove_all(&test_location)
             .await
             .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
 
@@ -445,7 +446,7 @@ impl StorageProfile {
         match &self {
             StorageProfile::S3(_) => {
                 tracing::debug!("Getting s3 file io from table config for vended credentials.");
-                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
+                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?.into();
                 tracing::debug!(
                     "Validating read/write access to: {test_location} using vended credentials"
                 );
@@ -457,7 +458,8 @@ impl StorageProfile {
                 let sts_file_io = az::get_file_io_from_table_config(
                     &tbl_config.config,
                     p.filesystem.to_string(),
-                )?;
+                )?
+                .into();
                 self.validate_read_write(&sts_file_io, test_location, true)
                     .await?;
             }
@@ -465,10 +467,13 @@ impl StorageProfile {
             StorageProfile::Test(_) => {}
             StorageProfile::Gcs(_) => {
                 tracing::debug!("Getting gcs file io from table config for vended credentials.");
-                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
+                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?.into();
                 tracing::debug!("Validating gcs vended credentials access to: {test_location}");
                 self.validate_read_write(&sts_file_io, test_location, true)
                     .await?;
+            }
+            StorageProfile::Hdfs(_) => {
+                tracing::debug!("Vended credentials not supported for HDFS");
             }
         }
 
@@ -889,10 +894,7 @@ mod tests {
         s3::{S3AwsSystemIdentityCredential, S3CloudflareR2Credential},
         *,
     };
-    use crate::{
-        catalog::io::{delete_file, read_file, write_metadata_file},
-        service::storage::s3::S3AccessKeyCredential,
-    };
+    use crate::service::storage::s3::S3AccessKeyCredential;
 
     #[test]
     fn test_split_location() {
@@ -1321,7 +1323,7 @@ mod tests {
             .file_io(Some(cred))
             .await
             .unwrap()
-            .delete_all(&base_location)
+            .remove_all(&base_location)
             .await
             .unwrap();
     }

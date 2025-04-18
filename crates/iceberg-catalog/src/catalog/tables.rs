@@ -267,7 +267,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             file_io
                 .write_metadata_file(metadata_location, &table_metadata, compression_codec)
                 .await?;
-        };
+        }
 
         // This requires the storage secret
         // because the table config might contain vended-credentials based
