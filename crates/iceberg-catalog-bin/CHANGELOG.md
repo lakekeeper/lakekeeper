@@ -2,6 +2,18 @@
 
 
 
+## [0.8.3](https://github.com/lakekeeper/lakekeeper/compare/v0.8.2...v0.8.3) (2025-04-18)
+
+
+### Bug Fixes
+
+* Permission assignments in UI ([3017a0f](https://github.com/lakekeeper/lakekeeper/commit/3017a0fa60d0ea235937204bc63bcb530ce9dd5c))
+
+
+### Miscellaneous Chores
+
+* release 0.8.3 ([21612cc](https://github.com/lakekeeper/lakekeeper/commit/21612cc2b14a91179890c9b62d10ff32f93f6f4d))
+
 ## [0.8.2](https://github.com/lakekeeper/lakekeeper/compare/v0.8.1...v0.8.2) (2025-04-17)
 
 
