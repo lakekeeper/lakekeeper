@@ -1,0 +1,250 @@
+services:
+  server:
+    hostname: server
+    environment:
+      - KRB5CCNAME=FILE:/tickets/krb5cc_0
+      - KRB5_CONFIG=/etc/krb5.conf
+      - HADOOP_CONF_DIR=/etc/hadoop
+      - KRB5_TRACE=/dev/stderr
+      - RUST_LOG=debug,hdfs_native=trace
+    volumes:
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - ./hdfs/hadoop-config/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./hdfs/hadoop-config/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+    depends_on:
+      - kerberos-sidecar
+    networks:
+      iceberg_rest_tests:
+
+  # # Kerberos KDC (Key Distribution Center)
+  # keycloak:
+  #   ports:
+  #     - "8080:8080"
+
+  kdc:
+    image: sequenceiq/kerberos:latest
+    hostname: kdc.example.com
+    entrypoint: [ "/bin/bash", "-c" ]
+    command: |
+      "
+      # Stop services to reconfigure
+      /etc/rc.d/init.d/krb5kdc stop
+      /etc/rc.d/init.d/kadmin stop
+
+      # Delete old database
+      kdb5_util destroy -f -r NODE.DC1.CONSUL
+
+      # Remove any existing keytabs
+      rm -f /keytabs/*.keytab
+      rm -f /keytabs/ready
+
+      # Update KDC config
+      sed -i 's/NODE.DC1.CONSUL/EXAMPLE.COM/g' /var/kerberos/krb5kdc/kdc.conf
+
+      # Initialize new database
+      mkdir -p /var/log/kerberos
+      kdb5_util -P masterkey -r EXAMPLE.COM create -s
+
+      # Create principals
+      kadmin.local -q 'addprinc -pw admin admin/admin'
+      echo '*/admin@EXAMPLE.COM *' > /var/kerberos/krb5kdc/kadm5.acl
+      
+      # Service principals
+      kadmin.local -q 'addprinc -randkey hdfs/namenode@EXAMPLE.COM'
+      kadmin.local -q 'addprinc -randkey HTTP/namenode@EXAMPLE.COM'
+      kadmin.local -q 'addprinc -randkey hdfs/datanode@EXAMPLE.COM'
+      
+      # Client principal
+      kadmin.local -q 'addprinc -randkey hdfs/server@EXAMPLE.COM'
+      
+      # Create keytabs
+      kadmin.local -q 'ktadd -k /keytabs/dn.keytab hdfs/datanode@EXAMPLE.COM'
+      kadmin.local -q 'ktadd -k /keytabs/app.keytab hdfs/server@EXAMPLE.COM'
+      kadmin.local -q 'ktadd -k /keytabs/nn.keytab hdfs/namenode@EXAMPLE.COM HTTP/namenode@EXAMPLE.COM'
+      # Create ready file explicitly
+      echo 'Keytab created' > /keytabs/ready
+      chmod 644 /keytabs/ready
+
+      # Start services
+      /etc/rc.d/init.d/krb5kdc start
+      /etc/rc.d/init.d/kadmin start
+
+      # Keep container running
+      tail -F /var/log/kerberos/krb5kdc.log
+      "
+    volumes:
+      - keytab-volume:/keytabs
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+    networks:
+      iceberg_rest_tests:
+        aliases:
+          - kdc.example.com
+  # HDFS NameNode with Kerberos
+  namenode:
+    image: apache/hadoop:3
+    hostname: namenode
+    container_name: namenode
+    user: root
+    depends_on:
+      kerberos-sidecar:
+        condition: service_healthy
+    environment:
+      HADOOP_CONF_DIR: /etc/hadoop
+      KRB5_CONFIG: /etc/krb5.conf
+      HADOOP_OPTS: "-Djava.security.krb5.conf=/etc/krb5.conf"
+#     HADOOP_OPTS: "-Djava.security.krb5.conf=/etc/krb5.conf -Dsun.security.spnego.debug=true -Djava.security.krb5.debug=true -Dsun.security.krb5.debug=true"
+      KRB5CCNAME: /tickets/krb5cc_0
+      HADOOP_JAAS_DEBUG: "true"
+    volumes:
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/hadoop-config:/etc/hadoop:ro
+      - ./hdfs/ssl:/etc/hadoop/ssl:rw
+      - keytab-volume:/etc/hadoop/keytabs:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - namenode-data:/hadoop/dfs/name
+    command: >
+      bash -c '
+        keytool -genkeypair -alias localhost -keyalg RSA -keysize 2048 -dname "CN=localhost" \
+          -keypass password -keystore /etc/hadoop/ssl/server.keystore.jks -storepass password
+        cp /etc/hadoop/ssl/server.keystore.jks /etc/hadoop/ssl/client.truststore.jks
+        echo "Formatting namenode directory"
+        hdfs namenode -format -force
+        hdfs namenode
+      '
+    healthcheck:
+      test: ["CMD", "bash", "-c", "export KRB5CCNAME=/tmp/ticks && kinit -kt /etc/hadoop/keytabs/nn.keytab hdfs/namenode@EXAMPLE.COM && hdfs dfsadmin -report"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      iceberg_rest_tests:
+        aliases:
+          - namenode
+  # HDFS DataNode with Kerberos
+  datanode:
+    image: apache/hadoop:3
+    hostname: datanode
+    user: root
+    depends_on:
+      namenode:
+        condition: service_healthy
+      kerberos-sidecar:
+        condition: service_healthy
+    environment:
+      HADOOP_CONF_DIR: /etc/hadoop
+      KRB5_CONFIG: /etc/krb5.conf
+      HADOOP_OPTS: "-Djava.security.krb5.conf=/etc/krb5.conf -Dhadoop.ssl.server.conf=/etc/hadoop/ssl-server.xml"
+      KRB5CCNAME: /tickets/krb5cc_0
+    volumes:
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/hadoop-config:/etc/hadoop:ro
+      - keytab-volume:/etc/hadoop/keytabs:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - datanode-data:/hadoop/dfs/data
+      - ./hdfs/ssl:/etc/hadoop/ssl:ro
+      - ./hdfs/hadoop-config/ssl-server.xml:/etc/hadoop/ssl-server.xml:ro
+    command: >
+      bash -c '
+        # Wait for keystore files to exist
+        while [ ! -f /etc/hadoop/ssl/server.keystore.jks ]; do
+          echo "Waiting for keystore files..."
+          sleep 2
+        done
+      
+        # Ensure permissions are correct
+        chmod 644 /etc/hadoop/ssl/*.jks
+      
+        # Start datanode
+        hdfs datanode
+      '
+    networks:
+      iceberg_rest_tests:
+        aliases:
+          - datanode
+  # Kerberos authentication sidecar
+  kerberos-sidecar:
+    image: ubuntu:22.04
+    depends_on:
+      - kdc
+    volumes:
+      - kerberos-tickets:/tickets
+      - keytab-volume:/keytabs:ro
+      - ./hdfs/krb5.conf:/tmp/krb5.conf:ro
+    environment:
+      - DEBIAN_FRONTEND=noninteractive
+      - KRB5CCNAME=/tickets/krb5cc_0
+    command: >
+      bash -c '
+        echo "Using mounted krb5.conf:"
+        cat /etc/krb5.conf
+        # Install Kerberos client
+        apt-get update
+        apt-get install -y --no-install-recommends krb5-user
+        # Now copy our configuration over the installed one
+        cp /tmp/krb5.conf /etc/krb5.conf
+        # Wait for ready signal
+        while [ ! -f /keytabs/ready ]; do
+          echo "Waiting for keytab..."
+          sleep 5
+        done
+        echo "running"
+        echo "Using ticket cache: $KRB5CCNAME"
+
+        klist -kte /keytabs/app.keytab
+      
+        # Try both principals for authentication
+        kinit -kt /keytabs/app.keytab hdfs/server@EXAMPLE.COM
+      
+        if [ $? -eq 0 ]; then
+          echo "SUCCESS: Authentication worked!"
+          klist
+          while true; do
+            sleep 3600
+            kinit -kt /keytabs/app.keytab hdfs/server@EXAMPLE.COM
+          done
+        else
+          echo "FAILED: Authentication failed"
+          klist
+          exit 1
+        fi
+      '
+    networks:
+      iceberg_rest_tests:
+    healthcheck:
+      test: ["CMD", "kinit", "-kt", "/keytabs/app.keytab", "hdfs/server@EXAMPLE.COM"]
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+  jupyter:
+    image: quay.io/jupyter/pyspark-notebook:2024-10-14
+    depends_on:
+      server:
+        condition: service_healthy
+    command: start-notebook.sh --NotebookApp.token=''
+    environment:
+      - KRB5CCNAME=FILE:/tickets/krb5cc_0
+      - KRB5_CONFIG=/etc/krb5.conf
+      - HADOOP_CONF_DIR=/etc/hadoop
+      - KRB5_TRACE=/dev/stderr
+    volumes:
+      - ./notebooks:/home/jovyan/examples/
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - ./hdfs/hadoop-config/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./hdfs/hadoop-config/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+    networks:
+      iceberg_rest_tests:
+    ports:
+      - "8888:8888"
+
+networks:
+  iceberg_rest_tests:
+    driver: bridge
+
+volumes:
+  namenode-data:
+  datanode-data:
+  kerberos-tickets:
+  keytab-volume:

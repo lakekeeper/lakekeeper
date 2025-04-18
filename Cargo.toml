@@ -52,6 +52,9 @@ google-cloud-token = { package = "token-source", version = "1.0" }
 gcloud-token = "1.0.0"
 figment = { version = "^0.10", features = ["env"] }
 figment_file_provider_adapter = "0.1.1"
+hdfs-native = { version = "0.11.1" }
+hdfs-native-object-store = { git = "https://github.com/c-thiel/hdfs-native-object-store.git", branch = "feat/derive-clone-for-hdfs-object-store" }
+object_store = { version = "0.12" }
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_with = "^3.4"

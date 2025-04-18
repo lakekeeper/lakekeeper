@@ -767,11 +767,12 @@ pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
     file_system: String,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("azdls")
+    iceberg::io::FileIOBuilder::new("azdls")
         .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .with_prop(AzdlsConfigKeys::Filesystem, file_system)
-        .build()?)
+        .build()
+        .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))
 }
 
 fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {

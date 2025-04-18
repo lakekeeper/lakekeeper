@@ -1,0 +1,22 @@
+<configuration>
+    <property>
+        <name>ssl.server.keystore.location</name>
+        <value>/etc/hadoop/ssl/server.keystore.jks</value>
+    </property>
+    <property>
+        <name>ssl.server.keystore.password</name>
+        <value>password</value>
+    </property>
+    <property>
+        <name>ssl.server.keystore.keypassword</name>
+        <value>password</value>
+    </property>
+    <property>
+        <name>ssl.client.truststore.location</name>
+        <value>/etc/hadoop/ssl/client.truststore.jks</value>
+    </property>
+    <property>
+        <name>ssl.client.truststore.password</name>
+        <value>password</value>
+    </property>
+</configuration>

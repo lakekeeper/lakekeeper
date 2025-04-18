@@ -15,7 +15,6 @@ use crate::{
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_metadata_file},
         require_warehouse_id,
         tables::{
             determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
@@ -239,15 +238,14 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         None
     };
 
-    // Write metadata file
-    let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
-    write_metadata_file(
-        &metadata_location,
-        &requested_update_metadata,
-        CompressionCodec::try_from_metadata(&requested_update_metadata)?,
-        &file_io,
-    )
-    .await?;
+    let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
+    file_io
+        .write_metadata_file(
+            &metadata_location,
+            &requested_update_metadata,
+            CompressionCodec::try_from_metadata(&requested_update_metadata)?,
+        )
+        .await?;
 
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
 

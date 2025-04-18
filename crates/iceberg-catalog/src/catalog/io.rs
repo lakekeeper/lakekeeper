@@ -1,8 +1,3 @@
-use futures::{stream::BoxStream, StreamExt};
-use iceberg::{io::FileIO, spec::TableMetadata};
-use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
-use serde::Serialize;
-
 use super::compression_codec::CompressionCodec;
 use crate::{
     api::{ErrorModel, Result},
@@ -12,6 +7,208 @@ use crate::{
         ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
     },
 };
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use hdfs_native_object_store::HdfsObjectStore;
+use iceberg::{io::FileIO as IcebergFileIO, spec::TableMetadata};
+use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
+use object_store::{ObjectStore, PutPayload};
+use serde::Serialize;
+
+use super::compression_codec::CompressionCodec;
+use crate::{
+    api::{ErrorModel, Result},
+    retry::retry_fn,
+    service::storage::az::reduce_scheme_string as reduce_azure_scheme,
+};
+
+#[derive(Debug, Clone)]
+pub enum LakekeeperFileIO {
+    IcebergFileIO(IcebergFileIO),
+    HdfsNative(HdfsObjectStore),
+}
+
+impl LakekeeperFileIO {
+    pub async fn write_metadata_file(
+        &self,
+        metadata_location: &Location,
+        metadata: impl Serialize,
+        compression_codec: CompressionCodec,
+    ) -> Result<(), IoError> {
+        let metadata_location = normalize_location(metadata_location);
+
+        let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
+        let metadata_bytes = compression_codec.compress(buf).await?;
+
+        match self {
+            LakekeeperFileIO::IcebergFileIO(file_io) => {
+                retry_fn(|| async {
+                    let metadata_file = file_io
+                        .new_output(&metadata_location)
+                        .map_err(IoError::FileCreation)?;
+                    metadata_file
+                        .write(metadata_bytes.clone().into())
+                        .await
+                        .map_err(IoError::FileWriterCreation)
+                })
+                .await
+            }
+            LakekeeperFileIO::HdfsNative(hdfs) => hdfs
+                .put(
+                    &object_store::path::Path::from(metadata_location.clone()),
+                    PutPayload::from(metadata_bytes),
+                )
+                .await
+                .map_err(|e| IoError::FileWrite(Box::new(e)))
+                .map(|_| ()),
+        }
+        .inspect_err(|e| {
+            tracing::info!(
+                ?e,
+                "Failed to delete table metadata from `{metadata_location}`"
+            )
+        })?;
+        Ok(())
+    }
+
+    pub async fn read_file(&self, file: &Location) -> Result<Vec<u8>, IoError> {
+        let file = normalize_location(file);
+        match self {
+            LakekeeperFileIO::IcebergFileIO(file_io) => {
+                retry_fn(|| async {
+                    // InputFile isn't clone
+                    file_io
+                        .clone()
+                        .new_input(&file)
+                        .map_err(IoError::FileInput)?
+                        .read()
+                        .await
+                        .map_err(|e| IoError::FileRead(Box::new(e)))
+                        .map(Into::into)
+                })
+                .await
+            }
+            LakekeeperFileIO::HdfsNative(hdfs) => {
+                let content = hdfs
+                    .get(&object_store::path::Path::from(file.clone()))
+                    .await
+                    .map_err(|e| IoError::FileRead(Box::new(e)))?;
+                content
+                    .bytes()
+                    .await
+                    .map_err(|e| IoError::FileRead(Box::new(e)))
+                    .map(|pl| pl.to_vec())
+            }
+        }
+        .inspect_err(|e| tracing::info!(?e, "Failed to read file `{file}`"))
+    }
+
+    pub async fn read_metadata_file(&self, file: &Location) -> Result<TableMetadata, IoError> {
+        let content = self.read_file(file).await?;
+
+        let content = if file.as_str().ends_with(".gz.metadata.json") {
+            let codec = CompressionCodec::Gzip;
+            let content = codec.decompress(content).await?;
+            content
+        } else {
+            content
+        };
+
+        tokio::task::spawn_blocking(move || {
+            serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
+        })
+        .await
+        .unwrap_or_else(|e| Err(IoError::JoinError(e)))
+    }
+
+    pub async fn delete_all(&self, location: &Location) -> Result<(), IoError> {
+        let location = normalize_location(location.clone().with_trailing_slash());
+
+        match self {
+            LakekeeperFileIO::IcebergFileIO(file_io) => {
+                retry_fn(|| async {
+                    file_io
+                        .clone()
+                        .remove_all(&location)
+                        .await
+                        .map_err(IoError::FileRemoveAll)
+                })
+                .await
+            }
+            LakekeeperFileIO::HdfsNative(hdfs) => {
+                let files = hdfs
+                    .list(Some(&object_store::path::Path::from(location.clone())))
+                    .map(|p| p.map(|p| p.location));
+                let delete_stream = hdfs.delete_stream(files.boxed());
+                let v = delete_stream.try_collect::<Vec<_>>().await;
+                match v {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(IoError::FileDelete(Box::new(e))),
+                }
+            }
+        }
+        .inspect_err(|e| tracing::info!(?e, "Failed to delete all files in location `{location}`"))
+    }
+
+    pub async fn delete_file(&self, location: &Location) -> Result<(), IoError> {
+        let location = normalize_location(&location);
+        match self {
+            LakekeeperFileIO::IcebergFileIO(file_io) => {
+                retry_fn(|| async {
+                    file_io
+                        .clone()
+                        .delete(&location)
+                        .await
+                        .map_err(|e| IoError::FileDelete(Box::new(e)))
+                })
+                .await
+            }
+            LakekeeperFileIO::HdfsNative(hdfs) => hdfs
+                .delete(&object_store::path::Path::from(location.clone()))
+                .await
+                .map_err(|e| IoError::FileDelete(Box::new(e))),
+        }
+        .inspect_err(|e| tracing::info!(?e, "Failed to delete file `{location}`"))
+    }
+
+    pub async fn list_location<'a>(
+        &'a self,
+        location: &'a Location,
+        page_size: Option<usize>,
+    ) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
+        let location = normalize_location(location.clone().with_trailing_slash());
+
+        match self {
+            LakekeeperFileIO::IcebergFileIO(file_io) => {
+                let size = page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE);
+                let entries = retry_fn(|| async {
+                    file_io
+                        .list_paginated(location.clone().as_str(), true, size)
+                        .await
+                        .map_err(|e| IoError::List(Box::new(e)))
+                })
+                .await?
+                .map(|res| match res {
+                    Ok(entries) => Ok(entries
+                        .into_iter()
+                        .map(|it| it.path().to_string())
+                        .collect()),
+                    Err(e) => Err(IoError::List(Box::new(e))),
+                });
+                Ok(entries.boxed())
+            }
+            LakekeeperFileIO::HdfsNative(hdfs) => Ok(hdfs
+                .list(Some(&object_store::path::Path::from(location)))
+                .map(|p| p.map(|p| p.location.to_string()))
+                .chunks(page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE))
+                .map(|c| {
+                    c.into_iter()
+                        .collect::<Result<Vec<String>, _>>()
+                        .map_err(|e| IoError::List(Box::new(e)))
+                })
+                .boxed()),
+        }
+    }
+}
 
 fn normalize_location(location: &Location) -> String {
     if location.as_str().starts_with("abfs")
@@ -20,6 +217,19 @@ fn normalize_location(location: &Location) -> String {
             .any(|p| location.as_str().starts_with(p))
     {
         reduce_azure_scheme(location.as_str(), false)
+    } else if location.scheme().starts_with("hdfs") {
+        let mut prefix = String::from(location.scheme());
+        prefix.push_str("://");
+        if let Some(host) = location.url().host() {
+            prefix.push_str(&host.to_string());
+        }
+        if let Some(port) = location.url().port() {
+            prefix.push_str(&format!(":{port}"));
+        }
+        location
+            .as_str()
+            .strip_prefix(&prefix)
+            .map_or_else(|| location.as_str().to_string(), ToString::to_string)
     } else if location.scheme().starts_with("s3") {
         if location.scheme() == "s3" {
             location.to_string()
@@ -33,129 +243,7 @@ fn normalize_location(location: &Location) -> String {
     }
 }
 
-pub(crate) async fn write_metadata_file(
-    metadata_location: &Location,
-    metadata: impl Serialize,
-    compression_codec: CompressionCodec,
-    file_io: &FileIO,
-) -> Result<(), IoError> {
-    let metadata_location = normalize_location(metadata_location);
-    tracing::debug!("Writing metadata file to {}", metadata_location);
-
-    let metadata_file = file_io
-        .new_output(metadata_location)
-        .map_err(IoError::FileCreation)?;
-
-    let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
-
-    let metadata_bytes = compression_codec.compress(buf).await?;
-
-    retry_fn(|| async {
-        metadata_file
-            .write(metadata_bytes.clone().into())
-            .await
-            .map_err(IoError::FileWriterCreation)
-    })
-    .await
-}
-
-pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = normalize_location(location);
-
-    retry_fn(|| async {
-        file_io
-            .clone()
-            .delete(location.clone())
-            .await
-            .map_err(IoError::FileDelete)
-    })
-    .await
-}
-
-pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u8>, IoError> {
-    let file = normalize_location(file);
-
-    let content: Vec<_> = retry_fn(|| async {
-        // InputFile isn't clone hence it's here
-        file_io
-            .clone()
-            .new_input(file.clone())
-            .map_err(IoError::FileInput)?
-            .read()
-            .await
-            .map_err(|e| IoError::FileRead(Box::new(e)))
-            .map(Into::into)
-    })
-    .await?;
-
-    if file.as_str().ends_with(".gz.metadata.json") {
-        let codec = CompressionCodec::Gzip;
-        let content = codec.decompress(content).await?;
-        Ok(content)
-    } else {
-        Ok(content)
-    }
-}
-
-pub(crate) async fn read_metadata_file(
-    file_io: &FileIO,
-    file: &Location,
-) -> Result<TableMetadata, IoError> {
-    let content = read_file(file_io, file).await?;
-    match tokio::task::spawn_blocking(move || {
-        serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(e) => Err(IoError::FileDecompression(Box::new(e))),
-    }
-}
-
-pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = normalize_location(location.clone().with_trailing_slash());
-
-    retry_fn(|| async {
-        file_io
-            .clone()
-            .remove_all(location.clone())
-            .await
-            .map_err(IoError::FileRemoveAll)
-    })
-    .await
-}
-
 pub(crate) const DEFAULT_LIST_LOCATION_PAGE_SIZE: usize = 1000;
-
-pub(crate) async fn list_location<'a>(
-    file_io: &'a FileIO,
-    location: &'a Location,
-    page_size: Option<usize>,
-) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
-    let location = normalize_location(location);
-    let location = format!("{}/", location.trim_end_matches('/'));
-    tracing::debug!("Listing location: {}", location);
-    let size = page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE);
-
-    let entries = retry_fn(|| async {
-        file_io
-            .list_paginated(location.clone().as_str(), true, size)
-            .await
-            .map_err(|e| {
-                tracing::warn!(?e, "Failed to list files in location. Retry three times...");
-                IoError::List(e)
-            })
-    })
-    .await?
-    .map(|res| match res {
-        Ok(entries) => Ok(entries
-            .into_iter()
-            .map(|it| it.path().to_string())
-            .collect()),
-        Err(e) => Err(IoError::List(e)),
-    });
-    Ok(entries.boxed())
-}
 
 #[derive(thiserror::Error, Debug, strum::IntoStaticStr)]
 pub enum IoError {
@@ -187,8 +275,8 @@ pub enum IoError {
         "Failed to remove all files in location. Please check the storage credentials: {}", .0
     )]
     FileRemoveAll(#[source] iceberg::Error),
-    #[error("Failed to list files in location. Please check the storage credentials: {}", .0)]
-    List(#[source] iceberg::Error),
+    #[error("Failed to join thread.")]
+    JoinError(#[source] tokio::task::JoinError),
 }
 
 impl IoError {
@@ -214,9 +302,10 @@ impl From<IoError> for IcebergErrorResponse {
             | IoError::FileCreation(_)
             | IoError::FileDecompression(_)
             | IoError::List(_) => ErrorModel::failed_dependency(message, typ, Some(boxed)).into(),
-            IoError::FileCompression(_) | IoError::Write(_) | IoError::Serialization(_) => {
-                ErrorModel::internal(message, typ, Some(boxed)).into()
-            }
+            IoError::FileCompression(_)
+            | IoError::Write(_)
+            | IoError::Serialization(_)
+            | IoError::JoinError(_) => ErrorModel::internal(message, typ, Some(boxed)).into(),
             IoError::TableMetadataDeserialization(e) => {
                 ErrorModel::bad_request(format!("{message} {e}"), typ, Some(boxed)).into()
             }
@@ -226,15 +315,26 @@ impl From<IoError> for IcebergErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    use iceberg_ext::configs::ParseFromStr;
     use needs_env_var::needs_env_var;
 
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
 
+    #[test]
+    fn test_with_trailing_slash_persists_in_normalization() {
+        let loc = Location::parse_value("s3://bucket/folder/").unwrap();
+        let loc = normalize_location(&loc);
+        assert_eq!("s3://bucket/folder/", loc);
+    }
+
     #[allow(dead_code)]
     async fn test_remove_all(cred: StorageCredential, profile: StorageProfile) {
-        async fn list_simple(file_io: &FileIO, location: &Location) -> Option<Vec<String>> {
-            let list = list_location(file_io, location, Some(10)).await.unwrap();
+        async fn list_simple(
+            file_io: &LakekeeperFileIO,
+            location: &Location,
+        ) -> Option<Vec<String>> {
+            let list = file_io.list_location(location, Some(10)).await.unwrap();
 
             list.collect::<Vec<_>>()
                 .await
@@ -254,10 +354,12 @@ mod tests {
         let data_2 = serde_json::json!({"file": "2"});
 
         let file_io = profile.file_io(Some(&cred)).await.unwrap();
-        write_metadata_file(&file_1, data_1, CompressionCodec::Gzip, &file_io)
+        file_io
+            .write_metadata_file(&file_1, data_1, CompressionCodec::Gzip)
             .await
             .unwrap();
-        write_metadata_file(&file_2, data_2, CompressionCodec::Gzip, &file_io)
+        file_io
+            .write_metadata_file(&file_2, data_2, CompressionCodec::Gzip)
             .await
             .unwrap();
 
@@ -274,8 +376,8 @@ mod tests {
         assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
 
         // Remove folder 1 - file 2 should still be here:
-        remove_all(&file_io, &folder_1).await.unwrap();
-        assert!(read_file(&file_io, &file_2).await.is_ok());
+        file_io.delete_all(&folder_1).await.unwrap();
+        assert!(file_io.read_file(&file_2).await.is_ok());
 
         let list = list_simple(&file_io, &location).await.unwrap();
         // Assert that "folder/" / file1 is gone
@@ -287,7 +389,7 @@ mod tests {
         assert!(list_simple(&file_io, &folder_1).await.is_none());
 
         // Cleanup
-        remove_all(&file_io, &folder_2).await.unwrap();
+        file_io.delete_all(&folder_2).await.unwrap();
     }
 
     #[needs_env_var(TEST_AWS = 1)]
@@ -339,5 +441,13 @@ mod tests {
 
             test_remove_all(cred, profile).await;
         }
+    }
+
+    #[test]
+    fn test_normalize_hdfs() {
+        let loc = "hdfs://namenode:8020/user/hdfs/019625f2-668e-7173-bb4d-65ace9b475f1/019625f2-668e-7173-bb4d-65bb757efa94/metadata/test";
+        let loc = Location::parse_value(loc).unwrap();
+        let loc = normalize_location(&loc);
+        assert_eq!("/user/hdfs/019625f2-668e-7173-bb4d-65ace9b475f1/019625f2-668e-7173-bb4d-65bb757efa94/metadata/test", loc);
     }
 }
