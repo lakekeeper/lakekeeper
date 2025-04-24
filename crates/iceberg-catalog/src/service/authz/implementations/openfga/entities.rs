@@ -64,7 +64,7 @@ impl ParseOpenFgaEntity for RoleId {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
-                format!("Expected role type, but got {}", r#type),
+                format!("Expected role type, but got {type}"),
             ));
         }
 
@@ -80,7 +80,7 @@ impl ParseOpenFgaEntity for RoleAssignee {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
-                format!("Expected role type, but got {}", r#type),
+                format!("Expected role type, but got {type}"),
             ));
         }
 
@@ -131,7 +131,7 @@ impl ParseOpenFgaEntity for UserId {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::User],
                 id.clone(),
-                format!("Expected user type, but got {}", r#type),
+                format!("Expected user type, but got {type}"),
             ));
         }
 
@@ -187,7 +187,7 @@ impl ParseOpenFgaEntity for ProjectId {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Project],
                 id.to_string(),
-                format!("Expected project type, but got {}", r#type),
+                format!("Expected project type, but got {type}"),
             ));
         }
 
