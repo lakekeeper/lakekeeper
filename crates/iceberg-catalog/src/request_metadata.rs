@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::{service::authn::Actor, ProjectId, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
 
-pub const PROJECT_ID_HEADER: &str = "x-project-ident";
+const PROJECT_ID_HEADER_DEPRECATED: &str = "x-project-ident";
+pub const X_PROJECT_ID_HEADER: &str = "x-project-id";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
@@ -162,7 +163,7 @@ impl RequestMetadata {
     ) -> crate::api::Result<ProjectId> {
         user_project.or(self.preferred_project_id()).ok_or_else(|| {
             crate::api::ErrorModel::bad_request(
-                format!("No project provided. Please provide the `{PROJECT_ID_HEADER}` header"),
+                format!("No project provided. Please provide the `{X_PROJECT_ID_HEADER}` header"),
                 "NoProjectIdProvided",
                 None,
             )
@@ -228,7 +229,8 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     };
 
     let project_id = headers
-        .get(PROJECT_ID_HEADER)
+        .get(X_PROJECT_ID_HEADER)
+        .or(headers.get(PROJECT_ID_HEADER_DEPRECATED))
         .and_then(|hv| hv.to_str().ok())
         .map(ProjectId::from_str)
         .transpose();

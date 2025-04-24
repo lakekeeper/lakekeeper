@@ -104,7 +104,9 @@ pub struct CreateUserRequest {
     #[serde(default)]
     pub user_type: Option<UserType>,
     /// Subject id of the user - allows user provisioning.
-    /// The id must be identical to the subject in JWT tokens.
+    /// The id must be identical to the subject in JWT tokens, prefixed
+    /// with `<idp-identifier>~`. For example: `oidc~1234567890` for OIDC users
+    /// or `kubernetes~1234567890` for Kubernetes users.
     /// To create users in self-service manner, do not set the id.
     /// The id is then extracted from the passed JWT token.
     #[serde(default)]

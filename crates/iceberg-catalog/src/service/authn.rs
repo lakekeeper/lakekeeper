@@ -130,6 +130,13 @@ impl std::fmt::Display for UserId {
 impl UserId {
     fn try_new(subject: Subject) -> Result<Self, ErrorModel> {
         Self::validate_subject(subject.subject_in_idp())?;
+        if subject.idp_id().is_none() {
+            return Err(ErrorModel::bad_request(
+                "User ID must contain an IdP ID.",
+                "InvalidUserIdError",
+                None,
+            ));
+        }
         Ok(Self(subject))
     }
 
@@ -146,6 +153,14 @@ impl UserId {
     }
 
     fn validate_len(subject: &str) -> Result<(), ErrorModel> {
+        // Check for empty subject
+        if subject.is_empty() {
+            return Err(ErrorModel::bad_request(
+                "user id cannot be empty",
+                "EmptyUserIdError",
+                None,
+            ));
+        }
         if subject.len() >= 128 {
             return Err(ErrorModel::bad_request(
                 "user id must be shorter than 128 chars",
@@ -157,12 +172,10 @@ impl UserId {
     }
 
     fn no_illegal_chars(subject: &str) -> Result<(), ErrorModel> {
-        if subject
-            .chars()
-            .any(|c| !(c.is_alphanumeric() || c == '-' || c == '_'))
-        {
+        // Check for control characters
+        if subject.chars().any(char::is_control) {
             return Err(ErrorModel::bad_request(
-                "sub or oid claim contain illegal characters. Only alphanumeric + - are legal.",
+                "User ID cannot contain control characters.",
                 "InvalidUserIdError",
                 None,
             ));
@@ -185,9 +198,17 @@ impl TryFrom<String> for UserId {
     type Error = ErrorModel;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        let subject = parse_subject(&s, Some(IDP_SEPARATOR)).map_err(|_e| {
+        UserId::try_from(s.as_str())
+    }
+}
+
+impl<'a> TryFrom<&'a str> for UserId {
+    type Error = ErrorModel;
+
+    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+        let subject = parse_subject(s, Some(IDP_SEPARATOR)).map_err(|_e| {
             ErrorModel::bad_request(
-                format!("Invalid user id format: {s}"),
+                format!("Invalid user id: `{s}`. Expected format: `<idp_id>~<user-id>`"),
                 "InvalidUserId",
                 None,
             )
@@ -267,6 +288,84 @@ mod tests {
             UserId(Subject::new(
                 Some("kubernetes".to_string()),
                 "123".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    /// Test special cases:
+    /// * empty idp (must not work)
+    /// * empty sub (must not work)
+    /// * sub with control characters (must not work)
+    fn test_invalid_user_ids() {
+        // empty idp
+        let user_id = UserId::try_from("~123");
+        assert!(user_id.is_err());
+
+        // empty sub
+        let user_id = UserId::try_from("oidc~");
+        assert!(user_id.is_err());
+
+        // sub with control characters
+        let user_id = UserId::try_from("oidc~123\n");
+        assert!(user_id.is_err());
+    }
+
+    #[test]
+    /// Test UTF-8
+    /// * user-id contains UTF-8 character (non-ASCII)
+    /// * user-id starts with separator
+    /// * user-id ends with separator
+    /// * user-id contains separator
+    fn test_user_ids_utf8() {
+        // user-id contains UTF-8 character (non-ASCII)
+        let user_id = UserId::try_from("oidc~1234é").unwrap();
+        assert_eq!(
+            user_id,
+            UserId(Subject::new(Some("oidc".to_string()), "1234é".to_string()))
+        );
+
+        // user-id starts with separator
+        let user_id = UserId::try_from("oidc~~1234").unwrap();
+        assert_eq!(
+            user_id,
+            UserId(Subject::new(Some("oidc".to_string()), "~1234".to_string()))
+        );
+
+        // user-id ends with separator
+        let user_id = UserId::try_from("oidc~1234~").unwrap();
+        assert_eq!(
+            user_id,
+            UserId(Subject::new(Some("oidc".to_string()), "1234~".to_string()))
+        );
+
+        // user-id contains separator
+        let user_id = UserId::try_from("oidc~1234~5678").unwrap();
+        assert_eq!(
+            user_id,
+            UserId(Subject::new(
+                Some("oidc".to_string()),
+                "1234~5678".to_string()
+            ))
+        );
+
+        // e-mail address as user-id
+        let user_id = UserId::try_from("oidc~foo.bar@lakekeeper.io").unwrap();
+        assert_eq!(
+            user_id,
+            UserId(Subject::new(
+                Some("oidc".to_string()),
+                "foo.bar@lakekeeper.io".to_string()
+            ))
+        );
+
+        // e-mail with separator
+        let user_id = UserId::try_from("oidc~foo~bar@lakekeeper.io").unwrap();
+        assert_eq!(
+            user_id,
+            UserId(Subject::new(
+                Some("oidc".to_string()),
+                "foo~bar@lakekeeper.io".to_string()
             ))
         );
     }

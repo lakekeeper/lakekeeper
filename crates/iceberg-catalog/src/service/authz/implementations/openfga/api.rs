@@ -1078,7 +1078,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update permissions for a project
+/// Update permissions for a warehouse
 #[utoipa::path(
     post,
     tag = "permissions",
