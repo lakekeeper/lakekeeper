@@ -6,10 +6,10 @@ use tower_http::{
 use tracing::{Level, Span};
 use uuid::Uuid;
 
-use crate::api::X_REQUEST_ID_HEADER;
-use crate::X_FORWARDED_FOR_HEADER;
-use crate::X_FORWARDED_PORT_HEADER;
-use crate::X_FORWARDED_PROTO_HEADER;
+use crate::{
+    api::X_REQUEST_ID_HEADER, X_FORWARDED_FOR_HEADER, X_FORWARDED_PORT_HEADER,
+    X_FORWARDED_PROTO_HEADER,
+};
 
 /// A `MakeSpan` implementation that attaches the `request_id` to the span.
 #[derive(Debug, Clone)]
