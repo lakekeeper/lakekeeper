@@ -15,9 +15,9 @@ use crate::{service::authn::Actor, ProjectId, WarehouseIdent, CONFIG, DEFAULT_PR
 pub const PROJECT_ID_HEADER: &str = "x-project-ident";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 
-const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
-const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
-const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
+pub(crate) const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
+pub(crate) const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
+pub(crate) const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
 
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
