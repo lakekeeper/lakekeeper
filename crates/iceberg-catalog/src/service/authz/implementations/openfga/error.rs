@@ -14,8 +14,12 @@ pub(crate) enum OpenFGAError {
     ActiveAuthModelNotFound(String),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
     StoreNotFound(String),
-    #[error("Unexpected entity for type {type:?}: {value}")]
-    UnexpectedEntity { r#type: Vec<FgaType>, value: String },
+    #[error("Unexpected entity for type {type:?}: {value}. {reason}")]
+    UnexpectedEntity {
+        r#type: Vec<FgaType>,
+        value: String,
+        reason: String,
+    },
     #[error("Unknown OpenFGA type: {0}")]
     UnknownType(String),
     #[error("Invalid OpenFGA entity string: `{0}`")]
@@ -35,8 +39,12 @@ pub(crate) enum OpenFGAError {
 }
 
 impl OpenFGAError {
-    pub(crate) fn unexpected_entity(r#type: Vec<FgaType>, value: String) -> Self {
-        OpenFGAError::UnexpectedEntity { r#type, value }
+    pub(crate) fn unexpected_entity(r#type: Vec<FgaType>, value: String, reason: String) -> Self {
+        OpenFGAError::UnexpectedEntity {
+            r#type,
+            value,
+            reason,
+        }
     }
 }
 

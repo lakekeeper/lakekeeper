@@ -24,10 +24,10 @@ paths:
     post:
       tags:
         - server
-      summary: |-
-        Creates the user in the catalog if it does not exist.
-        If the user exists, it updates the users' metadata from the token.
-        The token sent to this endpoint should have "profile" and "email" scopes.
+      summary: Bootstrap
+      description: |-
+        Initializes the Lakekeeper server and sets the initial administrator account.
+        This operation can only be performed once.
       operationId: bootstrap
       requestBody:
         content:
@@ -54,7 +54,10 @@ paths:
     get:
       tags:
         - project
-      summary: Get the default project. This Endpoint is deprecated.
+      summary: Get Default Project
+      description: |-
+        Retrieves information about the user's default project.
+        This endpoint is deprecated and will be removed in a future version.
       operationId: get_default_project_deprecated
       responses:
         '200':
@@ -73,7 +76,10 @@ paths:
     delete:
       tags:
         - project
-      summary: Delete the default project
+      summary: Delete default Project
+      description: |-
+        Removes the user's default project and all its resources.
+        This endpoint is deprecated and will be removed in a future version.
       operationId: delete_default_project_deprecated
       responses:
         '204':
@@ -89,9 +95,10 @@ paths:
     post:
       tags:
         - project
-      summary: |-
-        Rename the default project.
-        This Endpoint is deprecated, use `/v1/projects/default` instead.
+      summary: Rename the default project.
+      description: |-
+        Updates the name of the user's default project.
+        This endpoint is deprecated and will be removed in a future version.
       operationId: rename_default_project_deprecated
       requestBody:
         content:
@@ -113,9 +120,9 @@ paths:
     post:
       tags:
         - project
-      summary: Retrieve API Usage Statistics
+      summary: Get API Statistics
       description: |-
-        Returns detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
+        Retrieves detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
         track frequency of operations, and analyze response codes.
 
         ## Data Collection
@@ -179,7 +186,8 @@ paths:
     get:
       tags:
         - server
-      summary: Get information about the server
+      summary: ServerInfo
+      description: Returns basic information about the server configuration and status.
       operationId: get_server_info
       responses:
         '200':
@@ -853,7 +861,7 @@ paths:
     post:
       tags:
         - permissions
-      summary: Update permissions for a project
+      summary: Update permissions for a warehouse
       operationId: update_warehouse_assignments_by_id
       parameters:
         - name: warehouse_id
@@ -899,8 +907,16 @@ paths:
     get:
       tags:
         - project
-      summary: Get the default project
+      summary: Get Project
+      description: Retrieves information about the user's default project.
       operationId: get_default_project
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
       responses:
         '200':
           description: Project details
@@ -917,7 +933,8 @@ paths:
     post:
       tags:
         - project
-      summary: Create a new project
+      summary: Create Project
+      description: Creates a new project with the specified configuration.
       operationId: create_project
       requestBody:
         content:
@@ -941,8 +958,15 @@ paths:
     delete:
       tags:
         - project
-      summary: Delete the default project
+      summary: Delete Project
       operationId: delete_default_project
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
       responses:
         '204':
           description: Project deleted successfully
@@ -956,7 +980,8 @@ paths:
     get:
       tags:
         - project
-      summary: List all projects the requesting user has access to
+      summary: List Projects
+      description: Lists all projects that the requesting user has access to.
       operationId: list_projects
       responses:
         '200':
@@ -975,8 +1000,15 @@ paths:
     post:
       tags:
         - project
-      summary: Rename the default project.
+      summary: Rename Project
       operationId: rename_default_project
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Optional project ID
+          required: true
+          schema:
+            type: string
       requestBody:
         content:
           application/json:
@@ -996,7 +1028,7 @@ paths:
     get:
       tags:
         - project
-      summary: Get a specific project by id
+      summary: Get Project
       operationId: get_project_by_id
       parameters:
         - name: project_id
@@ -1020,7 +1052,8 @@ paths:
     delete:
       tags:
         - project
-      summary: Delete a project by ID
+      summary: Delete Project by ID
+      description: Permanently removes a specific project and all its associated resources.
       operationId: delete_project_by_id
       parameters:
         - name: project_id
@@ -1041,7 +1074,8 @@ paths:
     post:
       tags:
         - project
-      summary: Rename project by id
+      summary: Rename Project by ID
+      description: Updates the name of a specific project.
       operationId: rename_project_by_id
       parameters:
         - name: project_id
@@ -1068,7 +1102,8 @@ paths:
     get:
       tags:
         - role
-      summary: List roles in a project
+      summary: List Roles
+      description: Returns all roles in the project that the current user has access to view.
       operationId: list_roles
       parameters:
         - name: name
@@ -1122,7 +1157,8 @@ paths:
     post:
       tags:
         - role
-      summary: Create a new role
+      summary: Create Role
+      description: Creates a role with the specified name, description, and permissions.
       operationId: create_role
       requestBody:
         content:
@@ -1147,7 +1183,8 @@ paths:
     get:
       tags:
         - role
-      summary: Get a role
+      summary: Get Role
+      description: Retrieves detailed information about a specific role.
       operationId: get_role
       parameters:
         - name: role_id
@@ -1172,7 +1209,7 @@ paths:
     post:
       tags:
         - role
-      summary: Update a role
+      summary: Update Role
       operationId: update_role
       parameters:
         - name: role_id
@@ -1203,8 +1240,8 @@ paths:
     delete:
       tags:
         - role
-      summary: Delete role
-      description: All permissions of the role are permanently removed.
+      summary: Delete Role
+      description: Permanently removes a role and all its associated permissions.
       operationId: delete_role
       parameters:
         - name: role_id
@@ -1226,7 +1263,8 @@ paths:
     post:
       tags:
         - role
-      summary: Search for roles (Fuzzy)
+      summary: Search Role
+      description: Performs a fuzzy search for roles based on the provided criteria.
       operationId: search_role
       requestBody:
         content:
@@ -1251,7 +1289,8 @@ paths:
     post:
       tags:
         - user
-      summary: Search for users (Fuzzy)
+      summary: Search User
+      description: Performs a fuzzy search for users based on the provided criteria.
       operationId: search_user
       requestBody:
         content:
@@ -1276,7 +1315,8 @@ paths:
     get:
       tags:
         - user
-      summary: List users
+      summary: List Users
+      description: Returns a paginated list of users based on the provided query parameters.
       operationId: list_user
       parameters:
         - name: name
@@ -1320,10 +1360,10 @@ paths:
     post:
       tags:
         - user
-      summary: |-
-        Creates the user in the catalog if it does not exist.
-        If the user exists, it updates the users' metadata from the token.
-        The token sent to this endpoint should have "profile" and "email" scopes.
+      summary: Provision User
+      description: |-
+        Creates a new user or updates an existing user's metadata from the provided token.
+        The token should include "profile" and "email" scopes for complete user information.
       operationId: create_user
       requestBody:
         content:
@@ -1354,7 +1394,8 @@ paths:
     get:
       tags:
         - user
-      summary: Get a user by ID
+      summary: Get User by ID
+      description: Retrieves detailed information about a specific user.
       operationId: get_user
       parameters:
         - name: user_id
@@ -1378,9 +1419,10 @@ paths:
     put:
       tags:
         - user
-      summary: |-
-        Update details of a user. Replaces the current details with the new details.
-        If a field is not provided, it is set to `None`.
+      summary: Replace User
+      description: |-
+        Replaces the current user details with the new details provided in the request.
+        If a field is not provided, it will be set to `None`.
       operationId: update_user
       parameters:
         - name: user_id
@@ -1406,10 +1448,10 @@ paths:
     delete:
       tags:
         - user
-      summary: Delete user
+      summary: Delete User
       description: |-
-        All permissions of the user are permanently removed and need to be re-added
-        if the user is re-registered.
+        Permanently removes a user and all their associated permissions.
+        If the user is re-registered later, their permissions will need to be re-added.
       operationId: delete_user
       parameters:
         - name: user_id
@@ -1430,10 +1472,11 @@ paths:
     get:
       tags:
         - warehouse
-      summary: List all warehouses in a project
+      summary: List Warehouses
       description: |-
-        By default, this endpoint does not return deactivated warehouses.
-        To include deactivated warehouses, set the `include_deactivated` query parameter to `true`.
+        Returns all warehouses in the project that the current user has access to.
+        By default, deactivated warehouses are not included in the results.
+        Set the `include_deactivated` query parameter to `true` to include them.
       operationId: list_warehouses
       parameters:
         - name: warehouseStatus
@@ -1473,11 +1516,11 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Create a new warehouse.
+      summary: Create Warehouse
       description: |-
-        Create a new warehouse in the given project. The project
-        of a warehouse cannot be changed after creation.
-        The storage configuration is validated by this method.
+        Creates a new warehouse in the specified project with the provided configuration.
+        The project of a warehouse cannot be changed after creation.
+        This operation validates the storage configuration.
       operationId: create_warehouse
       requestBody:
         content:
@@ -1502,7 +1545,8 @@ paths:
     get:
       tags:
         - warehouse
-      summary: Get a warehouse by ID
+      summary: Get Warehouse
+      description: Retrieves detailed information about a specific warehouse.
       operationId: get_warehouse
       parameters:
         - name: warehouse_id
@@ -1527,7 +1571,10 @@ paths:
     delete:
       tags:
         - warehouse
-      summary: Delete a warehouse by ID
+      summary: Delete Warehouse
+      description: |-
+        Permanently removes a warehouse and all its associated resources.
+        Use the `force` parameter to delete protected warehouses.
       operationId: delete_warehouse
       parameters:
         - name: warehouse_id
@@ -1549,7 +1596,8 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Activate a warehouse
+      summary: Activate Warehouse
+      description: Re-enables access to a previously deactivated warehouse.
       operationId: activate_warehouse
       parameters:
         - name: warehouse_id
@@ -1571,7 +1619,8 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Deactivate a warehouse
+      summary: Deactivate Warehouse
+      description: Temporarily disables access to a warehouse without deleting its data.
       operationId: deactivate_warehouse
       parameters:
         - name: warehouse_id
@@ -1593,7 +1642,8 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Update the Deletion Profile (soft-delete) of a warehouse.
+      summary: Update Deletion Profile
+      description: Configures the soft-delete behavior for a warehouse.
       operationId: update_warehouse_delete_profile
       parameters:
         - name: warehouse_id
@@ -1621,8 +1671,8 @@ paths:
     get:
       tags:
         - warehouse
-      summary: List soft-deleted tabulars
-      description: List all soft-deleted tabulars in the warehouse that are visible to you.
+      summary: List Soft-Deleted Tabulars
+      description: Returns all soft-deleted tables and views in the warehouse that are visible to the current user.
       operationId: list_deleted_tabulars
       parameters:
         - name: warehouse_id
@@ -1672,6 +1722,8 @@ paths:
     post:
       tags:
         - warehouse
+      summary: Undrop Tabular
+      description: Restores previously deleted tables or views to make them accessible again.
       operationId: undrop_tabulars
       parameters:
         - name: warehouse_id
@@ -1699,6 +1751,10 @@ paths:
     post:
       tags:
         - warehouse
+      summary: Undrop Tabular
+      description: |-
+        Restores previously deleted tables or views to make them accessible again.
+        This endpoint is deprecated and will be removed soon.
       operationId: undrop_tabulars_deprecated
       parameters:
         - name: warehouse_id
@@ -1727,6 +1783,8 @@ paths:
     get:
       tags:
         - warehouse
+      summary: Get Namespace Protection
+      description: Retrieves whether a namespace is protected from deletion.
       operationId: get_namespace_protection
       parameters:
         - name: warehouse_id
@@ -1757,6 +1815,8 @@ paths:
     post:
       tags:
         - warehouse
+      summary: Set Namespace Protection
+      description: Configures whether a namespace should be protected from deletion.
       operationId: set_namespace_protection
       parameters:
         - name: warehouse_id
@@ -1794,6 +1854,8 @@ paths:
     post:
       tags:
         - warehouse
+      summary: Set Warehouse Protection
+      description: Configures whether a warehouse should be protected from deletion.
       operationId: set_warehouse_protection
       parameters:
         - name: warehouse_id
@@ -1825,7 +1887,8 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Rename a warehouse
+      summary: Rename Warehouse
+      description: Updates the name of a specific warehouse.
       operationId: rename_warehouse
       parameters:
         - name: warehouse_id
@@ -1853,9 +1916,10 @@ paths:
     get:
       tags:
         - warehouse
-      summary: Get warehouse statistics
+      summary: Get Warehouse Statistics
       description: |-
-        Get statistics about the warehouse, currently table and view counts over time.
+        Retrieves statistical data about a warehouse's usage and resources over time.
+        Statistics are aggregated hourly when changes occur.
 
         We lazily create a new statistics entry every hour, in between hours, the existing entry is
         being updated. If there's a change at created_at + 1 hour, a new entry is created.
@@ -1911,7 +1975,8 @@ paths:
     post:
       tags:
         - warehouse
-      summary: Update the storage profile of a warehouse including its storage credential.
+      summary: Update Storage Profile
+      description: Updates both the storage profile and credentials of a warehouse.
       operationId: update_storage_profile
       parameters:
         - name: warehouse_id
@@ -1939,9 +2004,10 @@ paths:
     post:
       tags:
         - warehouse
-      summary: |-
-        Update the storage credential of a warehouse. The storage profile is not modified.
-        This can be used to update credentials before expiration.
+      summary: Update Storage Credential
+      description: |-
+        Updates only the storage credential of a warehouse without modifying the storage profile.
+        Useful for refreshing expiring credentials.
       operationId: update_storage_credential
       parameters:
         - name: warehouse_id
@@ -1969,6 +2035,8 @@ paths:
     get:
       tags:
         - warehouse
+      summary: Get Table Protection
+      description: Retrieves whether a table is protected from deletion.
       operationId: get_table_protection
       parameters:
         - name: warehouse_id
@@ -1999,6 +2067,8 @@ paths:
     post:
       tags:
         - warehouse
+      summary: Set Table Protection
+      description: Configures whether a table should be protected from deletion.
       operationId: set_table_protection
       parameters:
         - name: warehouse_id
@@ -2036,6 +2106,8 @@ paths:
     get:
       tags:
         - warehouse
+      summary: Get View Protection
+      description: Retrieves whether a view is protected from deletion.
       operationId: get_view_protection
       parameters:
         - name: warehouse_id
@@ -2066,6 +2138,8 @@ paths:
     post:
       tags:
         - warehouse
+      summary: Set View Protection
+      description: Configures whether a view should be protected from deletion.
       operationId: set_view_protection
       parameters:
         - name: warehouse_id
@@ -2103,7 +2177,8 @@ paths:
     get:
       tags:
         - user
-      summary: Get the currently authenticated user
+      summary: Whoami
+      description: Returns information about the user associated with the current authentication token.
       operationId: whoami
       responses:
         '200':
@@ -2407,7 +2482,9 @@ components:
             - 'null'
           description: |-
             Subject id of the user - allows user provisioning.
-            The id must be identical to the subject in JWT tokens.
+            The id must be identical to the subject in JWT tokens, prefixed
+            with `<idp-identifier>~`. For example: `oidc~1234567890` for OIDC users
+            or `kubernetes~1234567890` for Kubernetes users.
             To create users in self-service manner, do not set the id.
             The id is then extracted from the passed JWT token.
         name:

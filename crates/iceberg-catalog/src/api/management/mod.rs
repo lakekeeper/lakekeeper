@@ -164,7 +164,9 @@ pub mod v1 {
         secret_store: PhantomData<S>,
     }
 
-    /// Get information about the server
+    /// ServerInfo
+    ///
+    /// Returns basic information about the server configuration and status.
     #[utoipa::path(
         get,
         tag = "server",
@@ -184,9 +186,10 @@ pub mod v1 {
             .map(|user| (StatusCode::OK, Json(user)))
     }
 
-    /// Creates the user in the catalog if it does not exist.
-    /// If the user exists, it updates the users' metadata from the token.
-    /// The token sent to this endpoint should have "profile" and "email" scopes.
+    /// Bootstrap
+    ///
+    /// Initializes the Lakekeeper server and sets the initial administrator account.
+    /// This operation can only be performed once.
     #[utoipa::path(
         post,
         tag = "server",
@@ -207,9 +210,10 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    /// Creates the user in the catalog if it does not exist.
-    /// If the user exists, it updates the users' metadata from the token.
-    /// The token sent to this endpoint should have "profile" and "email" scopes.
+    /// Provision User
+    ///
+    /// Creates a new user or updates an existing user's metadata from the provided token.
+    /// The token should include "profile" and "email" scopes for complete user information.
     #[utoipa::path(
         post,
         tag = "user",
@@ -234,7 +238,9 @@ pub mod v1 {
             })
     }
 
-    /// Search for users (Fuzzy)
+    /// Search User
+    ///
+    /// Performs a fuzzy search for users based on the provided criteria.
     #[utoipa::path(
         post,
         tag = "user",
@@ -253,7 +259,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::search_user(api_context, metadata, request).await
     }
 
-    /// Get a user by ID
+    /// Get User by ID
+    ///
+    /// Retrieves detailed information about a specific user.
     #[utoipa::path(
         get,
         tag = "user",
@@ -274,7 +282,9 @@ pub mod v1 {
             .map(|user| (StatusCode::OK, Json(user)))
     }
 
-    /// Get the currently authenticated user
+    /// Whoami
+    ///
+    /// Returns information about the user associated with the current authentication token.
     #[utoipa::path(
         get,
         tag = "user",
@@ -305,8 +315,10 @@ pub mod v1 {
             .map(|user| (StatusCode::OK, Json(user)))
     }
 
-    /// Update details of a user. Replaces the current details with the new details.
-    /// If a field is not provided, it is set to `None`.
+    /// Replace User
+    ///
+    /// Replaces the current user details with the new details provided in the request.
+    /// If a field is not provided, it will be set to `None`.
     #[utoipa::path(
         put,
         tag = "user",
@@ -327,7 +339,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::update_user(api_context, metadata, user_id, request).await
     }
 
-    /// List users
+    /// List Users
+    ///
+    /// Returns a paginated list of users based on the provided query parameters.
     #[utoipa::path(
         get,
         tag = "user",
@@ -346,10 +360,10 @@ pub mod v1 {
         ApiServer::<C, A, S>::list_user(api_context, metadata, query).await
     }
 
-    /// Delete user
+    /// Delete User
     ///
-    /// All permissions of the user are permanently removed and need to be re-added
-    /// if the user is re-registered.
+    /// Permanently removes a user and all their associated permissions.
+    /// If the user is re-registered later, their permissions will need to be re-added.
     #[utoipa::path(
         delete,
         tag = "user",
@@ -370,7 +384,9 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Create a new role
+    /// Create Role
+    ///
+    /// Creates a role with the specified name, description, and permissions.
     #[utoipa::path(
         post,
         tag = "role",
@@ -392,7 +408,9 @@ pub mod v1 {
         }
     }
 
-    /// Search for roles (Fuzzy)
+    /// Search Role
+    ///
+    /// Performs a fuzzy search for roles based on the provided criteria.
     #[utoipa::path(
         post,
         tag = "role",
@@ -411,7 +429,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::search_role(api_context, metadata, request).await
     }
 
-    /// List roles in a project
+    /// List Roles
+    ///
+    /// Returns all roles in the project that the current user has access to view.
     #[utoipa::path(
         get,
         tag = "role",
@@ -430,9 +450,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::list_roles(api_context, query, metadata).await
     }
 
-    /// Delete role
+    /// Delete Role
     ///
-    /// All permissions of the role are permanently removed.
+    /// Permanently removes a role and all its associated permissions.
     #[utoipa::path(
         delete,
         tag = "role",
@@ -453,7 +473,9 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Get a role
+    /// Get Role
+    ///
+    /// Retrieves detailed information about a specific role.
     #[utoipa::path(
         get,
         tag = "role",
@@ -474,7 +496,7 @@ pub mod v1 {
             .map(|role| (StatusCode::OK, Json(role)))
     }
 
-    /// Update a role
+    /// Update Role
     #[utoipa::path(
         post,
         tag = "role",
@@ -497,11 +519,11 @@ pub mod v1 {
             .map(|role| (StatusCode::OK, Json(role)))
     }
 
-    /// Create a new warehouse.
+    /// Create Warehouse
     ///
-    /// Create a new warehouse in the given project. The project
-    /// of a warehouse cannot be changed after creation.
-    /// The storage configuration is validated by this method.
+    /// Creates a new warehouse in the specified project with the provided configuration.
+    /// The project of a warehouse cannot be changed after creation.
+    /// This operation validates the storage configuration.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -520,7 +542,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::create_warehouse(request, api_context, metadata).await
     }
 
-    /// List all projects the requesting user has access to
+    /// List Projects
+    ///
+    /// Lists all projects that the requesting user has access to.
     #[utoipa::path(
         get,
         tag = "project",
@@ -537,7 +561,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::list_projects(api_context, metadata).await
     }
 
-    /// Create a new project
+    /// Create Project
+    ///
+    /// Creates a new project with the specified configuration.
     #[utoipa::path(
         post,
         tag = "project",
@@ -555,11 +581,14 @@ pub mod v1 {
         ApiServer::<C, A, S>::create_project(request, api_context, metadata).await
     }
 
-    /// Get the default project
+    /// Get Project
+    ///
+    /// Retrieves information about the user's default project.
     #[utoipa::path(
         get,
         tag = "project",
         path = ManagementV1Endpoint::GetDefaultProject.path(),
+        params(("x-project-id" = String, Header, description = "Optional project ID"),),
         responses(
             (status = 200, description = "Project details", body = GetProjectResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -572,7 +601,10 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 
-    /// Get the default project. This Endpoint is deprecated.
+    /// Get Default Project
+    ///
+    /// Retrieves information about the user's default project.
+    /// This endpoint is deprecated and will be removed in a future version.
     #[utoipa::path(
             get,
             tag = "project",
@@ -593,7 +625,7 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_project(None, api_context, metadata).await
     }
 
-    /// Get a specific project by id
+    /// Get Project
     #[utoipa::path(
         get,
         tag = "project",
@@ -612,11 +644,12 @@ pub mod v1 {
         ApiServer::<C, A, S>::get_project(Some(project_id), api_context, metadata).await
     }
 
-    /// Delete the default project
+    /// Delete Project
     #[utoipa::path(
         delete,
         tag = "project",
         path = ManagementV1Endpoint::DeleteDefaultProject.path(),
+        params(("x-project-id" = String, Header, description = "Optional project ID"),),
         responses(
             (status = 204, description = "Project deleted successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -631,7 +664,10 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Delete the default project
+    /// Delete default Project
+    ///
+    /// Removes the user's default project and all its resources.
+    /// This endpoint is deprecated and will be removed in a future version.
     #[utoipa::path(
             delete,
             tag = "project",
@@ -654,7 +690,9 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Delete a project by ID
+    /// Delete Project by ID
+    ///
+    /// Permanently removes a specific project and all its associated resources.
     #[utoipa::path(
         delete,
         tag = "project",
@@ -675,11 +713,12 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Rename the default project.
+    /// Rename Project
     #[utoipa::path(
         post,
         tag = "project",
         path = ManagementV1Endpoint::RenameDefaultProject.path(),
+        params(("x-project-id" = String, Header, description = "Optional project ID"),),
         responses(
             (status = 200, description = "Project renamed successfully"),
             (status = "4XX", body = IcebergErrorResponse),
@@ -694,7 +733,9 @@ pub mod v1 {
     }
 
     /// Rename the default project.
-    /// This Endpoint is deprecated, use `/v1/projects/default` instead.
+    ///
+    /// Updates the name of the user's default project.
+    /// This endpoint is deprecated and will be removed in a future version.
     #[utoipa::path(
             post,
             tag = "project",
@@ -716,7 +757,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::rename_project(None, request, api_context, metadata).await
     }
 
-    /// Rename project by id
+    /// Rename Project by ID
+    ///
+    /// Updates the name of a specific project.
     #[utoipa::path(
         post,
         tag = "project",
@@ -736,10 +779,11 @@ pub mod v1 {
         ApiServer::<C, A, S>::rename_project(Some(project_id), request, api_context, metadata).await
     }
 
-    /// List all warehouses in a project
+    /// List Warehouses
     ///
-    /// By default, this endpoint does not return deactivated warehouses.
-    /// To include deactivated warehouses, set the `include_deactivated` query parameter to `true`.
+    /// Returns all warehouses in the project that the current user has access to.
+    /// By default, deactivated warehouses are not included in the results.
+    /// Set the `include_deactivated` query parameter to `true` to include them.
     #[utoipa::path(
         get,
         tag = "warehouse",
@@ -758,7 +802,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::list_warehouses(request, api_context, metadata).await
     }
 
-    /// Get a warehouse by ID
+    /// Get Warehouse
+    ///
+    /// Retrieves detailed information about a specific warehouse.
     #[utoipa::path(
         get,
         tag = "warehouse",
@@ -786,7 +832,10 @@ pub mod v1 {
         pub(crate) force: bool,
     }
 
-    /// Delete a warehouse by ID
+    /// Delete Warehouse
+    ///
+    /// Permanently removes a warehouse and all its associated resources.
+    /// Use the `force` parameter to delete protected warehouses.
     #[utoipa::path(
         delete,
         tag = "warehouse",
@@ -808,7 +857,9 @@ pub mod v1 {
             .map(|()| (StatusCode::NO_CONTENT, ()))
     }
 
-    /// Rename a warehouse
+    /// Rename Warehouse
+    ///
+    /// Updates the name of a specific warehouse.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -830,7 +881,9 @@ pub mod v1 {
             .await
     }
 
-    /// Update the Deletion Profile (soft-delete) of a warehouse.
+    /// Update Deletion Profile
+    ///
+    /// Configures the soft-delete behavior for a warehouse.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -857,7 +910,9 @@ pub mod v1 {
         .await
     }
 
-    /// Deactivate a warehouse
+    /// Deactivate Warehouse
+    ///
+    /// Temporarily disables access to a warehouse without deleting its data.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -876,7 +931,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::deactivate_warehouse(warehouse_id.into(), api_context, metadata).await
     }
 
-    /// Activate a warehouse
+    /// Activate Warehouse
+    ///
+    /// Re-enables access to a previously deactivated warehouse.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -895,7 +952,9 @@ pub mod v1 {
         ApiServer::<C, A, S>::activate_warehouse(warehouse_id.into(), api_context, metadata).await
     }
 
-    /// Update the storage profile of a warehouse including its storage credential.
+    /// Update Storage Profile
+    ///
+    /// Updates both the storage profile and credentials of a warehouse.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -917,8 +976,10 @@ pub mod v1 {
             .await
     }
 
-    /// Update the storage credential of a warehouse. The storage profile is not modified.
-    /// This can be used to update credentials before expiration.
+    /// Update Storage Credential
+    ///
+    /// Updates only the storage credential of a warehouse without modifying the storage profile.
+    /// Useful for refreshing expiring credentials.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -980,9 +1041,10 @@ pub mod v1 {
         }
     }
 
-    /// Get warehouse statistics
+    /// Get Warehouse Statistics
     ///
-    /// Get statistics about the warehouse, currently table and view counts over time.
+    /// Retrieves statistical data about a warehouse's usage and resources over time.
+    /// Statistics are aggregated hourly when changes occur.
     ///
     /// We lazily create a new statistics entry every hour, in between hours, the existing entry is
     /// being updated. If there's a change at created_at + 1 hour, a new entry is created.
@@ -1024,9 +1086,9 @@ pub mod v1 {
         .map(Json)
     }
 
-    /// Retrieve API Usage Statistics
+    /// Get API Statistics
     ///
-    /// Returns detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
+    /// Retrieves detailed endpoint call statistics for your project, allowing you to monitor API usage patterns,
     /// track frequency of operations, and analyze response codes.
     ///
     /// ## Data Collection
@@ -1086,9 +1148,9 @@ pub mod v1 {
             .map(Json)
     }
 
-    /// List soft-deleted tabulars
+    /// List Soft-Deleted Tabulars
     ///
-    /// List all soft-deleted tabulars in the warehouse that are visible to you.
+    /// Returns all soft-deleted tables and views in the warehouse that are visible to the current user.
     #[utoipa::path(
         get,
         tag = "warehouse",
@@ -1115,6 +1177,10 @@ pub mod v1 {
         .map(Json)
     }
 
+    /// Undrop Tabular
+    ///
+    /// Restores previously deleted tables or views to make them accessible again.
+    /// This endpoint is deprecated and will be removed soon.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -1145,6 +1211,9 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    /// Undrop Tabular
+    ///
+    /// Restores previously deleted tables or views to make them accessible again.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -1185,6 +1254,9 @@ pub mod v1 {
         }
     }
 
+    /// Get Table Protection
+    ///
+    /// Retrieves whether a table is protected from deletion.
     #[utoipa::path(
         get,
         tag = "warehouse",
@@ -1209,6 +1281,9 @@ pub mod v1 {
         .await
     }
 
+    /// Set Table Protection
+    ///
+    /// Configures whether a table should be protected from deletion.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -1235,6 +1310,9 @@ pub mod v1 {
         .await
     }
 
+    /// Get View Protection
+    ///
+    /// Retrieves whether a view is protected from deletion.
     #[utoipa::path(
         get,
         tag = "warehouse",
@@ -1259,6 +1337,9 @@ pub mod v1 {
         .await
     }
 
+    /// Set View Protection
+    ///
+    /// Configures whether a view should be protected from deletion.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -1285,6 +1366,9 @@ pub mod v1 {
         .await
     }
 
+    /// Get Namespace Protection
+    ///
+    /// Retrieves whether a namespace is protected from deletion.
     #[utoipa::path(
         get,
         tag = "warehouse",
@@ -1309,6 +1393,9 @@ pub mod v1 {
         .await
     }
 
+    /// Set Namespace Protection
+    ///
+    /// Configures whether a namespace should be protected from deletion.
     #[utoipa::path(
         post,
         tag = "warehouse",
@@ -1335,6 +1422,9 @@ pub mod v1 {
         .await
     }
 
+    /// Set Warehouse Protection
+    ///
+    /// Configures whether a warehouse should be protected from deletion.
     #[utoipa::path(
         post,
         tag = "warehouse",

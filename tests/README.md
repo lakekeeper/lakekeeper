@@ -24,6 +24,8 @@ docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.s
 docker compose run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh pyiceberg"
 # With Authorization
 docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh spark_openfga-1.7.1"
+# Pyiceberg only
+docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh pyiceberg"
 # Starrocks only
 docker compose -f docker-compose.yaml -f docker-compose-starrocks-overlay.yaml run spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh starrocks"
 # Trino only

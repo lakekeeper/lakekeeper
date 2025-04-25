@@ -4,6 +4,69 @@ import pyarrow as pa
 import pytest
 import time
 import pyiceberg.io as io
+import requests
+from urllib.parse import quote_plus, quote
+import uuid
+
+
+def create_user(warehouse: conftest.Warehouse):
+    user_email = f"foo~bar+:\\/.!?*👾 -{uuid.uuid4().hex}@lakekeeper.io"
+    user_id = f"oidc~{user_email}"
+
+    requests.post(
+        warehouse.server.user_url,
+        headers={"Authorization": f"Bearer {warehouse.access_token}"},
+        json={
+            "email": user_email,
+            "id": user_id,
+            "name": "Peter Cold",
+            "update-if-exists": True,
+            "user-type": "human",
+        },
+    ).raise_for_status()
+
+    return user_email, user_id
+
+
+def test_create_user_with_email_id(warehouse: conftest.Warehouse):
+    user_email, user_id = create_user(warehouse)
+    # Get this user
+    response = requests.get(
+        warehouse.server.user_url + f"/{quote(user_id, safe='')}",
+        headers={"Authorization": f"Bearer {warehouse.access_token}"},
+    )
+    response.raise_for_status()
+    user = response.json()
+    assert user["email"] == user_email
+    assert user["id"] == user_id
+
+
+def test_user_permissions_with_email_id(warehouse: conftest.Warehouse):
+    _, user_id = create_user(warehouse)
+
+    # Make user admin of the warehouse
+    requests.post(
+        warehouse.server.openfga_permissions_url
+        + f"/warehouse/{warehouse.warehouse_id}/assignments",
+        headers={"Authorization": f"Bearer {warehouse.access_token}"},
+        json={
+            "deletes": [],
+            "writes": [{"user": user_id, "type": "ownership"}],
+        },
+    ).raise_for_status()
+
+    # Check if user is admin
+    response = requests.get(
+        warehouse.server.openfga_permissions_url
+        + f"/warehouse/{warehouse.warehouse_id}/assignments",
+        headers={"Authorization": f"Bearer {warehouse.access_token}"},
+    )
+    response.raise_for_status()
+    assignments = response.json()["assignments"]
+    assignment = [
+        a for a in assignments if a["user"] == user_id and a["type"] == "ownership"
+    ]
+    assert len(assignment) == 1
 
 
 def test_create_namespace(warehouse: conftest.Warehouse):

@@ -1,5 +1,7 @@
 use std::str::FromStr;
 
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
+
 use super::RoleAssignee;
 use crate::{
     service::{
@@ -62,11 +64,13 @@ impl ParseOpenFgaEntity for RoleId {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
+                format!("Expected role type, but got {type}"),
             ));
         }
 
-        id.parse()
-            .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string()))
+        id.parse().map_err(|e: IcebergErrorResponse| {
+            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string(), e.error.message)
+        })
     }
 }
 
@@ -76,6 +80,7 @@ impl ParseOpenFgaEntity for RoleAssignee {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
+                format!("Expected role type, but got {type}"),
             ));
         }
 
@@ -83,20 +88,27 @@ impl ParseOpenFgaEntity for RoleAssignee {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
+                "Expected role assignee type, but got a role".to_string(),
             ));
         }
 
         let id = &id[..id.len() - "#assignee".len()];
 
-        Ok(RoleAssignee::from_role(id.parse().map_err(|_e| {
-            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string())
-        })?))
+        Ok(RoleAssignee::from_role(id.parse().map_err(
+            |e: IcebergErrorResponse| {
+                OpenFGAError::unexpected_entity(
+                    vec![FgaType::Role],
+                    id.to_string(),
+                    e.error.message,
+                )
+            },
+        )?))
     }
 }
 
 impl OpenFgaEntity for UserId {
     fn to_openfga(&self) -> String {
-        format!("user:{self}")
+        format!("user:{}", urlencoding::encode(&self.to_string()))
     }
 
     fn openfga_type(&self) -> FgaType {
@@ -106,15 +118,25 @@ impl OpenFgaEntity for UserId {
 
 impl ParseOpenFgaEntity for UserId {
     fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+        let id = urlencoding::decode(id)
+            .map_err(|e| {
+                OpenFGAError::unexpected_entity(
+                    vec![FgaType::User],
+                    id.to_string(),
+                    format!("Failed to decode user ID: {e}"),
+                )
+            })?
+            .to_string();
         if r#type != FgaType::User {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::User],
-                id.to_string(),
+                id.clone(),
+                format!("Expected user type, but got {type}"),
             ));
         }
 
-        UserId::try_from(id.to_string())
-            .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::User], id.to_string()))
+        UserId::try_from(id.as_str())
+            .map_err(|e| OpenFGAError::unexpected_entity(vec![FgaType::User], id, e.message))
     }
 }
 
@@ -165,11 +187,13 @@ impl ParseOpenFgaEntity for ProjectId {
             return Err(OpenFGAError::unexpected_entity(
                 vec![FgaType::Project],
                 id.to_string(),
+                format!("Expected project type, but got {type}"),
             ));
         }
 
-        ProjectId::from_str(id)
-            .map_err(|_e| OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string()))
+        ProjectId::from_str(id).map_err(|e: IcebergErrorResponse| {
+            OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string(), e.error.message)
+        })
     }
 }
 
@@ -210,5 +234,21 @@ impl OpenFgaEntity for ViewIdentUuid {
 
     fn openfga_type(&self) -> FgaType {
         FgaType::View
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_user_id_pre_0_9_can_be_parsed() {
+        // Previously allowed characters up to 0.8: "-", "_", alphanumeric
+        let user_id = "oidc~abc-def_ghi";
+        let openfga_id = format!("user:{user_id}",);
+        let parsed = UserId::parse_from_openfga(openfga_id.as_str()).unwrap();
+        assert_eq!(parsed.to_openfga(), openfga_id);
+        assert_eq!(parsed.openfga_type(), FgaType::User);
+        assert_eq!(parsed.to_string(), user_id);
     }
 }
