@@ -30,7 +30,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     let q_config = TaskQueueConfig {
         max_retries: 1,
         max_age: chrono::Duration::seconds(60),
-        poll_interval: std::time::Duration::from_secs(10),
+        poll_interval: std::time::Duration::from_secs(1),
         num_workers: 2,
     };
     let api_context = get_api_context(&pool, authorizer, Some(q_config));

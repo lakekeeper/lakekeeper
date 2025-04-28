@@ -184,14 +184,13 @@ mod test {
     };
 
     #[sqlx::test]
-    #[tracing_test::traced_test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let config = TaskQueueConfig::default();
-        let pg_queue = setup(pool, config);
+        let (pg_queue, warehouse_ident) = setup(pool, config).await;
         let queue = super::TabularPurgeQueue { pg_queue };
         let input = TabularPurgeInput {
             tabular_id: uuid::Uuid::new_v4(),
-            warehouse_ident: uuid::Uuid::new_v4().into(),
+            warehouse_ident,
             tabular_type: crate::api::management::v1::TabularType::Table,
             parent_id: None,
             tabular_location: String::new(),
