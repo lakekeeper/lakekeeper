@@ -14,7 +14,7 @@ Lakekeeper is an implementation of the Apache Iceberg REST Catalog API.  Lakekee
 * **Identity Provider** (optional): Lakekeeper can authenticate incoming requests using any OIDC capable Identity Provider (IdP). Lakekeeper can also natively authenticate kubernetes service accounts.
 * **Authorization System** (optional): For permission management, Lakekeeper uses the wonderful [OpenFGA](http://openfga.dev) Project. OpenFGA is automatically deployed in our docker-compose and helm installations. Authorization can only be used if Lakekeeper is connected to an Identity Provider.
 * **Secret Store** (optional): By default, Lakekeeper stores all secrets (i.e. S3 access credentials) encrypted in the Persistence Backend. To increase security, Lakekeeper can also use external systems to store secrets. Currently all Hashicorp-Vault like stores are supported.
-* **Event Store** (optional): Lakekeeper can send Change Events to an Event Store. Currently [Nats](http://nats.io) is supported, we are working on support for [Apache Kafka](http://kafka.apache.org)
+* **Event Store** (optional): Lakekeeper can send Change Events to an Event Store. We support [Nats](http://nats.io) and [Apache Kafka](http://kafka.apache.org)
 * **Data Contract System** (optional): Lakekeeper can interface with external data contract systems to prohibit breaking changes to your tables.
 
 To get started quickly with the latest version of Lakekeeper check our [Getting Started Guide](../../getting-started.md).
