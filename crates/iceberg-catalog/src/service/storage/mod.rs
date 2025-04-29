@@ -7,6 +7,8 @@ pub(crate) mod gcs;
 pub(crate) mod hdfs;
 pub(crate) mod s3;
 
+use std::sync::Arc;
+
 pub use az::{AdlsLocation, AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
 use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, UpdateError};
@@ -18,7 +20,6 @@ use iceberg_ext::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
@@ -388,7 +389,7 @@ impl StorageProfile {
         tracing::debug!("Cleanup started");
         // Cleanup
         file_io
-            .remove_all(&test_location)
+            .remove_all(&ns_location)
             .await
             .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
 

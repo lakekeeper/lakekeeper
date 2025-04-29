@@ -1,25 +1,23 @@
-use crate::catalog::io::{IoError, DEFAULT_LIST_LOCATION_PAGE_SIZE};
-use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use hdfs_native::client::FileStatus;
-use hdfs_native::{file::FileWriter, HdfsError, WriteOptions};
 use std::path::PathBuf;
-use std::sync::Arc;
+
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use hdfs_native::{client::FileStatus, file::FileWriter, HdfsError, WriteOptions};
+
+use crate::catalog::io::{IoError, DEFAULT_LIST_LOCATION_PAGE_SIZE};
 
 pub(crate) async fn atomic_write(
     client: &hdfs_native::Client,
     file_path: &str,
-    bytes: Arc<[bytes::Bytes]>,
+    bytes: bytes::Bytes,
     overwrite: bool,
 ) -> crate::api::Result<(), IoError> {
     let (mut writer, tmp_file_path) = open_tmp_file(client, file_path)
         .await
         .map_err(|e| IoError::FileWrite(Box::new(e)))?;
-    for b in bytes.into_iter() {
-        writer
-            .write(b)
-            .await
-            .map_err(|e| IoError::FileWrite(Box::new(e)))?;
-    }
+    writer
+        .write(bytes)
+        .await
+        .map_err(|e| IoError::FileWrite(Box::new(e)))?;
     writer
         .close()
         .await
@@ -34,12 +32,12 @@ pub(crate) async fn atomic_write(
     Ok(())
 }
 
-pub(crate) async fn list_dir(
+pub(crate) fn list_dir(
     client: &hdfs_native::Client,
     location: &str,
     page_size: Option<usize>,
-) -> crate::api::Result<BoxStream<'static, std::result::Result<Vec<String>, IoError>>, IoError> {
-    Ok(list_raw(client, location)
+) -> BoxStream<'static, std::result::Result<Vec<String>, IoError>> {
+    list_raw(client, location)
         .map_ok(|status| status.path)
         .chunks(page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE))
         .map(|c| {
@@ -55,7 +53,7 @@ pub(crate) async fn list_dir(
                     )
                 })
         })
-        .boxed())
+        .boxed()
 }
 
 pub(crate) fn list_raw(
@@ -110,7 +108,7 @@ pub(crate) async fn get_raw(
 async fn open_tmp_file(
     client: &hdfs_native::Client,
     file_path: &str,
-) -> hdfs_native::Result<(FileWriter, String)> {
+) -> hdfs_native::Result<(Box<FileWriter>, String)> {
     let path_buf = PathBuf::from(file_path);
 
     let file_name = path_buf
@@ -130,7 +128,11 @@ async fn open_tmp_file(
     let mut index = 1;
     loop {
         let path = format!("{tmp_file_path}.{index}");
-        match client.create(&path, WriteOptions::default()).await {
+        match client
+            .create(&path, WriteOptions::default())
+            .await
+            .map(Box::new)
+        {
             Ok(writer) => break Ok((writer, path)),
             Err(HdfsError::AlreadyExists(_)) => index += 1,
             Err(e) => break Err(e),

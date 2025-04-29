@@ -3,7 +3,7 @@ mod hdfs;
 
 use std::sync::Arc;
 
-use futures::{stream::BoxStream, StreamExt};
+use futures::{stream::BoxStream, FutureExt, StreamExt};
 use iceberg::{io::FileIO as IcebergFileIO, spec::TableMetadata};
 use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
 use serde::Serialize;
@@ -58,6 +58,7 @@ impl LakekeeperFileIO {
                     metadata_bytes.into(),
                     true,
                 )
+                .boxed()
                 .await
             }
         }
@@ -221,7 +222,7 @@ impl LakekeeperFileIO {
             }
             #[cfg(feature = "hdfs")]
             LakekeeperFileIO::HdfsNative(client) => {
-                hdfs::list_dir(client, &location, page_size).await
+                Ok(hdfs::list_dir(client, &location, page_size))
             }
         }
     }

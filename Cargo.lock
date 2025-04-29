@@ -2808,21 +2808,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hdfs-native-object-store"
-version = "0.14.1"
-source = "git+https://github.com/c-thiel/hdfs-native-object-store.git?branch=feat/derive-clone-for-hdfs-object-store#dee707c17e687e22b53f676833f040295a7dd4cb"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "hdfs-native",
- "object_store",
- "thiserror 2.0.12",
- "tokio",
-]
-
-[[package]]
 name = "headers"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2995,12 +2980,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "humantime"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b112acc8b3adf4b107a8ec20977da0273a8c386765a3ec0229bd500a1443f9f"
 
 [[package]]
 name = "hyper"
@@ -3244,7 +3223,6 @@ dependencies = [
  "fxhash",
  "gcloud-auth",
  "hdfs-native",
- "hdfs-native-object-store",
  "hostname",
  "http 1.3.1",
  "http-body-util",
@@ -3262,7 +3240,6 @@ dependencies = [
  "mockall",
  "moka",
  "needs_env_var",
- "object_store",
  "openfga-client",
  "openssl-src",
  "paste",
@@ -4500,28 +4477,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "object_store"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9ce831b09395f933addbc56d894d889e4b226eba304d4e7adbab591e26daf1e"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "http 1.3.1",
- "humantime",
- "itertools 0.14.0",
- "parking_lot",
- "percent-encoding",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "url",
- "walkdir",
 ]
 
 [[package]]

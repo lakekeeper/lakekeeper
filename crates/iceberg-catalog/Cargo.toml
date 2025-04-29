@@ -31,7 +31,7 @@ default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
 authz-openfga = ["dep:openfga-client"]
-hdfs = ["dep:hdfs-native", "dep:hdfs-native-object-store"]
+hdfs = ["dep:hdfs-native"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -64,7 +64,6 @@ fxhash = { workspace = true }
 google-cloud-auth = { workspace = true }
 google-cloud-token = { workspace = true }
 hdfs-native = { workspace = true, optional = true }
-hdfs-native-object-store = { workspace = true, optional = true }
 hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
@@ -79,7 +78,6 @@ lazy_static = { workspace = true }
 limes = { workspace = true }
 middle = { workspace = true }
 moka = { workspace = true }
-object_store = { workspace = true }
 openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
