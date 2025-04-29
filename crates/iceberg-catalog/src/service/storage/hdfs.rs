@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use hdfs_native_object_store::HdfsObjectStore;
 use iceberg_ext::configs::{table::TableProperties, Location, ParseFromStr};
 use serde::{Deserialize, Serialize};
 
@@ -90,7 +89,7 @@ impl HdfsProfile {
     pub fn file_io(
         &self,
         _credential: Option<&HdfsCredential>,
-    ) -> Result<HdfsObjectStore, FileIoError> {
+    ) -> Result<hdfs_native::Client, FileIoError> {
         if !CONFIG.enable_hdfs_with_system_credentials {
             return Err(FileIoError::Credentials(
                 CredentialsError::Misconfiguration(
@@ -98,7 +97,7 @@ impl HdfsProfile {
                 ),
             ));
         }
-        HdfsObjectStore::with_config(self.url.as_str(), self.config.clone())
+        hdfs_native::Client::new_with_config(self.url.as_str(), self.config.clone())
             .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))
     }
 }

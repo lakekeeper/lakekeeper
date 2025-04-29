@@ -191,6 +191,8 @@ services:
     hostname: namenode
     container_name: namenode
     user: root
+    ports:
+      - "9871:9871"
     depends_on:
       kerberos-sidecar:
         condition: service_healthy

@@ -52,6 +52,7 @@ azure_identity = { workspace = true }
 azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
 base64 = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }

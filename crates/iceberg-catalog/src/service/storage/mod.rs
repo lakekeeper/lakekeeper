@@ -18,6 +18,7 @@ use iceberg_ext::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
@@ -186,7 +187,7 @@ impl StorageProfile {
             #[cfg(feature = "hdfs")]
             StorageProfile::Hdfs(prof) => Ok(prof
                 .file_io(secret.map(|s| s.try_into_hdfs()).transpose()?)
-                .map(LakekeeperFileIO::HdfsNative)?),
+                .map(|client| LakekeeperFileIO::HdfsNative(Arc::new(client)))?),
         }
     }
 

@@ -1,10 +1,11 @@
 #[cfg(feature = "hdfs")]
-use futures::TryStreamExt;
+mod hdfs;
+
+use std::sync::Arc;
+
 use futures::{stream::BoxStream, StreamExt};
 use iceberg::{io::FileIO as IcebergFileIO, spec::TableMetadata};
 use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
-#[cfg(feature = "hdfs")]
-use object_store::{ObjectStore, PutPayload};
 use serde::Serialize;
 
 use super::compression_codec::CompressionCodec;
@@ -21,7 +22,7 @@ use crate::{
 pub enum LakekeeperFileIO {
     IcebergFileIO(IcebergFileIO),
     #[cfg(feature = "hdfs")]
-    HdfsNative(hdfs_native_object_store::HdfsObjectStore),
+    HdfsNative(Arc<hdfs_native::Client>),
 }
 
 impl LakekeeperFileIO {
@@ -50,14 +51,15 @@ impl LakekeeperFileIO {
                 .await
             }
             #[cfg(feature = "hdfs")]
-            LakekeeperFileIO::HdfsNative(hdfs) => hdfs
-                .put(
-                    &object_store::path::Path::from(metadata_location.clone()),
-                    PutPayload::from(metadata_bytes),
+            LakekeeperFileIO::HdfsNative(hdfs) => {
+                hdfs::atomic_write(
+                    hdfs,
+                    metadata_location.as_str(),
+                    metadata_bytes.into(),
+                    true,
                 )
                 .await
-                .map_err(|e| IoError::FileWrite(Box::new(e)))
-                .map(|_| ()),
+            }
         }
         .inspect_err(|e| {
             tracing::info!(
@@ -86,17 +88,7 @@ impl LakekeeperFileIO {
                 .await
             }
             #[cfg(feature = "hdfs")]
-            LakekeeperFileIO::HdfsNative(hdfs) => {
-                let content = hdfs
-                    .get(&object_store::path::Path::from(file.clone()))
-                    .await
-                    .map_err(|e| IoError::FileRead(Box::new(e)))?;
-                content
-                    .bytes()
-                    .await
-                    .map_err(|e| IoError::FileRead(Box::new(e)))
-                    .map(|pl| pl.to_vec())
-            }
+            LakekeeperFileIO::HdfsNative(client) => hdfs::get(client, &file).await,
         }
         .inspect_err(|e| tracing::info!(?e, "Failed to read file `{file}`"))
     }
@@ -120,39 +112,42 @@ impl LakekeeperFileIO {
     }
 
     pub async fn remove_all(&self, location: &Location) -> Result<(), IoError> {
-        let location = normalize_location(location.clone().with_trailing_slash());
+        let normalized_location = normalize_location(location.clone().with_trailing_slash());
 
         match self {
             LakekeeperFileIO::IcebergFileIO(file_io) => {
                 retry_fn(|| async {
                     file_io
                         .clone()
-                        .remove_all(&location)
+                        .remove_all(&normalized_location)
                         .await
                         .map_err(IoError::FileRemoveAll)
                 })
                 .await
             }
             #[cfg(feature = "hdfs")]
-            LakekeeperFileIO::HdfsNative(hdfs) => {
-                let files = hdfs
-                    .list(Some(&object_store::path::Path::from(location.clone())))
-                    .map(|p| p.map(|p| p.location));
-                let delete_stream = hdfs.delete_stream(files.boxed());
-                let v = delete_stream.try_collect::<Vec<_>>().await;
-                match v {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(IoError::FileDelete(
-                        iceberg::Error::new(
-                            iceberg::ErrorKind::RequirementFailed,
-                            format!("Failed to delete hdfs file: {e}"),
+            LakekeeperFileIO::HdfsNative(client) => {
+                client
+                    .delete(&normalized_location, true)
+                    .await
+                    .map_err(|e| {
+                        IoError::FileDelete(
+                            iceberg::Error::new(
+                                iceberg::ErrorKind::RequirementFailed,
+                                format!("Failed to delete hdfs file: {e}"),
+                            )
+                            .with_source(e),
                         )
-                        .with_source(e),
-                    )),
-                }
+                    })?;
+                Ok(())
             }
         }
-        .inspect_err(|e| tracing::info!(?e, "Failed to delete all files in location `{location}`"))
+        .inspect_err(|e| {
+            tracing::info!(
+                ?e,
+                "Failed to delete all files in location `{normalized_location}`"
+            );
+        })
     }
 
     pub async fn delete_file(&self, location: &Location) -> Result<(), IoError> {
@@ -169,20 +164,33 @@ impl LakekeeperFileIO {
                 .await
             }
             #[cfg(feature = "hdfs")]
-            LakekeeperFileIO::HdfsNative(hdfs) => hdfs
-                .delete(&object_store::path::Path::from(location.clone()))
-                .await
-                .map_err(|e| {
-                    IoError::FileDelete(
-                        iceberg::Error::new(
-                            iceberg::ErrorKind::RequirementFailed,
-                            format!("Failed to delete hdfs file: {e}"),
+            LakekeeperFileIO::HdfsNative(client) => {
+                let info = client.get_file_info(&location).await.map_err(|e| {
+                    tracing::error!("Failed to get fileinfo while trying to delete a file.");
+                    IoError::FileRead(Box::new(e))
+                })?;
+                if info.isdir {
+                    return Err(IoError::FileDelete(iceberg::Error::new(
+                        iceberg::ErrorKind::RequirementFailed,
+                        "Cannot delete a directory",
+                    )));
+                }
+                client
+                    .delete(&location, false)
+                    .await
+                    .map_err(|e| {
+                        IoError::FileDelete(
+                            iceberg::Error::new(
+                                iceberg::ErrorKind::RequirementFailed,
+                                format!("Failed to delete hdfs file: {e}"),
+                            )
+                            .with_source(e),
                         )
-                        .with_source(e),
-                    )
-                }),
+                    })
+                    .map(|_| ())
+            }
+            .inspect_err(|e| tracing::info!(?e, "Failed to delete file `{location}`")),
         }
-        .inspect_err(|e| tracing::info!(?e, "Failed to delete file `{location}`"))
     }
 
     pub async fn list_location<'a>(
@@ -212,24 +220,9 @@ impl LakekeeperFileIO {
                 Ok(entries.boxed())
             }
             #[cfg(feature = "hdfs")]
-            LakekeeperFileIO::HdfsNative(hdfs) => Ok(hdfs
-                .list(Some(&object_store::path::Path::from(location)))
-                .map(|p| p.map(|p| p.location.to_string()))
-                .chunks(page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE))
-                .map(|c| {
-                    c.into_iter()
-                        .collect::<Result<Vec<String>, _>>()
-                        .map_err(|e| {
-                            IoError::List(
-                                iceberg::Error::new(
-                                    iceberg::ErrorKind::RequirementFailed,
-                                    format!("Failed to list hdfs file: {e}"),
-                                )
-                                .with_source(e),
-                            )
-                        })
-                })
-                .boxed()),
+            LakekeeperFileIO::HdfsNative(client) => {
+                hdfs::list_dir(client, &location, page_size).await
+            }
         }
     }
 }
@@ -347,9 +340,9 @@ impl From<IcebergFileIO> for LakekeeperFileIO {
 }
 
 #[cfg(feature = "hdfs")]
-impl From<hdfs_native_object_store::HdfsObjectStore> for LakekeeperFileIO {
-    fn from(file_io: hdfs_native_object_store::HdfsObjectStore) -> Self {
-        LakekeeperFileIO::HdfsNative(file_io)
+impl From<hdfs_native::Client> for LakekeeperFileIO {
+    fn from(file_io: hdfs_native::Client) -> Self {
+        LakekeeperFileIO::HdfsNative(Arc::new(file_io))
     }
 }
 
