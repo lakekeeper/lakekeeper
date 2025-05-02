@@ -80,6 +80,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
             &warehouse.warehouse_id.to_string(),
             &ns_name.to_string(),
             &table_name,
+            false,
         )
         .await
         .unwrap();

@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH namespace_info AS (\n            SELECT namespace_name, protected\n            FROM namespace\n            WHERE warehouse_id = $1 AND namespace_id = $2\n        ),\n        child_namespaces AS (\n            SELECT n.protected, n.namespace_id\n            FROM namespace n\n            INNER JOIN namespace_info ni ON n.namespace_name[1:array_length(ni.namespace_name, 1)] = ni.namespace_name\n            WHERE n.warehouse_id = $1 AND n.namespace_id != $2\n        ),\n        tabulars AS (\n            SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at\n            FROM tabular ta\n            WHERE namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))\n        ),\n        tasks AS (\n            SELECT te.task_id, t.status as task_status from tabular_expirations te join task t on te.task_id = t.task_id\n            WHERE t.status = 'running' AND te.tabular_id = ANY (SELECT tabular_id FROM tabulars)\n        )\n        SELECT\n            (SELECT protected FROM namespace_info) AS \"is_protected!\",\n            EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS \"has_protected_namespaces!\",\n            EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS \"has_protected_tabulars!\",\n            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS \"has_running_tasks!\",\n            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS \"child_tabulars!\",\n            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS \"child_tabulars_deleted!\",\n            ARRAY(SELECT namespace_id FROM child_namespaces) AS \"child_namespaces!\",\n            ARRAY(SELECT fs_protocol FROM tabulars) AS \"child_tabular_fs_protocol!\",\n            ARRAY(SELECT fs_location FROM tabulars) AS \"child_tabular_fs_location!\",\n            ARRAY(SELECT typ FROM tabulars) AS \"child_tabular_typ!: Vec<TabularType>\",\n            ARRAY(SELECT task_id FROM tasks) AS \"child_tabular_task_id!: Vec<Uuid>\"\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "has_protected_namespaces!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "has_protected_tabulars!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "has_running_tasks!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "child_tabulars!",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "child_tabulars_deleted!",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "child_namespaces!",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "child_tabular_fs_protocol!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "child_tabular_fs_location!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "child_tabular_typ!: Vec<TabularType>",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "tabular_type",
+                  "kind": {
+                    "Enum": [
+                      "table",
+                      "view"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "child_tabular_task_id!: Vec<Uuid>",
+        "type_info": "UuidArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "52220b2ebcd000ebfc163ba2ab561a5aa748d4256e7e1914198b63779219b326"
+}
