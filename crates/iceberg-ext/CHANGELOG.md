@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/lakekeeper/lakekeeper/compare/v0.8.3...v0.8.4) (2025-05-02)
+
+
+### Miscellaneous Chores
+
+* release 0.8.4 ([7a0b1c9](https://github.com/lakekeeper/lakekeeper/commit/7a0b1c95db682fc8f3b911032632841f3403b412))
+
 ## [0.8.3](https://github.com/lakekeeper/lakekeeper/compare/v0.8.2...v0.8.3) (2025-04-18)
 
 
