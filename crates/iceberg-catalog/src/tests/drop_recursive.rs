@@ -33,7 +33,10 @@ mod test {
         },
         catalog::CatalogServer,
         service::{ListNamespacesQuery, NamespaceIdentUuid, TableIdentUuid},
-        tests::{create_ns, drop_recursive::setup_drop_test, random_request_metadata},
+        tests::{
+            create_ns, create_table, drop_namespace, drop_recursive::setup_drop_test,
+            random_request_metadata,
+        },
     };
 
     #[sqlx::test]
@@ -511,6 +514,63 @@ mod test {
             .unwrap_err();
         assert_eq!(e.error.code, 404);
     }
+
+    #[sqlx::test]
+    async fn test_can_drop_namespace_with_staged_tabulars(pool: PgPool) {
+        let setup = setup_drop_test(pool, 0, 0, 1, TabularDeleteProfile::Hard {}).await;
+        let ctx = setup.ctx;
+        let warehouse = setup.warehouse;
+        let prefix = warehouse.warehouse_id.to_string();
+
+        let _ = create_table(
+            ctx.clone(),
+            &prefix,
+            setup.namespace_names[0].clone(),
+            "tab0",
+            true,
+        )
+        .await
+        .unwrap();
+        let tables = CatalogServer::list_tables(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: NamespaceIdent::new(setup.namespace_names[0].clone()),
+            },
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: None,
+                return_uuids: true,
+                return_protection_status: false,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        // staged tables are not included in the list
+        assert_eq!(tables.identifiers.len(), 0);
+
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(setup.namespace_names[0].clone()),
+        };
+        drop_namespace(
+            ctx.clone(),
+            NamespaceDropFlags {
+                force: false,
+                purge: true,
+                recursive: false,
+            },
+            ns_params.clone(),
+        )
+        .await
+        .unwrap();
+
+        let e = CatalogServer::namespace_exists(ns_params, ctx.clone(), random_request_metadata())
+            .await
+            .unwrap_err();
+        assert_eq!(e.error.code, 404);
+    }
 }
 
 struct DropSetup {
@@ -570,6 +630,7 @@ async fn setup_drop_test(
                 &warehouse.warehouse_id.to_string(),
                 &ns_name,
                 &tab_name,
+                false,
             )
             .await
             .unwrap();

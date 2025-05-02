@@ -109,13 +109,14 @@ pub(crate) async fn create_table<T: Authorizer>(
     prefix: impl Into<String>,
     ns_name: impl Into<String>,
     name: impl Into<String>,
+    stage: bool,
 ) -> crate::api::Result<LoadTableResult> {
     CatalogServer::create_table(
         NamespaceParameters {
             prefix: Some(Prefix(prefix.into())),
             namespace: NamespaceIdent::new(ns_name.into()),
         },
-        crate::catalog::tables::test::create_request(Some(name.into())),
+        crate::catalog::tables::test::create_request(Some(name.into()), Some(stage)),
         DataAccess::none(),
         api_context,
         random_request_metadata(),

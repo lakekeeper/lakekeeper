@@ -1944,7 +1944,10 @@ pub(crate) mod test {
         assert!(count.is_none());
     }
 
-    pub(crate) fn create_request(table_name: Option<String>) -> CreateTableRequest {
+    pub(crate) fn create_request(
+        table_name: Option<String>,
+        stage_create: Option<bool>,
+    ) -> CreateTableRequest {
         CreateTableRequest {
             name: table_name.unwrap_or("my_table".to_string()),
             location: None,
@@ -1967,7 +1970,7 @@ pub(crate) mod test {
                 .unwrap(),
             partition_spec: Some(UnboundPartitionSpec::builder().build()),
             write_order: None,
-            stage_create: Some(false),
+            stage_create,
             properties: None,
         }
     }
@@ -2719,7 +2722,7 @@ pub(crate) mod test {
         let (ctx, ns, ns_params, _) = table_test_setup(pool).await;
         let table = CatalogServer::create_table(
             ns_params.clone(),
-            create_request(Some("tab-1".to_string())),
+            create_request(Some("tab-1".to_string()), Some(false)),
             DataAccess {
                 vended_credentials: true,
                 remote_signing: false,
@@ -2768,9 +2771,9 @@ pub(crate) mod test {
     async fn test_can_create_tables_with_same_prefix_1(pool: PgPool) {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
-        let mut create_request_1 = create_request(Some("tab-1".to_string()));
+        let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
         create_request_1.location = Some(format!("{base_location}/{tmp_id}/my-table-2"));
-        let mut create_request_2 = create_request(Some("tab-2".to_string()));
+        let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
         create_request_2.location = Some(format!("{base_location}/{tmp_id}/my-table"));
 
         let _ = CatalogServer::create_table(
@@ -2798,9 +2801,9 @@ pub(crate) mod test {
     async fn test_can_create_tables_with_same_prefix_2(pool: PgPool) {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
-        let mut create_request_1 = create_request(Some("tab-1".to_string()));
+        let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
         create_request_1.location = Some(format!("{base_location}/{tmp_id}/my-table"));
-        let mut create_request_2 = create_request(Some("tab-2".to_string()));
+        let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
         create_request_2.location = Some(format!("{base_location}/{tmp_id}/my-table-2"));
 
         let _ = CatalogServer::create_table(
@@ -2828,9 +2831,9 @@ pub(crate) mod test {
     async fn test_cannot_create_table_at_same_location(pool: PgPool) {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
-        let mut create_request_1 = create_request(Some("tab-1".to_string()));
+        let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
         create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket"));
-        let mut create_request_2 = create_request(Some("tab-2".to_string()));
+        let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
         create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket"));
 
         let _ = CatalogServer::create_table(
@@ -2860,10 +2863,10 @@ pub(crate) mod test {
     async fn test_cannot_create_staged_tables_at_sublocations_1(pool: PgPool) {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
-        let mut create_request_1 = create_request(Some("tab-1".to_string()));
+        let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
         create_request_1.stage_create = Some(true);
         create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket/inner"));
-        let mut create_request_2 = create_request(Some("tab-2".to_string()));
+        let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
         create_request_2.stage_create = Some(true);
         create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket"));
         let _ = CatalogServer::create_table(
@@ -2893,10 +2896,10 @@ pub(crate) mod test {
     async fn test_cannot_create_staged_tables_at_sublocations_2(pool: PgPool) {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
-        let mut create_request_1 = create_request(Some("tab-1".to_string()));
+        let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
         create_request_1.stage_create = Some(true);
         create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket"));
-        let mut create_request_2 = create_request(Some("tab-2".to_string()));
+        let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
         create_request_2.stage_create = Some(true);
         create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/inner"));
         let _ = CatalogServer::create_table(
@@ -2927,9 +2930,9 @@ pub(crate) mod test {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
         let tmp_id = Uuid::now_v7();
 
-        let mut create_request_1 = create_request(Some("tab-1".to_string()));
+        let mut create_request_1 = create_request(Some("tab-1".to_string()), Some(false));
         create_request_1.location = Some(format!("{base_location}/{tmp_id}/bucket"));
-        let mut create_request_2 = create_request(Some("tab-2".to_string()));
+        let mut create_request_2 = create_request(Some("tab-2".to_string()), Some(false));
         create_request_2.location = Some(format!("{base_location}/{tmp_id}/bucket/sublocation"));
         let _ = CatalogServer::create_table(
             ns_params.clone(),
@@ -2986,7 +2989,7 @@ pub(crate) mod test {
             namespace: ns.namespace.clone(),
         };
         for i in 0..n_tables {
-            let mut create_request = create_request(Some(format!("{i}")));
+            let mut create_request = create_request(Some(format!("{i}")), Some(false));
             create_request.location = Some(format!("{base_location}/bucket/{i}"));
             let tab = CatalogServer::create_table(
                 ns_params.clone(),
@@ -3045,7 +3048,7 @@ pub(crate) mod test {
         for i in 0..10 {
             let _ = CatalogServer::create_table(
                 ns_params.clone(),
-                create_request(Some(format!("tab-{i}"))),
+                create_request(Some(format!("tab-{i}")), Some(false)),
                 DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
@@ -3231,7 +3234,7 @@ pub(crate) mod test {
         };
         let tab = CatalogServer::create_table(
             ns_params.clone(),
-            create_request(Some("tab-1".to_string())),
+            create_request(Some("tab-1".to_string()), Some(false)),
             DataAccess::none(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -3300,7 +3303,7 @@ pub(crate) mod test {
         };
         let tab = CatalogServer::create_table(
             ns_params.clone(),
-            create_request(Some("tab-1".to_string())),
+            create_request(Some("tab-1".to_string()), Some(false)),
             DataAccess::none(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),

@@ -54,6 +54,7 @@ mod test {
             &setup.warehouse.warehouse_id.to_string(),
             setup.namespace_name.as_str(),
             &tn,
+            false,
         )
         .await
         .unwrap();
@@ -185,6 +186,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
             &warehouse.warehouse_id.to_string(),
             ns_name,
             &tab_name,
+            false,
         )
         .await
         .unwrap();

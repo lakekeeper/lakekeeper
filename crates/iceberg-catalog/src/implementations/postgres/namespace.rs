@@ -356,7 +356,7 @@ pub(crate) async fn drop_namespace(
         tabulars AS (
             SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected
             FROM tabular ta
-            WHERE namespace_id = $2 OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+            WHERE namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
         ),
         tasks AS (
             SELECT te.task_id, t.status as task_status from tabular_expirations te join task t on te.task_id = t.task_id
