@@ -1500,7 +1500,9 @@ pub mod v1 {
         View,
     }
 
-    #[derive(Debug, Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq)]
+    #[derive(
+        Debug, Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq, strum_macros::Display,
+    )]
     #[serde(rename_all = "kebab-case")]
     pub enum DeleteKind {
         Default,

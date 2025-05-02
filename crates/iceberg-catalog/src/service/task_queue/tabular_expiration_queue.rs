@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use tracing::Instrument;
 use uuid::Uuid;
@@ -84,10 +84,10 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     match handle_table::<C, A>(catalog_state.clone(), authorizer, cleaner, expiration).await {
         Ok(()) => {
             fetcher.retrying_record_success(&expiration.task).await;
-            tracing::info!("Successfully handled table expiration");
+            tracing::debug!("Successful {expiration}");
         }
         Err(e) => {
-            tracing::error!("Failed to handle table expiration: {:?}", e);
+            tracing::error!("Failed to handle {expiration}: {:?}", e);
             fetcher
                 .retrying_record_failure(&expiration.task, &format!("{e:?}"))
                 .await;
@@ -167,6 +167,20 @@ pub struct TabularExpirationTask {
     pub warehouse_ident: WarehouseIdent,
     pub tabular_type: TabularType,
     pub task: Task,
+}
+
+impl fmt::Display for TabularExpirationTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "expiration of {} {} in warehouse {} (task: {}, action: {})",
+            self.tabular_type,
+            self.tabular_id,
+            self.warehouse_ident,
+            self.task.task_id,
+            self.deletion_kind
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

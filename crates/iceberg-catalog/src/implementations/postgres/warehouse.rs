@@ -14,7 +14,10 @@ use crate::{
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     request_metadata::RequestMetadata,
-    service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
+    service::{
+        storage::StorageProfile, task_queue::TaskStatus, GetProjectResponse, GetWarehouseResponse,
+        WarehouseStatus,
+    },
     ProjectId, SecretIdent, WarehouseIdent,
 };
 
@@ -442,16 +445,25 @@ pub(crate) async fn delete_warehouse(
     DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
-    let tasks = sqlx::query_scalar!(
-        r#"WITH running_tasks as (SELECT task_id, status from task WHERE warehouse_id = $1 AND status = ANY('{running, pending}')),
-                deletes as (DELETE FROM task where warehouse_id = $1 AND status != ANY('{running, pending}'))
-            SELECT COUNT(task_id) as "task_count!" FROM running_tasks"#,
-        *warehouse_id
-    ).fetch_one(&mut **transaction).await.map_err(|e| e.into_error_model("Error deleting warehouse_tasks"))?;
-    if tasks > 0 {
+    let unfinished_task_counts_per_queue = sqlx::query!(
+        r#"WITH running_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1 AND status = ANY($2::task_status[])),
+                deletes as (DELETE FROM task where warehouse_id = $1 AND status != ANY($2::task_status[]))
+            SELECT COUNT(task_id) as "task_count!", queue_name FROM running_tasks GROUP BY queue_name"#,
+        *warehouse_id,
+        TaskStatus::non_terminal_states() as _,
+    ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error deleting tasks for warehouse"))?;
+    if !unfinished_task_counts_per_queue.is_empty() {
+        let task_descriptions = unfinished_task_counts_per_queue
+            .iter()
+            .map(|row| format!("{} in queue '{}'", row.task_count, row.queue_name))
+            .collect::<Vec<_>>()
+            .join(", ");
+
         return Err(ErrorModel::conflict(
-            format!("Warehouse has {tasks} running tasks, retry once they are done."),
-            "WarehouseHasTasks",
+            format!(
+                "Warehouse has unfinished tasks: {task_descriptions}. Retry once they are done."
+            ),
+            "WarehouseHasUnfinishedTasks",
             None,
         )
         .into());

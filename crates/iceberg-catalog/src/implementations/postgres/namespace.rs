@@ -354,7 +354,7 @@ pub(crate) async fn drop_namespace(
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
         ),
         tabulars AS (
-            SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected
+            SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
             FROM tabular ta
             WHERE namespace_id = $2 OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
         ),
@@ -367,7 +367,8 @@ pub(crate) async fn drop_namespace(
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
-            ARRAY(SELECT tabular_id FROM tabulars) AS "child_tabulars!",
+            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
+            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
@@ -389,7 +390,16 @@ pub(crate) async fn drop_namespace(
 
     if !recursive && (!info.child_tabulars.is_empty() || !info.child_namespaces.is_empty()) {
         return Err(
-            ErrorModel::conflict("Namespace is not empty", "NamespaceNotEmpty", None).into(),
+            ErrorModel::conflict(
+                format!(
+                    "Namespace is not empty. Contains {} tables/views, {} soft-deleted tables/views and {} child namespaces. Use 'recursive' flag to delete all content",
+                    info.child_tabulars.len(),
+                    info.child_tabulars_deleted.len(),
+                    info.child_namespaces.len()
+                ),
+                "NamespaceNotEmpty",
+                None
+            ).into(),
         );
     }
 
