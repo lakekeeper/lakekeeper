@@ -14,6 +14,10 @@ impl MigrationHook for SplitTableMetadataHook {
         split_table_metadata(trx).boxed()
     }
 
+    fn name(&self) -> &'static str {
+        "split_table_metadata"
+    }
+
     fn version() -> i64
     where
         Self: Sized,
