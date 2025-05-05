@@ -12,11 +12,16 @@ use sqlx::{
 
 use crate::{
     implementations::postgres::{
-        migrations::split_table_metadata::SplitTableMetadataHook, CatalogState, PostgresTransaction,
+        migrations::{
+            patch_fix_sequence_metadata_hash::FixSequenceMetadataHashHook,
+            split_table_metadata::SplitTableMetadataHook,
+        },
+        CatalogState, PostgresTransaction,
     },
     service::Transaction,
 };
 
+mod patch_fix_sequence_metadata_hash;
 mod split_table_metadata;
 
 /// # Errors
@@ -56,9 +61,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             tr.apply(&migration).await?;
             tracing::info!(%migration.version, "Applying migration");
             if let Some(hook) = hooks.remove(&migration.version) {
-                tracing::info!(%migration.version, "Running split_table_metadata migration");
-                hook.apply(tr).await.map_err(|e| e.error)?;
-                tracing::info!(%migration.version, "split_table_metadata migration complete");
+                tracing::info!(%migration.version, "Running migration");
+                hook.apply(tr).await?;
+                tracing::info!(%migration.version, "Migration complete");
             } else {
                 tracing::info!(%migration.version, "No hook for migration");
             }
@@ -149,7 +154,7 @@ pub trait MigrationHook: Send + Sync + 'static {
     fn apply<'c>(
         &self,
         trx: &'c mut sqlx::Transaction<'_, Postgres>,
-    ) -> BoxFuture<'c, crate::api::Result<()>>;
+    ) -> BoxFuture<'c, anyhow::Result<()>>;
 
     fn version() -> i64
     where
@@ -163,10 +168,16 @@ pub struct Migration {
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
-    HashMap::from([(
-        SplitTableMetadataHook::version(),
-        Box::new(SplitTableMetadataHook) as Box<_>,
-    )])
+    HashMap::from([
+        (
+            SplitTableMetadataHook::version(),
+            Box::new(SplitTableMetadataHook) as Box<_>,
+        ),
+        (
+            FixSequenceMetadataHashHook::version(),
+            Box::new(FixSequenceMetadataHashHook) as Box<_>,
+        ),
+    ])
 }
 
 fn validate_applied_migrations(

@@ -10,6 +10,7 @@ WHERE t1.created_at < t2.created_at
 -- table fmt version 1 has no sequence number, hence we only enforce the unique constraint via a partial unique index
 CREATE OR REPLACE FUNCTION is_not_table_format_v1(table_id_param uuid)
     RETURNS BOOLEAN
+    SET search_path FROM CURRENT
     IMMUTABLE AS
 $$
 BEGIN
