@@ -38,7 +38,7 @@ The following shell snippet will start a full development environment including 
 
 ```sh
 $ cd examples
-$ docker-compose -f docker-compose.yaml -f docker-compose-latest.yaml up -d --build
+$ docker compose -f docker-compose.yaml -f docker-compose-latest.yaml up -d --build
 ```
 
 You may then head to `localhost:8888` and try out one of the notebooks.
