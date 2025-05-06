@@ -40,6 +40,7 @@ use crate::{
         authz::Authorizer,
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
+        hooks::Hooks,
         storage::{
             s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
             StorageProfile, TestProfile,
@@ -300,6 +301,7 @@ pub(crate) fn get_api_context<T: Authorizer>(
                     .unwrap(),
                 ),
             ),
+            hooks: Hooks::new(vec![]),
         },
     }
 }

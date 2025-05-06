@@ -138,8 +138,6 @@ fn parse_view_location(location: &str) -> Result<Location> {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
     use iceberg::NamespaceIdent;
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -149,17 +147,14 @@ mod test {
         catalog::views::validate_view_properties,
         implementations::postgres::{
             namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog, ReadWrite, SecretsState,
+            PostgresCatalog, SecretsState,
         },
         service::{
             authz::AllowAllAuthorizer,
-            contract_verification::ContractVerifiers,
-            event_publisher::CloudEventsPublisher,
             storage::{StorageProfile, TestProfile},
-            task_queue::TaskQueues,
             State,
         },
-        WarehouseIdent, CONFIG,
+        WarehouseIdent,
     };
 
     pub(crate) async fn setup(
@@ -170,7 +165,7 @@ mod test {
         NamespaceIdent,
         WarehouseIdent,
     ) {
-        let api_context = get_api_context(pool);
+        let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer, None);
         let state = api_context.v1_state.catalog.clone();
         let warehouse_id = initialize_warehouse(
             state.clone(),
@@ -192,30 +187,6 @@ mod test {
         .1
         .namespace;
         (api_context, namespace, warehouse_id)
-    }
-
-    pub(crate) fn get_api_context(
-        pool: PgPool,
-    ) -> ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>> {
-        let (tx, _) = tokio::sync::mpsc::channel(1000);
-
-        ApiContext {
-            v1_state: State {
-                authz: AllowAllAuthorizer,
-                catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
-                secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
-                publisher: CloudEventsPublisher::new(tx.clone()),
-                contract_verifiers: ContractVerifiers::new(vec![]),
-                queues: TaskQueues::new(
-                    Arc::new(
-                        crate::implementations::postgres::task_queues::TabularExpirationQueue::from_config(ReadWrite::from_pools(pool.clone(), pool.clone()), CONFIG.queue_config.clone()).unwrap(),
-                    ),
-                    Arc::new(
-                        crate::implementations::postgres::task_queues::TabularPurgeQueue::from_config(ReadWrite::from_pools(pool.clone(), pool), CONFIG.queue_config.clone()).unwrap()
-                    )
-                )
-            },
-        }
     }
 
     #[test]

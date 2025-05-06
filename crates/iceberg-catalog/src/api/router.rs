@@ -25,6 +25,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         event_publisher::CloudEventsPublisher,
         health::ServiceHealthProvider,
+        hooks::Hooks,
         task_queue::TaskQueues,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
@@ -50,6 +51,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
+    pub hooks: Hooks,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -74,6 +76,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
                 "endpoint_statistics_tracker_tx",
                 &self.endpoint_statistics_tracker_tx,
             )
+            .field("hooks", &self.hooks)
             .finish()
     }
 }
@@ -100,6 +103,7 @@ pub fn new_full_router<
         cors_origins,
         metrics_layer,
         endpoint_statistics_tracker_tx,
+        hooks,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -196,6 +200,7 @@ pub fn new_full_router<
                 publisher,
                 contract_verifiers: table_change_checkers,
                 queues,
+                hooks,
             },
         });
 

@@ -237,8 +237,6 @@ where
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test {
-    use std::sync::Arc;
-
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
     use sqlx::PgPool;
@@ -247,31 +245,20 @@ pub(crate) mod test {
     use crate::{
         api::{
             iceberg::{types::Prefix, v1::namespace::NamespaceService},
-            management::v1::{
-                bootstrap::{BootstrapRequest, Service as _},
-                warehouse::{
-                    CreateWarehouseRequest, CreateWarehouseResponse, Service as _,
-                    TabularDeleteProfile,
-                },
-                ApiServer,
-            },
+            management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
         catalog::CatalogServer,
-        implementations::postgres::{CatalogState, PostgresCatalog, ReadWrite, SecretsState},
+        implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
         service::{
             authz::Authorizer,
-            contract_verification::ContractVerifiers,
-            event_publisher::CloudEventsPublisher,
             storage::{
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile, TestProfile,
             },
-            task_queue::TaskQueues,
             State, UserId,
         },
-        CONFIG,
     };
 
     pub(crate) fn test_io_profile() -> StorageProfile {
@@ -339,71 +326,19 @@ pub(crate) mod test {
         user_id: Option<UserId>,
     ) -> (
         ApiContext<State<T, PostgresCatalog, SecretsState>>,
-        CreateWarehouseResponse,
+        TestWarehouseResponse,
     ) {
-        let api_context = get_api_context(pool, authorizer);
-        let _state = api_context.v1_state.catalog.clone();
-        let metadata = if let Some(user_id) = user_id {
-            RequestMetadata::random_human(user_id)
-        } else {
-            RequestMetadata::random_human(UserId::new_unchecked(
-                "oidc",
-                &uuid::Uuid::now_v7().to_string(),
-            ))
-        };
-        ApiServer::bootstrap(
-            api_context.clone(),
-            metadata.clone(),
-            BootstrapRequest {
-                accept_terms_of_use: true,
-                is_operator: true,
-                user_name: None,
-                user_email: None,
-                user_type: None,
-            },
+        crate::tests::setup(
+            pool,
+            storage_profile,
+            storage_credential,
+            authorizer,
+            delete_profile,
+            user_id,
+            None,
+            1,
         )
         .await
-        .unwrap();
-        let warehouse = ApiServer::create_warehouse(
-            CreateWarehouseRequest {
-                warehouse_name: format!("test-warehouse-{}", Uuid::now_v7()),
-                project_id: None,
-                storage_profile,
-                storage_credential,
-                delete_profile,
-            },
-            api_context.clone(),
-            metadata,
-        )
-        .await
-        .unwrap();
-
-        (api_context, warehouse)
-    }
-
-    pub(crate) fn get_api_context<T: Authorizer>(
-        pool: PgPool,
-        auth: T,
-    ) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
-        let (tx, _) = tokio::sync::mpsc::channel(1000);
-
-        ApiContext {
-            v1_state: State {
-                authz: auth,
-                catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
-                secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
-                publisher: CloudEventsPublisher::new(tx.clone()),
-                contract_verifiers: ContractVerifiers::new(vec![]),
-                queues: TaskQueues::new(
-                    Arc::new(
-                        crate::implementations::postgres::task_queues::TabularExpirationQueue::from_config(ReadWrite::from_pools(pool.clone(), pool.clone()), CONFIG.queue_config.clone()).unwrap(),
-                    ),
-                    Arc::new(
-                        crate::implementations::postgres::task_queues::TabularPurgeQueue::from_config(ReadWrite::from_pools(pool.clone(), pool), CONFIG.queue_config.clone()).unwrap()
-                    ),
-                ),
-            },
-        }
     }
 
     macro_rules! impl_pagination_tests {
@@ -632,4 +567,6 @@ pub(crate) mod test {
         };
     }
     pub(crate) use impl_pagination_tests;
+
+    use crate::tests::TestWarehouseResponse;
 }

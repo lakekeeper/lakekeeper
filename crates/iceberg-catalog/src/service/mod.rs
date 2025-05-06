@@ -5,6 +5,7 @@ pub mod contract_verification;
 pub mod endpoint_statistics;
 pub mod event_publisher;
 pub mod health;
+pub mod hooks;
 pub mod secrets;
 pub mod storage;
 mod tabular_idents;
@@ -36,9 +37,10 @@ use crate::{
     api::{iceberg::v1::Prefix, ThreadSafe as ServiceState},
     service::{
         contract_verification::ContractVerifiers, event_publisher::CloudEventsPublisher,
-        task_queue::TaskQueues,
+        hooks::Hooks, task_queue::TaskQueues,
     },
 };
+
 // ---------------- State ----------------
 #[derive(Clone, Debug)]
 pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
@@ -48,6 +50,7 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
     pub publisher: CloudEventsPublisher,
     pub contract_verifiers: ContractVerifiers,
     pub queues: TaskQueues,
+    pub hooks: Hooks,
 }
 
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}

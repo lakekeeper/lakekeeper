@@ -27,6 +27,7 @@ use iceberg_catalog::{
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
         health::ServiceHealthProvider,
+        hooks::Hooks,
         task_queue::TaskQueues,
         Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
@@ -120,11 +121,11 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
             CONFIG.queue_config.clone(),
         )?),
     );
+    let hooks = Hooks::new(vec![]);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
-
     match authorizer {
         Authorizers::AllowAll(a) => {
             serve_with_authn(
@@ -132,6 +133,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
                 catalog_state,
                 secrets_state,
                 queues,
+                hooks,
                 health_provider,
                 listener,
             )
@@ -143,6 +145,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
                 catalog_state,
                 secrets_state,
                 queues,
+                hooks,
                 health_provider,
                 listener,
             )
@@ -158,6 +161,7 @@ async fn serve_with_authn<A: Authorizer>(
     catalog_state: CatalogState,
     secrets_state: Secrets,
     queues: TaskQueues,
+    endpoint_hooks: Hooks,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -255,6 +259,7 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
+                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -273,6 +278,7 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
+                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -285,6 +291,7 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
+                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -298,6 +305,7 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
+                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -307,12 +315,14 @@ async fn serve_with_authn<A: Authorizer>(
 }
 
 /// Helper function to remove redundant code from matching different implementations
+#[allow(clippy::too_many_arguments)]
 async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     authorizer: A,
     authenticator: Option<N>,
     catalog_state: CatalogState,
     secrets_state: Secrets,
     queues: TaskQueues,
+    hooks: Hooks,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -388,6 +398,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
+        hooks,
     })?;
 
     #[cfg(feature = "ui")]
