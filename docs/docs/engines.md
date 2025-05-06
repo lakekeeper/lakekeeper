@@ -190,6 +190,44 @@ catalog = pyiceberg.catalog.rest.RestCatalog(
 print(catalog.list_namespaces())
 ```
 
+## <img src="/assets/athena.svg" width="30"> AWS Athena (Spark)
+
+Amazon Athena is a serverless query service that allows you to use SQL or PySpark to query data in Lakekeeper without provisioning infrastructure. The following steps demonstrate how to connect Athena PySpark with Lakekeeper.
+
+**1. Create an Apache Spark workgroup in the AWS Athena console:**
+
+* Go to the Athena console > Administration > Workgroups
+* Create a workgroup with Apache Spark as the analytics engine
+
+**2. Create a new PySpark notebook:**
+
+* Give your notebook a name
+* Select your Spark workgroup
+* Configure JSON properties with Lakekeeper catalog settings
+
+    ```json
+    {
+        "spark.sql.catalog.lakekeeper": "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.lakekeeper.type": "rest",
+        "spark.sql.catalog.lakekeeper.uri": "<Lakekeeper Catalog URI>",
+        "spark.sql.catalog.lakekeeper.warehouse": "<Name of the Warehouse in Lakekeeper>",
+        "spark.sql.defaultCatalog": "lakekeeper",
+        "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+        "spark.sql.catalog.lakekeeper.credential": "<Client-ID>:<Client-Secret>", 
+        "spark.sql.catalog.lakekeeper.oauth2-server-uri": "<Token Endpoint of your IdP>"
+    }
+    ```
+
+**3. Verify the connection in your notebook:**
+
+```python
+# Verify connectivity to your Lakekeeper catalog
+spark.sql("select count(*) from lakekeeper.<namespace>.<table>").show()
+```
+
+Amazon Athena has Iceberg pre-installed, so no additional package installations are required.
+
+
 ## <img src="/assets/starrocks.svg" width="30"> Starrocks
 
 Starrocks is improving the Iceberg REST support quickly. This guide is written for Starrocks 3.3, which does not support vended-credentials for AWS S3 with custom endpoints.
@@ -224,4 +262,3 @@ The following docker compose examples are available for starrocks:
         "aws.s3.enable_path_style_access" = "true"
     )
     ```
-
