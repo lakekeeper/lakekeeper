@@ -4,16 +4,17 @@ use async_trait::async_trait;
 use cloudevents::Event;
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::{
-    CommitTransactionRequest, CreateTableRequest, RegisterTableRequest, RenameTableRequest,
+    CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
+    RegisterTableRequest, RenameTableRequest,
 };
 use uuid::Uuid;
 
-use super::{TableIdentUuid, WarehouseIdent};
+use super::{TableIdentUuid, ViewIdentUuid, WarehouseIdent};
 use crate::{
     api::{
         iceberg::{
             types::{DropParams, Prefix},
-            v1::{DataAccess, NamespaceParameters, TableParameters},
+            v1::{DataAccess, NamespaceParameters, TableParameters, ViewParameters},
         },
         RequestMetadata,
     },
@@ -198,7 +199,136 @@ impl EndpointHooks for CloudEventsPublisher {
             });
     }
 
-    // TODO: views
+    async fn create_view(
+        &self,
+        warehouse_id: WarehouseIdent,
+        view_ident_uuid: ViewIdentUuid,
+        parameters: NamespaceParameters,
+        request: Arc<CreateViewRequest>,
+        _data_access: DataAccess,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        let _ = self
+            .publish(
+                Uuid::now_v7(),
+                "createView",
+                maybe_body_to_json(&request),
+                EventMetadata {
+                    tabular_id: TabularIdentUuid::View(*view_ident_uuid),
+                    warehouse_id,
+                    name: request.name.clone(),
+                    namespace: parameters.namespace.to_url_string(),
+                    prefix: parameters
+                        .prefix
+                        .map(Prefix::into_string)
+                        .unwrap_or_default(),
+                    num_events: 1,
+                    sequence_number: 0,
+                    trace_id: request_metadata.request_id(),
+                },
+            )
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to publish event: {e}");
+            });
+    }
+
+    async fn commit_view(
+        &self,
+        warehouse_id: WarehouseIdent,
+        view_ident_uuid: ViewIdentUuid,
+        parameters: ViewParameters,
+        request: Arc<CommitViewRequest>,
+        _data_access: DataAccess,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        let _ = self
+            .publish(
+                Uuid::now_v7(),
+                "updateView",
+                maybe_body_to_json(request),
+                EventMetadata {
+                    tabular_id: TabularIdentUuid::View(*view_ident_uuid),
+                    warehouse_id,
+                    name: parameters.view.name,
+                    namespace: parameters.view.namespace.to_url_string(),
+                    prefix: parameters
+                        .prefix
+                        .map(Prefix::into_string)
+                        .unwrap_or_default(),
+                    num_events: 1,
+                    sequence_number: 0,
+                    trace_id: request_metadata.request_id(),
+                },
+            )
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to publish event: {e}");
+            });
+    }
+
+    async fn drop_view(
+        &self,
+        warehouse_id: WarehouseIdent,
+        parameters: ViewParameters,
+        _drop_params: DropParams,
+        view_ident_uuid: ViewIdentUuid,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        let _ = self
+            .publish(
+                Uuid::now_v7(),
+                "dropView",
+                serde_json::Value::Null,
+                EventMetadata {
+                    tabular_id: TabularIdentUuid::View(*view_ident_uuid),
+                    warehouse_id,
+                    name: parameters.view.name,
+                    namespace: parameters.view.namespace.to_url_string(),
+                    prefix: parameters
+                        .prefix
+                        .map(Prefix::into_string)
+                        .unwrap_or_default(),
+                    num_events: 1,
+                    sequence_number: 0,
+                    trace_id: request_metadata.request_id(),
+                },
+            )
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to publish event: {e}");
+            });
+    }
+
+    async fn rename_view(
+        &self,
+        warehouse_id: WarehouseIdent,
+        prefix: Option<Prefix>,
+        view_ident_uuid: ViewIdentUuid,
+        request: Arc<RenameTableRequest>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        let _ = self
+            .publish(
+                Uuid::now_v7(),
+                "renameView",
+                serde_json::Value::Null,
+                EventMetadata {
+                    tabular_id: TabularIdentUuid::View(*view_ident_uuid),
+                    warehouse_id,
+                    name: request.source.name.clone(),
+                    namespace: request.source.namespace.to_url_string(),
+                    prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                    num_events: 1,
+                    sequence_number: 0,
+                    trace_id: request_metadata.request_id(),
+                },
+            )
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to publish event: {e}");
+            });
+    }
     // TODO: undrop tabular
 }
 

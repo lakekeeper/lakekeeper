@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iceberg::{
     spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder},
     TableIdent,
@@ -10,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     api::iceberg::v1::{
-        ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Prefix, Result,
+        ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
     catalog::{
@@ -18,8 +20,8 @@ use crate::{
         io::{remove_all, write_metadata_file},
         require_warehouse_id,
         tables::{
-            determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
-            require_active_warehouse, validate_table_or_view_ident, CONCURRENT_UPDATE_ERROR_TYPE,
+            determine_table_ident, extract_count_from_metadata_location, require_active_warehouse,
+            validate_table_or_view_ident, CONCURRENT_UPDATE_ERROR_TYPE,
             MAX_RETRIES_ON_CONCURRENT_UPDATE,
         },
         views::{parse_view_location, validate_view_updates},
@@ -28,11 +30,11 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        event_publisher::EventMetadata,
+        hooks::EndpointHooks,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        Catalog, NamespaceIdentUuid, State, TabularIdentUuid, Transaction, ViewCommit,
-        ViewIdentUuid, ViewMetadataWithLocation,
+        Catalog, NamespaceIdentUuid, State, Transaction, ViewCommit, ViewIdentUuid,
+        ViewMetadataWithLocation,
     },
     SecretIdent,
 };
@@ -56,7 +58,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         updates,
     } = &request;
 
-    let identifier = determine_table_ident(parameters.view, identifier.as_ref())?;
+    let identifier = determine_table_ident(&parameters.view, identifier.as_ref())?;
     validate_table_or_view_ident(&identifier)?;
 
     // ------------------- AUTHZ -------------------
@@ -95,10 +97,8 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     // Verify assertions (only needed once)
     check_asserts(requirements.as_ref(), view_id)?;
 
-    // Prepare for event publishing (serialize body once)
-    let body = maybe_body_to_json(&request);
-
     // Start the retry loop
+    let request = Arc::new(request);
     let mut attempt = 0;
     loop {
         let result = try_commit_view::<C, A, S>(
@@ -108,7 +108,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 identifier: &identifier,
                 storage_profile,
                 storage_secret_id,
-                request: &request,
+                request: request.as_ref(),
                 data_access,
             },
             &state,
@@ -117,27 +117,16 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
         match result {
             Ok(result) => {
-                // Only publish event on success
-                let _ = state
+                state
                     .v1_state
-                    .publisher
-                    .publish(
-                        Uuid::now_v7(),
-                        "commitView",
-                        body,
-                        EventMetadata {
-                            tabular_id: TabularIdentUuid::View(*view_id),
-                            warehouse_id,
-                            name: identifier.name.clone(),
-                            namespace: identifier.namespace.to_url_string(),
-                            prefix: parameters
-                                .prefix
-                                .map(Prefix::into_string)
-                                .unwrap_or_default(),
-                            num_events: 1,
-                            sequence_number: 0,
-                            trace_id: request_metadata.request_id(),
-                        },
+                    .hooks
+                    .commit_view(
+                        warehouse_id,
+                        view_id,
+                        parameters,
+                        request.clone(),
+                        data_access,
+                        Arc::new(request_metadata),
                     )
                     .await;
 

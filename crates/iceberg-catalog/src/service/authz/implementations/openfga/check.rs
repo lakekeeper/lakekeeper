@@ -527,7 +527,7 @@ mod tests {
                 iceberg::v1::{namespace::NamespaceService, Prefix},
                 management::v1::{
                     role::{CreateRoleRequest, Service as RoleService},
-                    warehouse::{CreateWarehouseResponse, TabularDeleteProfile},
+                    warehouse::TabularDeleteProfile,
                     ApiServer,
                 },
             },
@@ -539,6 +539,7 @@ mod tests {
                     migration::tests::authorizer_for_empty_store, RoleAssignee,
                 },
             },
+            tests::TestWarehouseResponse,
         };
 
         async fn setup(
@@ -546,7 +547,7 @@ mod tests {
             pool: sqlx::PgPool,
         ) -> (
             ApiContext<State<OpenFGAAuthorizer, PostgresCatalog, SecretsState>>,
-            CreateWarehouseResponse,
+            TestWarehouseResponse,
             CreateNamespaceResponse,
         ) {
             let prof = crate::catalog::test::test_io_profile();

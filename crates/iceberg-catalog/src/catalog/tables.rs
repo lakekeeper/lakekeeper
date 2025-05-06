@@ -606,7 +606,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
         request.identifier = Some(determine_table_ident(
-            parameters.table,
+            &parameters.table,
             request.identifier.as_ref(),
         )?);
         let t = commit_tables_internal(
@@ -1511,14 +1511,14 @@ pub(crate) struct TableMetadataDiffs {
 }
 
 pub(crate) fn determine_table_ident(
-    parameters_ident: TableIdent,
+    parameters_ident: &TableIdent,
     request_ident: Option<&TableIdent>,
 ) -> Result<TableIdent> {
     let Some(identifier) = request_ident else {
-        return Ok(parameters_ident);
+        return Ok(parameters_ident.clone());
     };
 
-    if identifier == &parameters_ident {
+    if identifier == parameters_ident {
         return Ok(identifier.clone());
     }
 
