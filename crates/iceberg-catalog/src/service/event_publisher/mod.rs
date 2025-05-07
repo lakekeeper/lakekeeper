@@ -2,7 +2,10 @@ use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
 use cloudevents::Event;
-use iceberg::TableIdent;
+use iceberg::{
+    spec::{TableMetadata, ViewMetadata},
+    TableIdent,
+};
 use iceberg_ext::catalog::rest::{
     CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
     RegisterTableRequest, RenameTableRequest,
@@ -19,7 +22,7 @@ use crate::{
         management::v1::warehouse::UndropTabularsRequest,
         RequestMetadata,
     },
-    catalog::tables::maybe_body_to_json,
+    catalog::tables::{maybe_body_to_json, CommitContext},
     service::{endpoint_hooks::EndpointHooks, tabular_idents::TabularId},
 };
 
@@ -33,6 +36,7 @@ impl EndpointHooks for CloudEventsPublisher {
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
+        _responses: Arc<Vec<CommitContext>>,
         table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -110,7 +114,7 @@ impl EndpointHooks for CloudEventsPublisher {
         warehouse_id: WarehouseId,
         NamespaceParameters { prefix, namespace }: NamespaceParameters,
         request: Arc<RegisterTableRequest>,
-        table_ident_uuid: TableId,
+        metadata: Arc<TableMetadata>,
         request_metadata: Arc<RequestMetadata>,
     ) {
         let _ = self
@@ -119,7 +123,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "registerTable",
                 serde_json::Value::Null,
                 EventMetadata {
-                    tabular_id: TabularId::Table(*table_ident_uuid),
+                    tabular_id: TabularId::Table(metadata.uuid()),
                     warehouse_id,
                     name: request.name.clone(),
                     namespace: namespace.to_url_string(),
@@ -139,8 +143,8 @@ impl EndpointHooks for CloudEventsPublisher {
         &self,
         warehouse_id: WarehouseId,
         NamespaceParameters { prefix, namespace }: NamespaceParameters,
-        table_ident_uuid: TableId,
         request: Arc<CreateTableRequest>,
+        metadata: Arc<TableMetadata>,
         _data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -150,7 +154,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "createTable",
                 serde_json::Value::Null,
                 EventMetadata {
-                    tabular_id: TabularId::Table(*table_ident_uuid),
+                    tabular_id: TabularId::Table(metadata.uuid()),
                     warehouse_id,
                     name: request.name.clone(),
                     namespace: namespace.to_url_string(),
@@ -198,9 +202,9 @@ impl EndpointHooks for CloudEventsPublisher {
     async fn create_view(
         &self,
         warehouse_id: WarehouseId,
-        view_ident_uuid: ViewId,
         parameters: NamespaceParameters,
         request: Arc<CreateViewRequest>,
+        metadata: Arc<ViewMetadata>,
         _data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -210,7 +214,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "createView",
                 maybe_body_to_json(&request),
                 EventMetadata {
-                    tabular_id: TabularId::View(*view_ident_uuid),
+                    tabular_id: TabularId::View(metadata.uuid()),
                     warehouse_id,
                     name: request.name.clone(),
                     namespace: parameters.namespace.to_url_string(),
@@ -232,9 +236,9 @@ impl EndpointHooks for CloudEventsPublisher {
     async fn commit_view(
         &self,
         warehouse_id: WarehouseId,
-        view_ident_uuid: ViewId,
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
+        metadata: Arc<ViewMetadata>,
         _data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -244,7 +248,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "updateView",
                 maybe_body_to_json(request),
                 EventMetadata {
-                    tabular_id: TabularId::View(*view_ident_uuid),
+                    tabular_id: TabularId::View(metadata.uuid()),
                     warehouse_id,
                     name: parameters.view.name,
                     namespace: parameters.view.namespace.to_url_string(),

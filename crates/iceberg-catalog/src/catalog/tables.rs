@@ -293,7 +293,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let load_table_result = LoadTableResult {
             metadata_location: metadata_location.map(|l| l.to_string()),
-            metadata: table_metadata,
+            metadata: table_metadata.clone(),
             config: Some(config.config.into()),
             storage_credentials,
         };
@@ -316,8 +316,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .create_table(
                 warehouse_id,
                 parameters,
-                TableId::from(*tabular_id),
                 Arc::new(request),
+                Arc::new(table_metadata),
                 data_access,
                 Arc::new(request_metadata),
             )
@@ -418,7 +418,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 warehouse_id,
                 parameters,
                 Arc::new(request),
-                TableId::from(*tabular_id),
+                Arc::new(table_metadata.clone()),
                 Arc::new(request_metadata),
             )
             .await;
@@ -1065,6 +1065,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                     .commit_table(
                         warehouse_id,
                         Arc::new(request),
+                        Arc::new(commits.clone()),
                         table_ids,
                         Arc::new(request_metadata),
                     )
@@ -1296,7 +1297,8 @@ pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Optio
     }
 }
 
-struct CommitContext {
+#[derive(Clone, Debug)]
+pub struct CommitContext {
     pub new_metadata: iceberg::spec::TableMetadata,
     pub new_metadata_location: Location,
     pub previous_metadata: iceberg::spec::TableMetadata,

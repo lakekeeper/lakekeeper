@@ -1,6 +1,9 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
-use iceberg::TableIdent;
+use iceberg::{
+    spec::{TableMetadata, ViewMetadata},
+    TableIdent,
+};
 use iceberg_ext::catalog::rest::{
     CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
     RegisterTableRequest, RenameTableRequest,
@@ -15,6 +18,7 @@ use crate::{
         management::v1::warehouse::UndropTabularsRequest,
         RequestMetadata,
     },
+    catalog::tables::CommitContext,
     service::{TableId, UndropTabularResponse, ViewId},
     WarehouseId,
 };
@@ -41,6 +45,7 @@ impl EndpointHooks for EndpointHookCollection {
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
+        responses: Arc<Vec<CommitContext>>,
         table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -48,6 +53,7 @@ impl EndpointHooks for EndpointHookCollection {
             hook.commit_table(
                 warehouse_id,
                 request.clone(),
+                responses.clone(),
                 table_ident_map.clone(),
                 request_metadata.clone(),
             )
@@ -80,7 +86,7 @@ impl EndpointHooks for EndpointHookCollection {
         warehouse_id: WarehouseId,
         parameters: NamespaceParameters,
         request: Arc<RegisterTableRequest>,
-        table_id: TableId,
+        metadata: Arc<TableMetadata>,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -88,7 +94,7 @@ impl EndpointHooks for EndpointHookCollection {
                 warehouse_id,
                 parameters.clone(),
                 request.clone(),
-                table_id,
+                metadata.clone(),
                 request_metadata.clone(),
             )
         }))
@@ -98,18 +104,18 @@ impl EndpointHooks for EndpointHookCollection {
     async fn create_view(
         &self,
         warehouse_id: WarehouseId,
-        view_ident_uuid: ViewId,
         parameters: NamespaceParameters,
         request: Arc<CreateViewRequest>,
+        metadata: Arc<ViewMetadata>,
         data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
             hook.create_view(
                 warehouse_id,
-                view_ident_uuid,
                 parameters.clone(),
                 request.clone(),
+                metadata.clone(),
                 data_access,
                 request_metadata.clone(),
             )
@@ -120,18 +126,18 @@ impl EndpointHooks for EndpointHookCollection {
     async fn commit_view(
         &self,
         warehouse_id: WarehouseId,
-        view_id: ViewId,
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
+        metadata: Arc<ViewMetadata>,
         data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
             hook.commit_view(
                 warehouse_id,
-                view_id,
                 parameters.clone(),
                 request.clone(),
+                metadata.clone(),
                 data_access,
                 request_metadata.clone(),
             )
@@ -177,19 +183,37 @@ impl EndpointHooks for EndpointHookCollection {
         .await;
     }
 
+    async fn rename_table(
+        &self,
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        request: Arc<RenameTableRequest>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.rename_table(
+                warehouse_id,
+                table_id,
+                request.clone(),
+                request_metadata.clone(),
+            )
+        }))
+        .await;
+    }
+
     async fn undrop_tabular(
         &self,
-        _warehouse_id: WarehouseId,
-        _request: Arc<UndropTabularsRequest>,
-        _responses: Arc<Vec<UndropTabularResponse>>,
-        _request_metadata: Arc<RequestMetadata>,
+        warehouse_id: WarehouseId,
+        request: Arc<UndropTabularsRequest>,
+        responses: Arc<Vec<UndropTabularResponse>>,
+        request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
             hook.undrop_tabular(
-                _warehouse_id,
-                _request.clone(),
-                _responses.clone(),
-                _request_metadata.clone(),
+                warehouse_id,
+                request.clone(),
+                responses.clone(),
+                request_metadata.clone(),
             )
         }))
         .await;
@@ -202,6 +226,7 @@ pub trait EndpointHooks: Send + Sync + Debug {
         &self,
         _warehouse_id: WarehouseId,
         _request: Arc<CommitTransactionRequest>,
+        _responses: Arc<Vec<CommitContext>>,
         _table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         _request_metadata: Arc<RequestMetadata>,
     ) {
@@ -222,7 +247,7 @@ pub trait EndpointHooks: Send + Sync + Debug {
         _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<RegisterTableRequest>,
-        _table_id: TableId,
+        _metadata: Arc<TableMetadata>,
         _request_metadata: Arc<RequestMetadata>,
     ) {
     }
@@ -230,8 +255,8 @@ pub trait EndpointHooks: Send + Sync + Debug {
         &self,
         _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
-        _table_id: TableId,
         _request: Arc<CreateTableRequest>,
+        _metadata: Arc<TableMetadata>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
     ) {
@@ -249,22 +274,21 @@ pub trait EndpointHooks: Send + Sync + Debug {
     async fn create_view(
         &self,
         _warehouse_id: WarehouseId,
-        _view_id: ViewId,
         _parameters: NamespaceParameters,
         _request: Arc<CreateViewRequest>,
+        _metadata: Arc<ViewMetadata>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
     ) {
-        // Default implementation does nothing
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn commit_view(
         &self,
         _warehouse_id: WarehouseId,
-        _view_id: ViewId,
         _parameters: ViewParameters,
         _request: Arc<CommitViewRequest>,
+        _metadata: Arc<ViewMetadata>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
     ) {

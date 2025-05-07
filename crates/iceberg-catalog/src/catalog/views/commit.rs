@@ -121,9 +121,9 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                     .hooks
                     .commit_view(
                         warehouse_id,
-                        view_id,
                         parameters,
                         request.clone(),
+                        Arc::new(result.metadata.clone()),
                         data_access,
                         Arc::new(request_metadata),
                     )
