@@ -4,6 +4,7 @@ pub mod management;
 pub(crate) mod endpoints;
 #[cfg(feature = "router")]
 pub mod router;
+mod mcp;
 
 pub use iceberg_ext::catalog::rest::*;
 

@@ -227,6 +227,10 @@ generate_endpoints! {
         Delete(DELETE, "/management/v1/permissions"),
         Put(PUT, "/management/v1/permissions"),
     }
+
+    enum MCPV1 {
+        ServerInfo(GET, "/mcp/v1/info"),
+    }
 }
 
 impl Endpoint {

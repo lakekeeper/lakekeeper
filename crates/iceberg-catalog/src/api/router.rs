@@ -16,6 +16,7 @@ use crate::{
     api::{
         iceberg::v1::new_v1_full_router,
         management::v1::{api_doc as v1_api_doc, ApiServer},
+        mcp::v1::api_doc as v1_mcp_api_doc,
         shutdown_signal, ApiContext,
     },
     request_metadata::create_request_metadata_with_trace_and_project_fn,
@@ -105,6 +106,7 @@ pub fn new_full_router<
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
+    let mcp_routes = Router::new().route("/", get(|| async {}));
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
             .iter()
@@ -143,10 +145,10 @@ pub fn new_full_router<
     } else {
         option_layer(None)
     };
-
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        .nest("/mcp/v1", mcp_routes)
         .layer(axum::middleware::from_fn_with_state(
             endpoint_statistics_tracker_tx,
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
@@ -162,6 +164,7 @@ pub fn new_full_router<
         .merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                 .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>())
+                .url("/api-docs/mcp/v1/openapi.json", v1_mcp_api_doc::<A>())
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",
                     ICEBERG_OPENAPI_SPEC_YAML.clone(),
