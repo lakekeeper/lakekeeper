@@ -12,10 +12,12 @@ use tower_http::{
     ServiceBuilderExt,
 };
 
+use crate::api::mcp::v1::MCPServer;
 use crate::{
     api::{
         iceberg::v1::new_v1_full_router,
         management::v1::{api_doc as v1_api_doc, ApiServer},
+        mcp::server::get_mcp_router_and_server,
         mcp::v1::api_doc as v1_mcp_api_doc,
         shutdown_signal, ApiContext,
     },
@@ -106,7 +108,8 @@ pub fn new_full_router<
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
-    let mcp_routes = Router::new().route("/", get(|| async {}));
+    let mcp_router = Router::new().merge(MCPServer::new_v1_router(&authorizer));
+
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
             .iter()
@@ -148,7 +151,7 @@ pub fn new_full_router<
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
-        .nest("/mcp/v1", mcp_routes)
+        .nest("/mcp/v1", mcp_router)
         .layer(axum::middleware::from_fn_with_state(
             endpoint_statistics_tracker_tx,
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,

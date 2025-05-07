@@ -2,9 +2,9 @@ pub mod iceberg;
 pub mod management;
 
 pub(crate) mod endpoints;
+mod mcp;
 #[cfg(feature = "router")]
 pub mod router;
-mod mcp;
 
 pub use iceberg_ext::catalog::rest::*;
 

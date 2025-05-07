@@ -1,20 +1,25 @@
+pub(crate) mod server;
+mod tools;
 
 pub(crate) mod v1 {
 
-    use std::marker::PhantomData;
-    use http::StatusCode;
-    use crate::api::{ApiContext, RequestMetadata};
     use crate::api::endpoints::MCPV1Endpoint;
     use crate::api::management::v1::bootstrap::{ServerInfo, Service};
+    use crate::api::management::v1::ApiServer;
+    use crate::api::mcp::server;
+    use crate::api::IcebergErrorResponse;
+    use crate::api::{ApiContext, RequestMetadata};
     use crate::service::authz::Authorizer;
     use crate::service::{Catalog, SecretStore, State};
-    use crate::api::IcebergErrorResponse;
-    use axum::{extract::State as AxumState, Extension, Json};
+    use axum::routing::{get, post};
+    use axum::{extract::State as AxumState, Extension, Json, Router};
+    use http::StatusCode;
+    use std::marker::PhantomData;
     use tracing::info;
     use utoipa::OpenApi;
 
     #[derive(Clone, Debug)]
-    pub struct ApiServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
+    pub struct MCPServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
         auth_handler: PhantomData<A>,
         config_server: PhantomData<C>,
         secret_store: PhantomData<S>,
@@ -43,8 +48,6 @@ pub(crate) mod v1 {
             .map(|user| (StatusCode::OK, Json(user)))
     }
 
-
-
     #[must_use]
     pub fn api_doc<A: Authorizer>() -> utoipa::openapi::OpenApi {
         MCPApiDoc::openapi()
@@ -54,15 +57,9 @@ pub(crate) mod v1 {
     #[openapi(
         info(
             title = "Lakekeeper MCP API",
-            description = "Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation. The MCP API provides endpoints to manage the server, projects, warehouses, users, and roles. If Authorization is enabled, permissions can also be managed. An interactive Swagger-UI for the specific Lakekeeper Version and configuration running is available at `/swagger-ui/#/` of Lakekeeper (by default [http://localhost:8181/swagger-ui/#/](http://localhost:8181/swagger-ui/#/)).",
+            description = "Lakekeeper MCP",
         ),
-        tags(
-            (name = "server", description = "Manage Server"),
-            (name = "project", description = "Manage Projects"),
-            (name = "warehouse", description = "Manage Warehouses"),
-            (name = "user", description = "Manage Users"),
-            (name = "role", description = "Manage Roles")
-        ),
+        tags(),
         security(
             ("bearerAuth" = [])
         ),
@@ -72,4 +69,15 @@ pub(crate) mod v1 {
     )]
     struct MCPApiDoc;
 
+    impl<C: Catalog, A: Authorizer, S: SecretStore> MCPServer<C, A, S> {
+        pub fn new_v1_router(authorizer: &A) -> Router<ApiContext<State<A, C, S>>> {
+            let (server, router) =
+                server::get_mcp_router_and_server().expect("Failed to create MCP Server");
+            Router::new()
+                // Server
+                .route("/info", get(get_server_info))
+            // .merge(authorizer.new_router())
+            // .merge(router)
+        }
+    }
 }
