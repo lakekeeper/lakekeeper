@@ -5,7 +5,7 @@ All commits to main go through a PR. CI checks have to pass before merging the P
 If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
 
 ## Foundation & CLA
-We hate red tape. Currently, all committers need to sign the CLA in Github. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently, we prefer to spent our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
+We hate red tape. Currently, all committers need to sign the CLA in Github. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently, we prefer to spend our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
 
 ## First steps
 
