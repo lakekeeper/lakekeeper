@@ -11,7 +11,7 @@ We hate red tape. Currently, all committers need to sign the CLA in Github. To e
 
 To work on small and self-contained features, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy. Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`. 
 
-If you made any changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
+If you made any changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` before submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
 
 ```bash
 # start postgres
