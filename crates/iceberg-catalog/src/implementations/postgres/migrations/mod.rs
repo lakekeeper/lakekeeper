@@ -183,7 +183,7 @@ pub struct Migration {
 }
 
 fn get_sha_patches() -> HashSet<i64> {
-    HashSet::from([20_250_328_131_139])
+    HashSet::from([20_250_328_131_139, 20_250_505_101_407])
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {

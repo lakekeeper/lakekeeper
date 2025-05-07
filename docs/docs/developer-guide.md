@@ -9,7 +9,7 @@ We hate red tape. Currently, all committers need to sign the CLA in Github. To e
 
 ## First steps
 
-To work on small, self-contained, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy. Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`. 
+To work on small and self-contained features, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy. Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`. 
 
 If you made any changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
 
@@ -174,6 +174,7 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
 1. apply your changes, e.g. add `define can_undrop: modify` to the `view` type in `authz/openfga/v2.2/schema.fga`
 1. regenerate `schema.json` via `./fga model transform --file authz/openfga/v2.2/schema.fga > authz/openfga/v2.2/schema.json` (download the `fga` binary from the [OpenFGA repo](https://github.com/openfga/cli/releases/))
 1. Head to `crate::service::authz::implementations::openfga::migration.rs`, modify `ACTIVE_MODEL_VERSION` to the newer version. For backwards compatible changes, change the `add_model` section. For changes that require migrations, add an additional `add_model` section that includes the migration fn.
+
 ```rust
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(3, 0)); // <- Change this for every change in the model
