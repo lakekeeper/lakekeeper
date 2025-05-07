@@ -1,16 +1,21 @@
 # Developer Guide
 
-All commits to main should go through a PR. CI checks should pass before merging the PR.
-Before merge commits are squashed. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+All commits to main go through a PR. CI checks have to pass before merging the PR, keep in mind that CI checks include lints. Before merge, commits are squashed, but GitHub is taking care of this, so don't worry. PR titles should follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). We encourage small and orthogonal PRs. If you want to work on a bigger feature, please open an issue and discuss it with us first. 
+
+If you want to work on something but don't know what, take a look at our issues tagged with `help wanted`. If you're still unsure, please reach out to us via the [Lakekeeper Discord](https://discord.gg/jkAGG8p93B). If you have questions while working on something, please use the GitHub issue or our Discord. We are happy to guide you!
 
 ## Foundation & CLA
-We hate red tape. Currently all committers need to sign the CLA in github. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently we prefer to spent our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
+We hate red tape. Currently, all committers need to sign the CLA in Github. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently, we prefer to spent our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
 
-## Quickstart
+## First steps
+
+To work on small, self-contained, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy. Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`. 
+
+If you made any changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
 
 ```bash
 # start postgres
-docker run -d --name postgres-15 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:15
+docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
 # set envs
 echo 'export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres' > .env
 echo 'export ICEBERG_REST__PG_ENCRYPTION_KEY="abc"' >> .env
@@ -23,25 +28,47 @@ cd crates/iceberg-catalog
 sqlx database create && sqlx migrate run
 cd ../..
 
-# run tests
-cargo test --all-features --all-targets
+# run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
+cargo nextest run --all-features
 
 # run clippy
 cargo clippy --all-features --all-targets
 ```
 
-This quickstart does not run tests against cloud-storage providers or KV2. For that, please refer to the sections below.
+## Code structure
 
-## Developing with docker compose
+### What is where?
 
-The following shell snippet will start a full development environment including the catalog plus its dependencies and a jupyter server with spark. The iceberg-catalog and its migrations will be built from source. This can be useful for development and testing.
+We have three crates, `iceberg-catalog`, `iceberg-catalog-bin` and `iceberg-ext`. The bulk of the code is in `iceberg-catalog`. The `iceberg-catalog-bin` crate contains the main entry point for the catalog. The `iceberg-ext` crate contains extensions to `iceberg-rust`. 
 
-```sh
-$ cd examples
-$ docker-compose -f docker-compose.yaml -f docker-compose-latest.yaml up -d --build
-```
+#### iceberg-catalog
 
-You may then head to `localhost:8888` and try out one of the notebooks.
+The `iceberg-catalog` crate contains the core of the catalog. It is structured into several modules:
+
+1. `api` - contains the implementation of the REST API handlers as well as the `axum` router instantiation.
+2. `catalog` - contains the core business logic of the REST catalog
+3. `service` - contains various function blocks that make up the whole service, e.g., authn, authz and implementations of specific cloud storage backends.
+4. `tests` - contains integration tests and some common test helpers, see below for more information.
+5. `implementations` - contains the concrete implementation of the catalog backend, currently there's only a Postgres implementation and an alternative for Postgres as secret-store, `kv2`.
+
+#### iceberg-catalog-bin
+
+The main function branches out into multiple commands, amongst others, there's a health-check, migrations, but also serve which is likely the most relevant to you. In case you are forking us to implement your own AuthZ backend, you'll want to change the `serve` command to use your own implementation, just follow the call-chain.
+
+### Where to put tests?
+
+We try to keep unit-tests close to the code they are testing. E.g., all tests for the database module of tables are located in `crates/iceberg-catalog/src/implementations/postgres/tabular/table/mod.rs`. While working on more complex features we noticed a lot of repetition within tests and started to put commonly used functions into `crates/iceberg-catalog/src/tests/mod.rs`. Within the `tests` module, there are also some higher-level tests that cannot be easily mapped to a single module or require a non-trivial setup. Depending on what you are working on, you may want to put your tests there.
+
+### I need to add an endpoint
+
+You'll start at `api` and add the endpoint function to either `management` or `iceberg` depending on whether the endpoint belongs to official iceberg rest specification. The likely next step is to extend the respective `Service` trait so that there's a function to be called from the REST handler. Within the trait function, depending on your feature, you may need to store or fetch something from the storage backend. Depending on if the functionality already exists, you can do so via the respective function on the `C` generic and either the `state: ApiContext<State<...>>` struct or by first getting a transaction via `C::Transaction::begin_<write|read>(state.v1_state.catalog.clone()).await?;`. If you need to add a new function to the storage backend, extend the `Catalog` trait and implement it in the respective modules within `implementations`. Remember to do appropriate AuthZ checks within the function of the respecive `Service` trait.
+
+## Debugging complex issues and prototyping using our examples
+
+To debug more complex issues, work on prototypes or simply an initial manual test, you can use one of the `examples`. Unless you are working on AuthN or AuthZ, you'll most likely want to use the minimal example. All examples come with a `docker-compose-build.yaml` which will build the catalog image from source. The invocation looks like this: `docker-compose -f docker-compose.yaml -f docker-compose-build.yaml up -d --build`. Aside from building the catalog, the `docker-compose-build.yaml` overlay also exposes the docker services to your host, so you can also use it as a development environment by e.g. pointing your env vars to the docker container to test against its minio instance.
+If you made changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` before rebuilding the catalog image. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database.
+
+After spinning the example up, you may head to `localhost:8888` and use one of the notebooks.
 
 ## Working with SQLx
 
@@ -49,7 +76,7 @@ This crate uses sqlx. For development and compilation a Postgres Database is req
 one.:
 
 ```sh
-docker run -d --name postgres-15 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:15
+docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
 ```
 The `crates/iceberg-catalog` folder contains a `.env.sample` File.
 Copy this file to `.env` and add your database credentials if they differ.
@@ -60,6 +87,14 @@ Run:
 sqlx database create
 sqlx migrate run
 ```
+
+Before committing changes to SQL queries, run: 
+
+```sh
+cargo sqlx prepare --workspace -- --all-targets --all-features
+```
+
+Then `git add` the changes to `.sqlx` and commit them. Careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on Github so there's no way of really breaking things.
 
 ## KV2 / Vault
 
@@ -87,7 +122,7 @@ cargo test --all-features --all-targets
 
 ## Test cloud storage profiles
 
-Currently, we're not aware of a good way of testing cloud storage integration against local deployments. That means, in order to test against AWS S3, GCS and ADLS Gen2, you need to set the following environment variables. For more information take a look at the [Storage Guide](storage.md). A sample `.env` could look like this:
+Currently, we're not aware of a good way of testing cloud storage integration against local deployments. That means, to test against AWS S3, GCS and ADLS Gen2, you need to set the following environment variables. For more information, take a look at the [Storage Guide](storage.md). A sample `.env` could look like this:
 
 ```sh
 # TEST_AZURE=<some-value> controls a proc macro which either includes or excludes the azure tests
@@ -125,7 +160,7 @@ cargo test service::storage::s3::test::aws::test_can_validate
 
 ## Running integration test
 
-Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests).
+Our integration tests are written in Python and use pytest. They are located in the `tests` folder. The integration tests are run using docker-compose. The integration tests require a running instance of the catalog, which is started via docker-compose. The integration tests are run using `docker-compose`, please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests).
 
 
 ## Extending Authz

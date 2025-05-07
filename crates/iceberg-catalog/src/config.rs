@@ -170,6 +170,7 @@ pub struct DynAppConfig {
 
     // ------------- KAFKA CLOUDEVENTS -------------
     pub kafka_topic: Option<String>,
+    #[cfg(feature = "kafka")]
     pub kafka_config: Option<KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
@@ -474,6 +475,7 @@ impl Default for DynAppConfig {
             nats_user: None,
             nats_password: None,
             nats_token: None,
+            #[cfg(feature = "kafka")]
             kafka_config: None,
             kafka_topic: None,
             log_cloudevents: None,
@@ -907,6 +909,7 @@ mod test {
     fn test_openfga_config_no_auth() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__STORE_NAME", "store_name");
             let config = get_config();
             let authz_config = config.openfga.unwrap();
@@ -923,6 +926,7 @@ mod test {
     fn test_openfga_config_api_key() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__API_KEY", "api_key");
             let config = get_config();
             let authz_config = config.openfga.unwrap();
@@ -942,6 +946,7 @@ mod test {
     fn test_openfga_client_config_fails_without_token() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__STORE_NAME", "store_name");
             get_config();
@@ -953,6 +958,7 @@ mod test {
     fn test_openfga_client_credentials() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
             jail.set_env(
@@ -981,6 +987,7 @@ mod test {
     fn test_openfga_client_credentials_with_scope() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "openfga");
+            jail.set_env("LAKEKEEPER_TEST__OPENFGA__ENDPOINT", "http://localhost");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_ID", "client_id");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__CLIENT_SECRET", "client_secret");
             jail.set_env("LAKEKEEPER_TEST__OPENFGA__SCOPE", "openfga");
