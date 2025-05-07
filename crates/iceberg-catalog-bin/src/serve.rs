@@ -19,6 +19,7 @@ use iceberg_catalog::{
             Authorizer,
         },
         contract_verification::ContractVerifiers,
+        endpoint_hooks::EndpointHookCollection,
         endpoint_statistics::{EndpointStatisticsMessage, EndpointStatisticsTracker, FlushMode},
         event_publisher::{
             kafka::{KafkaBackend, KafkaConfig},
@@ -27,7 +28,6 @@ use iceberg_catalog::{
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
         health::ServiceHealthProvider,
-        hooks::Hooks,
         task_queue::TaskQueues,
         Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
@@ -121,7 +121,6 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
             CONFIG.queue_config.clone(),
         )?),
     );
-    let hooks = Hooks::new(vec![]);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -133,7 +132,6 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
                 catalog_state,
                 secrets_state,
                 queues,
-                hooks,
                 health_provider,
                 listener,
             )
@@ -145,7 +143,6 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
                 catalog_state,
                 secrets_state,
                 queues,
-                hooks,
                 health_provider,
                 listener,
             )
@@ -161,7 +158,6 @@ async fn serve_with_authn<A: Authorizer>(
     catalog_state: CatalogState,
     secrets_state: Secrets,
     queues: TaskQueues,
-    endpoint_hooks: Hooks,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -259,7 +255,6 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
-                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -278,7 +273,6 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
-                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -291,7 +285,6 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
-                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -305,7 +298,6 @@ async fn serve_with_authn<A: Authorizer>(
                 catalog_state,
                 secrets_state,
                 queues,
-                endpoint_hooks,
                 health_provider,
                 listener,
             )
@@ -322,7 +314,6 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     catalog_state: CatalogState,
     secrets_state: Secrets,
     queues: TaskQueues,
-    hooks: Hooks,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -385,6 +376,9 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     );
 
     let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
+    let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
+        cloud_events_tx.clone(),
+    ))]);
 
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
@@ -392,7 +386,6 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
         queues: queues.clone(),
-        publisher: CloudEventsPublisher::new(cloud_events_tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),

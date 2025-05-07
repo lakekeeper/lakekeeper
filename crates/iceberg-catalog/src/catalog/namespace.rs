@@ -24,9 +24,9 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
         task_queue::{tabular_purge_queue::TabularPurgeInput, TaskFilter},
-        Catalog, GetWarehouseResponse, NamespaceIdentUuid, State, TabularIdentUuid, Transaction,
+        Catalog, GetWarehouseResponse, NamespaceId, State, TabularId, Transaction,
     },
-    WarehouseIdent, CONFIG,
+    WarehouseId, CONFIG,
 };
 
 pub const UNSUPPORTED_NAMESPACE_PROPERTIES: &[&str] = &[];
@@ -225,7 +225,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = NamespaceIdentUuid::default();
+        let namespace_id = NamespaceId::default();
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
@@ -427,9 +427,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
     flags: NamespaceDropFlags,
     state: ApiContext<State<A, C, S>>,
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     mut t: <C as Catalog>::Transaction,
-    namespace_id: NamespaceIdentUuid,
+    namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
 ) -> Result<()> {
     let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
@@ -462,8 +462,8 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
         if flags.purge {
             for (tabular_id, tabular_location) in drop_info.child_tables {
                 let (tabular_id, tabular_type) = match tabular_id {
-                    TabularIdentUuid::Table(id) => (id, TabularType::Table),
-                    TabularIdentUuid::View(id) => (id, TabularType::View),
+                    TabularId::Table(id) => (id, TabularType::Table),
+                    TabularId::View(id) => (id, TabularType::View),
                 };
                 state
                     .v1_state
@@ -492,11 +492,11 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
 pub(crate) async fn authorized_namespace_ident_to_id<C: Catalog, A: Authorizer + Clone>(
     authorizer: A,
     metadata: &RequestMetadata,
-    warehouse_id: &WarehouseIdent,
+    warehouse_id: &WarehouseId,
     namespace: &NamespaceIdent,
     action: impl From<CatalogNamespaceAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<NamespaceIdentUuid> {
+) -> Result<NamespaceId> {
     validate_namespace_ident(namespace)?;
     authorizer
         .require_warehouse_action(metadata, *warehouse_id, CatalogWarehouseAction::CanUse)
@@ -583,7 +583,7 @@ fn remove_managed_namespace_properties(namespace_props: &mut NamespaceProperties
 fn set_namespace_location_property(
     namespace_props: &mut NamespaceProperties,
     warehouse: &GetWarehouseResponse,
-    namespace_id: NamespaceIdentUuid,
+    namespace_id: NamespaceId,
 ) -> Result<()> {
     let mut location = namespace_props.get_location();
 
@@ -712,7 +712,7 @@ mod tests {
         request_metadata::RequestMetadata,
         service::{
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
-            ListNamespacesQuery, NamespaceIdentUuid, State, Transaction, UserId,
+            ListNamespacesQuery, NamespaceId, State, Transaction, UserId,
         },
     };
 
@@ -802,7 +802,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let ns_id = NamespaceIdentUuid::from(
+        let ns_id = NamespaceId::from(
             *CatalogServer::list_namespaces(
                 Some(Prefix(warehouse.warehouse_id.to_string())),
                 ListNamespacesQuery {

@@ -30,23 +30,23 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler as _,
         tabular::{
-            drop_tabular, list_tabulars, try_parse_namespace_ident, TabularIdentBorrowed,
-            TabularIdentOwned, TabularIdentUuid, TabularType,
+            drop_tabular, list_tabulars, try_parse_namespace_ident, TabularId,
+            TabularIdentBorrowed, TabularIdentOwned, TabularType,
         },
         CatalogState,
     },
     service::{
         storage::{join_location, split_location, StorageProfile},
-        ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result, TableIdent,
-        TableIdentUuid, TableInfo, TabularDetails, TabularInfo,
+        ErrorModel, GetTableMetadataResponse, LoadTableResponse, Result, TableId, TableIdent,
+        TableInfo, TabularDetails, TabularInfo,
     },
-    SecretIdent, WarehouseIdent,
+    SecretIdent, WarehouseId,
 };
 
 const MAX_PARAMETERS: usize = 30000;
 
 pub(crate) async fn resolve_table_ident<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     table: &TableIdent,
     list_flags: crate::service::ListFlags,
     catalog_state: E,
@@ -62,11 +62,11 @@ where
     )
     .await?
     .map(|(id, location)| match id {
-        TabularIdentUuid::Table(tab) => Ok(TabularDetails {
+        TabularId::Table(tab) => Ok(TabularDetails {
             ident: tab.into(),
             location,
         }),
-        TabularIdentUuid::View(_) => Err(ErrorModel::builder()
+        TabularId::View(_) => Err(ErrorModel::builder()
             .code(StatusCode::INTERNAL_SERVER_ERROR.into())
             .message("DB returned a view when filtering for tables.".to_string())
             .r#type("InternalDatabaseError".to_string())
@@ -77,11 +77,11 @@ where
 }
 
 pub(crate) async fn table_idents_to_ids<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     tables: HashSet<&TableIdent>,
     list_flags: crate::service::ListFlags,
     catalog_state: E,
-) -> Result<HashMap<TableIdent, Option<TableIdentUuid>>>
+) -> Result<HashMap<TableIdent, Option<TableId>>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -97,7 +97,7 @@ where
     .await?
     .into_iter()
     .map(|(k, v)| match k {
-        TabularIdentOwned::Table(t) => Ok((t, v.map(|v| TableIdentUuid::from(*v)))),
+        TabularIdentOwned::Table(t) => Ok((t, v.map(|v| TableId::from(*v)))),
         TabularIdentOwned::View(_) => Err(ErrorModel::internal(
             "DB returned a view when filtering for tables.",
             "InternalDatabaseError",
@@ -105,7 +105,7 @@ where
         )
         .into()),
     })
-    .collect::<Result<HashMap<_, Option<TableIdentUuid>>>>()?;
+    .collect::<Result<HashMap<_, Option<TableId>>>>()?;
 
     Ok(table_map)
 }
@@ -129,12 +129,12 @@ impl From<DbTableFormatVersion> for FormatVersion {
 }
 
 pub(crate) async fn list_tables<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     namespace: &NamespaceIdent,
     list_flags: crate::service::ListFlags,
     transaction: E,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedMapping<TableIdentUuid, TableInfo>>
+) -> Result<PaginatedMapping<TableId, TableInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -149,13 +149,13 @@ where
     )
     .await?;
 
-    tabulars.map::<TableIdentUuid, TableInfo>(
+    tabulars.map::<TableId, TableInfo>(
         |k| match k {
-            TabularIdentUuid::Table(t) => {
-                let r: Result<TableIdentUuid> = Ok(TableIdentUuid::from(t));
+            TabularId::Table(t) => {
+                let r: Result<TableId> = Ok(TableId::from(t));
                 r
             }
-            TabularIdentUuid::View(_) => Err(ErrorModel::internal(
+            TabularId::View(_) => Err(ErrorModel::internal(
                 "DB returned a view when filtering for tables.",
                 "InternalDatabaseError",
                 None,
@@ -423,8 +423,8 @@ impl TableQueryStruct {
 }
 
 pub(crate) async fn load_storage_profile(
-    warehouse_id: WarehouseIdent,
-    table: TableIdentUuid,
+    warehouse_id: WarehouseId,
+    table: TableId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<(Option<SecretIdent>, StorageProfile)> {
     let secret = sqlx::query!(
@@ -454,11 +454,11 @@ pub(crate) async fn load_storage_profile(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn load_tables(
-    warehouse_id: WarehouseIdent,
-    tables: impl IntoIterator<Item = TableIdentUuid>,
+    warehouse_id: WarehouseId,
+    tables: impl IntoIterator<Item = TableId>,
     include_deleted: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
+) -> Result<HashMap<TableId, LoadTableResponse>> {
     let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
 
     let table = sqlx::query_as!(
@@ -655,8 +655,8 @@ pub(crate) async fn load_tables(
 }
 
 pub(crate) async fn get_table_metadata_by_id(
-    warehouse_id: WarehouseIdent,
-    table: TableIdentUuid,
+    warehouse_id: WarehouseId,
+    table: TableId,
     list_flags: crate::service::ListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
@@ -720,7 +720,7 @@ pub(crate) async fn get_table_metadata_by_id(
 }
 
 pub(crate) async fn get_table_metadata_by_s3_location(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     location: &Location,
     list_flags: crate::service::ListFlags,
     catalog_state: CatalogState,
@@ -797,15 +797,15 @@ pub(crate) async fn get_table_metadata_by_s3_location(
 
 /// Rename a table. Tables may be moved across namespaces.
 pub(crate) async fn rename_table(
-    warehouse_id: WarehouseIdent,
-    source_id: TableIdentUuid,
+    warehouse_id: WarehouseId,
+    source_id: TableId,
     source: &TableIdent,
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     crate::implementations::postgres::tabular::rename_tabular(
         warehouse_id,
-        TabularIdentUuid::Table(*source_id),
+        TabularId::Table(*source_id),
         source,
         destination,
         transaction,
@@ -816,11 +816,11 @@ pub(crate) async fn rename_table(
 }
 
 pub(crate) async fn drop_table(
-    table_id: TableIdentUuid,
+    table_id: TableId,
     force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularIdentUuid::Table(*table_id), force, None, transaction).await
+    drop_tabular(TabularId::Table(*table_id), force, None, transaction).await
 }
 
 #[derive(Default)]
@@ -877,7 +877,7 @@ pub(crate) mod tests {
             tabular::{mark_tabular_as_deleted, table::create::create_table},
             warehouse::{set_warehouse_status, test::initialize_warehouse},
         },
-        service::{ListFlags, NamespaceIdentUuid, TableCreation},
+        service::{ListFlags, NamespaceId, TableCreation},
     };
 
     fn create_request(
@@ -934,9 +934,9 @@ pub(crate) mod tests {
 
     pub(crate) async fn get_namespace_id(
         state: CatalogState,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,
-    ) -> NamespaceIdentUuid {
+    ) -> NamespaceId {
         let namespace = sqlx::query!(
             r#"
             SELECT namespace_id
@@ -954,14 +954,14 @@ pub(crate) mod tests {
 
     pub(crate) struct InitializedTable {
         #[allow(dead_code)]
-        pub(crate) namespace_id: NamespaceIdentUuid,
+        pub(crate) namespace_id: NamespaceId,
         pub(crate) namespace: NamespaceIdent,
-        pub(crate) table_id: TableIdentUuid,
+        pub(crate) table_id: TableId,
         pub(crate) table_ident: TableIdent,
     }
 
     pub(crate) async fn initialize_table(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         state: CatalogState,
         staged: bool,
         namespace: Option<NamespaceIdent>,
@@ -1775,7 +1775,7 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         mark_tabular_as_deleted(
-            TabularIdentUuid::Table(*table.table_id),
+            TabularId::Table(*table.table_id),
             false,
             None,
             &mut transaction,

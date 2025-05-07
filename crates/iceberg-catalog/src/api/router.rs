@@ -23,9 +23,8 @@ use crate::{
         authn::{auth_middleware_fn, AuthMiddlewareState},
         authz::Authorizer,
         contract_verification::ContractVerifiers,
-        event_publisher::CloudEventsPublisher,
+        endpoint_hooks::EndpointHookCollection,
         health::ServiceHealthProvider,
-        hooks::Hooks,
         task_queue::TaskQueues,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
@@ -45,13 +44,12 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub catalog_state: C::State,
     pub secrets_state: S,
     pub queues: TaskQueues,
-    pub publisher: CloudEventsPublisher,
     pub table_change_checkers: ContractVerifiers,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
-    pub hooks: Hooks,
+    pub hooks: EndpointHookCollection,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -63,7 +61,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
             .field("catalog_state", &"CatalogState")
             .field("secrets_state", &"SecretsState")
             .field("queues", &self.queues)
-            .field("publisher", &self.publisher)
             .field("table_change_checkers", &self.table_change_checkers)
             .field("authenticator", &self.authenticator)
             .field("svhp", &self.service_health_provider)
@@ -97,7 +94,6 @@ pub fn new_full_router<
         catalog_state,
         secrets_state,
         queues,
-        publisher,
         table_change_checkers,
         service_health_provider,
         cors_origins,
@@ -197,7 +193,6 @@ pub fn new_full_router<
                 authz: authorizer,
                 catalog: catalog_state,
                 secrets: secrets_state,
-                publisher,
                 contract_verifiers: table_change_checkers,
                 queues,
                 hooks,
