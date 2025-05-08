@@ -15,7 +15,6 @@ use crate::{
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_metadata_file},
         require_warehouse_id,
         tables::{
             determine_table_ident, extract_count_from_metadata_location, maybe_body_to_json,
@@ -241,13 +240,13 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     // Write metadata file
     let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
-    write_metadata_file(
-        &metadata_location,
-        &requested_update_metadata,
-        CompressionCodec::try_from_metadata(&requested_update_metadata)?,
-        &file_io,
-    )
-    .await?;
+    file_io
+        .write_metadata_file(
+            &metadata_location,
+            &requested_update_metadata,
+            CompressionCodec::try_from_metadata(&requested_update_metadata)?,
+        )
+        .await?;
 
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
 
@@ -268,7 +267,8 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     // Handle file cleanup after transaction is committed
     if let Some(DeleteLocation(before_update_view_location)) = delete_old_location {
         tracing::debug!("Deleting old view location at: '{before_update_view_location}'");
-        let _ = remove_all(&file_io, before_update_view_location)
+        let _ = file_io
+            .remove_all(before_update_view_location)
             .await
             .inspect(|()| tracing::trace!("Deleted old view location"))
             .inspect_err(|e| tracing::error!("Failed to delete old view location: {e:?}"));

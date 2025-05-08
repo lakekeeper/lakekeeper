@@ -138,6 +138,9 @@ pub struct DynAppConfig {
     /// Enable GCP System Identities
     pub(crate) enable_gcp_system_credentials: bool,
 
+    /// Enable HDFS with System Identities
+    pub(crate) enable_hdfs_with_system_credentials: bool,
+
     // ------------- POSTGRES IMPLEMENTATION -------------
     #[redact]
     pub(crate) pg_encryption_key: String,
@@ -468,6 +471,7 @@ impl Default for DynAppConfig {
             s3_enable_direct_system_credentials: false,
             s3_require_external_id_for_system_credentials: true,
             enable_gcp_system_credentials: false,
+            enable_hdfs_with_system_credentials: false,
             nats_address: None,
             nats_topic: None,
             nats_creds_file: None,
@@ -1070,6 +1074,19 @@ mod test {
             let config = get_config();
             assert!(config.enable_aws_system_credentials);
             assert!(!config.s3_enable_direct_system_credentials);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_hdfs_enable() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__ENABLE_HDFS_WITH_SYSTEM_CREDENTIALS",
+                "true",
+            );
+            let config = get_config();
+            assert!(config.enable_hdfs_with_system_credentials);
             Ok(())
         });
     }

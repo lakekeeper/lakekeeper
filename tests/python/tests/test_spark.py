@@ -213,11 +213,6 @@ def test_drop_table(
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "s3":
-        pytest.skip(
-            "S3 fails to purge tables since it tries to sign a DELETE request for the bucket location which we don't want to sign."
-        )
-
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
         "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"

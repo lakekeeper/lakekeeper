@@ -12,7 +12,6 @@ use crate::{
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::write_metadata_file,
         maybe_get_secret, require_warehouse_id,
         tables::{
             determine_tabular_location, maybe_body_to_json, require_active_warehouse,
@@ -141,13 +140,9 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
     let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
     let compression_codec = CompressionCodec::try_from_metadata(&metadata.metadata)?;
-    write_metadata_file(
-        &metadata_location,
-        &metadata.metadata,
-        compression_codec,
-        &file_io,
-    )
-    .await?;
+    file_io
+        .write_metadata_file(&metadata_location, &metadata.metadata, compression_codec)
+        .await?;
     tracing::debug!("Wrote new metadata file to: '{}'", metadata_location);
 
     // Generate the storage profile. This requires the storage secret

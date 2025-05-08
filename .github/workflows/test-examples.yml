@@ -30,6 +30,7 @@ jobs:
       - test-example-access-control-simple
       - test-example-minimal
       - test-example-access-control-advanced
+      - test-example-hdfs
     steps:
       - run: exit 0
 
@@ -56,7 +57,7 @@ jobs:
         run: |
           cd examples/minimal
           sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\""
+          docker compose run --quiet-pull jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\""
         env:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure
@@ -86,7 +87,7 @@ jobs:
         run: |
           cd examples/access-control-simple
           sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb"
+          docker compose run --quiet-pull jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb"
         env:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure
@@ -116,10 +117,39 @@ jobs:
         run: |
           cd examples/access-control-advanced
           sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
+          docker compose run --quiet-pull jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
         env:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
   
+  test-example-hdfs:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iceberg-catalog-image
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -Rlh artifacts
+
+      - name: Restore Docker image
+        run: |
+          docker load -i artifacts/iceberg-catalog-local-amd64.tar
+
+      - name: Test HDFS
+        run: |
+          cd examples/hdfs
+          sed -i '/pull_policy: always/d' docker-compose.yaml
+          docker compose run --quiet-pull jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
+        env:
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
