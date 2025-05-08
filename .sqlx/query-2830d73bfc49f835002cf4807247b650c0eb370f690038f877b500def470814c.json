@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH running_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1 AND status = ANY($2::task_status[])),\n                deletes as (DELETE FROM task where warehouse_id = $1 AND status != ANY($2::task_status[]))\n            SELECT COUNT(task_id) as \"task_count!\", queue_name FROM running_tasks GROUP BY queue_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "queue_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "task_status[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "task_status",
+                  "kind": {
+                    "Enum": [
+                      "pending",
+                      "running",
+                      "done",
+                      "failed",
+                      "cancelled"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "2830d73bfc49f835002cf4807247b650c0eb370f690038f877b500def470814c"
+}

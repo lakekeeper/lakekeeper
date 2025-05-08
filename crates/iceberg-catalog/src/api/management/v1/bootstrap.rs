@@ -1,5 +1,6 @@
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use super::user::{parse_create_user_request, CreateUserRequest, UserLastUpdatedWith, UserType};
 use crate::{
@@ -21,27 +22,32 @@ pub enum AuthZBackend {
     OpenFGA,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, TypedBuilder)]
 #[serde(rename_all = "kebab-case")]
 pub struct BootstrapRequest {
     /// Set to true if you accept LAKEKEEPER terms of use.
+    #[builder(setter(strip_bool))]
     pub accept_terms_of_use: bool,
     /// If set to true, the calling user is treated as an operator and obtain
     /// a corresponding role. If not specified, the user is treated as a human.
     #[serde(default)]
+    #[builder(setter(strip_bool))]
     pub is_operator: bool,
     /// Name of the user performing bootstrap. Optional. If not provided
     /// the server will try to parse the name from the provided token.
     /// The initial user will become the global admin.
     #[serde(default)]
+    #[builder(default, setter(strip_option))]
     pub user_name: Option<String>,
     /// Email of the user performing bootstrap. Optional. If not provided
     /// the server will try to parse the email from the provided token.
     #[serde(default)]
+    #[builder(default, setter(strip_option))]
     pub user_email: Option<String>,
     /// Type of the user performing bootstrap. Optional. If not provided
     /// the server will try to parse the type from the provided token.
     #[serde(default)]
+    #[builder(default, setter(strip_option))]
     pub user_type: Option<UserType>,
 }
 

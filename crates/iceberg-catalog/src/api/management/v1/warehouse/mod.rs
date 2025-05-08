@@ -4,6 +4,7 @@ use futures::FutureExt;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -66,7 +67,7 @@ impl ListDeletedTabularsQuery {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema, TypedBuilder)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateWarehouseRequest {
     /// Name of the warehouse to create. Must be unique
@@ -75,14 +76,17 @@ pub struct CreateWarehouseRequest {
     /// Project ID in which to create the warehouse.
     /// Deprecated: Please use the `x-project-id` header instead.
     #[schema(value_type=Option::<String>)]
+    #[builder(default, setter(strip_option))]
     pub project_id: Option<ProjectId>,
     /// Storage profile to use for the warehouse.
     pub storage_profile: StorageProfile,
     /// Optional storage credential to use for the warehouse.
+    #[builder(default, setter(strip_option))]
     pub storage_credential: Option<StorageCredential>,
     /// Profile to determine behavior upon dropping of tabulars, defaults to soft-deletion with
     /// 7 days expiration.
     #[serde(default)]
+    #[builder(default)]
     pub delete_profile: TabularDeleteProfile,
 }
 

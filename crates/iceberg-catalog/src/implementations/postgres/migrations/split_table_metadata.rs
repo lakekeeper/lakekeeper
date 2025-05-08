@@ -2,7 +2,7 @@ use futures::{future::BoxFuture, FutureExt};
 use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::Postgres;
 
-use crate::{api, implementations::postgres::migrations::MigrationHook};
+use crate::implementations::postgres::migrations::MigrationHook;
 
 pub(super) struct SplitTableMetadataHook;
 
@@ -10,8 +10,12 @@ impl MigrationHook for SplitTableMetadataHook {
     fn apply<'c>(
         &self,
         trx: &'c mut sqlx::Transaction<'_, Postgres>,
-    ) -> BoxFuture<'c, api::Result<()>> {
+    ) -> BoxFuture<'c, anyhow::Result<()>> {
         split_table_metadata(trx).boxed()
+    }
+
+    fn name(&self) -> &'static str {
+        "split_table_metadata"
     }
 
     fn version() -> i64
@@ -22,10 +26,9 @@ impl MigrationHook for SplitTableMetadataHook {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn split_table_metadata(
     transaction: &mut sqlx::Transaction<'_, Postgres>,
-) -> api::Result<()> {
+) -> anyhow::Result<()> {
     let num_projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project")
         .fetch_one(&mut **transaction)
         .await

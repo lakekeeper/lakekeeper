@@ -14,7 +14,10 @@ use crate::{
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     request_metadata::RequestMetadata,
-    service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
+    service::{
+        storage::StorageProfile, task_queue::TaskStatus, GetProjectResponse, GetWarehouseResponse,
+        WarehouseStatus,
+    },
     ProjectId, SecretIdent, WarehouseIdent,
 };
 
@@ -442,12 +445,33 @@ pub(crate) async fn delete_warehouse(
     DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
+    let unfinished_task_counts_per_queue = sqlx::query!(
+        r#"WITH running_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1 AND status = ANY($2::task_status[])),
+                deletes as (DELETE FROM task where warehouse_id = $1 AND status != ANY($2::task_status[]))
+            SELECT COUNT(task_id) as "task_count!", queue_name FROM running_tasks GROUP BY queue_name"#,
+        *warehouse_id,
+        TaskStatus::non_terminal_states() as _,
+    ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error deleting tasks for warehouse"))?;
+    if !unfinished_task_counts_per_queue.is_empty() {
+        let task_descriptions = unfinished_task_counts_per_queue
+            .iter()
+            .map(|row| format!("{} in queue '{}'", row.task_count, row.queue_name))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        return Err(ErrorModel::conflict(
+            format!(
+                "Warehouse has unfinished tasks: {task_descriptions}. Retry once they are done."
+            ),
+            "WarehouseHasUnfinishedTasks",
+            None,
+        )
+        .into());
+    }
+
     let protected = sqlx::query_scalar!(
         r#"WITH delete_info as (
-               SELECT
-                   protected
-               FROM warehouse
-               WHERE warehouse_id = $1
+               SELECT protected FROM warehouse w WHERE w.warehouse_id = $1
            ),
            deleted as (DELETE FROM warehouse WHERE warehouse_id = $1 AND (not protected OR $2))
            SELECT protected as "protected!" FROM delete_info"#,
@@ -1162,5 +1186,31 @@ pub(crate) mod test {
 
         assert_eq!(stats.stats.len(), 0);
         assert!(stats.next_page_token.is_none());
+    }
+
+    #[sqlx::test]
+    async fn test_delete_non_existing_warehouse(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::from(uuid::Uuid::new_v4());
+        let warehouse_id =
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+        let mut trx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: false },
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
+        let e = delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery { force: false },
+            trx.transaction(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.error.code, StatusCode::NOT_FOUND);
     }
 }

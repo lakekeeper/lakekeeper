@@ -21,7 +21,7 @@ All docker compose examples come with batteries included (Identity Provider, Sto
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
     cd examples/access-control-advanced
-    docker-compose up -d
+    docker compose up -d
     ```
 
 === "🐳 With Authentication & Authorization - Simple"
@@ -30,7 +30,7 @@ All docker compose examples come with batteries included (Identity Provider, Sto
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
     cd examples/access-control-simple
-    docker-compose up -d
+    docker compose up -d
     ```
 
 === "🐳 Unsecured"
@@ -38,7 +38,7 @@ All docker compose examples come with batteries included (Identity Provider, Sto
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
     cd examples/minimal
-    docker-compose up -d
+    docker compose up -d
     ```
 
 Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8181` for the Lakekeeper UI.
@@ -54,7 +54,7 @@ While you can start the "🐳 Unsecured" variant without any external dependenci
     ```bash
     git clone https://github.com/lakekeeper/lakekeeper
     cd docker-compose
-    docker-compose up -d
+    docker compose up -d
     ```
 
 === "🐳 Authentication & Authorization"

@@ -37,8 +37,8 @@ This quickstart does not run tests against cloud-storage providers or KV2. For t
 The following shell snippet will start a full development environment including the catalog plus its dependencies and a jupyter server with spark. The iceberg-catalog and its migrations will be built from source. This can be useful for development and testing.
 
 ```sh
-$ cd examples
-$ docker-compose -f docker-compose.yaml -f docker-compose-latest.yaml up -d --build
+cd examples/minimal
+docker compose -f docker-compose.yaml -f docker-compose-build.yaml up -d --build
 ```
 
 You may then head to `localhost:8888` and try out one of the notebooks.
@@ -139,6 +139,7 @@ When adding a new endpoint, you may need to extend the authorization model. Plea
 1. apply your changes, e.g. add `define can_undrop: modify` to the `view` type in `authz/openfga/v2.2/schema.fga`
 1. regenerate `schema.json` via `./fga model transform --file authz/openfga/v2.2/schema.fga > authz/openfga/v2.2/schema.json` (download the `fga` binary from the [OpenFGA repo](https://github.com/openfga/cli/releases/))
 1. Head to `crate::service::authz::implementations::openfga::migration.rs`, modify `ACTIVE_MODEL_VERSION` to the newer version. For backwards compatible changes, change the `add_model` section. For changes that require migrations, add an additional `add_model` section that includes the migration fn.
+
 ```rust
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(3, 0)); // <- Change this for every change in the model

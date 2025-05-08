@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    stringify,
 };
 
 use anyhow::anyhow;
@@ -17,26 +18,33 @@ use crate::{
     service::Transaction,
 };
 
+mod patch_migration_hash;
 mod split_table_metadata;
 
 /// # Errors
 /// Returns an error if the migration fails.
 pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     let migrator = sqlx::migrate!();
-    let mut hooks = get_data_migrations();
+    let mut data_migration_hooks = get_data_migrations();
+    let mut sha_patches = get_sha_patches();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-    tracing::info!("Hooks: {:?}", hooks.keys().collect::<Vec<_>>());
+    tracing::info!(
+        "Data migration hooks: {:?}",
+        data_migration_hooks.keys().collect::<Vec<_>>()
+    );
+
+    tracing::info!("SHA patches: {:?}", sha_patches.iter().collect::<Vec<_>>());
     let mut trx = PostgresTransaction::begin_write(catalog_state.clone())
         .await
         .map_err(|e| e.error)?;
     let locking = true;
-    let tr = trx.transaction();
+    let transaction = trx.transaction();
     // lock the database for exclusive access by the migrator
     if locking {
-        tr.lock().await?;
+        transaction.lock().await?;
     }
 
-    let applied_migrations = run_checks(&migrator, tr).await?;
+    let applied_migrations = run_checks(&migrator, transaction).await?;
 
     for migration in migrator.iter() {
         tracing::info!(%migration.version, %migration.description, "Current migration");
@@ -49,16 +57,26 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
 
         if let Some(applied_migration) = applied_migrations.get(&migration.version) {
             if migration.checksum != applied_migration.checksum {
+                if sha_patches.remove(&migration.version) {
+                    patch_migration_hash::patch(
+                        transaction,
+                        applied_migration.checksum.clone(),
+                        migration.checksum.clone(),
+                        migration.version,
+                    )
+                    .await?;
+                    continue;
+                }
                 return Err(MigrateError::VersionMismatch(migration.version))?;
             }
             tracing::info!(%migration.version, "Migration already applied");
         } else {
-            tr.apply(&migration).await?;
+            transaction.apply(&migration).await?;
             tracing::info!(%migration.version, "Applying migration");
-            if let Some(hook) = hooks.remove(&migration.version) {
-                tracing::info!(%migration.version, "Running split_table_metadata migration");
-                hook.apply(tr).await.map_err(|e| e.error)?;
-                tracing::info!(%migration.version, "split_table_metadata migration complete");
+            if let Some(hook) = data_migration_hooks.remove(&migration.version) {
+                tracing::info!(%migration.version, "Running data migration {}", hook.name());
+                hook.apply(transaction).await?;
+                tracing::info!(%migration.version, "Data migration {} complete", hook.name());
             } else {
                 tracing::info!(%migration.version, "No hook for migration");
             }
@@ -68,7 +86,7 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     // unlock the migrator to allow other migrators to run
     // but do nothing as we already migrated
     if locking {
-        tr.unlock().await?;
+        transaction.unlock().await?;
     }
     trx.commit().await.map_err(|e| anyhow::anyhow!(e.error))?;
     Ok(())
@@ -102,6 +120,9 @@ async fn run_checks(
 pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
     let mut conn = pool.acquire().await?;
     let m = sqlx::migrate!();
+    let sha_patches = get_sha_patches();
+    tracing::info!("SHA patches: {:?}", sha_patches.iter().collect::<Vec<_>>());
+
     let applied_migrations = match conn.list_applied_migrations().await {
         Ok(migrations) => migrations,
         Err(e) => {
@@ -122,10 +143,12 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
         .migrations
         .iter()
         .map(|mig| (mig.version, &*mig.checksum))
+        .filter(|(v, _)| !sha_patches.contains(v))
         .collect::<HashSet<_>>();
     let applied = applied_migrations
         .iter()
         .map(|mig| (mig.version, &*mig.checksum))
+        .filter(|(v, _)| !sha_patches.contains(v))
         .collect::<HashSet<_>>();
     let missing = to_be_applied.difference(&applied).collect::<HashSet<_>>();
 
@@ -149,7 +172,9 @@ pub trait MigrationHook: Send + Sync + 'static {
     fn apply<'c>(
         &self,
         trx: &'c mut sqlx::Transaction<'_, Postgres>,
-    ) -> BoxFuture<'c, crate::api::Result<()>>;
+    ) -> BoxFuture<'c, anyhow::Result<()>>;
+
+    fn name(&self) -> &'static str;
 
     fn version() -> i64
     where
@@ -160,6 +185,10 @@ pub trait MigrationHook: Send + Sync + 'static {
 pub struct Migration {
     version: i64,
     description: Cow<'static, str>,
+}
+
+fn get_sha_patches() -> HashSet<i64> {
+    HashSet::from([20_250_328_131_139, 20_250_505_101_407])
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {

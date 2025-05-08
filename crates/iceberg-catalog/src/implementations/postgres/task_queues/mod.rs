@@ -371,8 +371,10 @@ mod test {
     use uuid::Uuid;
 
     use super::*;
-    use crate::WarehouseIdent;
-    const TEST_WAREHOUSE: WarehouseIdent = WarehouseIdent(Uuid::nil());
+    use crate::{
+        api::management::v1::warehouse::TabularDeleteProfile, service::authz::AllowAllAuthorizer,
+        WarehouseIdent,
+    };
 
     async fn queue_task(
         conn: &mut PgConnection,
@@ -402,38 +404,28 @@ mod test {
     #[sqlx::test]
     async fn test_queue_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
+        let config = TaskQueueConfig::default();
+        let (_, warehouse_id) = setup(pool.clone(), config).await;
 
-        let idempotency_key = Uuid::new_v5(&TEST_WAREHOUSE, b"test");
+        let idempotency_key = Uuid::new_v5(&warehouse_id, b"test");
 
-        let id = queue_task(
-            &mut conn,
-            "test",
-            None,
-            idempotency_key,
-            TEST_WAREHOUSE,
-            None,
-        )
-        .await
-        .unwrap();
+        let id = queue_task(&mut conn, "test", None, idempotency_key, warehouse_id, None)
+            .await
+            .unwrap();
 
-        assert!(queue_task(
-            &mut conn,
-            "test",
-            None,
-            idempotency_key,
-            TEST_WAREHOUSE,
-            None,
-        )
-        .await
-        .unwrap()
-        .is_none());
+        assert!(
+            queue_task(&mut conn, "test", None, idempotency_key, warehouse_id, None,)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let id3 = queue_task(
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test2"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test2"),
+            warehouse_id,
             None,
         )
         .await
@@ -442,21 +434,36 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    pub(crate) fn setup(pool: PgPool, config: TaskQueueConfig) -> PgQueue {
-        PgQueue::from_config(ReadWrite::from_pools(pool.clone(), pool), config).unwrap()
+    pub(crate) async fn setup(pool: PgPool, config: TaskQueueConfig) -> (PgQueue, WarehouseIdent) {
+        let prof = crate::tests::test_io_profile();
+        let (_, wh) = crate::tests::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            TabularDeleteProfile::Hard {},
+            None,
+            Some(config.clone()),
+            1,
+        )
+        .await;
+        (
+            PgQueue::from_config(ReadWrite::from_pools(pool.clone(), pool), config).unwrap(),
+            wh.warehouse_id,
+        )
     }
 
     #[sqlx::test]
     async fn test_failed_tasks_are_put_back(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
         let id = queue_task(
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test"),
+            warehouse_id,
             None,
         )
         .await
@@ -500,14 +507,14 @@ mod test {
     async fn test_success_task_arent_polled(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
 
         let id = queue_task(
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test"),
+            warehouse_id,
             None,
         )
         .await
@@ -538,14 +545,14 @@ mod test {
     async fn test_scheduled_tasks_are_polled_later(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
 
         let id = queue_task(
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test"),
+            warehouse_id,
             Some(Utc::now() + chrono::Duration::milliseconds(500)),
         )
         .await
@@ -579,14 +586,14 @@ mod test {
             max_age: chrono::Duration::milliseconds(500),
             ..Default::default()
         };
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
 
         let id = queue_task(
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test"),
+            warehouse_id,
             None,
         )
         .await
@@ -624,14 +631,14 @@ mod test {
     async fn test_multiple_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
 
         let id = queue_task(
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test"),
+            warehouse_id,
             None,
         )
         .await
@@ -642,8 +649,8 @@ mod test {
             &mut conn,
             "test",
             None,
-            Uuid::new_v5(&TEST_WAREHOUSE, b"test2"),
-            TEST_WAREHOUSE,
+            Uuid::new_v5(&warehouse_id, b"test2"),
+            warehouse_id,
             None,
         )
         .await
@@ -688,20 +695,20 @@ mod test {
     async fn test_queue_batch(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
 
         let ids = queue_task_batch(
             &mut conn,
             "test",
             &hashmap! {
-                Uuid::new_v5(&TEST_WAREHOUSE, b"test") => TaskArg {
+                Uuid::new_v5(&warehouse_id, b"test") => TaskArg {
                     parent: None,
-                    warehouse_ident: TEST_WAREHOUSE,
+                    warehouse_ident: warehouse_id,
                     suspend_until: None,
                 },
-                Uuid::new_v5(&TEST_WAREHOUSE, b"test2") => TaskArg {
+                Uuid::new_v5(&warehouse_id, b"test2") => TaskArg {
                     parent: None,
-                    warehouse_ident: TEST_WAREHOUSE,
+                    warehouse_ident: warehouse_id,
                     suspend_until: None,
                 },
             },
@@ -749,20 +756,20 @@ mod test {
     async fn test_queue_batch_idempotency(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
-        let queue = setup(pool.clone(), config);
+        let (queue, warehouse_id) = setup(pool.clone(), config).await;
 
         let ids = queue_task_batch(
             &mut conn,
             "test",
             &hashmap! {
-                Uuid::new_v5(&TEST_WAREHOUSE, b"test") => TaskArg {
+                Uuid::new_v5(&warehouse_id, b"test") => TaskArg {
                     parent: None,
-                    warehouse_ident: TEST_WAREHOUSE,
+                    warehouse_ident: warehouse_id,
                     suspend_until: None,
                 },
-                Uuid::new_v5(&TEST_WAREHOUSE, b"test2") => TaskArg {
+                Uuid::new_v5(&warehouse_id, b"test2") => TaskArg {
                     parent: None,
-                    warehouse_ident: TEST_WAREHOUSE,
+                    warehouse_ident: warehouse_id,
                     suspend_until: None,
                 },
             },
@@ -806,20 +813,20 @@ mod test {
         record_success(task.task_id, &pool).await.unwrap();
         record_success(id2, &pool).await.unwrap();
 
-        let new_key = Uuid::new_v5(&TEST_WAREHOUSE, b"test3");
+        let new_key = Uuid::new_v5(&warehouse_id, b"test3");
 
         let ids_second = queue_task_batch(
             &mut conn,
             "test",
             &hashmap! {
-                Uuid::new_v5(&TEST_WAREHOUSE, b"test") => TaskArg {
+                Uuid::new_v5(&warehouse_id, b"test") => TaskArg {
                     parent: None,
-                    warehouse_ident: TEST_WAREHOUSE,
+                    warehouse_ident: warehouse_id,
                     suspend_until: None,
                 },
                 new_key => TaskArg {
                     parent: None,
-                    warehouse_ident: TEST_WAREHOUSE,
+                    warehouse_ident: warehouse_id,
                     suspend_until: None,
                 },
             },

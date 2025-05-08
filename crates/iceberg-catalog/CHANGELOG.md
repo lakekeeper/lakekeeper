@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.4](https://github.com/lakekeeper/lakekeeper/compare/v0.8.3...v0.8.4) (2025-05-02)
+
+
+### Features
+
+* Add X-Forwarded- Headers to request trace ([#1048](https://github.com/lakekeeper/lakekeeper/issues/1048)) ([f3bc2b5](https://github.com/lakekeeper/lakekeeper/commit/f3bc2b5ae13e57978d5adbf6f2b44113fc0e624c))
+* Expand allowed characters for user-id to all UTF-8 except control ([#1043](https://github.com/lakekeeper/lakekeeper/issues/1043)) ([15fddf5](https://github.com/lakekeeper/lakekeeper/commit/15fddf51f241d02d4417bb62f547b3b3c38948d6))
+
+
+### Bug Fixes
+
+* delete warehouse with open tasks should not work with pending/running tasks ([#1052](https://github.com/lakekeeper/lakekeeper/issues/1052)) ([c327247](https://github.com/lakekeeper/lakekeeper/commit/c327247d6eb6b6b5d51ffbf9013e25bfdc721e2d))
+* Missing prepared query after merge ([#1065](https://github.com/lakekeeper/lakekeeper/issues/1065)) ([5a1f0c1](https://github.com/lakekeeper/lakekeeper/commit/5a1f0c11d6b0ae5db21daa714331c0c241beff86))
+* staged tables should be dropped with namespaces ([#1062](https://github.com/lakekeeper/lakekeeper/issues/1062)) ([02714b5](https://github.com/lakekeeper/lakekeeper/commit/02714b5b01d72c3c8bbf9320034dcf62abcd0c92))
+
+
+### Miscellaneous Chores
+
+* release 0.8.4 ([7a0b1c9](https://github.com/lakekeeper/lakekeeper/commit/7a0b1c95db682fc8f3b911032632841f3403b412))
+
 ## [0.8.3](https://github.com/lakekeeper/lakekeeper/compare/v0.8.2...v0.8.3) (2025-04-18)
 
 

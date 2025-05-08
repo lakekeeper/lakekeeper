@@ -5,6 +5,7 @@ use chrono::Utc;
 use rand::{rng, Rng as _};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use strum::EnumIter;
 use uuid::Uuid;
 
 use super::{authz::Authorizer, WarehouseIdent};
@@ -214,7 +215,7 @@ pub struct Task {
     pub attempt: i32,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, EnumIter)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -226,6 +227,12 @@ pub enum TaskStatus {
     Running,
     Failed,
     Cancelled,
+}
+
+impl TaskStatus {
+    pub(crate) fn non_terminal_states() -> &'static [TaskStatus] {
+        &[TaskStatus::Pending, TaskStatus::Running]
+    }
 }
 
 #[derive(Debug)]

@@ -350,6 +350,24 @@ class Server:
     def project_url(self) -> str:
         return urllib.parse.urljoin(self.management_url, "v1/project")
 
+    @property
+    def user_url(self) -> str:
+        return urllib.parse.urljoin(self.management_url, "v1/user")
+
+    @property
+    def openfga_permissions_url(self) -> str:
+        server_info = requests.get(
+            self.management_url + "v1/info",
+            headers={"Authorization": f"Bearer {self.access_token}"},
+        )
+        server_info.raise_for_status()
+        server_info = server_info.json()
+
+        if server_info.get("authz-backend") != "openfga":
+            pytest.skip("Server is not using OpenFGA as authz backend. Skipping test.")
+
+        return urllib.parse.urljoin(self.management_url, "v1/permissions")
+
 
 @dataclasses.dataclass
 class Warehouse:

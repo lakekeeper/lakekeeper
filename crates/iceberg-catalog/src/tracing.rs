@@ -6,7 +6,10 @@ use tower_http::{
 use tracing::{Level, Span};
 use uuid::Uuid;
 
-use crate::api::X_REQUEST_ID_HEADER;
+use crate::{
+    api::X_REQUEST_ID_HEADER, X_FORWARDED_FOR_HEADER, X_FORWARDED_PORT_HEADER,
+    X_FORWARDED_PROTO_HEADER,
+};
 
 /// A `MakeSpan` implementation that attaches the `request_id` to the span.
 #[derive(Debug, Clone)]
@@ -36,6 +39,10 @@ impl<B> MakeSpan<B> for RestMakeSpan {
                         $level,
                         "request",
                         method = %request.method(),
+                        host = %request.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                        "x-forwarded-for" = %request.headers().get(X_FORWARDED_FOR_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                        "x-forwarded-proto" = %request.headers().get(X_FORWARDED_PROTO_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                        "x-forwarded-port" = %request.headers().get(X_FORWARDED_PORT_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
                         uri = %request.uri(),
                         version = ?request.version(),
                         request_id = %request

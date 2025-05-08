@@ -7,7 +7,7 @@ pub mod router;
 
 pub use iceberg_ext::catalog::rest::*;
 
-pub use crate::request_metadata::{RequestMetadata, PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};
+pub use crate::request_metadata::{RequestMetadata, X_PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};
 
 // Used only to group required traits for a State
 pub trait ThreadSafe: Clone + Send + Sync + 'static {}

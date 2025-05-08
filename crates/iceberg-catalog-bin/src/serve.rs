@@ -196,7 +196,7 @@ async fn serve_with_authn<A: Authorizer>(
 
         Some(authenticator)
     } else {
-        tracing::info!("Running without Kubernetes authentication.");
+        tracing::info!("Running without Kubernetes authentication for legacy service accounts.");
         None
     };
 
@@ -262,7 +262,8 @@ async fn serve_with_authn<A: Authorizer>(
         }
         (None, Some(auth1), Some(auth2))
         | (Some(auth1), None, Some(auth2))
-        | (Some(auth1), Some(auth2), None) => {
+        // OIDC has priority over k8s if specified
+        | (Some(auth2), Some(auth1), None) => {
             let authenticator = limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
                 .add_authenticator(auth1)
                 .add_authenticator(auth2)

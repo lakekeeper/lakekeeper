@@ -17,7 +17,6 @@ use iceberg_ext::{
 };
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
 use crate::{
@@ -660,15 +659,17 @@ impl StorageLocations for StorageProfile {}
 impl StorageLocations for S3Profile {}
 impl StorageLocations for AdlsProfile {}
 
+#[cfg(test)]
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TestProfile {
-    base_location: Uuid,
+    base_location: uuid::Uuid,
 }
 
+#[cfg(test)]
 impl Default for TestProfile {
     fn default() -> Self {
         Self {
-            base_location: Uuid::now_v7(),
+            base_location: uuid::Uuid::now_v7(),
         }
     }
 }

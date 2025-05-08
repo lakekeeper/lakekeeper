@@ -14,6 +14,7 @@ use iceberg_ext::catalog::rest::{
     UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use typed_builder::TypedBuilder;
 
 use crate::{
     api::{
@@ -23,22 +24,25 @@ use crate::{
     request_metadata::RequestMetadata,
 };
 
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, TypedBuilder)]
 pub struct NamespaceDropFlags {
     #[serde(
         deserialize_with = "crate::api::iceberg::types::deserialize_bool",
         default
     )]
+    #[builder(setter(strip_bool))]
     pub force: bool,
     #[serde(
         deserialize_with = "crate::api::iceberg::types::deserialize_bool",
         default
     )]
+    #[builder(setter(strip_bool))]
     pub purge: bool,
     #[serde(
         deserialize_with = "crate::api::iceberg::types::deserialize_bool",
         default
     )]
+    #[builder(setter(strip_bool))]
     pub recursive: bool,
 }
 

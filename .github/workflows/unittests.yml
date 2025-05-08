@@ -158,16 +158,20 @@ jobs:
           - 9000:9000
           - 9001:9001
         options: --health-cmd "curl -I http://localhost:9000/minio/health/live"
-
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: azure/login@v2
+        if: ${{ env.AZURE_CLIENT_ID != '' }}
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
           allow-no-subscriptions: true
       
       - name: Write gcp credential to file
+        if: ${{ env.GCS_CREDENTIAL != '' }}
         run: echo "${{ secrets.GCS_CREDENTIAL }}" > /tmp/gcs.json
         shell: bash
 
@@ -177,13 +181,9 @@ jobs:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        run: cargo install --force cargo-nextest
-
-      - name: Install Azure CLI
-        run: |
-          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-          az upgrade --yes --only-show-errors
-          az config set extension.use_dynamic_install=yes_without_prompt
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Migrate database
         run: |
@@ -195,6 +195,7 @@ jobs:
           sqlx migrate run
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
       - name: Setup vault
         run: |
           export VAULT_ADDR=http://localhost:8200
@@ -252,11 +253,11 @@ jobs:
           AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
           AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
           AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
-          TEST_AWS_KMS: 1
+          TEST_AWS_KMS: ${{ secrets.TEST_AWS_KMS }}
           AWS_KMS_S3_BUCKET: ${{ secrets.AWS_KMS_S3_BUCKET }}
           AWS_S3_KMS_ARN: ${{ secrets.AWS_S3_KMS_ARN }}
 
-          TEST_R2: 1
+          TEST_R2: ${{ secrets.TEST_R2 }}
           LAKEKEEPER_TEST__R2_BUCKET: ${{ secrets.LAKEKEEPER_TEST__R2_BUCKET }}
           LAKEKEEPER_TEST__R2_TOKEN: ${{ secrets.LAKEKEEPER_TEST__R2_TOKEN }}
           LAKEKEEPER_TEST__R2_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__R2_SECRET_ACCESS_KEY }}
@@ -265,7 +266,7 @@ jobs:
           LAKEKEEPER_TEST__R2_ENDPOINT: ${{ secrets.LAKEKEEPER_TEST__R2_ENDPOINT }}
 
           TEST_GCS: ${{ secrets.TEST_GCS }}
-          TEST_GCS_HNS: 1
+          TEST_GCS_HNS: ${{ secrets.TEST_GCS_HNS }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}

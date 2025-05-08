@@ -2,6 +2,7 @@
 
 use iceberg_ext::configs::ParseFromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use typed_builder::TypedBuilder;
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct Prefix(pub(crate) String);
@@ -193,7 +194,7 @@ fn true_fn() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, TypedBuilder)]
 #[serde(rename_all = "camelCase")]
 pub struct DropParams {
     #[serde(deserialize_with = "deserialize_bool", default = "true_fn")]
