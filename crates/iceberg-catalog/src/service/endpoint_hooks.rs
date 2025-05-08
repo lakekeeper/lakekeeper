@@ -59,7 +59,7 @@ impl Display for EndpointHookCollection {
 
 #[async_trait::async_trait]
 impl EndpointHooks for EndpointHookCollection {
-    async fn commit_table(
+    async fn commit_transaction(
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
@@ -68,7 +68,7 @@ impl EndpointHooks for EndpointHookCollection {
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
-            hook.commit_table(
+            hook.commit_transaction(
                 warehouse_id,
                 request.clone(),
                 responses.clone(),
@@ -252,7 +252,7 @@ impl EndpointHooks for EndpointHookCollection {
 /// your hooks.
 #[async_trait::async_trait]
 pub trait EndpointHooks: Send + Sync + Debug + Display {
-    async fn commit_table(
+    async fn commit_transaction(
         &self,
         _warehouse_id: WarehouseId,
         _request: Arc<CommitTransactionRequest>,

@@ -36,7 +36,7 @@ pub mod nats;
 
 #[async_trait::async_trait]
 impl EndpointHooks for CloudEventsPublisher {
-    async fn commit_table(
+    async fn commit_transaction(
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,

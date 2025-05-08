@@ -1062,7 +1062,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 state
                     .v1_state
                     .hooks
-                    .commit_table(
+                    .commit_transaction(
                         warehouse_id,
                         Arc::new(request),
                         Arc::new(commits.clone()),
