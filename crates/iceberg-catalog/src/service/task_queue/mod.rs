@@ -1,4 +1,4 @@
-use std::{fmt::Debug, ops::Deref, time::Duration};
+use std::{collections::HashMap, fmt::Debug, ops::Deref, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -25,6 +25,8 @@ pub mod tabular_purge_queue;
 
 #[derive(Debug, Clone)]
 pub struct TaskQueues {
+    queues: HashMap<String, tokio::sync::mpsc::Sender<Task>>,
+    queue: Arc<dyn TaskQueue>,
     tabular_expiration: tabular_expiration_queue::ExpirationQueue,
     tabular_purge: tabular_purge_queue::TabularPurgeQueue,
 }
@@ -32,21 +34,70 @@ pub struct TaskQueues {
 impl TaskQueues {
     #[must_use]
     pub fn new(
+        queue: Arc<dyn TaskQueue>,
         expiration: tabular_expiration_queue::ExpirationQueue,
         purge: tabular_purge_queue::TabularPurgeQueue,
     ) -> Self {
         Self {
+            queues: HashMap::new(),
+            queue,
             tabular_expiration: expiration,
             tabular_purge: purge,
+        }
+    }
+
+    pub async fn run(self) {
+        loop {
+            for (queue_name, queue_tx) in self.queues.iter() {
+                // Todo: error handling
+                if let Ok(Some(task)) = self.queue.pick_new_task(queue_name).await {
+                    let task_id = task.task_id;
+                    // TODO: retries
+                    if let Err(e) = queue_tx.send(task).await {
+                        // TODO: retries
+                        let _ = self
+                            .queue
+                            .record_failure(
+                                task_id,
+                                &format!("Failed to forward task to task queue handler {e}"),
+                            )
+                            .await
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to record failure for task {task_id}: {e}");
+                            });
+                    };
+                }
+            }
         }
     }
 
     #[tracing::instrument(skip(self))]
     pub(crate) async fn queue_tabular_expiration(
         &self,
-        task: TabularExpirationInput,
+        TabularExpirationInput {
+            tabular_id,
+            warehouse_ident,
+            tabular_type,
+            purge,
+            expire_at,
+        }: TabularExpirationInput,
     ) -> crate::api::Result<()> {
-        self.tabular_expiration.enqueue(task).await
+        self.queue
+            .enqueue(TaskInput {
+                idempotency_key: Uuid::new_v5(&warehouse_ident.0, tabular_id.as_bytes()),
+                warehouse_id: warehouse_ident,
+                parent_task_id: None,
+                suspend_until: expire_at,
+                queue_name: "tabular_expiration".to_string(),
+                // TODO: change input to this fn to contain this as a struct instead of doing this
+                //       ad-hoc json construction
+                payload: serde_json::json!({
+                    "tabular_id": tabular_id,
+                    "typ": tabular_type.to_string(),
+                    "deletion_kind": if purge { "purge" } else {"default"}
+                }),
+            })
+            .await
     }
 
     #[tracing::instrument(skip(self))]
@@ -54,7 +105,7 @@ impl TaskQueues {
         &self,
         filter: TaskFilter,
     ) -> crate::api::Result<()> {
-        self.tabular_expiration.cancel_pending_tasks(filter).await
+        self.queue.cancel_pending_tasks(filter).await
     }
 
     #[tracing::instrument(skip(self))]
@@ -160,19 +211,31 @@ pub enum TaskFilter {
     TaskIds(Vec<TaskId>),
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskStruct {
+    pub task: Task,
+    pub payload: serde_json::Value,
+}
+
+pub struct TaskInput {
+    pub idempotency_key: Uuid,
+    pub warehouse_id: WarehouseId,
+    pub parent_task_id: Option<Uuid>,
+    pub suspend_until: chrono::DateTime<Utc>,
+    pub queue_name: String,
+    pub payload: serde_json::Value,
+}
+
 #[async_trait]
 pub trait TaskQueue: Debug {
-    type Task: Send + Sync + 'static;
-    type Input: Debug + Send + Sync + 'static;
-
     fn config(&self) -> &TaskQueueConfig;
-    fn queue_name(&self) -> &'static str;
+    // fn queue_name(&self) -> &'static str;
 
-    async fn enqueue_batch(&self, task: Vec<Self::Input>) -> crate::api::Result<()>;
-    async fn enqueue(&self, task: Self::Input) -> crate::api::Result<()> {
+    async fn enqueue_batch(&self, task: Vec<TaskInput>) -> crate::api::Result<()>;
+    async fn enqueue(&self, task: TaskInput) -> crate::api::Result<()> {
         self.enqueue_batch(vec![task]).await
     }
-    async fn pick_new_task(&self) -> crate::api::Result<Option<Self::Task>>;
+    async fn pick_new_task(&self, queue_name: &str) -> crate::api::Result<Option<Task>>;
     async fn record_success(&self, id: Uuid) -> crate::api::Result<()>;
     async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()>;
     async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()>;
@@ -213,6 +276,20 @@ pub struct Task {
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub parent_task_id: Option<Uuid>,
     pub attempt: i32,
+    pub warehouse_id: WarehouseId,
+    state: serde_json::Value,
+}
+
+impl Task {
+    pub fn task_state<T: Deserialize>(&self) -> crate::api::Result<T> {
+        Ok(serde_json::from_value(self.state.clone()).map_err(|e| {
+            crate::api::ErrorModel::internal(
+                format!("Failed to deserialize task state: {e}"),
+                "TaskStateDeserializationError",
+                Some(Box::new(e)),
+            )
+        })?)
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, EnumIter)]

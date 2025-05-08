@@ -1,9 +1,10 @@
 use std::{fmt, sync::Arc, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use uuid::Uuid;
 
-use super::random_ms_duration;
+use super::{random_ms_duration, TaskQueues};
 use crate::{
     api::{
         management::v1::{DeleteKind, TabularType},
@@ -27,47 +28,45 @@ pub type ExpirationQueue = Arc<
         + 'static,
 >;
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct State {
+    pub tabular_id: Uuid,
+    pub tabular_type: TabularType,
+    pub deletion_kind: DeleteKind,
+}
+
 // TODO: concurrent workers
 pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
-    fetcher: ExpirationQueue,
-    cleaner: TabularPurgeQueue,
+    mut fetcher: tokio::sync::mpsc::Receiver<Task>,
+    queues: Arc<dyn TaskQueue>,
     catalog_state: C::State,
     authorizer: A,
 ) {
-    loop {
-        tokio::time::sleep(random_ms_duration()).await;
-
-        let expiration = match fetcher.pick_new_task().await {
-            Ok(expiration) => expiration,
+    while let Some(expiration) = fetcher.recv().await {
+        let state = match expiration.task_state::<State>() {
+            Ok(state) => state,
             Err(err) => {
-                // TODO: add retry counter + exponential backoff
-                tracing::error!("Failed to fetch deletion: {:?}", err);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tracing::error!("Failed to deserialize task state: {:?}", err);
+                // TODO: record fatal error
                 continue;
             }
         };
-
-        let Some(expiration) = expiration else {
-            tokio::time::sleep(fetcher.config().poll_interval).await;
-            continue;
-        };
-
         let span = tracing::debug_span!(
             "tabular_expiration",
-            queue_name = %expiration.task.queue_name,
-            tabular_id = %expiration.tabular_id,
-            warehouse_id = %expiration.warehouse_ident,
-            tabular_type = %expiration.tabular_type,
-            deletion_kind = ?expiration.deletion_kind,
-            task = ?expiration.task,
+            queue_name = %expiration.queue_name,
+            tabular_id = %state.tabular_id,
+            warehouse_id = %expiration.warehouse_id,
+            tabular_type = %state.tabular_type,
+            deletion_kind = ?state.deletion_kind,
+            task = ?expiration,
         );
 
         instrumented_expire::<C, A>(
-            fetcher.clone(),
-            &cleaner,
+            todo!(),
+            queues.clone(),
             catalog_state.clone(),
             authorizer.clone(),
-            &expiration,
+            state,
         )
         .instrument(span.or_current())
         .await;
@@ -76,20 +75,21 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
 
 async fn instrumented_expire<C: Catalog, A: Authorizer>(
     fetcher: ExpirationQueue,
-    cleaner: &TabularPurgeQueue,
+    cleaner: Arc<dyn TaskQueue>,
     catalog_state: C::State,
     authorizer: A,
-    expiration: &TabularExpirationTask,
+    expiration: &State,
+    task: &Task,
 ) {
     match handle_table::<C, A>(catalog_state.clone(), authorizer, cleaner, expiration).await {
         Ok(()) => {
-            fetcher.retrying_record_success(&expiration.task).await;
+            fetcher.retrying_record_success(&task).await;
             tracing::debug!("Successful {expiration}");
         }
         Err(e) => {
             tracing::error!("Failed to handle {expiration}: {:?}", e);
             fetcher
-                .retrying_record_failure(&expiration.task, &format!("{e:?}"))
+                .retrying_record_failure(&task, &format!("{e:?}"))
                 .await;
         }
     };
@@ -98,8 +98,8 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
 async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
-    delete_queue: &TabularPurgeQueue,
-    expiration: &TabularExpirationTask,
+    queue: Arc<dyn TaskQueue>,
+    expiration: &State,
 ) -> Result<()>
 where
     C: Catalog,
@@ -139,7 +139,7 @@ where
     };
 
     if matches!(expiration.deletion_kind, DeleteKind::Purge) {
-        delete_queue
+        queue
             .enqueue(TabularPurgeInput {
                 tabular_id: expiration.tabular_id,
                 warehouse_ident: expiration.warehouse_ident,

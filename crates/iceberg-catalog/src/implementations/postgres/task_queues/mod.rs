@@ -5,14 +5,14 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use itertools::Itertools;
 use sqlx::{PgConnection, PgPool};
-pub use tabular_expiration_queue::TabularExpirationQueue;
 pub use tabular_purge_queue::TabularPurgeQueue;
 use uuid::Uuid;
 
 use crate::{
     implementations::postgres::{dbutils::DBErrorHandler, ReadWrite},
-    service::task_queue::{Task, TaskFilter, TaskQueueConfig, TaskStatus},
+    service::task_queue::{Task, TaskFilter, TaskQueue, TaskQueueConfig, TaskStatus, TaskStruct},
     WarehouseId,
 };
 
@@ -55,6 +55,64 @@ impl PgQueue {
                 microseconds,
             },
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl TaskQueue for PgQueue {
+    fn config(&self) -> &TaskQueueConfig {
+        &self.config
+    }
+
+    #[tracing::instrument(skip(self, tasks))]
+    async fn enqueue_batch(&self, tasks: Vec<TaskInput>) -> crate::api::Result<()> {
+        let idempotency2task = tasks
+            .into_iter()
+            .map(|t| {
+                (
+                    Uuid::new_v5(&t.warehouse_id, t.idempotency_key.as_bytes()),
+                    t,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut transaction =
+            self.read_write.write_pool.begin().await.map_err(|e| {
+                e.into_error_model("failed to begin transaction for expiration queue")
+            })?;
+
+        let queued =
+            queue_task_batch(&mut transaction, self.queue_name(), &idempotency2task).await?;
+
+        tracing::debug!("Queued {} tasks", queued.len());
+
+        transaction.commit().await.map_err(|e| {
+            tracing::error!(?e, "failed to commit");
+            e.into_error_model("failed to commit transaction inserting tabular expiration task")
+        })?;
+        Ok(())
+    }
+
+    async fn pick_new_task(&self, queue_name: &str) -> crate::api::Result<Option<Task>> {
+        pick_task(&self.read_write.write_pool, queue_name, &self.max_age).await
+    }
+
+    async fn record_success(&self, id: Uuid) -> crate::api::Result<()> {
+        record_success(id, &self.read_write.write_pool).await
+    }
+
+    async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()> {
+        record_failure(
+            &self.read_write.write_pool,
+            id,
+            self.config().max_retries,
+            error_details,
+        )
+        .await
+    }
+
+    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
+        cancel_pending_tasks(&self, filter, self.queue_name()).await
     }
 }
 
@@ -111,28 +169,29 @@ fn preprocess_batch<T: InputTrait, F: Fn(&T) -> Uuid>(
 async fn queue_task_batch(
     conn: &mut PgConnection,
     queue_name: &str,
-    tasks: &HashMap<Uuid, TaskArg>,
+    tasks: Vec<TaskInput>,
 ) -> Result<Vec<InsertResult>, IcebergErrorResponse> {
     let mut task_ids = Vec::with_capacity(tasks.len());
     let mut idempotency_keys = Vec::with_capacity(tasks.len());
     let mut parent_task_ids = Vec::with_capacity(tasks.len());
     let mut warehouse_idents = Vec::with_capacity(tasks.len());
     let mut suspend_untils = Vec::with_capacity(tasks.len());
-
-    for (
+    let mut states = Vec::with_capacity(tasks.len());
+    for TaskInput {
         idempotency_key,
-        TaskArg {
-            parent,
-            warehouse_ident,
-            suspend_until,
-        },
-    ) in tasks
+        warehouse_id,
+        parent_task_id,
+        suspend_until,
+        queue_name,
+        payload,
+    } in tasks.into_iter()
     {
         task_ids.push(Uuid::now_v7());
-        idempotency_keys.push(*idempotency_key);
-        parent_task_ids.push(*parent);
-        warehouse_idents.push(**warehouse_ident);
-        suspend_untils.push(*suspend_until);
+        idempotency_keys.push(idempotency_key);
+        parent_task_ids.push(parent_task_id);
+        warehouse_idents.push(*warehouse_id);
+        suspend_untils.push(suspend_until);
+        states.push(payload);
     }
 
     Ok(sqlx::query_as!(
@@ -144,7 +203,8 @@ async fn queue_task_batch(
                 unnest($3::uuid[]) as parent_task_id,
                 unnest($4::uuid[]) as idempotency_key,
                 unnest($5::uuid[]) as warehouse_id,
-                unnest($6::timestamptz[]) as suspend_until
+                unnest($6::timestamptz[]) as suspend_until,
+                unnest(&6::jsonb[]) as payload
         )
         INSERT INTO task(
                 task_id,
@@ -153,7 +213,8 @@ async fn queue_task_batch(
                 parent_task_id,
                 idempotency_key,
                 warehouse_id,
-                suspend_until)
+                suspend_until,
+                state)
         SELECT
             i.task_id,
             i.queue_name,
@@ -161,11 +222,13 @@ async fn queue_task_batch(
             i.parent_task_id,
             i.idempotency_key,
             i.warehouse_id,
-            i.suspend_until
+            i.suspend_until,
+            i.payload
         FROM input_rows i
         ON CONFLICT ON CONSTRAINT unique_idempotency_key
         DO UPDATE SET
             status = EXCLUDED.status,
+            state = EXCLUDED.state,
             suspend_until = EXCLUDED.suspend_until
         WHERE task.status = 'cancelled'
         RETURNING task_id, idempotency_key"#,
@@ -177,7 +240,8 @@ async fn queue_task_batch(
         &suspend_untils
             .iter()
             .map(|t| t.as_ref())
-            .collect::<Vec<_>>() as _
+            .collect::<Vec<_>>() as _,
+        &states
     )
     .fetch_all(conn)
     .await
@@ -214,7 +278,7 @@ async fn record_failure(
 #[tracing::instrument]
 async fn pick_task(
     pool: &PgPool,
-    queue_name: &'static str,
+    queue_name: &str,
     max_age: &sqlx::postgres::types::PgInterval,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
     let x = sqlx::query_as!(
@@ -232,7 +296,7 @@ async fn pick_task(
     SET status = 'running', picked_up_at = $2, attempt = task.attempt + 1
     FROM updated_task
     WHERE task.task_id = updated_task.task_id
-    RETURNING task.task_id, task.status as "status: TaskStatus", task.picked_up_at, task.attempt, task.parent_task_id, task.queue_name
+    RETURNING task.task_id, task.state, task.status as "status: TaskStatus", task.picked_up_at, task.attempt, task.parent_task_id, task.queue_name
     "#,
         queue_name,
         Utc::now(),
@@ -299,6 +363,8 @@ macro_rules! impl_pg_task_queue {
     };
 }
 use impl_pg_task_queue;
+
+use crate::service::task_queue::TaskInput;
 
 /// Cancel pending tasks for a warehouse
 /// If `task_ids` are provided in `filter` which are not pending, they are ignored

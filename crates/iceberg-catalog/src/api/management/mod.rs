@@ -1492,7 +1492,9 @@ pub mod v1 {
     }
 
     /// Type of tabular
-    #[derive(Debug, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq)]
+    #[derive(
+        Debug, Deserialize, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq,
+    )]
     #[serde(rename_all = "kebab-case")]
     pub enum TabularType {
         Table,
@@ -1500,7 +1502,15 @@ pub mod v1 {
     }
 
     #[derive(
-        Debug, Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq, strum_macros::Display,
+        Debug,
+        Deserialize,
+        Serialize,
+        utoipa::ToSchema,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        strum_macros::Display,
     )]
     #[serde(rename_all = "kebab-case")]
     pub enum DeleteKind {
