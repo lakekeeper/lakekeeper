@@ -73,7 +73,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
                 "endpoint_statistics_tracker_tx",
                 &self.endpoint_statistics_tracker_tx,
             )
-            .field("hooks", &self.hooks)
+            .field("endpoint_hooks", &self.hooks)
             .finish()
     }
 }

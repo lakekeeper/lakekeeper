@@ -115,7 +115,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .await;
 
         match result {
-            Ok(result) => {
+            Ok((result, commit)) => {
                 state
                     .v1_state
                     .hooks
@@ -123,7 +123,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                         warehouse_id,
                         parameters,
                         request.clone(),
-                        Arc::new(result.metadata.clone()),
+                        Arc::new(commit),
                         data_access,
                         Arc::new(request_metadata),
                     )
@@ -162,7 +162,7 @@ struct CommitViewContext<'a> {
 async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
-) -> Result<LoadViewResult> {
+) -> Result<(LoadViewResult, crate::service::endpoint_hooks::ViewCommit)> {
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
@@ -182,7 +182,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     let (requested_update_metadata, delete_old_location) = build_new_metadata(
         ctx.request.clone(),
-        before_update_metadata,
+        before_update_metadata.clone(),
         &previous_view_location,
     )?;
 
@@ -262,11 +262,19 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
             .inspect_err(|e| tracing::error!("Failed to delete old view location: {e:?}"));
     }
 
-    Ok(LoadViewResult {
-        metadata_location: metadata_location.to_string(),
-        metadata: requested_update_metadata,
-        config: Some(config.config.into()),
-    })
+    Ok((
+        LoadViewResult {
+            metadata_location: metadata_location.to_string(),
+            metadata: requested_update_metadata.clone(),
+            config: Some(config.config.into()),
+        },
+        crate::service::endpoint_hooks::ViewCommit {
+            old_metadata: before_update_metadata,
+            new_metadata: requested_update_metadata,
+            old_metadata_location: previous_metadata_location,
+            new_metadata_location: metadata_location,
+        },
+    ))
 }
 
 fn check_asserts(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {

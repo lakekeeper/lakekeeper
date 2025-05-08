@@ -10,9 +10,12 @@ use iceberg::{
     spec::{TableMetadata, ViewMetadata},
     TableIdent,
 };
-use iceberg_ext::catalog::rest::{
-    CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
-    RegisterTableRequest, RenameTableRequest,
+use iceberg_ext::{
+    catalog::rest::{
+        CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
+        RegisterTableRequest, RenameTableRequest,
+    },
+    configs::Location,
 };
 use uuid::Uuid;
 
@@ -27,7 +30,10 @@ use crate::{
         RequestMetadata,
     },
     catalog::tables::{maybe_body_to_json, CommitContext},
-    service::{endpoint_hooks::EndpointHooks, tabular_idents::TabularId},
+    service::{
+        endpoint_hooks::{EndpointHooks, ViewCommit},
+        tabular_idents::TabularId,
+    },
 };
 
 #[cfg(feature = "kafka")]
@@ -40,7 +46,7 @@ impl EndpointHooks for CloudEventsPublisher {
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
-        _responses: Arc<Vec<CommitContext>>,
+        _commits: Arc<Vec<CommitContext>>,
         table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -119,6 +125,7 @@ impl EndpointHooks for CloudEventsPublisher {
         NamespaceParameters { prefix, namespace }: NamespaceParameters,
         request: Arc<RegisterTableRequest>,
         metadata: Arc<TableMetadata>,
+        _metadata_location: Arc<Location>,
         request_metadata: Arc<RequestMetadata>,
     ) {
         let _ = self
@@ -149,6 +156,7 @@ impl EndpointHooks for CloudEventsPublisher {
         NamespaceParameters { prefix, namespace }: NamespaceParameters,
         request: Arc<CreateTableRequest>,
         metadata: Arc<TableMetadata>,
+        _metadata_location: Option<Arc<Location>>,
         _data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -209,6 +217,7 @@ impl EndpointHooks for CloudEventsPublisher {
         parameters: NamespaceParameters,
         request: Arc<CreateViewRequest>,
         metadata: Arc<ViewMetadata>,
+        _metadata_location: Arc<Location>,
         _data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -242,7 +251,7 @@ impl EndpointHooks for CloudEventsPublisher {
         warehouse_id: WarehouseId,
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
-        metadata: Arc<ViewMetadata>,
+        metadata: Arc<ViewCommit>,
         _data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -252,7 +261,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "updateView",
                 maybe_body_to_json(request),
                 EventMetadata {
-                    tabular_id: TabularId::View(metadata.uuid()),
+                    tabular_id: TabularId::View(metadata.new_metadata.uuid()),
                     warehouse_id,
                     name: parameters.view.name,
                     namespace: parameters.view.namespace.to_url_string(),

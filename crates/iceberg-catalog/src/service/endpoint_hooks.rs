@@ -8,9 +8,12 @@ use iceberg::{
     spec::{TableMetadata, ViewMetadata},
     TableIdent,
 };
-use iceberg_ext::catalog::rest::{
-    CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
-    RegisterTableRequest, RenameTableRequest,
+use iceberg_ext::{
+    catalog::rest::{
+        CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
+        RegisterTableRequest, RenameTableRequest,
+    },
+    configs::Location,
 };
 
 use crate::{
@@ -48,13 +51,21 @@ impl Display for EndpointHookCollection {
         write!(f, "EndpointHookCollection with [")?;
         for idx in 0..self.0.len() {
             if idx == self.0.len() - 1 {
-                write!(f, "{:?}", self.0[idx])?;
+                write!(f, "{}", self.0[idx])?;
             } else {
-                write!(f, "{:?}, ", self.0[idx])?;
+                write!(f, "{}, ", self.0[idx])?;
             }
         }
         write!(f, "]")
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewCommit {
+    pub old_metadata: ViewMetadata,
+    pub new_metadata: ViewMetadata,
+    pub old_metadata_location: Location,
+    pub new_metadata_location: Location,
 }
 
 #[async_trait::async_trait]
@@ -63,7 +74,7 @@ impl EndpointHooks for EndpointHookCollection {
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
-        responses: Arc<Vec<CommitContext>>,
+        commits: Arc<Vec<CommitContext>>,
         table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -71,7 +82,7 @@ impl EndpointHooks for EndpointHookCollection {
             hook.commit_transaction(
                 warehouse_id,
                 request.clone(),
-                responses.clone(),
+                commits.clone(),
                 table_ident_map.clone(),
                 request_metadata.clone(),
             )
@@ -105,6 +116,7 @@ impl EndpointHooks for EndpointHookCollection {
         parameters: NamespaceParameters,
         request: Arc<RegisterTableRequest>,
         metadata: Arc<TableMetadata>,
+        metadata_location: Arc<Location>,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -113,6 +125,49 @@ impl EndpointHooks for EndpointHookCollection {
                 parameters.clone(),
                 request.clone(),
                 metadata.clone(),
+                metadata_location.clone(),
+                request_metadata.clone(),
+            )
+        }))
+        .await;
+    }
+
+    async fn create_table(
+        &self,
+        warehouse_id: WarehouseId,
+        parameters: NamespaceParameters,
+        request: Arc<CreateTableRequest>,
+        metadata: Arc<TableMetadata>,
+        metadata_location: Option<Arc<Location>>,
+        data_access: DataAccess,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.create_table(
+                warehouse_id,
+                parameters.clone(),
+                request.clone(),
+                metadata.clone(),
+                metadata_location.clone(),
+                data_access,
+                request_metadata.clone(),
+            )
+        }))
+        .await;
+    }
+
+    async fn rename_table(
+        &self,
+        warehouse_id: WarehouseId,
+        table_id: TableId,
+        request: Arc<RenameTableRequest>,
+        request_metadata: Arc<RequestMetadata>,
+    ) {
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.rename_table(
+                warehouse_id,
+                table_id,
+                request.clone(),
                 request_metadata.clone(),
             )
         }))
@@ -125,6 +180,7 @@ impl EndpointHooks for EndpointHookCollection {
         parameters: NamespaceParameters,
         request: Arc<CreateViewRequest>,
         metadata: Arc<ViewMetadata>,
+        metadata_location: Arc<Location>,
         data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -134,6 +190,7 @@ impl EndpointHooks for EndpointHookCollection {
                 parameters.clone(),
                 request.clone(),
                 metadata.clone(),
+                metadata_location.clone(),
                 data_access,
                 request_metadata.clone(),
             )
@@ -146,7 +203,7 @@ impl EndpointHooks for EndpointHookCollection {
         warehouse_id: WarehouseId,
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
-        metadata: Arc<ViewMetadata>,
+        view_commit: Arc<ViewCommit>,
         data_access: DataAccess,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -155,7 +212,7 @@ impl EndpointHooks for EndpointHookCollection {
                 warehouse_id,
                 parameters.clone(),
                 request.clone(),
-                metadata.clone(),
+                view_commit.clone(),
                 data_access,
                 request_metadata.clone(),
             )
@@ -201,24 +258,6 @@ impl EndpointHooks for EndpointHookCollection {
         .await;
     }
 
-    async fn rename_table(
-        &self,
-        warehouse_id: WarehouseId,
-        table_id: TableId,
-        request: Arc<RenameTableRequest>,
-        request_metadata: Arc<RequestMetadata>,
-    ) {
-        futures::future::join_all(self.0.iter().map(|hook| {
-            hook.rename_table(
-                warehouse_id,
-                table_id,
-                request.clone(),
-                request_metadata.clone(),
-            )
-        }))
-        .await;
-    }
-
     async fn undrop_tabular(
         &self,
         warehouse_id: WarehouseId,
@@ -256,7 +295,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         &self,
         _warehouse_id: WarehouseId,
         _request: Arc<CommitTransactionRequest>,
-        _responses: Arc<Vec<CommitContext>>,
+        _commits: Arc<Vec<CommitContext>>,
         _table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         _request_metadata: Arc<RequestMetadata>,
     ) {
@@ -278,15 +317,19 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _parameters: NamespaceParameters,
         _request: Arc<RegisterTableRequest>,
         _metadata: Arc<TableMetadata>,
+        _metadata_location: Arc<Location>,
         _request_metadata: Arc<RequestMetadata>,
     ) {
     }
+
+    #[allow(clippy::too_many_arguments)]
     async fn create_table(
         &self,
         _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<CreateTableRequest>,
         _metadata: Arc<TableMetadata>,
+        _metadata_location: Option<Arc<Location>>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
     ) {
@@ -301,12 +344,14 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
     ) {
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn create_view(
         &self,
         _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<CreateViewRequest>,
         _metadata: Arc<ViewMetadata>,
+        _metadata_location: Arc<Location>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
     ) {
@@ -318,7 +363,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _warehouse_id: WarehouseId,
         _parameters: ViewParameters,
         _request: Arc<CommitViewRequest>,
-        _metadata: Arc<ViewMetadata>,
+        _view_commit: Arc<ViewCommit>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
     ) {

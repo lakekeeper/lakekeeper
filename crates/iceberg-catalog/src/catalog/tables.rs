@@ -292,7 +292,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         });
 
         let load_table_result = LoadTableResult {
-            metadata_location: metadata_location.map(|l| l.to_string()),
+            metadata_location: metadata_location.as_ref().map(ToString::to_string),
             metadata: table_metadata.clone(),
             config: Some(config.config.into()),
             storage_credentials,
@@ -318,6 +318,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 parameters,
                 Arc::new(request),
                 Arc::new(table_metadata),
+                metadata_location.map(Arc::new),
                 data_access,
                 Arc::new(request_metadata),
             )
@@ -419,6 +420,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 parameters,
                 Arc::new(request),
                 Arc::new(table_metadata.clone()),
+                Arc::new(metadata_location.clone()),
                 Arc::new(request_metadata),
             )
             .await;

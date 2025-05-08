@@ -178,6 +178,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             parameters.clone(),
             Arc::new(request),
             Arc::new(metadata.metadata.clone()),
+            Arc::new(metadata_location.clone()),
             data_access,
             Arc::new(request_metadata),
         )
