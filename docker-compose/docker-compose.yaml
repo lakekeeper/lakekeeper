@@ -41,7 +41,7 @@ services:
       iceberg_net:
 
   db:
-    image: bitnami/postgresql:16.6.0
+    image: bitnami/postgresql:17.5.0
     environment:
       - POSTGRESQL_USERNAME=postgres
       - POSTGRESQL_PASSWORD=postgres
