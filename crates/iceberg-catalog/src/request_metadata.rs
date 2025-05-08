@@ -8,7 +8,6 @@ use axum::{
 use http::{HeaderMap, Method};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
-use rand::rand_core::le;
 use uuid::Uuid;
 
 use crate::{service::authn::Actor, ProjectId, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID};
@@ -266,8 +265,7 @@ fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
 
     let host_header = headers
         .get(http::header::HOST)
-        .map(|hv| hv.to_str().ok())
-        .flatten();
+        .and_then(|hv| hv.to_str().ok());
 
     if CONFIG.use_x_forwarded_headers {
         let any_x_forwarded_header_present = headers
