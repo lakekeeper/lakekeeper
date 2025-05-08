@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use cloudevents::Event;
@@ -364,6 +368,12 @@ impl EndpointHooks for CloudEventsPublisher {
 pub struct CloudEventsPublisher {
     tx: tokio::sync::mpsc::Sender<CloudEventsMessage>,
     timeout: tokio::time::Duration,
+}
+
+impl Display for CloudEventsPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CloudEventsPublisher")
+    }
 }
 
 impl CloudEventsPublisher {

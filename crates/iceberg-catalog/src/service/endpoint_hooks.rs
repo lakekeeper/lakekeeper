@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
 use iceberg::{
     spec::{TableMetadata, ViewMetadata},
@@ -36,6 +40,20 @@ impl EndpointHookCollection {
     #[must_use]
     pub fn new(hooks: Vec<Arc<dyn EndpointHooks>>) -> Self {
         Self(hooks)
+    }
+}
+
+impl Display for EndpointHookCollection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EndpointHookCollection with [")?;
+        for idx in 0..self.0.len() {
+            if idx == self.0.len() - 1 {
+                write!(f, "{:?}", self.0[idx])?;
+            } else {
+                write!(f, "{:?}, ", self.0[idx])?;
+            }
+        }
+        write!(f, "]")
     }
 }
 
@@ -220,8 +238,20 @@ impl EndpointHooks for EndpointHookCollection {
     }
 }
 
+/// `EndpointHooks` is a trait that allows for custom hooks to be executed within the context of
+/// various endpoints.
+///
+/// The default implementation of every hook does nothing. Override any function if you want to
+/// implement it.
+///
+/// An implementation should be light-weight, ideally every longer running task is deferred to a
+/// background task via a channel or is spawned as a tokio task.
+///
+/// The `EndpointHooks` are passed into the services via the `EndpointHookCollection`. If you want
+/// to provide your own implementation, you'll have to fork and modify the main function to include
+/// your hooks.
 #[async_trait::async_trait]
-pub trait EndpointHooks: Send + Sync + Debug {
+pub trait EndpointHooks: Send + Sync + Debug + Display {
     async fn commit_table(
         &self,
         _warehouse_id: WarehouseId,
