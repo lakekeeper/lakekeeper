@@ -6,7 +6,7 @@ For most deployments, we recommend to set at least the following variables: `LAK
 
 ## Routing and Base-URL
 
-Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default, these links are generated using the `x-forwarded-for`, `x-forwarded-proto` and `x-forwarded-port` headers, if these are not present, the `host` header is used. If these heuristics are not working for you, you may set the `LAKEKEEPER_BASE_URI` environment variable to the base-URL where Lakekeeper is externally reachable. This may be necessary if Lakekeeper runs behind a reverse proxy or load balancer, and you cannot set the headers accordingly. In general, we recommend relying on the headers. To respect the `host` header but not the `x-forwarded-` headers, set `LAKEKEEPER__USE_X_FORWARDED_HEADERS` to `false`.
+Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default, these links are generated using the `x-forwarded-host`, `x-forwarded-proto` and `x-forwarded-port` headers, if these are not present, the `host` header is used. If these heuristics are not working for you, you may set the `LAKEKEEPER_BASE_URI` environment variable to the base-URL where Lakekeeper is externally reachable. This may be necessary if Lakekeeper runs behind a reverse proxy or load balancer, and you cannot set the headers accordingly. In general, we recommend relying on the headers. To respect the `host` header but not the `x-forwarded-` headers, set `LAKEKEEPER__USE_X_FORWARDED_HEADERS` to `false`.
 
 ### General
 
@@ -20,7 +20,7 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 | `LAKEKEEPER__BIND_IP`                              | `0.0.0.0`, `::1`, `::`                 | IP Address Lakekeeper binds to. Default: `0.0.0.0` (listen to all incoming IPv4 packages) |
 | `LAKEKEEPER__SECRET_BACKEND`                       | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
 | `LAKEKEEPER__ALLOW_ORIGIN`                         | `*`                                    | A comma separated list of allowed origins for CORS. |
-| <nobr>`LAKEKEEPER__USE_X_FORWARDED_HEADERS`</nobr> | <nobr>`false`<nobr>                    | If true, Lakekeeper respects the `x-forwarded-for`, `x-forwarded-proto` and `x-forwarded-port` headers in incoming requests. This is mostly relevant for the `/config` endpoint. Default: `true` (Headers are respected.) |
+| <nobr>`LAKEKEEPER__USE_X_FORWARDED_HEADERS`</nobr> | <nobr>`false`<nobr>                    | If true, Lakekeeper respects the `x-forwarded-host`, `x-forwarded-proto` and `x-forwarded-port` headers in incoming requests. This is mostly relevant for the `/config` endpoint. Default: `true` (Headers are respected.) |
 
 ### Storage
 
