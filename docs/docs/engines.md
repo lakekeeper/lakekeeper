@@ -225,3 +225,27 @@ The following docker compose examples are available for starrocks:
     )
     ```
 
+
+## <img src="/assets/olake.svg" width="30"> OLake
+
+Open-source tool for replicating Databases to Apache Iceberg or Data Lakehouse. ⚡ Efficient, quick and scalable data ingestion for real-time analytics. Visit <a href="https://olake.io" target="_blank">OLake</a> for the full documentation, and benchmarks.
+
+- <a href="https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal" target="_blank">Minimal</a> : No authentication
+
+
+
+=== "S3-Compatible"
+
+    ```json
+    {
+    "type": "ICEBERG",
+        "writer": {
+            "catalog_type": "rest",
+            "normalization": false,
+            "rest_catalog_url": "http://localhost:8181/catalog",
+            "iceberg_s3_path": "warehouse",
+            "iceberg_db": "ICEBERG_DATABASE_NAME"
+        }
+    }
+    ```
+
