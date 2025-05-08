@@ -265,7 +265,7 @@ The following docker compose examples are available for starrocks:
 
 ## <img src="/assets/olake.svg" width="30"> OLake
 
-OLake is an open-source, quick and scalable tool for replicating Databases to Apache Iceberg or Data Lakehouses. Visit <a href="https://olake.io" target="_blank">OLake</a> for the full documentation, and benchmarks.
+OLake is an open-source, quick and scalable tool for replicating Databases to Apache Iceberg or Data Lakehouses written in Go. Visit the [Olake Iceberg Documentation](https://olake.io/docs/writers/iceberg/catalog/rest#rest-catalog) for the full documentation, and additional information on Olake.
 
 === "S3-Compatible"
 
@@ -281,3 +281,9 @@ OLake is an open-source, quick and scalable tool for replicating Databases to Ap
         }
     }
     ```
+
+## Generic Iceberg REST Clients
+
+All Apache Iceberg REST clients are compatible with Lakekeeper, as Lakekeeper fully implements the standard Iceberg REST Catalog API specification. This page only contains some exemplary tools and configurations to help you get started. For tools not listed here, please refer to their documentation for specific configuration details and best practices when connecting to an Iceberg REST Catalog. Always check with your tool provider for the most up-to-date information regarding supported features and configuration options.
+
+When using Lakekeeper with authentication enabled, remember that you can follow the approaches described at the beginning of this page: either use credentials specific to individual users or leverage OAuth2 token exchange for shared query engines. The authentication parameters typically include credential pairs, OAuth2 server URIs, and scopes as shown in the examples above.
