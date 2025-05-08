@@ -172,7 +172,6 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::ManagementOpenapi {}) => {
             let doc = match CONFIG.authz_backend {
                 AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(),
-                #[cfg(feature = "authz-openfga")]
                 AuthZBackend::OpenFGA => v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(),
             };
             println!("{}", doc.to_yaml()?);

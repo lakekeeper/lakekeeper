@@ -14,6 +14,10 @@ check-cargo-sort:
 
 check: check-format check-clippy check-cargo-sort
 
+fix-format:
+    cargo +nightly fmt --all
+    cargo sort -w
+
 fix:
     cargo clippy --all-targets --all-features --workspace --fix --allow-staged
     cargo +nightly fmt --all

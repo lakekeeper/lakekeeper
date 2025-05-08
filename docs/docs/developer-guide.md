@@ -11,7 +11,9 @@ We hate red tape. Currently, all committers need to sign the CLA in Github. To e
 
 To work on small and self-contained features, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy. Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`. 
 
-If you made any changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` before submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub. Always run `cargo +nightly fmt` before committing, you may have to install a nightly rust toolchain, for linting, run `clippy --all-targets --all-features`.
+There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
+
+If you made any changes to SQL queries, you'll have to run from the repository root `just sqlx-prepare` before submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub. Always run `just fix-format` before committing, you may have to install a nightly rust toolchain, for linting, run `just check-clippy`. If you're interested in what these commands do, take a look at the `justfile` in the root of the repository.
 
 ```bash
 # start postgres
@@ -32,7 +34,7 @@ cd ../..
 cargo nextest run --all-features
 
 # run clippy
-cargo clippy --all-features --all-targets
+just check-clippy
 ```
 
 ## Code structure
@@ -66,7 +68,7 @@ You'll start at `api` and add the endpoint function to either `management` or `i
 ## Debugging complex issues and prototyping using our examples
 
 To debug more complex issues, work on prototypes or simply an initial manual test, you can use one of the `examples`. Unless you are working on AuthN or AuthZ, you'll most likely want to use the minimal example. All examples come with a `docker-compose-build.yaml` which will build the catalog image from source. The invocation looks like this: `docker-compose -f docker-compose.yaml -f docker-compose-build.yaml up -d --build`. Aside from building the catalog, the `docker-compose-build.yaml` overlay also exposes the docker services to your host, so you can also use it as a development environment by e.g. pointing your env vars to the docker container to test against its minio instance.
-If you made changes to SQL queries, you'll have to run `cargo sqlx prepare --workspace -- --all-targets --all-features` before rebuilding the catalog image. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database.
+If you made changes to SQL queries, you'll have to run `just sqlx-prepare` before rebuilding the catalog image. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database.
 
 After spinning the example up, you may head to `localhost:8888` and use one of the notebooks.
 
@@ -91,7 +93,7 @@ sqlx migrate run
 Before committing changes to SQL queries, run: 
 
 ```sh
-cargo sqlx prepare --workspace -- --all-targets --all-features
+`just sqlx-prepare`
 ```
 
 Then `git add` the changes to `.sqlx` and commit them. Careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on Github so there's no way of really breaking things.
@@ -160,7 +162,7 @@ cargo test service::storage::s3::test::aws::test_can_validate
 
 ## Running integration test
 
-Our integration tests are written in Python and use pytest. They are located in the `tests` folder. The integration tests are run using docker-compose. The integration tests require a running instance of the catalog, which is started via docker-compose. The integration tests are run using `docker-compose`, please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests).
+Our integration tests are written in Python and use pytest. They are located in the `tests` folder. The integration tests spin up Lakekeeper and all the dependencies via `docker compose`. Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests) for more information.
 
 
 ## Extending Authz
