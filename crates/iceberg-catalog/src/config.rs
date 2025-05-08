@@ -97,6 +97,9 @@ pub struct DynAppConfig {
     /// Bind IP the server listens on.
     /// Defaults to 0.0.0.0
     pub bind_ip: IpAddr,
+    /// If x-forwarded-x headers should be respected.
+    /// Defaults to true
+    pub use_x_forwarded_headers: bool,
     /// If true (default), the NIL uuid is used as default project id.
     pub enable_default_project: bool,
     /// Template to obtain the "prefix" for a warehouse,
@@ -441,6 +444,7 @@ impl Default for DynAppConfig {
             base_uri: None,
             metrics_port: 9000,
             enable_default_project: true,
+            use_x_forwarded_headers: true,
             prefix_template: "{warehouse_id}".to_string(),
             allow_origin: None,
             reserved_namespaces: ReservedNamespaces(HashSet::from([
@@ -1070,6 +1074,23 @@ mod test {
             let config = get_config();
             assert!(config.enable_aws_system_credentials);
             assert!(!config.s3_enable_direct_system_credentials);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_use_x_forwarded_headers() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__USE_X_FORWARDED_HEADERS", "true");
+            let config = get_config();
+            assert!(config.use_x_forwarded_headers);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__USE_X_FORWARDED_HEADERS", "false");
+            let config = get_config();
+            assert!(!config.use_x_forwarded_headers);
             Ok(())
         });
     }
