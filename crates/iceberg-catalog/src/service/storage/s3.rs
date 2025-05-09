@@ -1633,14 +1633,13 @@ pub(crate) mod test {
         assert_eq!(location.to_string(), expected);
     }
 
-    #[needs_env_var(TEST_MINIO = 1)]
+    // #[needs_env_var(TEST_MINIO = 1)]
     pub(crate) mod s3_compat {
-        use std::sync::LazyLock;
-
         use crate::service::storage::{
             s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-            StorageProfile,
+            StorageProfile, StorageValidation,
         };
+        use std::sync::LazyLock;
 
         static TEST_BUCKET: LazyLock<String> =
             LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap());
@@ -1652,6 +1651,10 @@ pub(crate) mod test {
             LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap());
         static TEST_ENDPOINT: LazyLock<String> =
             LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").unwrap());
+        static READ_ONLY_USER: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_READ_ONLY_USER").unwrap());
+        static READ_ONLY_PASSWORD: LazyLock<String> =
+            LazyLock::new(|| std::env::var("LAKEKEEPER_TEST__S3_READ_ONLY_PASSWORD").unwrap());
 
         pub(crate) fn storage_profile(prefix: &str) -> (S3Profile, S3Credential) {
             let profile = S3Profile {
@@ -1690,11 +1693,63 @@ pub(crate) mod test {
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);
+
                     let mut profile: StorageProfile = profile.into();
+                    let readonly_cred: StorageCredential =
+                        S3Credential::AccessKey(S3AccessKeyCredential {
+                            aws_access_key_id: dbg!(READ_ONLY_USER.clone()),
+                            aws_secret_access_key: dbg!(READ_ONLY_PASSWORD.clone()),
+                            external_id: None,
+                        })
+                        .into();
+
                     let cred: StorageCredential = cred.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, StorageValidation::ReadWriteDelete {})
+                        .await
+                        .unwrap();
+                    {
+                        let fio = profile.file_io(Some(&cred)).await.unwrap();
+                        let of = fio
+                            .new_output(
+                                profile
+                                    .base_location()
+                                    .unwrap()
+                                    .cloning_push("read_this.txt")
+                                    .as_str(),
+                            )
+                            .unwrap();
+                        of.write(b"hello world".as_slice().into()).await.unwrap();
+
+                        let fio = profile.file_io(Some(&readonly_cred)).await.unwrap();
+                        let inf = fio
+                            .new_input(
+                                profile
+                                    .base_location()
+                                    .unwrap()
+                                    .cloning_push("read_this.txt")
+                                    .as_str(),
+                            )
+                            .unwrap();
+                        let bytes = inf.read().await.unwrap();
+                        let bbytes: bytes::Bytes = b"hello world".as_slice().into();
+                        assert_eq!(bytes, bbytes);
+                        tracing::error!("{}", inf.location());
+                        assert!(inf.exists().await.unwrap());
+                    }
+
+                    profile
+                        .validate_access(
+                            Some(&readonly_cred),
+                            None,
+                            StorageValidation::Read {
+                                path: "read_this.txt".to_string(),
+                            },
+                        )
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1704,7 +1759,7 @@ pub(crate) mod test {
     #[needs_env_var(TEST_AWS = 1)]
     pub(crate) mod aws {
         use super::super::*;
-        use crate::service::storage::{StorageCredential, StorageProfile};
+        use crate::service::storage::{StorageCredential, StorageProfile, StorageValidation};
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
             let profile = S3Profile {
@@ -1746,7 +1801,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, StorageValidation::ReadWriteDelete {})
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1756,7 +1814,7 @@ pub(crate) mod test {
     #[needs_env_var(TEST_AWS_KMS = 1)]
     pub(crate) mod aws_kms {
         use super::super::*;
-        use crate::service::storage::{StorageCredential, StorageProfile};
+        use crate::service::storage::{StorageCredential, StorageProfile, StorageValidation};
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
             let profile = S3Profile {
@@ -1798,7 +1856,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, StorageValidation::ReadWriteDelete {})
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1808,7 +1869,7 @@ pub(crate) mod test {
     #[needs_env_var(TEST_R2 = 1)]
     pub(crate) mod r2 {
         use super::super::*;
-        use crate::service::storage::{StorageCredential, StorageProfile};
+        use crate::service::storage::{StorageCredential, StorageProfile, StorageValidation};
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
             let profile = S3Profile {
@@ -1856,7 +1917,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, StorageValidation::ReadWriteDelete {})
+                        .await
+                        .unwrap();
                 },
                 true,
             );

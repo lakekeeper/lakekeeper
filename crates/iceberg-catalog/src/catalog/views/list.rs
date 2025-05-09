@@ -111,24 +111,24 @@ mod test {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
+            None,
+            1,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
-            ctx.clone(),
-            warehouse.warehouse_id.to_string(),
-            "ns1".to_string(),
-        )
-        .await;
+        let api_context = ctx.clone();
+        let prefix = warehouse.warehouse_id.to_string();
+        let ns_name = "ns1".to_string();
+        let ns = crate::tests::create_ns(api_context, prefix, ns_name).await;
         let ns_params = NamespaceParameters {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: ns.namespace.clone(),
@@ -170,25 +170,25 @@ mod test {
 
     #[sqlx::test]
     async fn test_view_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
+            None,
+            1,
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
-            ctx.clone(),
-            warehouse.warehouse_id.to_string(),
-            "ns1".to_string(),
-        )
-        .await;
+        let api_context = ctx.clone();
+        let prefix = warehouse.warehouse_id.to_string();
+        let ns_name = "ns1".to_string();
+        let ns = crate::tests::create_ns(api_context, prefix, ns_name).await;
         let ns_params = NamespaceParameters {
             prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
             namespace: ns.namespace.clone(),

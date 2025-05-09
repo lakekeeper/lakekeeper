@@ -507,7 +507,7 @@ pub(crate) mod test {
     pub(crate) mod cloud_tests {
         use crate::service::storage::{
             gcs::{GcsCredential, GcsProfile, GcsServiceKey},
-            StorageCredential, StorageProfile,
+            StorageCredential, StorageProfile, StorageValidation,
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
@@ -535,7 +535,10 @@ pub(crate) mod test {
             profile
                 .normalize(Some(&cred))
                 .expect("Failed to normalize profile");
-            profile.validate_access(Some(&cred), None).await.unwrap();
+            profile
+                .validate_access(Some(&cred), None, StorageValidation::ReadWriteDelete {})
+                .await
+                .unwrap();
         }
 
         #[tokio::test]
@@ -547,7 +550,15 @@ pub(crate) mod test {
             let credential = GcsCredential::GcpSystemIdentity {};
             let credential: StorageCredential = credential.into();
             profile
-                .validate_access(Some(&credential), None)
+                .validate_access(
+                    Some(&credential),
+                    None,
+                    StorageValidation::ReadWriteDelete {},
+                )
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
+            profile
+                .validate_access(Some(&credential), None, StorageValidation::Read)
                 .await
                 .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
         }
@@ -557,7 +568,7 @@ pub(crate) mod test {
     pub(crate) mod gcs_hns_tests {
         use crate::service::storage::{
             gcs::{GcsCredential, GcsProfile, GcsServiceKey},
-            StorageCredential, StorageProfile,
+            StorageCredential, StorageProfile, StorageValidation,
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
@@ -585,7 +596,10 @@ pub(crate) mod test {
             profile
                 .normalize(Some(&cred))
                 .expect("Failed to normalize profile");
-            profile.validate_access(Some(&cred), None).await.unwrap();
+            profile
+                .validate_access(Some(&cred), None, StorageValidation::ReadWriteDelete {})
+                .await
+                .unwrap();
         }
     }
 }

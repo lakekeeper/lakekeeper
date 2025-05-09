@@ -19,7 +19,7 @@ use crate::{
         },
     },
     catalog::CatalogServer,
-    service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig},
+    service::{authz::AllowAllAuthorizer, storage::StorageValidation, task_queue::TaskQueueConfig},
     tests::{get_api_context, random_request_metadata, spawn_drop_queues},
 };
 
@@ -50,6 +50,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         CreateWarehouseRequest::builder()
             .warehouse_name(warehouse_name.clone())
             .storage_profile(storage_profile)
+            .storage_access_validation(StorageValidation::ReadWriteDelete {})
             .build(),
         api_context.clone(),
         random_request_metadata(),

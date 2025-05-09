@@ -108,6 +108,7 @@ uuid = { workspace = true }
 vaultrs = "0.7.2"
 vaultrs-login = "0.2.1"
 veil = { workspace = true }
+bytes = "1.10.1"
 
 [dev-dependencies]
 assert-json-diff = { workspace = true }
