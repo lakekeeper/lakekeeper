@@ -5516,7 +5516,6 @@ checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 [[package]]
 name = "rmcp"
 version = "0.1.5"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk?branch=main#09474d47694225dc7cf828776d934fbd02414cba"
 dependencies = [
  "axum 0.8.4",
  "base64 0.21.7",
@@ -5524,7 +5523,6 @@ dependencies = [
  "futures",
  "paste",
  "pin-project-lite",
- "rand 0.9.1",
  "rmcp-macros",
  "schemars",
  "serde",
@@ -5534,12 +5532,12 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "rmcp-macros"
 version = "0.1.5"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk?branch=main#09474d47694225dc7cf828776d934fbd02414cba"
 dependencies = [
  "proc-macro2",
  "quote",

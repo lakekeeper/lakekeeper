@@ -1,10 +1,19 @@
-use std::{fmt::Debug, sync::LazyLock};
-
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderValue, Method};
 use limes::Authenticator;
+use rmcp::transport::common::axum::DEFAULT_AUTO_PING_INTERVAL;
+use rmcp::transport::streamable_http_server::axum::{
+    delete_handler, get_handler, post_handler, App, StreamableHttpServerConfig,
+};
+use rmcp::transport::StreamableHttpServer;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use std::{fmt::Debug, sync::LazyLock};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
@@ -12,6 +21,9 @@ use tower_http::{
     ServiceBuilderExt,
 };
 
+use crate::api::mcp;
+use crate::api::mcp::server;
+use crate::api::mcp::tools::Counter;
 use crate::api::mcp::v1::MCPServer;
 use crate::{
     api::{
@@ -108,8 +120,33 @@ pub fn new_full_router<
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
-    let mcp_router = Router::new().merge(MCPServer::new_v1_router(&authorizer));
 
+    let addr = crate::api::mcp::server::BIND_ADDRESS.parse::<SocketAddr>()?;
+
+    let config = StreamableHttpServerConfig {
+        bind: addr,
+        ct: CancellationToken::new(),
+        sse_keep_alive: Some(Duration::from_secs(15)),
+        path: "/".to_string(),
+    };
+
+    let (app, transport_rx) = App::new(config.sse_keep_alive.unwrap_or(DEFAULT_AUTO_PING_INTERVAL));
+
+    let mcp_router = Router::new()
+        .route(
+            &config.path,
+            get(get_handler).post(post_handler).delete(delete_handler),
+        )
+        .with_state(app);
+
+    let sse_server = StreamableHttpServer {
+        transport_rx,
+        config,
+    };
+
+    let counter = Arc::new(Mutex::new(0));
+    let counter = Counter::new(counter);
+    sse_server.with_service(move || counter.clone());
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
             .iter()
@@ -151,7 +188,7 @@ pub fn new_full_router<
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
-        .nest("/mcp/v1", mcp_router)
+        .nest_service("/mcp", mcp_router)
         .layer(axum::middleware::from_fn_with_state(
             endpoint_statistics_tracker_tx,
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,

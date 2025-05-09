@@ -81,7 +81,7 @@ quick-xml = { workspace = true }
 rand = "0.9.0"
 rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["transport-sse-server"] }
+rmcp = { path="../../../rust-sdk/crates/rmcp" , features = ["server", "transport-streamable-http-server"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yml = { workspace = true }

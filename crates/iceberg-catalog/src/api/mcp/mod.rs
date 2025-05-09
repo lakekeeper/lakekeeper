@@ -1,5 +1,5 @@
 pub(crate) mod server;
-mod tools;
+pub(crate) mod tools;
 
 pub(crate) mod v1 {
 
@@ -76,6 +76,8 @@ pub(crate) mod v1 {
             Router::new()
                 // Server
                 .route("/info", get(get_server_info))
+            // .nest("/mcp", router)
+            // router
             // .merge(authorizer.new_router())
             // .merge(router)
         }
