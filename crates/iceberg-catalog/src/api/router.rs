@@ -1,4 +1,7 @@
-use std::{fmt::Debug, sync::LazyLock};
+use std::{
+    fmt::Debug,
+    sync::{Arc, LazyLock},
+};
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
@@ -25,7 +28,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
+        task_queue::TaskQueue,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -43,7 +46,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub authorizer: A,
     pub catalog_state: C::State,
     pub secrets_state: S,
-    pub queues: TaskQueues,
+    pub queues: Arc<dyn TaskQueue + Send + Sync + 'static>,
     pub table_change_checkers: ContractVerifiers,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,

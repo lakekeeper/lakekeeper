@@ -120,7 +120,7 @@ async fn run_checks(
 pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
     let mut conn = pool.acquire().await?;
     let m = sqlx::migrate!();
-    let mut sha_patches = get_sha_patches();
+    let sha_patches = get_sha_patches();
     tracing::info!("SHA patches: {:?}", sha_patches.iter().collect::<Vec<_>>());
 
     let applied_migrations = match conn.list_applied_migrations().await {

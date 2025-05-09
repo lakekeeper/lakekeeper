@@ -2,9 +2,9 @@ use std::{collections::HashMap, fmt::Debug, ops::Deref, sync::Arc, time::Duratio
 
 use async_trait::async_trait;
 use chrono::Utc;
+use futures::{future::BoxFuture, FutureExt};
 use rand::{rng, Rng as _};
-use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use strum::EnumIter;
 use uuid::Uuid;
 
@@ -12,8 +12,7 @@ use super::{authz::Authorizer, WarehouseId};
 use crate::{
     service::{
         task_queue::{
-            tabular_expiration_queue::TabularExpirationInput,
-            tabular_purge_queue::TabularPurgeInput,
+            tabular_expiration_queue::TabularExpiration, tabular_purge_queue::TabularPurge,
         },
         Catalog, SecretStore,
     },
@@ -23,32 +22,59 @@ use crate::{
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 
-#[derive(Debug, Clone)]
+impl Debug for TaskQueues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskQueues")
+            .field("queues", &self.queues)
+            .field("queue", &self.queue)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct TaskQueues {
-    queues: HashMap<String, tokio::sync::mpsc::Sender<Task>>,
-    queue: Arc<dyn TaskQueue>,
-    tabular_expiration: tabular_expiration_queue::ExpirationQueue,
-    tabular_purge: tabular_purge_queue::TabularPurgeQueue,
+    queues: HashMap<String, async_channel::Sender<Task>>,
+    queue: Arc<dyn TaskQueue + Send + Sync + 'static>,
+    registered_queues: Vec<(
+        String,
+        usize,
+        Arc<
+            dyn Fn(async_channel::Receiver<Task>) -> BoxFuture<'static, crate::api::Result<()>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    )>,
 }
 
 impl TaskQueues {
     #[must_use]
-    pub fn new(
-        queue: Arc<dyn TaskQueue>,
-        expiration: tabular_expiration_queue::ExpirationQueue,
-        purge: tabular_purge_queue::TabularPurgeQueue,
-    ) -> Self {
+    pub fn new(queue: Arc<dyn TaskQueue + Send + Sync + 'static>) -> Self {
         Self {
             queues: HashMap::new(),
             queue,
-            tabular_expiration: expiration,
-            tabular_purge: purge,
+            registered_queues: vec![],
         }
     }
 
-    pub async fn run(self) {
+    pub fn register_queue(
+        &mut self,
+        queue_name: String,
+        n_workers: usize,
+        queue_task: Arc<
+            dyn Fn(async_channel::Receiver<Task>) -> BoxFuture<'static, crate::api::Result<()>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    ) {
+        self.registered_queues
+            .push((queue_name, n_workers, queue_task));
+    }
+
+    async fn run(self) {
         loop {
-            for (queue_name, queue_tx) in self.queues.iter() {
+            for (queue_name, queue_tx) in &self.queues {
                 // Todo: error handling
                 if let Ok(Some(task)) = self.queue.pick_new_task(queue_name).await {
                     let task_id = task.task_id;
@@ -63,7 +89,10 @@ impl TaskQueues {
                             )
                             .await
                             .inspect_err(|e| {
-                                tracing::error!("Failed to record failure for task {task_id}: {e}");
+                                tracing::error!(
+                                    "Failed to record failure for task {task_id}: {}",
+                                    e.error
+                                );
                             });
                     };
                 }
@@ -71,49 +100,95 @@ impl TaskQueues {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    async fn outer_run(mut self) -> anyhow::Result<()> {
+        let mut queue_tasks = vec![];
+        let mut qs = vec![];
+        std::mem::swap(&mut self.registered_queues, &mut qs);
+        for (name, n_workers, task_fn) in qs {
+            tracing::info!("Starting task queue {name} with {n_workers} workers");
+            let (tx, rx) = async_channel::bounded(100);
+            for n in 0..n_workers {
+                tracing::debug!("Starting task queue {name} worker {n}");
+                let task_fut = task_fn(rx.clone());
+                queue_tasks.push(tokio::task::spawn(task_fut));
+            }
+            self.queues.insert(name, tx);
+        }
+        let feeder = tokio::task::spawn(self.run());
+        tokio::select! {
+            res = futures::future::select_all(queue_tasks) => {
+                let (res, index, _) = res;
+                if let Err(e) = res {
+                    tracing::error!("Task queue {index} panicked: {e}");
+                    return Err(anyhow::anyhow!("Task queue {index} panicked: {e}"));
+                }
+                tracing::error!("Task queue {index} exited unexpectedly");
+                return Err(anyhow::anyhow!("Task queue {index} exited unexpectedly"))
+            }
+            res = feeder => {
+                if let Err(e) = res {
+                    tracing::error!("Feeder task panicked: {e}");
+                    return Err(anyhow::anyhow!("Feeder task panicked: {e}"))
+                }
+            }
+        };
+        Ok(())
+    }
+
+    #[tracing::instrument]
     pub(crate) async fn queue_tabular_expiration(
-        &self,
-        TabularExpirationInput {
-            tabular_id,
-            warehouse_ident,
-            tabular_type,
-            purge,
-            expire_at,
-        }: TabularExpirationInput,
+        queue: Arc<dyn TaskQueue + Send + Sync + 'static>,
+        task_metadata: TaskMetadata,
+        payload: TabularExpiration,
     ) -> crate::api::Result<()> {
-        self.queue
-            .enqueue(TaskInput {
-                idempotency_key: Uuid::new_v5(&warehouse_ident.0, tabular_id.as_bytes()),
-                warehouse_id: warehouse_ident,
-                parent_task_id: None,
-                suspend_until: expire_at,
-                queue_name: "tabular_expiration".to_string(),
-                // TODO: change input to this fn to contain this as a struct instead of doing this
-                //       ad-hoc json construction
-                payload: serde_json::json!({
-                    "tabular_id": tabular_id,
-                    "typ": tabular_type.to_string(),
-                    "deletion_kind": if purge { "purge" } else {"default"}
-                }),
-            })
+        queue
+            .enqueue(
+                "tabular_expiration",
+                TaskInput {
+                    task_metadata,
+                    payload: serde_json::to_value(&payload).map_err(|e| {
+                        crate::api::ErrorModel::internal(
+                            format!("Failed to serialize task payload: {e}"),
+                            "TaskPayloadSerializationError",
+                            Some(Box::new(e)),
+                        )
+                    })?,
+                },
+            )
             .await
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument]
     pub(crate) async fn cancel_tabular_expiration(
-        &self,
+        queue: Arc<dyn TaskQueue + Send + Sync + 'static>,
         filter: TaskFilter,
     ) -> crate::api::Result<()> {
-        self.queue.cancel_pending_tasks(filter).await
+        queue
+            .cancel_pending_tasks("tabular_expiration", filter)
+            .await
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument]
     pub(crate) async fn queue_tabular_purge(
-        &self,
-        task: TabularPurgeInput,
+        queue: Arc<dyn TaskQueue + Send + Sync + 'static>,
+        task_metadata: TaskMetadata,
+        task: TabularPurge,
     ) -> crate::api::Result<()> {
-        self.tabular_purge.enqueue(task).await
+        queue
+            .enqueue(
+                "tabular_purge",
+                TaskInput {
+                    task_metadata,
+                    payload: serde_json::to_value(&task).map_err(|e| {
+                        crate::api::ErrorModel::internal(
+                            format!("Failed to serialize task payload: {e}"),
+                            "TaskPayloadSerializationError",
+                            Some(Box::new(e)),
+                        )
+                    })?,
+                },
+            )
+            .await
     }
 
     /// Spawns the expiration and purge queues.
@@ -121,7 +196,7 @@ impl TaskQueues {
     /// # Errors
     /// Fails if any of the queue handlers exit unexpectedly.
     pub async fn spawn_queues<C, S, A>(
-        &self,
+        mut self,
         catalog_state: C::State,
         secret_store: S,
         authorizer: A,
@@ -131,53 +206,47 @@ impl TaskQueues {
         S: SecretStore,
         A: Authorizer,
     {
-        let num_workers_per_queue = CONFIG.queue_config.num_workers;
-
-        let mut expiration_handlers = Vec::with_capacity(num_workers_per_queue);
-        let mut purge_handlers = Vec::with_capacity(num_workers_per_queue);
-
-        // Spawn the specified number of workers for each queue
-        for _ in 0..num_workers_per_queue {
-            let expiration_handler =
-                tokio::task::spawn(tabular_expiration_queue::tabular_expiration_task::<C, A>(
-                    self.tabular_expiration.clone(),
-                    self.tabular_purge.clone(),
-                    catalog_state.clone(),
-                    authorizer.clone(),
-                ));
-            expiration_handlers.push(expiration_handler);
-
-            let purge_handler = tokio::task::spawn(tabular_purge_queue::purge_task::<C, S>(
-                self.tabular_purge.clone(),
-                catalog_state.clone(),
-                secret_store.clone(),
-            ));
-            purge_handlers.push(purge_handler);
-        }
-
-        // Wait for any task to exit and report the error
-        tokio::select! {
-            res = futures::future::select_all(expiration_handlers) => {
-                let (res, index, _) = res;
-                if let Err(e) = res {
-                    tracing::error!("Tabular expiration worker {index} panicked: {e}");
-                    return Err(anyhow::anyhow!("Tabular expiration worker {index} panicked: {e}"));
+        let queue = self.queue.clone();
+        let catalog_state_clone = catalog_state.clone();
+        self.register_queue(
+            "tabular_expiration".to_string(),
+            CONFIG.queue_config.num_workers,
+            Arc::new(move |rx| {
+                let value = queue.clone();
+                let catalog_state = catalog_state_clone.clone();
+                let authorizer = authorizer.clone();
+                async move {
+                    tabular_expiration_queue::tabular_expiration_task::<C, A>(
+                        rx,
+                        value,
+                        catalog_state,
+                        authorizer,
+                    )
+                    .await;
+                    Ok(())
                 }
-                tracing::error!("Tabular expiration worker {index} exited unexpectedly");
-                Err(anyhow::anyhow!("Tabular expiration worker {index} exited unexpectedly"))
-
-            }
-            res = futures::future::select_all(purge_handlers) => {
-                let (res, index, _) = res;
-                if let Err(e) = res {
-                    tracing::error!("Tabular purge worker {index} panicked: {e}");
-                    return Err(anyhow::anyhow!("Tabular purge worker {index} panicked: {e}"));
+                .boxed()
+            }),
+        );
+        let queue = self.queue.clone();
+        let catalog_state = catalog_state.clone();
+        self.register_queue(
+            "tabular_purge".to_string(),
+            CONFIG.queue_config.num_workers,
+            Arc::new(move |rx| {
+                let value = queue.clone();
+                let catalog_state = catalog_state.clone();
+                let secret_store = secret_store.clone();
+                async move {
+                    tabular_purge_queue::purge_task::<C, S>(rx, value, catalog_state, secret_store)
+                        .await;
+                    Ok(())
                 }
-                tracing::error!("Tabular purge worker {index} exited unexpectedly");
-                Err(anyhow::anyhow!("Tabular purge worker {index} exited unexpectedly"))
-
-            }
-        }
+                .boxed()
+            }),
+        );
+        self.outer_run().await?;
+        Ok(())
     }
 }
 
@@ -212,33 +281,48 @@ pub enum TaskFilter {
 }
 
 #[derive(Debug, Clone)]
-pub struct TaskStruct {
-    pub task: Task,
+pub struct TaskInput {
+    pub task_metadata: TaskMetadata,
     pub payload: serde_json::Value,
 }
 
-pub struct TaskInput {
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskMetadata {
     pub idempotency_key: Uuid,
     pub warehouse_id: WarehouseId,
     pub parent_task_id: Option<Uuid>,
-    pub suspend_until: chrono::DateTime<Utc>,
-    pub queue_name: String,
-    pub payload: serde_json::Value,
+    pub suspend_until: Option<chrono::DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Task {
+    pub task_metadata: TaskMetadata,
+    pub task_id: Uuid,
+    pub queue_name: String,
+    pub status: TaskStatus,
+    pub picked_up_at: Option<chrono::DateTime<Utc>>,
+    pub attempt: i32,
+    pub(crate) state: serde_json::Value,
+}
+
+// TODO: split into fetch and enqueue parts to better separate concerns
 #[async_trait]
 pub trait TaskQueue: Debug {
     fn config(&self) -> &TaskQueueConfig;
-    // fn queue_name(&self) -> &'static str;
 
-    async fn enqueue_batch(&self, task: Vec<TaskInput>) -> crate::api::Result<()>;
-    async fn enqueue(&self, task: TaskInput) -> crate::api::Result<()> {
-        self.enqueue_batch(vec![task]).await
+    async fn enqueue_batch(&self, queue_name: &str, task: Vec<TaskInput>)
+        -> crate::api::Result<()>;
+    async fn enqueue(&self, queue_name: &str, task: TaskInput) -> crate::api::Result<()> {
+        self.enqueue_batch(queue_name, vec![task]).await
     }
     async fn pick_new_task(&self, queue_name: &str) -> crate::api::Result<Option<Task>>;
     async fn record_success(&self, id: Uuid) -> crate::api::Result<()>;
     async fn record_failure(&self, id: Uuid, error_details: &str) -> crate::api::Result<()>;
-    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()>;
+    async fn cancel_pending_tasks(
+        &self,
+        queue_name: &str,
+        filter: TaskFilter,
+    ) -> crate::api::Result<()>;
 
     async fn retrying_record_success(&self, task: &Task) {
         self.retrying_record_success_or_failure(task, Status::Success)
@@ -267,21 +351,8 @@ pub trait TaskQueue: Debug {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "sqlx-postgres", derive(FromRow))]
-pub struct Task {
-    pub task_id: Uuid,
-    pub queue_name: String,
-    pub status: TaskStatus,
-    pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub parent_task_id: Option<Uuid>,
-    pub attempt: i32,
-    pub warehouse_id: WarehouseId,
-    state: serde_json::Value,
-}
-
 impl Task {
-    pub fn task_state<T: Deserialize>(&self) -> crate::api::Result<T> {
+    pub fn task_state<T: DeserializeOwned>(&self) -> crate::api::Result<T> {
         Ok(serde_json::from_value(self.state.clone()).map_err(|e| {
             crate::api::ErrorModel::internal(
                 format!("Failed to deserialize task state: {e}"),
@@ -374,16 +445,24 @@ mod test {
     use sqlx::PgPool;
 
     use crate::{
-        api::{iceberg::v1::PaginationQuery, management::v1::TabularType},
-        implementations::postgres::{
-            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog, PostgresTransaction,
+        api::{
+            iceberg::v1::PaginationQuery,
+            management::v1::{DeleteKind, TabularType},
+        },
+        implementations::{
+            kv2::SecretsState,
+            postgres::{
+                tabular::table::tests::initialize_table, task_queues::PgQueue,
+                warehouse::test::initialize_warehouse, CatalogState, PostgresCatalog,
+                PostgresTransaction,
+            },
         },
         service::{
             authz::AllowAllAuthorizer,
             storage::TestProfile,
             task_queue::{
-                tabular_expiration_queue::TabularExpirationInput, TaskQueue, TaskQueueConfig,
+                tabular_expiration_queue::TabularExpiration, TaskMetadata, TaskQueueConfig,
+                TaskQueues,
             },
             Catalog, ListFlags, Transaction,
         },
@@ -401,36 +480,20 @@ mod test {
 
         let rw =
             crate::implementations::postgres::ReadWrite::from_pools(pool.clone(), pool.clone());
-        let expiration_queue = Arc::new(
-            crate::implementations::postgres::task_queues::TabularExpirationQueue::from_config(
-                rw.clone(),
-                config.clone(),
-            )
-            .unwrap(),
-        );
-        let purge_queue = Arc::new(
-            crate::implementations::postgres::task_queues::TabularPurgeQueue::from_config(
-                rw.clone(),
-                config,
-            )
-            .unwrap(),
-        );
+        let queue = Arc::new(PgQueue::from_config(rw, config).unwrap());
 
         let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let queues =
-            crate::service::task_queue::TaskQueues::new(expiration_queue.clone(), purge_queue);
+        let queues = crate::service::task_queue::TaskQueues::new(queue.clone());
+
         let secrets =
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
-        let cloned = queues.clone();
         let cat = catalog_state.clone();
         let sec = secrets.clone();
         let auth = AllowAllAuthorizer;
-        let _queues_task = tokio::task::spawn(async move {
-            cloned
-                .spawn_queues::<PostgresCatalog, _, _>(cat, sec, auth)
-                .await
-        });
+        let _queue_task = tokio::task::spawn(
+            queues.spawn_queues::<PostgresCatalog, _, AllowAllAuthorizer>(cat, sec, auth),
+        );
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),
@@ -480,16 +543,22 @@ mod test {
         .unwrap();
         trx.commit().await.unwrap();
 
-        expiration_queue
-            .enqueue(TabularExpirationInput {
+        TaskQueues::queue_tabular_expiration(
+            queue.clone(),
+            TaskMetadata {
+                idempotency_key: tab.table_id.0,
+                warehouse_id: warehouse,
+                parent_task_id: None,
+                suspend_until: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+            },
+            TabularExpiration {
                 tabular_id: tab.table_id.0,
-                warehouse_ident: warehouse,
                 tabular_type: TabularType::Table,
-                purge: true,
-                expire_at: chrono::Utc::now() + chrono::Duration::seconds(1),
-            })
-            .await
-            .unwrap();
+                deletion_kind: DeleteKind::Purge,
+            },
+        )
+        .await
+        .unwrap();
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
             .await
             .unwrap();

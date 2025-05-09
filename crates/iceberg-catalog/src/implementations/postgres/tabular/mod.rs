@@ -23,9 +23,8 @@ use crate::{
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
         storage::{join_location, split_location},
-        task_queue::TaskId,
-        DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
-        TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
+        ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId, TabularIdentBorrowed,
+        TabularIdentOwned, TabularInfo, UndropTabularResponse,
     },
     WarehouseId,
 };
@@ -464,14 +463,15 @@ where
             t.typ as "typ: TabularType",
             t.created_at,
             t.deleted_at,
-            tt.suspend_until as "cleanup_at?",
-            tt.task_id as "cleanup_task_id?",
+--             tt.suspend_until as "cleanup_at?",
+--             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
         INNER JOIN namespace n ON t.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        LEFT JOIN tabular_expirations te ON t.tabular_id = te.tabular_id
-        LEFT JOIN task tt ON te.task_id = tt.task_id
+-- FIXME: we need to add a ref from tabular to task to fix this
+--         LEFT JOIN tabular_expirations te ON t.tabular_id = te.tabular_id
+--         LEFT JOIN task tt ON te.task_id = tt.task_id
         WHERE n.warehouse_id = $1
             AND (namespace_name = $2 OR $2 IS NULL)
             AND (n.namespace_id = $10 OR $10 IS NULL)
@@ -506,20 +506,22 @@ where
         let name = table.tabular_name;
 
         let deletion_details = if let Some(deleted_at) = table.deleted_at {
-            Some(DeletionDetails {
-                expiration_date: table.cleanup_at.ok_or(ErrorModel::internal(
-                    "Cleanup date missing for deleted tabular",
-                    "InternalDatabaseError",
-                    None,
-                ))?,
-                expiration_task_id: table.cleanup_task_id.ok_or(ErrorModel::internal(
-                    "Cleanup task ID missing for deleted tabular",
-                    "InternalDatabaseError",
-                    None,
-                ))?,
-                deleted_at,
-                created_at: table.created_at,
-            })
+            // FIXME: we need to add a ref from tabular to task to fix this
+            None
+            // Some(DeletionDetails {
+            //     expiration_date: table.cleanup_at.ok_or(ErrorModel::internal(
+            //         "Cleanup date missing for deleted tabular",
+            //         "InternalDatabaseError",
+            //         None,
+            //     ))?,
+            //     expiration_task_id: table.cleanup_task_id.ok_or(ErrorModel::internal(
+            //         "Cleanup task ID missing for deleted tabular",
+            //         "InternalDatabaseError",
+            //         None,
+            //     ))?,
+            //     deleted_at,
+            //     created_at: table.created_at,
+            // })
         } else {
             None
         };
@@ -694,14 +696,15 @@ pub(crate) async fn clear_tabular_deleted_at(
             UPDATE tabular
             SET deleted_at = NULL
             FROM tabular t JOIN namespace n ON t.namespace_id = n.namespace_id
-            JOIN tabular_expirations te ON t.tabular_id = te.tabular_id
+-- FIXME: once we have a ref from tabular to task
+--          JOIN tabular_expirations te ON t.tabular_id = te.tabular_id
             WHERE tabular.namespace_id = n.namespace_id
                 AND n.warehouse_id = $2
                 AND tabular.tabular_id = ANY($1::uuid[])
             RETURNING
                 tabular.name,
                 tabular.tabular_id,
-                te.task_id,
+--                 te.task_id,
                 n.namespace_name,
                 (SELECT all_found FROM validation) as "all_found!";"#,
         tabular_ids,
@@ -730,7 +733,9 @@ pub(crate) async fn clear_tabular_deleted_at(
         .into_iter()
         .map(|undrop_tabular_information| UndropTabularResponse {
             table_ident: TableId::from(undrop_tabular_information.tabular_id),
-            task_id: TaskId::from(undrop_tabular_information.task_id),
+            // FIXME!
+            task_id: todo!(),
+            // task_id: TaskId::from(undrop_tabular_information.task_id),
             name: undrop_tabular_information.name,
             namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
                 .unwrap_or(NamespaceIdent::new("unknown".into())),

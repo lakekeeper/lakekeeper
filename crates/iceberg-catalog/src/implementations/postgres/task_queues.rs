@@ -1,23 +1,19 @@
-mod tabular_expiration_queue;
-mod tabular_purge_queue;
-
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use sqlx::{PgConnection, PgPool};
-pub use tabular_purge_queue::TabularPurgeQueue;
 use uuid::Uuid;
 
 use crate::{
     implementations::postgres::{dbutils::DBErrorHandler, ReadWrite},
-    service::task_queue::{Task, TaskFilter, TaskQueue, TaskQueueConfig, TaskStatus, TaskStruct},
+    service::task_queue::{Task, TaskFilter, TaskQueue, TaskQueueConfig, TaskStatus},
     WarehouseId,
 };
 
 #[derive(Debug, Clone)]
-struct PgQueue {
+pub struct PgQueue {
     pub read_write: ReadWrite,
     pub config: TaskQueueConfig,
     pub max_age: sqlx::postgres::types::PgInterval,
@@ -41,7 +37,7 @@ impl PgQueue {
         }
     }
 
-    fn from_config(read_write: ReadWrite, config: TaskQueueConfig) -> anyhow::Result<Self> {
+    pub fn from_config(read_write: ReadWrite, config: TaskQueueConfig) -> anyhow::Result<Self> {
         let microseconds = config
             .max_age
             .num_microseconds()
@@ -65,24 +61,28 @@ impl TaskQueue for PgQueue {
     }
 
     #[tracing::instrument(skip(self, tasks))]
-    async fn enqueue_batch(&self, tasks: Vec<TaskInput>) -> crate::api::Result<()> {
-        let idempotency2task = tasks
+    async fn enqueue_batch(
+        &self,
+        queue_name: &str,
+        tasks: Vec<TaskInput>,
+    ) -> crate::api::Result<()> {
+        let tasks = tasks
             .into_iter()
-            .map(|t| {
-                (
-                    Uuid::new_v5(&t.warehouse_id, t.idempotency_key.as_bytes()),
-                    t,
-                )
+            .map(|mut t| {
+                t.task_metadata.idempotency_key = Uuid::new_v5(
+                    &t.task_metadata.warehouse_id,
+                    t.task_metadata.idempotency_key.as_bytes(),
+                );
+                t
             })
-            .collect::<HashMap<_, _>>();
+            .collect_vec();
 
         let mut transaction =
             self.read_write.write_pool.begin().await.map_err(|e| {
                 e.into_error_model("failed to begin transaction for expiration queue")
             })?;
 
-        let queued =
-            queue_task_batch(&mut transaction, self.queue_name(), &idempotency2task).await?;
+        let queued = queue_task_batch(&mut transaction, queue_name, tasks).await?;
 
         tracing::debug!("Queued {} tasks", queued.len());
 
@@ -111,8 +111,12 @@ impl TaskQueue for PgQueue {
         .await
     }
 
-    async fn cancel_pending_tasks(&self, filter: TaskFilter) -> crate::api::Result<()> {
-        cancel_pending_tasks(&self, filter, self.queue_name()).await
+    async fn cancel_pending_tasks(
+        &self,
+        queue_name: &str,
+        filter: TaskFilter,
+    ) -> crate::api::Result<()> {
+        cancel_pending_tasks(self, filter, queue_name).await
     }
 }
 
@@ -178,13 +182,15 @@ async fn queue_task_batch(
     let mut suspend_untils = Vec::with_capacity(tasks.len());
     let mut states = Vec::with_capacity(tasks.len());
     for TaskInput {
-        idempotency_key,
-        warehouse_id,
-        parent_task_id,
-        suspend_until,
-        queue_name,
+        task_metadata:
+            TaskMetadata {
+                idempotency_key,
+                parent_task_id,
+                warehouse_id,
+                suspend_until,
+            },
         payload,
-    } in tasks.into_iter()
+    } in tasks
     {
         task_ids.push(Uuid::now_v7());
         idempotency_keys.push(idempotency_key);
@@ -204,7 +210,7 @@ async fn queue_task_batch(
                 unnest($4::uuid[]) as idempotency_key,
                 unnest($5::uuid[]) as warehouse_id,
                 unnest($6::timestamptz[]) as suspend_until,
-                unnest(&6::jsonb[]) as payload
+                unnest($7::jsonb[]) as payload
         )
         INSERT INTO task(
                 task_id,
@@ -281,8 +287,7 @@ async fn pick_task(
     queue_name: &str,
     max_age: &sqlx::postgres::types::PgInterval,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
-    let x = sqlx::query_as!(
-        Task,
+    let x = sqlx::query!(
         r#"
     WITH updated_task AS (
         SELECT task_id
@@ -296,7 +301,7 @@ async fn pick_task(
     SET status = 'running', picked_up_at = $2, attempt = task.attempt + 1
     FROM updated_task
     WHERE task.task_id = updated_task.task_id
-    RETURNING task.task_id, task.state, task.status as "status: TaskStatus", task.picked_up_at, task.attempt, task.parent_task_id, task.queue_name
+    RETURNING task.task_id, task.warehouse_id, task.state, task.suspend_until, task.idempotency_key, task.status as "status: TaskStatus", task.picked_up_at, task.attempt, task.parent_task_id, task.queue_name
     "#,
         queue_name,
         Utc::now(),
@@ -308,11 +313,25 @@ async fn pick_task(
             tracing::error!(?e, "Failed to pick a task");
             e.into_error_model(format!("Failed to pick a '{queue_name}' task")) })?;
 
-    if let Some(task) = x.as_ref() {
+    if let Some(task) = x {
         tracing::info!("Picked up task: {:?}", task);
+        return Ok(Some(Task {
+            task_metadata: TaskMetadata {
+                idempotency_key: task.idempotency_key,
+                warehouse_id: task.warehouse_id.into(),
+                parent_task_id: task.parent_task_id,
+                suspend_until: task.suspend_until,
+            },
+            task_id: task.task_id,
+            status: task.status,
+            queue_name: task.queue_name,
+            picked_up_at: task.picked_up_at,
+            attempt: task.attempt,
+            state: task.state,
+        }));
     }
 
-    Ok(x)
+    Ok(None)
 }
 
 async fn record_success(id: Uuid, pool: &PgPool) -> Result<(), IcebergErrorResponse> {
@@ -330,48 +349,14 @@ async fn record_success(id: Uuid, pool: &PgPool) -> Result<(), IcebergErrorRespo
     Ok(())
 }
 
-macro_rules! impl_pg_task_queue {
-    ($name:ident) => {
-        use crate::implementations::postgres::{task_queues::PgQueue, ReadWrite};
-
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            pg_queue: PgQueue,
-        }
-
-        impl $name {
-            #[must_use]
-            pub fn new(read_write: ReadWrite) -> Self {
-                Self {
-                    pg_queue: PgQueue::new(read_write),
-                }
-            }
-
-            /// Create a new `$name` with the default configuration.
-            ///
-            /// # Errors
-            /// Returns an error if the max age duration is invalid.
-            pub fn from_config(
-                read_write: ReadWrite,
-                config: TaskQueueConfig,
-            ) -> anyhow::Result<Self> {
-                Ok(Self {
-                    pg_queue: PgQueue::from_config(read_write, config)?,
-                })
-            }
-        }
-    };
-}
-use impl_pg_task_queue;
-
-use crate::service::task_queue::TaskInput;
+use crate::service::task_queue::{TaskInput, TaskMetadata};
 
 /// Cancel pending tasks for a warehouse
 /// If `task_ids` are provided in `filter` which are not pending, they are ignored
 async fn cancel_pending_tasks(
     queue: &PgQueue,
     filter: TaskFilter,
-    queue_name: &'static str,
+    queue_name: &str,
 ) -> crate::api::Result<()> {
     let mut transaction = queue
         .read_write
@@ -432,7 +417,6 @@ async fn cancel_pending_tasks(
 
 #[cfg(test)]
 mod test {
-    use maplit::hashmap;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -447,20 +431,21 @@ mod test {
         queue_name: &str,
         parent_task_id: Option<Uuid>,
         idempotency_key: Uuid,
-        warehouse_ident: WarehouseId,
+        warehouse_id: WarehouseId,
         suspend_until: Option<DateTime<Utc>>,
     ) -> Result<Option<Uuid>, IcebergErrorResponse> {
         Ok(queue_task_batch(
             conn,
             queue_name,
-            &HashMap::from([(
-                idempotency_key,
-                TaskArg {
-                    parent: parent_task_id,
-                    warehouse_ident,
+            vec![TaskInput {
+                task_metadata: TaskMetadata {
+                    idempotency_key,
+                    warehouse_id,
                     suspend_until,
+                    parent_task_id,
                 },
-            )]),
+                payload: serde_json::json!({}),
+            }],
         )
         .await?
         .pop()
@@ -545,7 +530,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         record_failure(&pool, id, 5, "test").await.unwrap();
@@ -558,7 +543,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 2);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         record_failure(&pool, id, 2, "test").await.unwrap();
@@ -596,7 +581,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         record_success(id, &pool).await.unwrap();
@@ -641,7 +626,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
     }
 
@@ -675,7 +660,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
@@ -689,7 +674,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 2);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
     }
 
@@ -743,14 +728,14 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         assert_eq!(task2.task_id, id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt, 1);
         assert!(task2.picked_up_at.is_some());
-        assert!(task2.parent_task_id.is_none());
+        assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, "test");
 
         record_success(task.task_id, &pool).await.unwrap();
@@ -766,18 +751,26 @@ mod test {
         let ids = queue_task_batch(
             &mut conn,
             "test",
-            &hashmap! {
-                Uuid::new_v5(&warehouse_id, b"test") => TaskArg {
-                    parent: None,
-                    warehouse_ident: warehouse_id,
-                    suspend_until: None,
+            vec![
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        idempotency_key: Uuid::now_v7(),
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    payload: Default::default(),
                 },
-                Uuid::new_v5(&warehouse_id, b"test2") => TaskArg {
-                    parent: None,
-                    warehouse_ident: warehouse_id,
-                    suspend_until: None,
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        idempotency_key: Uuid::now_v7(),
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    payload: Default::default(),
                 },
-            },
+            ],
         )
         .await
         .unwrap();
@@ -804,14 +797,14 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         assert_eq!(task2.task_id, id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt, 1);
         assert!(task2.picked_up_at.is_some());
-        assert!(task2.parent_task_id.is_none());
+        assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, "test");
 
         record_success(task.task_id, &pool).await.unwrap();
@@ -823,22 +816,31 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
         let config = TaskQueueConfig::default();
         let (queue, warehouse_id) = setup(pool.clone(), config).await;
-
+        let idp1 = Uuid::now_v7();
+        let idp2 = Uuid::now_v7();
         let ids = queue_task_batch(
             &mut conn,
             "test",
-            &hashmap! {
-                Uuid::new_v5(&warehouse_id, b"test") => TaskArg {
-                    parent: None,
-                    warehouse_ident: warehouse_id,
-                    suspend_until: None,
+            vec![
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        idempotency_key: idp1,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    payload: Default::default(),
                 },
-                Uuid::new_v5(&warehouse_id, b"test2") => TaskArg {
-                    parent: None,
-                    warehouse_ident: warehouse_id,
-                    suspend_until: None,
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        idempotency_key: idp2,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    payload: Value::default(),
                 },
-            },
+            ],
         )
         .await
         .unwrap();
@@ -866,14 +868,14 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         assert_eq!(task2.task_id, id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt, 1);
         assert!(task2.picked_up_at.is_some());
-        assert!(task2.parent_task_id.is_none());
+        assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, "test");
 
         record_success(task.task_id, &pool).await.unwrap();
@@ -884,18 +886,26 @@ mod test {
         let ids_second = queue_task_batch(
             &mut conn,
             "test",
-            &hashmap! {
-                Uuid::new_v5(&warehouse_id, b"test") => TaskArg {
-                    parent: None,
-                    warehouse_ident: warehouse_id,
-                    suspend_until: None,
+            vec![
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        idempotency_key: idp1,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    payload: Default::default(),
                 },
-                new_key => TaskArg {
-                    parent: None,
-                    warehouse_ident: warehouse_id,
-                    suspend_until: None,
+                TaskInput {
+                    task_metadata: TaskMetadata {
+                        idempotency_key: idp2,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    payload: Default::default(),
                 },
-            },
+            ],
         )
         .await
         .unwrap();
@@ -921,7 +931,7 @@ mod test {
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
-        assert!(task.parent_task_id.is_none());
+        assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
 
         record_success(task.task_id, &pool).await.unwrap();

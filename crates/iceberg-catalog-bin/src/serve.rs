@@ -7,9 +7,7 @@ use iceberg_catalog::{
     api::router::{new_full_router, serve as service_serve, RouterArgs},
     implementations::{
         postgres::{
-            endpoint_statistics::PostgresStatisticsSink,
-            task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-            CatalogState, PostgresCatalog, ReadWrite,
+            endpoint_statistics::PostgresStatisticsSink, CatalogState, PostgresCatalog, ReadWrite,
         },
         Secrets,
     },
@@ -111,42 +109,15 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     );
     health_provider.spawn_health_checks().await;
 
-    let queues = TaskQueues::new(
-        Arc::new(TabularExpirationQueue::from_config(
-            ReadWrite::from_pools(read_pool.clone(), write_pool.clone()),
-            CONFIG.queue_config.clone(),
-        )?),
-        Arc::new(TabularPurgeQueue::from_config(
-            ReadWrite::from_pools(read_pool.clone(), write_pool.clone()),
-            CONFIG.queue_config.clone(),
-        )?),
-    );
-
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
     match authorizer {
         Authorizers::AllowAll(a) => {
-            serve_with_authn(
-                a,
-                catalog_state,
-                secrets_state,
-                queues,
-                health_provider,
-                listener,
-            )
-            .await?
+            serve_with_authn(a, catalog_state, secrets_state, health_provider, listener).await?
         }
         Authorizers::OpenFGA(a) => {
-            serve_with_authn(
-                a,
-                catalog_state,
-                secrets_state,
-                queues,
-                health_provider,
-                listener,
-            )
-            .await?
+            serve_with_authn(a, catalog_state, secrets_state, health_provider, listener).await?
         }
     }
 
@@ -157,7 +128,6 @@ async fn serve_with_authn<A: Authorizer>(
     authorizer: A,
     catalog_state: CatalogState,
     secrets_state: Secrets,
-    queues: TaskQueues,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -254,7 +224,6 @@ async fn serve_with_authn<A: Authorizer>(
                 Some(authenticator),
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -272,7 +241,6 @@ async fn serve_with_authn<A: Authorizer>(
                 Some(authenticator),
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -284,7 +252,6 @@ async fn serve_with_authn<A: Authorizer>(
                 Some(auth),
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -297,7 +264,6 @@ async fn serve_with_authn<A: Authorizer>(
                 None::<AuthenticatorEnum>,
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -313,7 +279,6 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     authenticator: Option<N>,
     catalog_state: CatalogState,
     secrets_state: Secrets,
-    queues: TaskQueues,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -379,13 +344,20 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
         cloud_events_tx.clone(),
     ))]);
+    let queue_interface = Arc::new(
+        iceberg_catalog::implementations::postgres::task_queues::PgQueue::from_config(
+            ReadWrite::from_pools(catalog_state.read_pool(), catalog_state.write_pool()),
+            CONFIG.queue_config.clone(),
+        )?,
+    );
+    let queues = TaskQueues::new(queue_interface.clone());
 
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
-        queues: queues.clone(),
+        queues: queue_interface,
         table_change_checkers: ContractVerifiers::new(vec![]),
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),

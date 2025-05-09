@@ -32,7 +32,7 @@ use crate::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         endpoint_hooks::EndpointHooks,
         secrets::SecretStore,
-        task_queue::TaskFilter,
+        task_queue::{TaskFilter, TaskQueues},
         Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
     },
     ProjectId, WarehouseId, DEFAULT_PROJECT_ID,
@@ -810,16 +810,16 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .collect::<Vec<_>>();
         let undrop_tabular_responses =
             C::undrop_tabulars(&tabs, warehouse_id, transaction.transaction()).await?;
-        context
-            .v1_state
-            .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(
+        TaskQueues::cancel_tabular_expiration(
+            context.v1_state.queues,
+            TaskFilter::TaskIds(
                 undrop_tabular_responses
                     .iter()
                     .map(|r| r.task_id.clone())
                     .collect(),
-            ))
-            .await?;
+            ),
+        )
+        .await?;
         transaction.commit().await?;
 
         context
