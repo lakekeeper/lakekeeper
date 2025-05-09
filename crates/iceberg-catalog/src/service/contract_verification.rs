@@ -8,7 +8,7 @@ use iceberg::{
 };
 use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
 
-use crate::service::TabularIdentUuid;
+use crate::service::TabularId;
 
 /// A trait for checking if a table change is allowed.
 ///
@@ -22,7 +22,7 @@ use crate::service::TabularIdentUuid;
 ///     use async_trait::async_trait;
 ///     use iceberg::spec::{TableMetadata, ViewMetadata};
 ///     use iceberg::{TableIdent, TableUpdate};
-///     use iceberg_catalog::service::{TabularIdentUuid, contract_verification::{ContractVerification, ContractVerificationOutcome}};
+///     use iceberg_catalog::service::{TabularId, contract_verification::{ContractVerification, ContractVerificationOutcome}};
 ///     use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
 ///
 ///     #[derive(Debug)]
@@ -47,12 +47,12 @@ use crate::service::TabularIdentUuid;
 ///
 ///         async fn check_drop(
 ///             &self,
-///             _table_ident_uuid: TabularIdentUuid,
+///             _table_ident_uuid: TabularId,
 ///         ) -> Result<ContractVerificationOutcome, ErrorModel> {
 ///             Ok(ContractVerificationOutcome::Clear {})
 ///         }
 ///
-///         async fn check_rename(&self, source: TabularIdentUuid, destination: &TableIdent) -> Result<ContractVerificationOutcome, ErrorModel> {
+///         async fn check_rename(&self, source: TabularId, destination: &TableIdent) -> Result<ContractVerificationOutcome, ErrorModel> {
 ///             Ok(ContractVerificationOutcome::Clear {})
 ///         }
 ///     }
@@ -93,7 +93,7 @@ use crate::service::TabularIdentUuid;
 ///
 ///         async fn check_drop(
 ///             &self,
-///             _table_ident_uuid: TabularIdentUuid,
+///             _table_ident_uuid: TabularId,
 ///         ) -> Result<ContractVerificationOutcome, ErrorModel> {
 ///             Ok(ContractVerificationOutcome::Violation {
 ///                 error_model: ErrorModel::builder()
@@ -105,7 +105,7 @@ use crate::service::TabularIdentUuid;
 ///             })
 ///         }
 ///
-///         async fn check_rename(&self, source: TabularIdentUuid, destination: &TableIdent) -> Result<ContractVerificationOutcome, ErrorModel> {
+///         async fn check_rename(&self, source: TabularId, destination: &TableIdent) -> Result<ContractVerificationOutcome, ErrorModel> {
 ///             Ok(ContractVerificationOutcome::Violation {
 ///                 error_model: ErrorModel::builder()
 ///                     .code(409)
@@ -135,12 +135,12 @@ pub trait ContractVerification: Debug {
 
     async fn check_drop(
         &self,
-        table_ident_uuid: TabularIdentUuid,
+        table_ident_uuid: TabularId,
     ) -> Result<ContractVerificationOutcome, ErrorModel>;
 
     async fn check_rename(
         &self,
-        source: TabularIdentUuid,
+        source: TabularId,
         destination: &TableIdent,
     ) -> Result<ContractVerificationOutcome, ErrorModel>;
 }
@@ -264,7 +264,7 @@ impl ContractVerification for ContractVerifiers {
 
     async fn check_drop(
         &self,
-        table_ident_uuid: TabularIdentUuid,
+        table_ident_uuid: TabularId,
     ) -> Result<ContractVerificationOutcome, ErrorModel> {
         for checker in &self.checkers {
             match checker.check_drop(table_ident_uuid).await {
@@ -288,7 +288,7 @@ impl ContractVerification for ContractVerifiers {
 
     async fn check_rename(
         &self,
-        source: TabularIdentUuid,
+        source: TabularId,
         destination: &TableIdent,
     ) -> Result<ContractVerificationOutcome, ErrorModel> {
         for checker in &self.checkers {

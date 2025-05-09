@@ -18,14 +18,14 @@ use crate::{
         storage::StorageProfile, task_queue::TaskStatus, GetProjectResponse, GetWarehouseResponse,
         WarehouseStatus,
     },
-    ProjectId, SecretIdent, WarehouseIdent,
+    ProjectId, SecretIdent, WarehouseId,
 };
 
 pub(super) async fn get_warehouse_by_name(
     warehouse_name: &str,
     project_id: &ProjectId,
     catalog_state: CatalogState,
-) -> Result<Option<WarehouseIdent>> {
+) -> Result<Option<WarehouseId>> {
     let warehouse_id = sqlx::query_scalar!(
         r#"
             SELECT
@@ -49,7 +49,7 @@ pub(super) async fn set_warehouse_deletion_profile<
     'e: 'c,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     deletion_profile: &TabularDeleteProfile,
     connection: E,
 ) -> Result<()> {
@@ -82,7 +82,7 @@ pub(super) async fn set_warehouse_deletion_profile<
 }
 
 pub(super) async fn get_config_for_warehouse(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     catalog_state: CatalogState,
     request_metadata: &RequestMetadata,
 ) -> Result<Option<CatalogConfig>> {
@@ -124,7 +124,7 @@ pub(crate) async fn create_warehouse(
     tabular_delete_profile: TabularDeleteProfile,
     storage_secret_id: Option<SecretIdent>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<WarehouseIdent> {
+) -> Result<WarehouseId> {
     let storage_profile_ser = serde_json::to_value(storage_profile).map_err(|e| {
         ErrorModel::internal(
             "Error serializing storage profile",
@@ -369,7 +369,7 @@ pub(crate) async fn list_warehouses<
 }
 
 pub(crate) async fn get_warehouse(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Option<GetWarehouseResponse>> {
     let warehouse = sqlx::query!(
@@ -441,7 +441,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
 }
 
 pub(crate) async fn delete_warehouse(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     DeleteWarehouseQuery { force }: DeleteWarehouseQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -510,7 +510,7 @@ pub(crate) async fn delete_warehouse(
 }
 
 pub(crate) async fn rename_warehouse(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     new_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -535,7 +535,7 @@ pub(crate) async fn rename_warehouse(
 }
 
 pub(crate) async fn set_warehouse_status(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     status: WarehouseStatus,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -559,7 +559,7 @@ pub(crate) async fn set_warehouse_status(
 }
 
 pub(crate) async fn set_warehouse_protection(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
@@ -591,7 +591,7 @@ pub(crate) async fn set_warehouse_protection(
 }
 
 pub(crate) async fn update_storage_profile(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     storage_profile: StorageProfile,
     storage_secret_id: Option<SecretIdent>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -673,7 +673,7 @@ fn db_to_api_tabular_delete_profile(
 
 pub(crate) async fn get_warehouse_stats(
     conn: PgPool,
-    warehouse_ident: WarehouseIdent,
+    warehouse_ident: WarehouseId,
     PaginationQuery {
         page_size,
         page_token,
@@ -769,7 +769,7 @@ pub(crate) mod test {
         project_id: Option<&ProjectId>,
         secret_id: Option<SecretIdent>,
         create_project: bool,
-    ) -> crate::WarehouseIdent {
+    ) -> crate::WarehouseId {
         let project_id = project_id.map_or(
             ProjectId::from(uuid::Uuid::nil()),
             std::borrow::ToOwned::to_owned,

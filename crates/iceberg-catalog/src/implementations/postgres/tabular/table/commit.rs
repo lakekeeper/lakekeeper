@@ -16,12 +16,12 @@ use crate::{
         },
     },
     service::{storage::split_location, TableCommit},
-    WarehouseIdent,
+    WarehouseId,
 };
 
 pub(crate) async fn commit_table_transaction(
     // We do not need the warehouse_id here, because table_ids are unique across warehouses
-    _: WarehouseIdent,
+    _: WarehouseId,
     commits: impl IntoIterator<Item = TableCommit> + Send,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {

@@ -19,6 +19,7 @@ use iceberg_catalog::{
             Authorizer,
         },
         contract_verification::ContractVerifiers,
+        endpoint_hooks::EndpointHookCollection,
         endpoint_statistics::{EndpointStatisticsMessage, EndpointStatisticsTracker, FlushMode},
         event_publisher::{
             kafka::{KafkaBackend, KafkaConfig},
@@ -124,7 +125,6 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
-
     match authorizer {
         Authorizers::AllowAll(a) => {
             serve_with_authn(
@@ -308,6 +308,7 @@ async fn serve_with_authn<A: Authorizer>(
 }
 
 /// Helper function to remove redundant code from matching different implementations
+#[allow(clippy::too_many_arguments)]
 async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     authorizer: A,
     authenticator: Option<N>,
@@ -376,6 +377,9 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     );
 
     let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
+    let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
+        cloud_events_tx.clone(),
+    ))]);
 
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
@@ -383,12 +387,12 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
         queues: queues.clone(),
-        publisher: CloudEventsPublisher::new(cloud_events_tx.clone()),
         table_change_checkers: ContractVerifiers::new(vec![]),
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
+        hooks,
     })?;
 
     #[cfg(feature = "ui")]

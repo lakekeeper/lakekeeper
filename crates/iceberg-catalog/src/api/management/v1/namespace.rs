@@ -3,9 +3,9 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogNamespaceAction},
-        Catalog, NamespaceIdentUuid, SecretStore, State, Transaction,
+        Catalog, NamespaceId, SecretStore, State, Transaction,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> NamespaceManagementService<C, A, S>
@@ -19,8 +19,8 @@ where
     Self: Send + Sync + 'static,
 {
     async fn set_namespace_protection(
-        namespace_id: NamespaceIdentUuid,
-        _warehouse_id: WarehouseIdent,
+        namespace_id: NamespaceId,
+        _warehouse_id: WarehouseId,
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -46,8 +46,8 @@ where
     }
 
     async fn get_namespace_protection(
-        namespace_id: NamespaceIdentUuid,
-        _warehouse_id: WarehouseIdent,
+        namespace_id: NamespaceId,
+        _warehouse_id: WarehouseId,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
