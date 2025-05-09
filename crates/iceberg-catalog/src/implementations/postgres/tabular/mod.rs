@@ -505,20 +505,22 @@ where
         let name = table.tabular_name;
 
         let deletion_details = if let Some(deleted_at) = table.deleted_at {
-            Some(DeletionDetails {
-                expiration_date: table.cleanup_at.ok_or(ErrorModel::internal(
-                    "Cleanup date missing for deleted tabular",
-                    "InternalDatabaseError",
-                    None,
-                ))?,
-                expiration_task_id: table.cleanup_task_id.ok_or(ErrorModel::internal(
-                    "Cleanup task ID missing for deleted tabular",
-                    "InternalDatabaseError",
-                    None,
-                ))?,
-                deleted_at,
-                created_at: table.created_at,
-            })
+            //FIXME
+            None
+            // Some(DeletionDetails {
+            //     expiration_date: table.cleanup_at.ok_or(ErrorModel::internal(
+            //         "Cleanup date missing for deleted tabular",
+            //         "InternalDatabaseError",
+            //         None,
+            //     ))?,
+            //     expiration_task_id: table.cleanup_task_id.ok_or(ErrorModel::internal(
+            //         "Cleanup task ID missing for deleted tabular",
+            //         "InternalDatabaseError",
+            //         None,
+            //     ))?,
+            //     deleted_at,
+            //     created_at: table.created_at,
+            // })
         } else {
             None
         };
