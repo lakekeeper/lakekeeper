@@ -2,6 +2,19 @@
 
 
 
+## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
+
+
+### Bug Fixes
+
+* OIDC Authenticator should take precedence over Kubernetes ([#1076](https://github.com/lakekeeper/lakekeeper/issues/1076)) ([fd03cdc](https://github.com/lakekeeper/lakekeeper/commit/fd03cdc23ae2448b0663f6fe392db080c57eba43))
+* Owners can now delete Roles in the UI ([#1086](https://github.com/lakekeeper/lakekeeper/issues/1086)) ([9a75621](https://github.com/lakekeeper/lakekeeper/commit/9a75621a12de6f3a77657f0ab42aef8e2fa45141))
+
+
+### Miscellaneous Chores
+
+* release 0.8.5 ([118dc0b](https://github.com/lakekeeper/lakekeeper/commit/118dc0b3ab6138213a3a4b4c5cacaab707cd24a2))
+
 ## [0.8.4](https://github.com/lakekeeper/lakekeeper/compare/v0.8.3...v0.8.4) (2025-05-02)
 
 

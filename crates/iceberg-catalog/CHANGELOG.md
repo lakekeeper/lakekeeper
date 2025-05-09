@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
+
+
+### Features
+
+* Optionally disable the use of x-forwarded- headers ([2776f80](https://github.com/lakekeeper/lakekeeper/commit/2776f8020a3cc39cdc620695f974b85aeb763e30))
+
+
+### Bug Fixes
+
+* Do not add standard ports (80, 443) if protocol matches ([e5d8147](https://github.com/lakekeeper/lakekeeper/commit/e5d814766543cf0efa49b6320a8cea319c0d82a3))
+* Format / Clippy ([a3f9e25](https://github.com/lakekeeper/lakekeeper/commit/a3f9e25a70e6c1e06b3b50489248456d40185c74))
+* migration health check ([#1083](https://github.com/lakekeeper/lakekeeper/issues/1083)) ([b861920](https://github.com/lakekeeper/lakekeeper/commit/b861920c85abc9665ec33479be00c8afc71d3fa9))
+* pg17 search_path issue ([#1069](https://github.com/lakekeeper/lakekeeper/issues/1069)) ([3e531a6](https://github.com/lakekeeper/lakekeeper/commit/3e531a6a1ab86dfbd65d6131977f11f4e427243d))
+* sequence number index cannot use stable function ([#1072](https://github.com/lakekeeper/lakekeeper/issues/1072)) ([92b4603](https://github.com/lakekeeper/lakekeeper/commit/92b4603be6de1f1c1d0bad284053c3f04f4cf106))
+* Use X-Forwarded-Host header for response in /config Endpoint ([2776f80](https://github.com/lakekeeper/lakekeeper/commit/2776f8020a3cc39cdc620695f974b85aeb763e30))
+
+
+### Miscellaneous Chores
+
+* release 0.8.5 ([118dc0b](https://github.com/lakekeeper/lakekeeper/commit/118dc0b3ab6138213a3a4b4c5cacaab707cd24a2))
+
 ## [0.8.4](https://github.com/lakekeeper/lakekeeper/compare/v0.8.3...v0.8.4) (2025-05-02)
 
 
