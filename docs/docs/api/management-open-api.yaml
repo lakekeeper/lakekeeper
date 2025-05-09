@@ -4134,33 +4134,6 @@ components:
               type: string
               enum:
                 - soft
-    TabularId:
-      oneOf:
-        - type: object
-          required:
-            - id
-            - type
-          properties:
-            id:
-              type: string
-              format: uuid
-            type:
-              type: string
-              enum:
-                - table
-        - type: object
-          required:
-            - id
-            - type
-          properties:
-            id:
-              type: string
-              format: uuid
-            type:
-              type: string
-              enum:
-                - view
-      title: TabularIdentUuid
     TabularIdentOrUuid:
       oneOf:
         - type: object
@@ -4187,6 +4160,32 @@ components:
               type: string
               format: uuid
       description: Identifier for a table or view, either a UUID or its name and namespace
+    TabularIdentUuid:
+      oneOf:
+        - type: object
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+        - type: object
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - view
     TabularType:
       type: string
       description: Type of tabular
@@ -4250,7 +4249,7 @@ components:
         targets:
           type: array
           items:
-            $ref: '#/components/schemas/TabularId'
+            $ref: '#/components/schemas/TabularIdentUuid'
           description: Tabulars to undrop
     UpdateNamespaceAssignmentsRequest:
       type: object
