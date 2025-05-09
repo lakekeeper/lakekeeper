@@ -19,9 +19,9 @@ use crate::{
         tabular::TabularType,
     },
     service::{
-        storage::join_location, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel,
-        GetNamespaceResponse, ListNamespacesQuery, NamespaceDropInfo, NamespaceId, NamespaceIdent,
-        NamespaceInfo, Result, TabularId,
+        storage::join_location, task_queue::TaskId, CreateNamespaceRequest,
+        CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
+        NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceInfo, Result, TabularId,
     },
     WarehouseId,
 };
@@ -353,27 +353,26 @@ pub(crate) async fn drop_namespace(
             WHERE n.warehouse_id = $1 AND n.namespace_id != $2
         ),
         tabulars AS (
-            SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
+            SELECT ta.tabular_id, ta.expiration_task_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
             FROM tabular ta
             WHERE namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+        ),
+        tasks AS (
+            SELECT t.task_id, t.status as task_status from task t
+            WHERE t.status = 'running' AND t.task_id = ANY (SELECT expiration_task_id FROM tabulars)
         )
--- FIXME: we need to add a reference from tabular to task since we're removing tabular_expirations
---         tasks AS (
---             SELECT te.task_id, t.status as task_status from tabular_expirations te join task t on te.task_id = t.task_id
---             WHERE t.status = 'running' AND te.tabular_id = ANY (SELECT tabular_id FROM tabulars)
---         )
         SELECT
             (SELECT protected FROM namespace_info) AS "is_protected!",
             EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
             EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
---             EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
+            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running') AS "has_running_tasks!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
             ARRAY(SELECT fs_protocol FROM tabulars) AS "child_tabular_fs_protocol!",
             ARRAY(SELECT fs_location FROM tabulars) AS "child_tabular_fs_location!",
-            ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>"
---             ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
+            ARRAY(SELECT typ FROM tabulars) AS "child_tabular_typ!: Vec<TabularType>",
+            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
 "#,
         *warehouse_id,
         *namespace_id,
@@ -427,12 +426,11 @@ pub(crate) async fn drop_namespace(
         .into());
     }
 
-    // FIXME: re-add this check
-    // if info.has_running_tasks {
-    //     return Err(
-    //         ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
-    //     );
-    // }
+    if info.has_running_tasks {
+        return Err(
+            ErrorModel::conflict("Namespace has a currently running tabular expiration, please retry after the expiration task is done.", "NamespaceNotEmpty", None).into(),
+        );
+    }
 
     // Return 404 not found if namespace does not exist
     let record = sqlx::query!(
@@ -494,12 +492,11 @@ pub(crate) async fn drop_namespace(
             )
         })
         .collect_vec(),
-        // FIXME
-        open_tasks: todo!(), // info
-                             //     .child_tabular_task_id
-                             //     .into_iter()
-                             //     .map(TaskId::from)
-                             //     .collect(),
+        open_tasks: info
+            .child_tabular_task_id
+            .into_iter()
+            .map(TaskId::from)
+            .collect(),
     })
 }
 

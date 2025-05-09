@@ -3,7 +3,6 @@ use std::{collections::HashMap, fmt::Debug, ops::Deref, sync::Arc, time::Duratio
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{future::BoxFuture, FutureExt};
-use rand::{rng, Rng as _};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use strum::EnumIter;
 use uuid::Uuid;
@@ -425,12 +424,6 @@ impl Default for TaskQueueConfig {
     }
 }
 
-/// Generate random duration between 1 and 30ms
-pub(crate) fn random_ms_duration() -> std::time::Duration {
-    let random_duration = rng().random_range(1..=30);
-    std::time::Duration::from_millis(random_duration)
-}
-
 const fn valid_max_age(num: i64) -> chrono::Duration {
     assert!(num > 0, "max_age must be greater than 0");
     let dur = chrono::Duration::seconds(num);
@@ -449,13 +442,10 @@ mod test {
             iceberg::v1::PaginationQuery,
             management::v1::{DeleteKind, TabularType},
         },
-        implementations::{
-            kv2::SecretsState,
-            postgres::{
-                tabular::table::tests::initialize_table, task_queues::PgQueue,
-                warehouse::test::initialize_warehouse, CatalogState, PostgresCatalog,
-                PostgresTransaction,
-            },
+        implementations::postgres::{
+            tabular::table::tests::initialize_table, task_queues::PgQueue,
+            warehouse::test::initialize_warehouse, CatalogState, PostgresCatalog,
+            PostgresTransaction,
         },
         service::{
             authz::AllowAllAuthorizer,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use itertools::Itertools;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -20,23 +20,6 @@ pub struct PgQueue {
 }
 
 impl PgQueue {
-    fn new(read_write: ReadWrite) -> Self {
-        let config = TaskQueueConfig::default();
-        let microseconds = config
-            .max_age
-            .num_microseconds()
-            .expect("Invalid max age duration for task queues hard-coded in Default.");
-        Self {
-            read_write,
-            config,
-            max_age: sqlx::postgres::types::PgInterval {
-                months: 0,
-                days: 0,
-                microseconds,
-            },
-        }
-    }
-
     pub fn from_config(read_write: ReadWrite, config: TaskQueueConfig) -> anyhow::Result<Self> {
         let microseconds = config
             .max_age
@@ -121,13 +104,6 @@ impl TaskQueue for PgQueue {
 }
 
 #[derive(Debug)]
-pub struct TaskArg {
-    parent: Option<Uuid>,
-    warehouse_ident: WarehouseId,
-    suspend_until: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug)]
 pub struct InsertResult {
     pub task_id: Uuid,
     pub idempotency_key: Uuid,
@@ -138,36 +114,6 @@ pub trait InputTrait {
     fn suspend_until(&self) -> Option<chrono::DateTime<Utc>> {
         None
     }
-}
-
-fn preprocess_batch<T: InputTrait, F: Fn(&T) -> Uuid>(
-    tasks: Vec<T>,
-    idempotency_fn: F,
-) -> crate::api::Result<(HashMap<Uuid, TaskArg>, HashMap<Uuid, T>)> {
-    let mut idempotency2task = HashMap::with_capacity(tasks.len());
-    let mut idempotency2specific = HashMap::with_capacity(tasks.len());
-    for task in tasks {
-        let idempotency_key = idempotency_fn(&task);
-        if let Some(duplicate) = idempotency2task.insert(
-            idempotency_key,
-            TaskArg {
-                parent: None,
-                warehouse_ident: task.warehouse_ident(),
-                suspend_until: task.suspend_until(),
-            },
-        ) {
-            tracing::error!(?duplicate, "Duplicate Task in Batch.");
-            // TODO: bad-request?
-            return Err(ErrorModel::internal(
-                "Duplicate Task in Batch",
-                "InternalServerError",
-                None,
-            )
-            .into());
-        }
-        idempotency2specific.insert(idempotency_key, task);
-    }
-    Ok((idempotency2task, idempotency2specific))
 }
 
 async fn queue_task_batch(
@@ -441,8 +387,8 @@ mod test {
                 task_metadata: TaskMetadata {
                     idempotency_key,
                     warehouse_id,
-                    suspend_until,
                     parent_task_id,
+                    suspend_until,
                 },
                 payload: serde_json::json!({}),
             }],
@@ -759,7 +705,7 @@ mod test {
                         parent_task_id: None,
                         suspend_until: None,
                     },
-                    payload: Default::default(),
+                    payload: serde_json::Value::default(),
                 },
                 TaskInput {
                     task_metadata: TaskMetadata {
@@ -768,7 +714,7 @@ mod test {
                         parent_task_id: None,
                         suspend_until: None,
                     },
-                    payload: Default::default(),
+                    payload: serde_json::Value::default(),
                 },
             ],
         )
@@ -829,7 +775,7 @@ mod test {
                         parent_task_id: None,
                         suspend_until: None,
                     },
-                    payload: Default::default(),
+                    payload: serde_json::Value::default(),
                 },
                 TaskInput {
                     task_metadata: TaskMetadata {
@@ -838,7 +784,7 @@ mod test {
                         parent_task_id: None,
                         suspend_until: None,
                     },
-                    payload: Value::default(),
+                    payload: serde_json::Value::default(),
                 },
             ],
         )
@@ -880,9 +826,7 @@ mod test {
 
         record_success(task.task_id, &pool).await.unwrap();
         record_success(id2, &pool).await.unwrap();
-
-        let new_key = Uuid::new_v5(&warehouse_id, b"test3");
-
+        let new_key = Uuid::now_v7();
         let ids_second = queue_task_batch(
             &mut conn,
             "test",
@@ -894,16 +838,16 @@ mod test {
                         parent_task_id: None,
                         suspend_until: None,
                     },
-                    payload: Default::default(),
+                    payload: serde_json::Value::default(),
                 },
                 TaskInput {
                     task_metadata: TaskMetadata {
-                        idempotency_key: idp2,
+                        idempotency_key: new_key,
                         warehouse_id,
                         parent_task_id: None,
                         suspend_until: None,
                     },
-                    payload: Default::default(),
+                    payload: serde_json::Value::default(),
                 },
             ],
         )

@@ -195,6 +195,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
+                #[cfg(feature = "authz-openfga")]
                 config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
             },
             aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
