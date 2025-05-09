@@ -32,8 +32,7 @@ use crate::{
     },
     catalog::CatalogServer,
     implementations::postgres::{
-        task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-        CatalogState, PostgresCatalog, ReadWrite, SecretsState,
+        task_queues::PgQueue, CatalogState, PostgresCatalog, ReadWrite, SecretsState,
     },
     request_metadata::RequestMetadata,
     service::{
@@ -282,21 +281,9 @@ pub(crate) fn get_api_context<T: Authorizer>(
             catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
             secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
             contract_verifiers: ContractVerifiers::new(vec![]),
-            queues: TaskQueues::new(
-                Arc::new(
-                    TabularExpirationQueue::from_config(
-                        ReadWrite::from_pools(pool.clone(), pool.clone()),
-                        q_config.clone(),
-                    )
+            queues: Arc::new(
+                PgQueue::from_config(ReadWrite::from_pools(pool.clone(), pool.clone()), q_config)
                     .unwrap(),
-                ),
-                Arc::new(
-                    TabularPurgeQueue::from_config(
-                        ReadWrite::from_pools(pool.clone(), pool.clone()),
-                        q_config.clone(),
-                    )
-                    .unwrap(),
-                ),
             ),
             hooks: EndpointHookCollection::new(vec![]),
         },
@@ -311,16 +298,10 @@ pub(crate) fn spawn_drop_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
 ) {
     let ctx = ctx.clone();
-    tokio::task::spawn(async move {
-        ctx.clone()
-            .v1_state
-            .queues
-            .spawn_queues::<PostgresCatalog, SecretsState, T>(
-                ctx.v1_state.catalog,
-                ctx.v1_state.secrets,
-                ctx.v1_state.authz,
-            )
-            .await
-            .unwrap();
-    });
+    let queues = TaskQueues::new(ctx.v1_state.queues.clone());
+    tokio::task::spawn(queues.clone().spawn_queues::<PostgresCatalog, _, T>(
+        ctx.v1_state.catalog.clone(),
+        ctx.v1_state.secrets.clone(),
+        ctx.v1_state.authz.clone(),
+    ));
 }

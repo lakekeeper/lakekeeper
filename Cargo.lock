@@ -3097,6 +3097,7 @@ version = "0.8.4"
 dependencies = [
  "anyhow",
  "assert-json-diff",
+ "async-channel 2.3.1",
  "async-nats",
  "async-stream",
  "async-trait",
@@ -3116,6 +3117,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cloudevents-sdk",
+ "crossbeam-channel",
  "derive_more",
  "figment",
  "figment_file_provider_adapter",

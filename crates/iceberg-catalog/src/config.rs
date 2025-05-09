@@ -20,10 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{
-    service::{event_publisher::kafka::KafkaConfig, task_queue::TaskQueueConfig},
-    ProjectId, WarehouseId,
-};
+use crate::{service::task_queue::TaskQueueConfig, ProjectId, WarehouseId};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -170,7 +167,8 @@ pub struct DynAppConfig {
 
     // ------------- KAFKA CLOUDEVENTS -------------
     pub kafka_topic: Option<String>,
-    pub kafka_config: Option<KafkaConfig>,
+    #[cfg(feature = "kafka")]
+    pub kafka_config: Option<crate::service::event_publisher::kafka::KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -408,6 +406,7 @@ pub struct OpenFGAConfig {
 pub enum AuthZBackend {
     #[serde(alias = "allowall", alias = "AllowAll", alias = "ALLOWALL")]
     AllowAll,
+    #[cfg(feature = "authz-openfga")]
     #[serde(alias = "openfga", alias = "OpenFGA", alias = "OPENFGA")]
     OpenFGA,
 }
@@ -474,6 +473,7 @@ impl Default for DynAppConfig {
             nats_user: None,
             nats_password: None,
             nats_token: None,
+            #[cfg(feature = "authz-openfga")]
             kafka_config: None,
             kafka_topic: None,
             log_cloudevents: None,
@@ -903,6 +903,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "authz-openfga")]
     #[test]
     fn test_openfga_config_no_auth() {
         figment::Jail::expect_with(|jail| {
@@ -919,6 +920,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "authz-openfga")]
     #[test]
     fn test_openfga_config_api_key() {
         figment::Jail::expect_with(|jail| {
@@ -949,6 +951,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "authz-openfga")]
     #[test]
     fn test_openfga_client_credentials() {
         figment::Jail::expect_with(|jail| {

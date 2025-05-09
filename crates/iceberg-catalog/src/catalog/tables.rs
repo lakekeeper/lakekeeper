@@ -41,7 +41,7 @@ use crate::{
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
         set_not_found_status_code,
     },
     catalog,
@@ -55,8 +55,8 @@ use crate::{
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
         task_queue::{
-            tabular_expiration_queue::TabularExpirationInput,
-            tabular_purge_queue::TabularPurgeInput,
+            tabular_expiration_queue::TabularExpiration, tabular_purge_queue::TabularPurge,
+            TaskMetadata, TaskQueues,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
@@ -699,17 +699,21 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 t.commit().await?;
 
                 if purge_requested {
-                    state
-                        .v1_state
-                        .queues
-                        .queue_tabular_purge(TabularPurgeInput {
+                    TaskQueues::queue_tabular_purge(
+                        state.v1_state.queues,
+                        TaskMetadata {
+                            idempotency_key: table_id.into(),
+                            warehouse_id,
+                            parent_task_id: None,
+                            suspend_until: None,
+                        },
+                        TabularPurge {
                             tabular_id: *table_id,
                             tabular_location: location,
-                            warehouse_ident: warehouse_id,
                             tabular_type: TabularType::Table,
-                            parent_id: None,
-                        })
-                        .await?;
+                        },
+                    )
+                    .await?;
 
                     tracing::debug!("Queued purge task for dropped table '{table_id}'.");
                 }
@@ -720,17 +724,25 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .await?;
                 t.commit().await?;
 
-                state
-                    .v1_state
-                    .queues
-                    .queue_tabular_expiration(TabularExpirationInput {
+                TaskQueues::queue_tabular_expiration(
+                    state.v1_state.queues,
+                    TaskMetadata {
+                        idempotency_key: table_id.into(),
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: Some(chrono::Utc::now() + expiration_seconds),
+                    },
+                    TabularExpiration {
                         tabular_id: table_id.into(),
-                        warehouse_ident: warehouse_id,
                         tabular_type: TabularType::Table,
-                        purge: purge_requested,
-                        expire_at: chrono::Utc::now() + expiration_seconds,
-                    })
-                    .await?;
+                        deletion_kind: if purge_requested {
+                            DeleteKind::Purge
+                        } else {
+                            DeleteKind::Default
+                        },
+                    },
+                )
+                .await?;
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
             }
         }

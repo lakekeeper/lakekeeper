@@ -11,7 +11,7 @@ pub mod storage;
 mod tabular_idents;
 pub mod task_queue;
 
-use std::{ops::Deref, str::FromStr};
+use std::{ops::Deref, str::FromStr, sync::Arc};
 
 pub use authn::{Actor, UserId};
 pub use catalog::{
@@ -37,7 +37,7 @@ use crate::{
     api::{iceberg::v1::Prefix, ThreadSafe as ServiceState},
     service::{
         contract_verification::ContractVerifiers, endpoint_hooks::EndpointHookCollection,
-        task_queue::TaskQueues,
+        task_queue::TaskQueue,
     },
 };
 
@@ -48,7 +48,7 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
     pub catalog: C::State,
     pub secrets: S,
     pub contract_verifiers: ContractVerifiers,
-    pub queues: TaskQueues,
+    pub queues: Arc<dyn TaskQueue + Send + Sync + 'static>,
     pub hooks: EndpointHookCollection,
 }
 

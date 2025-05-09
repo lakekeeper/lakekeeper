@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     api::{
         iceberg::{types::DropParams, v1::ViewParameters},
-        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
         set_not_found_status_code, ApiContext,
     },
     catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
@@ -13,8 +13,8 @@ use crate::{
         contract_verification::ContractVerification,
         endpoint_hooks::EndpointHooks,
         task_queue::{
-            tabular_expiration_queue::TabularExpirationInput,
-            tabular_purge_queue::TabularPurgeInput,
+            tabular_expiration_queue::TabularExpiration, tabular_purge_queue::TabularPurge,
+            TaskMetadata, TaskQueues,
         },
         Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
@@ -73,17 +73,21 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             t.commit().await?;
 
             if purge_requested {
-                state
-                    .v1_state
-                    .queues
-                    .queue_tabular_purge(TabularPurgeInput {
+                TaskQueues::queue_tabular_purge(
+                    state.v1_state.queues,
+                    TaskMetadata {
+                        idempotency_key: *view_id,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    TabularPurge {
                         tabular_location: location,
                         tabular_id: *view_id,
-                        warehouse_ident: warehouse_id,
                         tabular_type: TabularType::View,
-                        parent_id: None,
-                    })
-                    .await?;
+                    },
+                )
+                .await?;
                 tracing::debug!("Queued purge task for dropped view '{view_id}'.");
             }
             authorizer.delete_view(view_id).await?;
@@ -92,17 +96,25 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             C::mark_tabular_as_deleted(TabularId::View(*view_id), force, t.transaction()).await?;
             t.commit().await?;
 
-            state
-                .v1_state
-                .queues
-                .queue_tabular_expiration(TabularExpirationInput {
+            TaskQueues::queue_tabular_expiration(
+                state.v1_state.queues.clone(),
+                TaskMetadata {
+                    idempotency_key: *view_id,
+                    warehouse_id,
+                    parent_task_id: None,
+                    suspend_until: Some(chrono::Utc::now() + expiration_seconds),
+                },
+                TabularExpiration {
                     tabular_id: *view_id,
-                    warehouse_ident: warehouse_id,
                     tabular_type: TabularType::View,
-                    purge: purge_requested,
-                    expire_at: chrono::Utc::now() + expiration_seconds,
-                })
-                .await?;
+                    deletion_kind: if purge_requested {
+                        DeleteKind::Purge
+                    } else {
+                        DeleteKind::Default
+                    },
+                },
+            )
+            .await?;
             tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
         }
     }

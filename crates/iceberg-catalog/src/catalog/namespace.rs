@@ -23,7 +23,7 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
-        task_queue::{tabular_purge_queue::TabularPurgeInput, TaskFilter},
+        task_queue::{tabular_purge_queue::TabularPurge, TaskFilter, TaskMetadata, TaskQueues},
         Catalog, GetWarehouseResponse, NamespaceId, State, TabularId, Transaction,
     },
     WarehouseId, CONFIG,
@@ -453,11 +453,11 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
             .delete_namespace(request_metadata, namespace_id)
             .await?;
         // cancel pending tasks
-        state
-            .v1_state
-            .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(drop_info.open_tasks))
-            .await?;
+        TaskQueues::cancel_tabular_expiration(
+            state.v1_state.queues.clone(),
+            TaskFilter::TaskIds(drop_info.open_tasks),
+        )
+        .await?;
 
         if flags.purge {
             for (tabular_id, tabular_location) in drop_info.child_tables {
@@ -465,17 +465,21 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
                     TabularId::Table(id) => (id, TabularType::Table),
                     TabularId::View(id) => (id, TabularType::View),
                 };
-                state
-                    .v1_state
-                    .queues
-                    .queue_tabular_purge(TabularPurgeInput {
+                TaskQueues::queue_tabular_purge(
+                    state.v1_state.queues.clone(),
+                    TaskMetadata {
+                        idempotency_key: tabular_id,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    TabularPurge {
                         tabular_id,
-                        warehouse_ident: warehouse.id,
-                        tabular_type,
-                        parent_id: None,
                         tabular_location,
-                    })
-                    .await?;
+                        tabular_type,
+                    },
+                )
+                .await?;
             }
         }
         Ok(())
