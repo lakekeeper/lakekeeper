@@ -1967,7 +1967,7 @@ mod tests {
         async fn test_set_namespace_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let namespace_id = NamespaceId::from(Uuid::now_v7());
+            let namespace_id = NamespaceIdentUuid::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
@@ -2000,7 +2000,7 @@ mod tests {
         async fn test_warehouse_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let warehouse_id = WarehouseId::from(Uuid::now_v7());
+            let warehouse_id = WarehouseIdent::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();

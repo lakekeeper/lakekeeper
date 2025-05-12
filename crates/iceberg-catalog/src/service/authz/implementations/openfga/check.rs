@@ -626,7 +626,7 @@ mod tests {
         async fn test_check(pool: sqlx::PgPool) {
             let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let (ctx, warehouse, namespace) = setup(operator_id.clone(), pool).await;
-            let namespace_id = NamespaceId::from_str(
+            let namespace_id = NamespaceIdentUuid::from_str(
                 namespace
                     .properties
                     .unwrap()
