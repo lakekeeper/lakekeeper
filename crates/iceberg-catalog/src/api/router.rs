@@ -144,8 +144,8 @@ pub fn new_full_router<
         config,
     };
 
-    let counter = Arc::new(Mutex::new(0));
-    let counter = Counter::new(counter);
+    let counter_mutex = Arc::new(Mutex::new(0));
+    let counter = Counter::<C>::new(counter_mutex, catalog_state.clone());
     sse_server.with_service(move || counter.clone());
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins

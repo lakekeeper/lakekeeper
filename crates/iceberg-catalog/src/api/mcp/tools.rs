@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::service::{Catalog, State};
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
@@ -14,14 +15,19 @@ pub struct StructRequest {
 }
 
 #[derive(Clone)]
-pub struct Counter {
+pub struct Counter<C: Catalog> {
     counter: Arc<Mutex<i32>>,
+    catalog_state: C::State,
 }
+
 #[tool(tool_box)]
-impl Counter {
+impl<C: Catalog> Counter<C> {
     #[allow(dead_code)]
-    pub fn new(counter: Arc<Mutex<i32>>) -> Self {
-        Self { counter }
+    pub fn new(counter: Arc<Mutex<i32>>, catalog_state: C::State) -> Self {
+        Self {
+            counter,
+            catalog_state,
+        }
     }
 
     fn _create_resource_text(&self, uri: &str, name: &str) -> Resource {
@@ -80,8 +86,7 @@ impl Counter {
     }
 }
 const_string!(Echo = "echo");
-#[tool(tool_box)]
-impl ServerHandler for Counter {
+impl<C: Catalog> ServerHandler for Counter<C> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
