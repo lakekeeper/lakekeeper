@@ -37,7 +37,7 @@ use crate::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
         StoragePermissions, StorageType, TableConfig,
     },
-    WarehouseIdent, CONFIG,
+    WarehouseId, CONFIG,
 };
 
 #[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -150,7 +150,7 @@ impl AdlsProfile {
     // may change..
     #[allow(clippy::unused_self)]
     #[must_use]
-    pub fn generate_catalog_config(&self, _: WarehouseIdent) -> CatalogConfig {
+    pub fn generate_catalog_config(&self, _: WarehouseId) -> CatalogConfig {
         CatalogConfig {
             defaults: HashMap::default(),
             overrides: HashMap::default(),
@@ -959,8 +959,8 @@ pub(crate) mod test {
             },
             AdlsLocation, AdlsProfile, StorageLocations, StorageProfile,
         },
-        tabular_idents::TabularIdentUuid,
-        NamespaceIdentUuid,
+        tabular_idents::TabularId,
+        NamespaceId,
     };
 
     #[test]
@@ -1095,8 +1095,8 @@ pub(crate) mod test {
 
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceIdentUuid::from(uuid::Uuid::now_v7());
-        let table_id = TabularIdentUuid::Table(uuid::Uuid::now_v7());
+        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
+        let table_id = TabularId::Table(uuid::Uuid::now_v7());
         let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, table_id);

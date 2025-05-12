@@ -21,15 +21,14 @@ use crate::{
     service::{
         storage::join_location, task_queue::TaskId, CreateNamespaceRequest,
         CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
-        NamespaceDropInfo, NamespaceIdent, NamespaceIdentUuid, NamespaceInfo, Result,
-        TabularIdentUuid,
+        NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceInfo, Result, TabularId,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 pub(crate) async fn get_namespace(
-    warehouse_id: WarehouseIdent,
-    namespace_id: NamespaceIdentUuid,
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<GetNamespaceResponse> {
     let row = sqlx::query!(
@@ -76,7 +75,7 @@ pub(crate) async fn get_namespace(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn list_namespaces(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     ListNamespacesQuery {
         page_token,
         page_size,
@@ -85,7 +84,7 @@ pub(crate) async fn list_namespaces(
         return_protection_status: _,
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceInfo>> {
+) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>> {
     let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
 
     // Treat empty parent as None
@@ -178,7 +177,7 @@ pub(crate) async fn list_namespaces(
         };
 
     // Convert Vec<Vec<String>> to Vec<NamespaceIdent>
-    let mut namespace_map: PaginatedMapping<NamespaceIdentUuid, NamespaceInfo> =
+    let mut namespace_map: PaginatedMapping<NamespaceId, NamespaceInfo> =
         PaginatedMapping::with_capacity(namespaces.len());
     for ns_result in namespaces.into_iter().map(|(id, n, ts, protected)| {
         NamespaceIdent::from_vec(n.clone())
@@ -216,8 +215,8 @@ pub(crate) async fn list_namespaces(
 }
 
 pub(crate) async fn create_namespace(
-    warehouse_id: WarehouseIdent,
-    namespace_id: NamespaceIdentUuid,
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
     request: CreateNamespaceRequest,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<CreateNamespaceResponse> {
@@ -301,10 +300,10 @@ pub(crate) async fn create_namespace(
 }
 
 pub(crate) async fn namespace_to_id(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     namespace: &NamespaceIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> Result<Option<NamespaceIdentUuid>> {
+) -> Result<Option<NamespaceId>> {
     let namespace_id = sqlx::query_scalar!(
         r#"
         SELECT namespace_id
@@ -332,8 +331,8 @@ pub(crate) async fn namespace_to_id(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn drop_namespace(
-    warehouse_id: WarehouseIdent,
-    namespace_id: NamespaceIdentUuid,
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
     NamespaceDropFlags {
         force,
         purge: _purge,
@@ -486,8 +485,8 @@ pub(crate) async fn drop_namespace(
         .map(|(id, protocol, fs_location, typ)| {
             (
                 match typ {
-                    TabularType::Table => TabularIdentUuid::Table(id),
-                    TabularType::View => TabularIdentUuid::View(id),
+                    TabularType::Table => TabularId::Table(id),
+                    TabularType::View => TabularId::View(id),
                 },
                 join_location(protocol.as_str(), fs_location.as_str()),
             )
@@ -502,7 +501,7 @@ pub(crate) async fn drop_namespace(
 }
 
 pub(crate) async fn set_namespace_protected(
-    namespace_id: NamespaceIdentUuid,
+    namespace_id: NamespaceId,
     protect: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
@@ -540,7 +539,7 @@ pub(crate) async fn set_namespace_protected(
 }
 
 pub(crate) async fn get_namespace_protected(
-    namespace_id: NamespaceIdentUuid,
+    namespace_id: NamespaceId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
     let row = sqlx::query!(
@@ -575,8 +574,8 @@ pub(crate) async fn get_namespace_protected(
 }
 
 pub(crate) async fn update_namespace_properties(
-    warehouse_id: WarehouseIdent,
-    namespace_id: NamespaceIdentUuid,
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
     properties: HashMap<String, String>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
@@ -631,15 +630,15 @@ pub(crate) mod tests {
 
     pub(crate) async fn initialize_namespace(
         state: CatalogState,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,
         properties: Option<HashMap<String, String>>,
-    ) -> (NamespaceIdentUuid, CreateNamespaceResponse) {
+    ) -> (NamespaceId, CreateNamespaceResponse) {
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
 
-        let namespace_id = NamespaceIdentUuid::default();
+        let namespace_id = NamespaceId::default();
 
         let response = PostgresCatalog::create_namespace(
             warehouse_id,
@@ -1095,7 +1094,7 @@ pub(crate) mod tests {
 
         let response = PostgresCatalog::create_namespace(
             warehouse_id,
-            NamespaceIdentUuid::default(),
+            NamespaceId::default(),
             CreateNamespaceRequest {
                 namespace: namespace_1.clone(),
                 properties: None,
@@ -1115,7 +1114,7 @@ pub(crate) mod tests {
 
         let response = PostgresCatalog::create_namespace(
             warehouse_id,
-            NamespaceIdentUuid::default(),
+            NamespaceId::default(),
             CreateNamespaceRequest {
                 namespace: namespace_2.clone(),
                 properties: None,
@@ -1275,7 +1274,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         set_tabular_protected(
-            TabularIdentUuid::Table(*tab.table_id),
+            TabularId::Table(*tab.table_id),
             true,
             transaction.transaction(),
         )

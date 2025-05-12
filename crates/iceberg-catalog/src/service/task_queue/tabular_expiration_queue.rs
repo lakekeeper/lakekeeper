@@ -15,9 +15,9 @@ use crate::{
             tabular_purge_queue::{TabularPurgeInput, TabularPurgeQueue},
             Task, TaskQueue,
         },
-        Catalog, TableIdentUuid, Transaction, ViewIdentUuid,
+        Catalog, TableId, Transaction, ViewId,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 pub type ExpirationQueue = Arc<
@@ -114,7 +114,7 @@ where
 
     let tabular_location = match expiration.tabular_type {
         TabularType::Table => {
-            let table_id = TableIdentUuid::from(expiration.tabular_id);
+            let table_id = TableId::from(expiration.tabular_id);
             let location = C::drop_table(table_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
@@ -126,7 +126,7 @@ where
             location
         }
         TabularType::View => {
-            let view_id = ViewIdentUuid::from(expiration.tabular_id);
+            let view_id = ViewId::from(expiration.tabular_id);
             let location = C::drop_view(view_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
@@ -164,7 +164,7 @@ where
 pub struct TabularExpirationTask {
     pub deletion_kind: DeleteKind,
     pub tabular_id: Uuid,
-    pub warehouse_ident: WarehouseIdent,
+    pub warehouse_ident: WarehouseId,
     pub tabular_type: TabularType,
     pub task: Task,
 }
@@ -186,7 +186,7 @@ impl fmt::Display for TabularExpirationTask {
 #[derive(Debug, Clone)]
 pub struct TabularExpirationInput {
     pub tabular_id: Uuid,
-    pub warehouse_ident: WarehouseIdent,
+    pub warehouse_ident: WarehouseId,
     pub tabular_type: TabularType,
     pub purge: bool,
     pub expire_at: chrono::DateTime<chrono::Utc>,

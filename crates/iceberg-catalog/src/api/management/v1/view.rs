@@ -3,9 +3,9 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogViewAction},
-        Catalog, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
+        Catalog, SecretStore, State, TabularId, Transaction, ViewId,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> ViewManagementService<C, A, S>
@@ -19,8 +19,8 @@ where
     Self: Send + Sync + 'static,
 {
     async fn set_view_protection(
-        view_id: ViewIdentUuid,
-        _warehouse_id: WarehouseIdent,
+        view_id: ViewId,
+        _warehouse_id: WarehouseId,
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -28,7 +28,7 @@ where
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
-        let view_id: ViewIdentUuid = authorizer
+        let view_id: ViewId = authorizer
             .require_view_action(
                 &request_metadata,
                 Ok(Some(view_id)),
@@ -39,15 +39,14 @@ where
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let status =
-            C::set_tabular_protected(TabularIdentUuid::View(*view_id), protected, t.transaction())
-                .await?;
+            C::set_tabular_protected(TabularId::View(*view_id), protected, t.transaction()).await?;
         t.commit().await?;
         Ok(status)
     }
 
     async fn get_view_protection(
-        view_id: ViewIdentUuid,
-        _warehouse_id: WarehouseIdent,
+        view_id: ViewId,
+        _warehouse_id: WarehouseId,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {

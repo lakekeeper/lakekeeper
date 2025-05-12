@@ -15,13 +15,13 @@ use crate::{
         tabular_expiration_queue::{TabularExpirationInput, TabularExpirationTask},
         TaskFilter, TaskQueue, TaskQueueConfig,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 super::impl_pg_task_queue!(TabularExpirationQueue);
 
 impl InputTrait for TabularExpirationInput {
-    fn warehouse_ident(&self) -> WarehouseIdent {
+    fn warehouse_ident(&self) -> WarehouseId {
         self.warehouse_ident
     }
 

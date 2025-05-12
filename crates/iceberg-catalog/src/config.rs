@@ -22,7 +22,7 @@ use veil::Redact;
 
 use crate::{
     service::{event_publisher::kafka::KafkaConfig, task_queue::TaskQueueConfig},
-    ProjectId, WarehouseIdent,
+    ProjectId, WarehouseId,
 };
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
@@ -508,7 +508,7 @@ impl Default for DynAppConfig {
 }
 
 impl DynAppConfig {
-    pub fn warehouse_prefix(&self, warehouse_id: WarehouseIdent) -> String {
+    pub fn warehouse_prefix(&self, warehouse_id: WarehouseId) -> String {
         self.prefix_template
             .replace("{warehouse_id}", warehouse_id.to_string().as_str())
     }
