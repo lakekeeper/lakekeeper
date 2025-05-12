@@ -59,10 +59,10 @@ use crate::{
             tabular_purge_queue::TabularPurgeInput,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
-        LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
-        TabularDetails, TabularId, Transaction, WarehouseStatus,
+        LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation,
+        TableIdentUuid, TabularDetails, TabularIdentUuid, Transaction, WarehouseStatus,
     },
-    WarehouseId,
+    WarehouseIdent,
 };
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
@@ -171,8 +171,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let id = Uuid::now_v7();
-        let tabular_id = TabularId::Table(id);
-        let table_id = TableId::from(id);
+        let tabular_id = TabularIdentUuid::Table(id);
+        let table_id = TableIdentUuid::from(id);
 
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
@@ -299,7 +299,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         authorizer
-            .create_table(&request_metadata, TableId::from(*tabular_id), namespace_id)
+            .create_table(
+                &request_metadata,
+                TableIdentUuid::from(*tabular_id),
+                namespace_id,
+            )
             .await?;
 
         // Metadata file written, now we can commit the transaction
@@ -372,7 +376,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         storage_profile.require_allowed_location(&table_location)?;
 
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
-        let tabular_id = TableId::from(table_metadata.uuid());
+        let tabular_id = TableIdentUuid::from(table_metadata.uuid());
 
         let CreateTableResponse {
             table_metadata,
@@ -686,7 +690,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_drop(TabularId::Table(*table_id))
+            .check_drop(TabularIdentUuid::Table(*table_id))
             .await?
             .into_result()?;
 
@@ -716,8 +720,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer.delete_table(table_id).await?;
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
-                C::mark_tabular_as_deleted(TabularId::Table(*table_id), force, t.transaction())
-                    .await?;
+                C::mark_tabular_as_deleted(
+                    TabularIdentUuid::Table(*table_id),
+                    force,
+                    t.transaction(),
+                )
+                .await?;
                 t.commit().await?;
 
                 state
@@ -745,7 +753,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     purge_requested,
                     force,
                 },
-                TableId::from(*table_id),
+                TableIdentUuid::from(*table_id),
                 Arc::new(request_metadata),
             )
             .await;
@@ -852,7 +860,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_rename(TabularId::Table(*source_table_id), destination)
+            .check_rename(TabularIdentUuid::Table(*source_table_id), destination)
             .await?
             .into_result()?;
 
@@ -889,7 +897,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
     async fn resolve_and_authorize_table_access(
         request_metadata: &RequestMetadata,
         table: &TableIdent,
-        warehouse_id: WarehouseId,
+        warehouse_id: WarehouseIdent,
         list_flags: ListFlags,
         authorizer: A,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
@@ -1034,7 +1042,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     }
 
     let mut events = vec![];
-    let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
+    let mut event_table_ids: Vec<(TableIdent, TableIdentUuid)> = vec![];
     let mut updates = vec![];
     for commit_table_request in &request.table_changes {
         if let Some(id) = &commit_table_request.identifier {
@@ -1096,8 +1104,8 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
 #[allow(clippy::too_many_lines)]
 async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     request: &CommitTransactionRequest,
-    warehouse_id: WarehouseId,
-    table_ids: Arc<HashMap<TableIdent, TableId>>,
+    warehouse_id: WarehouseIdent,
+    table_ids: Arc<HashMap<TableIdent, TableIdentUuid>>,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
 ) -> Result<Vec<CommitContext>> {
@@ -1265,12 +1273,12 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     table_ident: &TableIdent,
     list_flags: ListFlags,
     action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<TableId> {
+) -> Result<TableIdentUuid> {
     authorizer
         .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
@@ -1556,7 +1564,7 @@ pub(super) fn parse_location(location: &str, code: StatusCode) -> Result<Locatio
 pub(super) fn determine_tabular_location(
     namespace: &GetNamespaceResponse,
     request_table_location: Option<String>,
-    table_id: TabularId,
+    table_id: TabularIdentUuid,
     storage_profile: &StorageProfile,
 ) -> Result<Location> {
     let request_table_location = request_table_location
@@ -1591,7 +1599,10 @@ pub(super) fn determine_tabular_location(
     Ok(location)
 }
 
-fn require_table_id(table_ident: &TableIdent, table_id: Option<TableId>) -> Result<TableId> {
+fn require_table_id(
+    table_ident: &TableIdent,
+    table_id: Option<TableIdentUuid>,
+) -> Result<TableIdentUuid> {
     table_id.ok_or_else(|| {
         ErrorModel::not_found(
             format!(
@@ -1620,9 +1631,9 @@ fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
 }
 
 fn take_table_metadata<T>(
-    table_id: &TableId,
+    table_id: &TableIdentUuid,
     table_ident: &TableIdent,
-    metadatas: &mut HashMap<TableId, T>,
+    metadatas: &mut HashMap<TableIdentUuid, T>,
 ) -> Result<T> {
     metadatas
         .remove(table_id)
@@ -1736,7 +1747,7 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
 }
 
 pub(crate) fn create_table_request_into_table_metadata(
-    table_id: TableId,
+    table_id: TableIdentUuid,
     request: CreateTableRequest,
 ) -> Result<TableMetadata> {
     let CreateTableRequest {
@@ -1844,7 +1855,7 @@ pub(crate) mod test {
             State, UserId,
         },
         tests::random_request_metadata,
-        WarehouseId,
+        WarehouseIdent,
     };
 
     #[test]
@@ -3192,7 +3203,7 @@ pub(crate) mod test {
 
         ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
-            WarehouseId::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             true,
             ctx.clone(),
             random_request_metadata(),
@@ -3218,7 +3229,7 @@ pub(crate) mod test {
 
         ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
-            WarehouseId::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             false,
             ctx.clone(),
             random_request_metadata(),
@@ -3261,7 +3272,7 @@ pub(crate) mod test {
 
         ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
-            WarehouseId::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             true,
             ctx.clone(),
             random_request_metadata(),

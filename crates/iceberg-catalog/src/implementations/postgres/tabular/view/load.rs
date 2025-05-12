@@ -19,11 +19,11 @@ use crate::{
         dbutils::DBErrorHandler,
         tabular::view::{ViewFormatVersion, ViewRepresentationType},
     },
-    service::{storage::join_location, ViewId, ViewMetadataWithLocation},
+    service::{storage::join_location, ViewIdentUuid, ViewMetadataWithLocation},
 };
 
 pub(crate) async fn load_view(
-    view_id: ViewId,
+    view_id: ViewIdentUuid,
     include_deleted: bool,
     conn: &mut PgConnection,
 ) -> Result<ViewMetadataWithLocation> {

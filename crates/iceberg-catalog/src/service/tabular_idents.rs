@@ -9,47 +9,47 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::{TableId, ViewId};
+use super::{TableIdentUuid, ViewIdentUuid};
 
 #[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 #[schema(as=TabularIdentUuid)]
-pub enum TabularId {
+pub enum TabularIdentUuid {
     Table(Uuid),
     View(Uuid),
 }
 
-impl TabularId {
+impl TabularIdentUuid {
     #[must_use]
     pub fn typ_str(&self) -> &'static str {
         match self {
-            TabularId::Table(_) => "Table",
-            TabularId::View(_) => "View",
+            TabularIdentUuid::Table(_) => "Table",
+            TabularIdentUuid::View(_) => "View",
         }
     }
 }
 
-impl From<TableId> for TabularId {
-    fn from(ident: TableId) -> Self {
-        TabularId::Table(ident.0)
+impl From<TableIdentUuid> for TabularIdentUuid {
+    fn from(ident: TableIdentUuid) -> Self {
+        TabularIdentUuid::Table(ident.0)
     }
 }
 
-impl From<ViewId> for TabularId {
-    fn from(ident: ViewId) -> Self {
-        TabularId::View(ident.0)
+impl From<ViewIdentUuid> for TabularIdentUuid {
+    fn from(ident: ViewIdentUuid) -> Self {
+        TabularIdentUuid::View(ident.0)
     }
 }
 
-impl AsRef<Uuid> for TabularId {
+impl AsRef<Uuid> for TabularIdentUuid {
     fn as_ref(&self) -> &Uuid {
         match self {
-            TabularId::Table(id) | TabularId::View(id) => id,
+            TabularIdentUuid::Table(id) | TabularIdentUuid::View(id) => id,
         }
     }
 }
 
-impl Display for TabularId {
+impl Display for TabularIdentUuid {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &**self)
     }
@@ -129,12 +129,12 @@ impl TabularIdentBorrowed<'_> {
     }
 }
 
-impl Deref for TabularId {
+impl Deref for TabularIdentUuid {
     type Target = Uuid;
 
     fn deref(&self) -> &Self::Target {
         match self {
-            TabularId::Table(id) | TabularId::View(id) => id,
+            TabularIdentUuid::Table(id) | TabularIdentUuid::View(id) => id,
         }
     }
 }

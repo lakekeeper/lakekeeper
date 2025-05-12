@@ -61,9 +61,10 @@ pub mod v1 {
         request_metadata::RequestMetadata,
         service::{
             authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse,
-            NamespaceId, RoleId, SecretStore, State, TableId, TabularId, ViewId,
+            NamespaceIdentUuid, RoleId, SecretStore, State, TableIdentUuid, TabularIdentUuid,
+            ViewIdentUuid,
         },
-        ProjectId, WarehouseId,
+        ProjectId, WarehouseIdent,
     };
 
     pub(crate) fn default_page_size() -> i64 {
@@ -1203,7 +1204,7 @@ pub mod v1 {
         Json(request): Json<UndropTabularsRequest>,
     ) -> Result<StatusCode> {
         ApiServer::<C, A, S>::undrop_tabulars(
-            WarehouseId::from(warehouse_id),
+            WarehouseIdent::from(warehouse_id),
             metadata,
             request,
             api_context,
@@ -1232,7 +1233,7 @@ pub mod v1 {
         Json(request): Json<UndropTabularsRequest>,
     ) -> Result<StatusCode> {
         ApiServer::<C, A, S>::undrop_tabulars(
-            WarehouseId::from(warehouse_id),
+            WarehouseIdent::from(warehouse_id),
             metadata,
             request,
             api_context,
@@ -1274,7 +1275,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::get_table_protection(
-            TableId::from(table_id),
+            TableIdentUuid::from(table_id),
             warehouse_id.into(),
             api_context,
             metadata,
@@ -1302,7 +1303,7 @@ pub mod v1 {
         Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::set_table_protection(
-            TableId::from(table_id),
+            TableIdentUuid::from(table_id),
             warehouse_id.into(),
             protected,
             api_context,
@@ -1330,7 +1331,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::get_view_protection(
-            ViewId::from(view_id),
+            ViewIdentUuid::from(view_id),
             warehouse_id.into(),
             api_context,
             metadata,
@@ -1358,7 +1359,7 @@ pub mod v1 {
         Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::set_view_protection(
-            ViewId::from(view_id),
+            ViewIdentUuid::from(view_id),
             warehouse_id.into(),
             protected,
             api_context,
@@ -1386,7 +1387,7 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::get_namespace_protection(
-            NamespaceId::from(namespace_id),
+            NamespaceIdentUuid::from(namespace_id),
             warehouse_id.into(),
             api_context,
             metadata,
@@ -1414,7 +1415,7 @@ pub mod v1 {
         Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
     ) -> Result<ProtectionResponse> {
         ApiServer::<C, A, S>::set_namespace_protection(
-            NamespaceId::from(namespace_id),
+            NamespaceIdentUuid::from(namespace_id),
             warehouse_id.into(),
             protected,
             api_context,
@@ -1473,7 +1474,7 @@ pub mod v1 {
         pub typ: TabularType,
         /// Warehouse ID where the tabular is stored
         #[schema(value_type = uuid::Uuid)]
-        pub warehouse_id: WarehouseId,
+        pub warehouse_id: WarehouseIdent,
         /// Date when the tabular was created
         pub created_at: chrono::DateTime<chrono::Utc>,
         /// Date when the tabular was deleted
@@ -1482,11 +1483,11 @@ pub mod v1 {
         pub expiration_date: chrono::DateTime<chrono::Utc>,
     }
 
-    impl From<TabularId> for TabularType {
-        fn from(ident: TabularId) -> Self {
+    impl From<TabularIdentUuid> for TabularType {
+        fn from(ident: TabularIdentUuid) -> Self {
             match ident {
-                TabularId::Table(_) => TabularType::Table,
-                TabularId::View(_) => TabularType::View,
+                TabularIdentUuid::Table(_) => TabularType::Table,
+                TabularIdentUuid::View(_) => TabularType::View,
             }
         }
     }

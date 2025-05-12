@@ -17,7 +17,9 @@ use http::StatusCode;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::{api::endpoints::Endpoint, request_metadata::RequestMetadata, ProjectId, WarehouseId};
+use crate::{
+    api::endpoints::Endpoint, request_metadata::RequestMetadata, ProjectId, WarehouseIdent,
+};
 
 /// Middleware for tracking endpoint statistics.
 ///
@@ -107,7 +109,7 @@ impl ProjectStatistics {
 pub struct EndpointIdentifier {
     pub uri: Endpoint,
     pub status_code: StatusCode,
-    pub warehouse: Option<WarehouseId>,
+    pub warehouse: Option<WarehouseIdent>,
     // probably only relevant for config calls
     pub warehouse_name: Option<String>,
 }
@@ -293,10 +295,10 @@ impl EndpointStatisticsTracker {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn maybe_get_warehouse_ident(path_params: &HashMap<String, String>) -> Option<WarehouseId> {
+    fn maybe_get_warehouse_ident(path_params: &HashMap<String, String>) -> Option<WarehouseIdent> {
         path_params
             .get("warehouse_id")
-            .map(|s| WarehouseId::from_str(s.as_str()))
+            .map(|s| WarehouseIdent::from_str(s.as_str()))
             .transpose()
             .inspect_err(|e| tracing::debug!("Could not parse warehouse: {}", e.error))
             .ok()
@@ -308,7 +310,7 @@ impl EndpointStatisticsTracker {
                 .inspect_err(|e| tracing::debug!("Could not parse prefix: {}", e))
                 .ok()
                 .flatten()
-                .map(WarehouseId::from))
+                .map(WarehouseIdent::from))
     }
 }
 

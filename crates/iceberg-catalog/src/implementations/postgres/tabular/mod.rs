@@ -24,10 +24,11 @@ use crate::{
     service::{
         storage::{join_location, split_location},
         task_queue::TaskId,
-        DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
-        TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
+        DeletionDetails, ErrorModel, NamespaceIdentUuid, Result, TableIdent, TableIdentUuid,
+        TabularIdentBorrowed, TabularIdentOwned, TabularIdentUuid, TabularInfo,
+        UndropTabularResponse,
     },
-    WarehouseId,
+    WarehouseIdent,
 };
 
 const MAX_PARAMETERS: usize = 30000;
@@ -40,7 +41,7 @@ pub(crate) enum TabularType {
 }
 
 pub(crate) async fn set_tabular_protected(
-    tabular_id: TabularId,
+    tabular_id: TabularIdentUuid,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
@@ -84,7 +85,7 @@ pub(crate) async fn set_tabular_protected(
 }
 
 pub(crate) async fn get_tabular_protected(
-    tabular_id: TabularId,
+    tabular_id: TabularIdentUuid,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
     tracing::debug!(
@@ -126,11 +127,11 @@ pub(crate) async fn get_tabular_protected(
 }
 
 pub(crate) async fn tabular_ident_to_id<'a, 'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     table: &TabularIdentBorrowed<'a>,
     list_flags: crate::service::ListFlags,
     transaction: E,
-) -> Result<Option<(TabularId, String)>>
+) -> Result<Option<(TabularIdentUuid, String)>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -162,8 +163,8 @@ where
     .map(|r| {
         let location = join_location(&r.fs_protocol, &r.fs_location);
         Some(match r.typ {
-            TabularType::Table => (TabularId::Table(r.tabular_id), location),
-            TabularType::View => (TabularId::View(r.tabular_id), location),
+            TabularType::Table => (TabularIdentUuid::Table(r.tabular_id), location),
+            TabularType::View => (TabularIdentUuid::View(r.tabular_id), location),
         })
     });
 
@@ -190,11 +191,11 @@ struct TabularRow {
 }
 
 pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     tables: HashSet<TabularIdentBorrowed<'_>>,
     list_flags: crate::service::ListFlags,
     catalog_state: E,
-) -> Result<HashMap<TabularIdentOwned, Option<TabularId>>>
+) -> Result<HashMap<TabularIdentOwned, Option<TabularIdentUuid>>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -272,13 +273,13 @@ where
             TabularType::Table => {
                 table_map.insert(
                     TabularIdentOwned::Table(TableIdent { namespace, name }),
-                    Some(TabularId::Table(tabular_id)),
+                    Some(TabularIdentUuid::Table(tabular_id)),
                 );
             }
             TabularType::View => {
                 table_map.insert(
                     TabularIdentOwned::View(TableIdent { namespace, name }),
-                    Some(TabularId::View(tabular_id)),
+                    Some(TabularIdentUuid::View(tabular_id)),
                 );
             }
         }
@@ -425,14 +426,14 @@ pub(crate) async fn create_tabular(
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) async fn list_tabulars<'e, 'c, E>(
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     namespace: Option<&NamespaceIdent>,
-    namespace_id: Option<NamespaceId>,
+    namespace_id: Option<NamespaceIdentUuid>,
     list_flags: crate::service::ListFlags,
     catalog_state: E,
     typ: Option<TabularType>,
     pagination_query: PaginationQuery,
-) -> Result<PaginatedMapping<TabularId, TabularInfo>>
+) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -527,7 +528,7 @@ where
         match table.typ {
             TabularType::Table => {
                 tabulars.insert(
-                    TabularId::Table(table.tabular_id),
+                    TabularIdentUuid::Table(table.tabular_id),
                     TabularInfo {
                         table_ident: TabularIdentOwned::Table(TableIdent { namespace, name }),
                         deletion_details,
@@ -542,7 +543,7 @@ where
             }
             TabularType::View => {
                 tabulars.insert(
-                    TabularId::View(table.tabular_id),
+                    TabularIdentUuid::View(table.tabular_id),
                     TabularInfo {
                         table_ident: TabularIdentOwned::View(TableIdent { namespace, name }),
                         deletion_details,
@@ -563,8 +564,8 @@ where
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
 pub(crate) async fn rename_tabular(
-    warehouse_id: WarehouseId,
-    source_id: TabularId,
+    warehouse_id: WarehouseIdent,
+    source_id: TabularIdentUuid,
     source: &TableIdent,
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -681,7 +682,7 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
 
 pub(crate) async fn clear_tabular_deleted_at(
     tabular_ids: &[Uuid],
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Vec<UndropTabularResponse>> {
     let undrop_tabular_informations = sqlx::query!(
@@ -729,7 +730,7 @@ pub(crate) async fn clear_tabular_deleted_at(
     let undrop_tabular_informations = undrop_tabular_informations
         .into_iter()
         .map(|undrop_tabular_information| UndropTabularResponse {
-            table_ident: TableId::from(undrop_tabular_information.tabular_id),
+            table_ident: TableIdentUuid::from(undrop_tabular_information.tabular_id),
             task_id: TaskId::from(undrop_tabular_information.task_id),
             name: undrop_tabular_information.name,
             namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
@@ -741,7 +742,7 @@ pub(crate) async fn clear_tabular_deleted_at(
 }
 
 pub(crate) async fn mark_tabular_as_deleted(
-    tabular_id: TabularId,
+    tabular_id: TabularIdentUuid,
     force: bool,
     delete_date: Option<chrono::DateTime<Utc>>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -796,7 +797,7 @@ pub(crate) async fn mark_tabular_as_deleted(
 }
 
 pub(crate) async fn drop_tabular(
-    tabular_id: TabularId,
+    tabular_id: TabularIdentUuid,
     force: bool,
     required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -901,20 +902,20 @@ impl<'a, 'b> From<&'b TabularIdentBorrowed<'a>> for TabularType {
     }
 }
 
-impl<'a> From<&'a TabularId> for TabularType {
-    fn from(ident: &'a TabularId) -> Self {
+impl<'a> From<&'a TabularIdentUuid> for TabularType {
+    fn from(ident: &'a TabularIdentUuid) -> Self {
         match ident {
-            TabularId::Table(_) => TabularType::Table,
-            TabularId::View(_) => TabularType::View,
+            TabularIdentUuid::Table(_) => TabularType::Table,
+            TabularIdentUuid::View(_) => TabularType::View,
         }
     }
 }
 
-impl From<TabularId> for TabularType {
-    fn from(ident: TabularId) -> Self {
+impl From<TabularIdentUuid> for TabularType {
+    fn from(ident: TabularIdentUuid) -> Self {
         match ident {
-            TabularId::Table(_) => TabularType::Table,
-            TabularId::View(_) => TabularType::View,
+            TabularIdentUuid::Table(_) => TabularType::Table,
+            TabularIdentUuid::View(_) => TabularType::View,
         }
     }
 }

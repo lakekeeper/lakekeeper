@@ -10,9 +10,9 @@ use crate::{
             openfga::{OpenFGAError, OpenFGAResult},
             FgaType,
         },
-        NamespaceId, RoleId, TableId, ViewId,
+        NamespaceIdentUuid, RoleId, TableIdentUuid, ViewIdentUuid,
     },
-    ProjectId, WarehouseId,
+    ProjectId, WarehouseIdent,
 };
 
 pub(super) trait ParseOpenFgaEntity: Sized {
@@ -197,7 +197,7 @@ impl ParseOpenFgaEntity for ProjectId {
     }
 }
 
-impl OpenFgaEntity for WarehouseId {
+impl OpenFgaEntity for WarehouseIdent {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
     }
@@ -207,7 +207,7 @@ impl OpenFgaEntity for WarehouseId {
     }
 }
 
-impl OpenFgaEntity for TableId {
+impl OpenFgaEntity for TableIdentUuid {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
     }
@@ -217,7 +217,7 @@ impl OpenFgaEntity for TableId {
     }
 }
 
-impl OpenFgaEntity for NamespaceId {
+impl OpenFgaEntity for NamespaceIdentUuid {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
     }
@@ -227,7 +227,7 @@ impl OpenFgaEntity for NamespaceId {
     }
 }
 
-impl OpenFgaEntity for ViewId {
+impl OpenFgaEntity for ViewIdentUuid {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
     }

@@ -24,9 +24,10 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{implementations::openfga::entities::OpenFgaEntity, Authorizer},
-        Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId, Transaction, ViewId,
+        Catalog, ListFlags, NamespaceIdentUuid, Result, SecretStore, State, TableIdentUuid,
+        Transaction, ViewIdentUuid,
     },
-    ProjectId, WarehouseId,
+    ProjectId, WarehouseIdent,
 };
 
 /// Check if a specific action is allowed on the given object
@@ -133,7 +134,7 @@ async fn check_warehouse(
     authorizer: &OpenFGAAuthorizer,
     for_principal: Option<&UserOrRole>,
     action: &APIWarehouseAction,
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
 ) -> Result<(String, String)> {
     authorizer
         .require_action(
@@ -249,7 +250,7 @@ async fn check_table<C: Catalog, S: SecretStore>(
     });
     Ok(match table {
         TabularIdentOrUuid::Id { table_id } => {
-            let table_id = TableId::from(*table_id);
+            let table_id = TableIdentUuid::from(*table_id);
             authorizer
                 .require_table_action(metadata, Ok(Some(table_id)), action)
                 .await?;
@@ -297,7 +298,7 @@ async fn check_view<C: Catalog, S: SecretStore>(
     });
     Ok(match view {
         TabularIdentOrUuid::Id { table_id } => {
-            let view_id = ViewId::from(*table_id);
+            let view_id = ViewIdentUuid::from(*table_id);
             authorizer
                 .require_view_action(metadata, Ok(Some(view_id)), action)
                 .await?;
@@ -345,7 +346,7 @@ pub(super) enum CheckOperation {
     Warehouse {
         action: WarehouseAction,
         #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseId,
+        warehouse_id: WarehouseIdent,
     },
     Namespace {
         action: NamespaceAction,
@@ -371,14 +372,14 @@ pub(super) enum NamespaceIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     Id {
         #[schema(value_type = uuid::Uuid)]
-        namespace_id: NamespaceId,
+        namespace_id: NamespaceIdentUuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
         #[schema(value_type = Vec<String>)]
         namespace: NamespaceIdent,
         #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseId,
+        warehouse_id: WarehouseIdent,
     },
 }
 
@@ -399,7 +400,7 @@ pub(super) enum TabularIdentOrUuid {
         #[serde(alias = "view")]
         table: String,
         #[schema(value_type = uuid::Uuid)]
-        warehouse_id: WarehouseId,
+        warehouse_id: WarehouseIdent,
     },
 }
 
@@ -434,7 +435,7 @@ mod tests {
         let action = CheckOperation::Namespace {
             action: NamespaceAction::CreateTable,
             namespace: NamespaceIdentOrUuid::Id {
-                namespace_id: NamespaceId::from_str("00000000-0000-0000-0000-000000000000")
+                namespace_id: NamespaceIdentUuid::from_str("00000000-0000-0000-0000-000000000000")
                     .unwrap(),
             },
         };
@@ -457,7 +458,7 @@ mod tests {
             table: TabularIdentOrUuid::Name {
                 namespace: NamespaceIdent::from_vec(vec!["trino_namespace".to_string()]).unwrap(),
                 table: "trino_table".to_string(),
-                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                warehouse_id: WarehouseIdent::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
                     .unwrap(),
             },
         };
@@ -481,7 +482,7 @@ mod tests {
             action: NamespaceAction::GetMetadata,
             namespace: NamespaceIdentOrUuid::Name {
                 namespace: NamespaceIdent::from_vec(vec!["trino_namespace".to_string()]).unwrap(),
-                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                warehouse_id: WarehouseIdent::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
                     .unwrap(),
             },
         };

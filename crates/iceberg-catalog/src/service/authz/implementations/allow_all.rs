@@ -13,8 +13,8 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId,
-        WarehouseId,
+        Actor, Catalog, NamespaceIdentUuid, ProjectId, RoleId, SecretStore, State, TableIdentUuid,
+        ViewIdentUuid, WarehouseIdent,
     },
 };
 
@@ -103,7 +103,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_warehouse_action(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
+        _warehouse_id: WarehouseIdent,
         _action: CatalogWarehouseAction,
     ) -> Result<bool> {
         Ok(true)
@@ -112,7 +112,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_namespace_action<A>(
         &self,
         _metadata: &RequestMetadata,
-        _namespace_id: NamespaceId,
+        _namespace_id: NamespaceIdentUuid,
         _action: A,
     ) -> Result<bool>
     where
@@ -124,7 +124,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_table_action<A>(
         &self,
         _metadata: &RequestMetadata,
-        _table_id: TableId,
+        _table_id: TableIdentUuid,
         _action: A,
     ) -> Result<bool>
     where
@@ -136,7 +136,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_view_action<A>(
         &self,
         _metadata: &RequestMetadata,
-        _view_id: ViewId,
+        _view_id: ViewIdentUuid,
         _action: A,
     ) -> Result<bool>
     where
@@ -181,7 +181,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_warehouse(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
+        _warehouse_id: WarehouseIdent,
         _parent_project_id: &ProjectId,
     ) -> Result<()> {
         Ok(())
@@ -190,7 +190,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn delete_warehouse(
         &self,
         _metadata: &RequestMetadata,
-        _warehouse_id: WarehouseId,
+        _warehouse_id: WarehouseIdent,
     ) -> Result<()> {
         Ok(())
     }
@@ -198,7 +198,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_namespace(
         &self,
         _metadata: &RequestMetadata,
-        _namespace_id: NamespaceId,
+        _namespace_id: NamespaceIdentUuid,
         _parent: NamespaceParent,
     ) -> Result<()> {
         Ok(())
@@ -207,7 +207,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn delete_namespace(
         &self,
         _metadata: &RequestMetadata,
-        _namespace_id: NamespaceId,
+        _namespace_id: NamespaceIdentUuid,
     ) -> Result<()> {
         Ok(())
     }
@@ -215,26 +215,26 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_table(
         &self,
         _metadata: &RequestMetadata,
-        _table_id: TableId,
-        _parent: NamespaceId,
+        _table_id: TableIdentUuid,
+        _parent: NamespaceIdentUuid,
     ) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_table(&self, _table_id: TableId) -> Result<()> {
+    async fn delete_table(&self, _table_id: TableIdentUuid) -> Result<()> {
         Ok(())
     }
 
     async fn create_view(
         &self,
         _metadata: &RequestMetadata,
-        _view_id: ViewId,
-        _parent: NamespaceId,
+        _view_id: ViewIdentUuid,
+        _parent: NamespaceIdentUuid,
     ) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_view(&self, _view_id: ViewId) -> Result<()> {
+    async fn delete_view(&self, _view_id: ViewIdentUuid) -> Result<()> {
         Ok(())
     }
 }

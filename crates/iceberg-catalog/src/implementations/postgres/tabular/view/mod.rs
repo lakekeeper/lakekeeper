@@ -20,22 +20,23 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler as _,
         tabular::{
-            self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularId,
-            TabularIdentBorrowed, TabularType,
+            self, create_tabular, drop_tabular, list_tabulars, CreateTabular, TabularIdentBorrowed,
+            TabularIdentUuid, TabularType,
         },
     },
     service::{
-        ErrorModel, ListFlags, NamespaceId, Result, TableIdent, TableInfo, TabularInfo, ViewId,
+        ErrorModel, ListFlags, NamespaceIdentUuid, Result, TableIdent, TableInfo, TabularInfo,
+        ViewIdentUuid,
     },
-    WarehouseId,
+    WarehouseIdent,
 };
 
 pub(crate) async fn view_ident_to_id<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     table: &TableIdent,
     include_deleted: bool,
     catalog_state: E,
-) -> Result<Option<ViewId>>
+) -> Result<Option<ViewIdentUuid>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -51,19 +52,19 @@ where
     )
     .await?
     .map(|(id, _)| match id {
-        TabularId::Table(_) => Err(ErrorModel::builder()
+        TabularIdentUuid::Table(_) => Err(ErrorModel::builder()
             .code(StatusCode::INTERNAL_SERVER_ERROR.into())
             .message("DB returned a table when filtering for views.".to_string())
             .r#type("InternalDatabaseError".to_string())
             .build()
             .into()),
-        TabularId::View(view) => Ok(view.into()),
+        TabularIdentUuid::View(view) => Ok(view.into()),
     })
     .transpose()
 }
 
 pub(crate) async fn create_view(
-    namespace_id: NamespaceId,
+    namespace_id: NamespaceIdentUuid,
     metadata_location: &Location,
     transaction: &mut Transaction<'_, Postgres>,
     name: &str,
@@ -162,13 +163,13 @@ pub(crate) async fn create_view(
 }
 
 pub(crate) async fn drop_view(
-    view_id: ViewId,
+    view_id: ViewIdentUuid,
     force: bool,
     required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     drop_tabular(
-        TabularId::View(*view_id),
+        TabularIdentUuid::View(*view_id),
         force,
         required_metadata_location,
         transaction,
@@ -178,15 +179,15 @@ pub(crate) async fn drop_view(
 
 /// Rename a table. Tables may be moved across namespaces.
 pub(crate) async fn rename_view(
-    warehouse_id: WarehouseId,
-    source_id: ViewId,
+    warehouse_id: WarehouseIdent,
+    source_id: ViewIdentUuid,
     source: &TableIdent,
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     tabular::rename_tabular(
         warehouse_id,
-        TabularId::View(*source_id),
+        TabularIdentUuid::View(*source_id),
         source,
         destination,
         transaction,
@@ -427,12 +428,12 @@ pub(crate) async fn set_current_view_metadata_version(
 }
 
 pub(crate) async fn list_views<'e, 'c: 'e, E>(
-    warehouse_id: WarehouseId,
+    warehouse_id: WarehouseIdent,
     namespace: &NamespaceIdent,
     include_deleted: bool,
     transaction: E,
     paginate_query: PaginationQuery,
-) -> Result<PaginatedMapping<ViewId, TableInfo>>
+) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
@@ -450,15 +451,15 @@ where
         paginate_query,
     )
     .await?;
-    let views = page.map::<ViewId, TableInfo>(
+    let views = page.map::<ViewIdentUuid, TableInfo>(
         |k| match k {
-            TabularId::Table(_) => Err(ErrorModel::internal(
+            TabularIdentUuid::Table(_) => Err(ErrorModel::internal(
                 "DB returned a table when filtering for views.",
                 "InternalDatabaseError",
                 None,
             )
             .into()),
-            TabularId::View(t) => Ok(t.into()),
+            TabularIdentUuid::View(t) => Ok(t.into()),
         },
         TabularInfo::into_view_info,
     )?;
@@ -540,8 +541,8 @@ pub(crate) mod tests {
             warehouse::test::initialize_warehouse,
             CatalogState,
         },
-        service::{TabularId, ViewId},
-        WarehouseId,
+        service::{TabularIdentUuid, ViewIdentUuid},
+        WarehouseIdent,
     };
 
     fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
@@ -651,7 +652,7 @@ pub(crate) mod tests {
                 &namespace,
             )
             .await;
-        let view_uuid = ViewId::from(Uuid::now_v7());
+        let view_uuid = ViewIdentUuid::from(Uuid::now_v7());
         let location = "s3://my_bucket/my_table/metadata/bar"
             .parse::<Location>()
             .unwrap();
@@ -798,9 +799,14 @@ pub(crate) mod tests {
     async fn soft_drop_view(pool: sqlx::PgPool) {
         let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        mark_tabular_as_deleted(TabularId::View(created_meta.uuid()), false, None, &mut tx)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            TabularIdentUuid::View(created_meta.uuid()),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.uuid().into(),
@@ -878,7 +884,7 @@ pub(crate) mod tests {
     ) -> (
         CatalogState,
         ViewMetadata,
-        WarehouseId,
+        WarehouseIdent,
         NamespaceIdent,
         String,
         Location,

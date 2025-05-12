@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::{
     implementations::postgres::{dbutils::DBErrorHandler, ReadWrite},
     service::task_queue::{Task, TaskFilter, TaskQueueConfig, TaskStatus},
-    WarehouseId,
+    WarehouseIdent,
 };
 
 #[derive(Debug, Clone)]
@@ -61,7 +61,7 @@ impl PgQueue {
 #[derive(Debug)]
 pub struct TaskArg {
     parent: Option<Uuid>,
-    warehouse_ident: WarehouseId,
+    warehouse_ident: WarehouseIdent,
     suspend_until: Option<DateTime<Utc>>,
 }
 
@@ -72,7 +72,7 @@ pub struct InsertResult {
 }
 
 pub trait InputTrait {
-    fn warehouse_ident(&self) -> WarehouseId;
+    fn warehouse_ident(&self) -> WarehouseIdent;
     fn suspend_until(&self) -> Option<chrono::DateTime<Utc>> {
         None
     }
@@ -373,7 +373,7 @@ mod test {
     use super::*;
     use crate::{
         api::management::v1::warehouse::TabularDeleteProfile, service::authz::AllowAllAuthorizer,
-        WarehouseId,
+        WarehouseIdent,
     };
 
     async fn queue_task(
@@ -381,7 +381,7 @@ mod test {
         queue_name: &str,
         parent_task_id: Option<Uuid>,
         idempotency_key: Uuid,
-        warehouse_ident: WarehouseId,
+        warehouse_ident: WarehouseIdent,
         suspend_until: Option<DateTime<Utc>>,
     ) -> Result<Option<Uuid>, IcebergErrorResponse> {
         Ok(queue_task_batch(
@@ -434,7 +434,7 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    pub(crate) async fn setup(pool: PgPool, config: TaskQueueConfig) -> (PgQueue, WarehouseId) {
+    pub(crate) async fn setup(pool: PgPool, config: TaskQueueConfig) -> (PgQueue, WarehouseIdent) {
         let prof = crate::tests::test_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),

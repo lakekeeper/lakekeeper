@@ -29,7 +29,7 @@ use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
 pub(crate) use tabular_idents::TabularIdentBorrowed;
-pub use tabular_idents::{TabularId, TabularIdentOwned};
+pub use tabular_idents::{TabularIdentOwned, TabularIdentUuid};
 
 use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
@@ -58,9 +58,9 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
-pub struct ViewId(uuid::Uuid);
+pub struct ViewIdentUuid(uuid::Uuid);
 
-impl From<uuid::Uuid> for ViewId {
+impl From<uuid::Uuid> for ViewIdentUuid {
     fn from(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
@@ -70,19 +70,19 @@ impl From<uuid::Uuid> for ViewId {
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
-pub struct NamespaceId(uuid::Uuid);
+pub struct NamespaceIdentUuid(uuid::Uuid);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
-pub struct TableId(uuid::Uuid);
+pub struct TableIdentUuid(uuid::Uuid);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
 #[serde(transparent)]
-pub struct WarehouseId(pub(crate) uuid::Uuid);
+pub struct WarehouseIdent(pub(crate) uuid::Uuid);
 
 /// Status of a warehouse
 #[derive(
@@ -249,7 +249,7 @@ impl From<RoleId> for uuid::Uuid {
     }
 }
 
-impl Deref for ViewId {
+impl Deref for ViewIdentUuid {
     type Target = uuid::Uuid;
 
     fn deref(&self) -> &Self::Target {
@@ -257,23 +257,23 @@ impl Deref for ViewId {
     }
 }
 
-impl Default for NamespaceId {
+impl Default for NamespaceIdentUuid {
     fn default() -> Self {
         Self(uuid::Uuid::now_v7())
     }
 }
 
-impl std::fmt::Display for ViewId {
+impl std::fmt::Display for ViewIdentUuid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl FromStr for ViewId {
+impl FromStr for ViewIdentUuid {
     type Err = IcebergErrorResponse;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(ViewId(uuid::Uuid::from_str(s).map_err(|e| {
+        Ok(ViewIdentUuid(uuid::Uuid::from_str(s).map_err(|e| {
             ErrorModel::builder()
                 .code(StatusCode::BAD_REQUEST.into())
                 .message("Provided view id is not a valid UUID".to_string())
@@ -284,7 +284,7 @@ impl FromStr for ViewId {
     }
 }
 
-impl Deref for NamespaceId {
+impl Deref for NamespaceIdentUuid {
     type Target = uuid::Uuid;
 
     fn deref(&self) -> &Self::Target {
@@ -292,52 +292,54 @@ impl Deref for NamespaceId {
     }
 }
 
-impl std::fmt::Display for NamespaceId {
+impl std::fmt::Display for NamespaceIdentUuid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl FromStr for NamespaceId {
+impl FromStr for NamespaceIdentUuid {
     type Err = IcebergErrorResponse;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(NamespaceId(uuid::Uuid::from_str(s).map_err(|e| {
-            ErrorModel::builder()
-                .code(StatusCode::BAD_REQUEST.into())
-                .message("Provided namespace id is not a valid UUID".to_string())
-                .r#type("NamespaceIDIsNotUUID".to_string())
-                .source(Some(Box::new(e)))
-                .build()
-        })?))
+        Ok(NamespaceIdentUuid(uuid::Uuid::from_str(s).map_err(
+            |e| {
+                ErrorModel::builder()
+                    .code(StatusCode::BAD_REQUEST.into())
+                    .message("Provided namespace id is not a valid UUID".to_string())
+                    .r#type("NamespaceIDIsNotUUID".to_string())
+                    .source(Some(Box::new(e)))
+                    .build()
+            },
+        )?))
     }
 }
 
-impl From<uuid::Uuid> for NamespaceId {
+impl From<uuid::Uuid> for NamespaceIdentUuid {
     fn from(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
 }
 
-impl From<&uuid::Uuid> for NamespaceId {
+impl From<&uuid::Uuid> for NamespaceIdentUuid {
     fn from(uuid: &uuid::Uuid) -> Self {
         Self(*uuid)
     }
 }
 
-impl Default for TableId {
+impl Default for TableIdentUuid {
     fn default() -> Self {
         Self(uuid::Uuid::now_v7())
     }
 }
 
-impl std::fmt::Display for TableId {
+impl std::fmt::Display for TableIdentUuid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl Deref for TableId {
+impl Deref for TableIdentUuid {
     type Target = uuid::Uuid;
 
     fn deref(&self) -> &Self::Target {
@@ -345,17 +347,17 @@ impl Deref for TableId {
     }
 }
 
-impl From<uuid::Uuid> for TableId {
+impl From<uuid::Uuid> for TableIdentUuid {
     fn from(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
 }
 
-impl FromStr for TableId {
+impl FromStr for TableIdentUuid {
     type Err = IcebergErrorResponse;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(TableId(uuid::Uuid::from_str(s).map_err(|e| {
+        Ok(TableIdentUuid(uuid::Uuid::from_str(s).map_err(|e| {
             ErrorModel::builder()
                 .code(StatusCode::BAD_REQUEST.into())
                 .message("Provided table id is not a valid UUID".to_string())
@@ -366,19 +368,19 @@ impl FromStr for TableId {
     }
 }
 
-impl From<TableId> for uuid::Uuid {
-    fn from(ident: TableId) -> Self {
+impl From<TableIdentUuid> for uuid::Uuid {
+    fn from(ident: TableIdentUuid) -> Self {
         ident.0
     }
 }
 
-impl TryFrom<TabularId> for TableId {
+impl TryFrom<TabularIdentUuid> for TableIdentUuid {
     type Error = IcebergErrorResponse;
 
-    fn try_from(value: TabularId) -> Result<Self, Self::Error> {
+    fn try_from(value: TabularIdentUuid) -> Result<Self, Self::Error> {
         match value {
-            TabularId::Table(value) => Ok(value.into()),
-            TabularId::View(_) => Err(ErrorModel::internal(
+            TabularIdentUuid::Table(value) => Ok(value.into()),
+            TabularIdentUuid::View(_) => Err(ErrorModel::internal(
                 "Provided identifier is not a table id",
                 "IdentifierIsNotTableID",
                 None,
@@ -403,7 +405,7 @@ impl FromStr for ProjectId {
     }
 }
 
-impl WarehouseId {
+impl WarehouseIdent {
     #[must_use]
     pub fn to_uuid(&self) -> uuid::Uuid {
         **self
@@ -415,7 +417,7 @@ impl WarehouseId {
     }
 }
 
-impl Deref for WarehouseId {
+impl Deref for WarehouseIdent {
     type Target = uuid::Uuid;
 
     fn deref(&self) -> &Self::Target {
@@ -423,23 +425,23 @@ impl Deref for WarehouseId {
     }
 }
 
-impl From<uuid::Uuid> for WarehouseId {
+impl From<uuid::Uuid> for WarehouseIdent {
     fn from(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
 }
 
-impl std::fmt::Display for WarehouseId {
+impl std::fmt::Display for WarehouseIdent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl FromStr for WarehouseId {
+impl FromStr for WarehouseIdent {
     type Err = IcebergErrorResponse;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(WarehouseId(uuid::Uuid::from_str(s).map_err(|e| {
+        Ok(WarehouseIdent(uuid::Uuid::from_str(s).map_err(|e| {
             ErrorModel::builder()
                 .code(StatusCode::BAD_REQUEST.into())
                 .message("Provided warehouse id is not a valid UUID".to_string())
@@ -456,7 +458,7 @@ impl From<uuid::Uuid> for ProjectId {
     }
 }
 
-impl TryFrom<Prefix> for WarehouseId {
+impl TryFrom<Prefix> for WarehouseIdent {
     type Error = IcebergErrorResponse;
 
     fn try_from(value: Prefix) -> Result<Self, Self::Error> {
@@ -471,12 +473,12 @@ impl TryFrom<Prefix> for WarehouseId {
                 .source(Some(Box::new(e)))
                 .build()
         })?;
-        Ok(WarehouseId(prefix))
+        Ok(WarehouseIdent(prefix))
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct TabularDetails {
-    pub ident: TableId,
+    pub ident: TableIdentUuid,
     pub location: String,
 }

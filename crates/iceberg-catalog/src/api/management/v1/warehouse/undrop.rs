@@ -4,7 +4,7 @@ use crate::{
     api,
     api::management::v1::warehouse::UndropTabularsRequest,
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, TabularId},
+    service::{authz::Authorizer, TabularIdentUuid},
 };
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer>(
@@ -29,20 +29,20 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer>(
 async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     request_metadata: &RequestMetadata,
     authorizer: &A,
-    tabs: &[TabularId],
+    tabs: &[TabularIdentUuid],
 ) -> api::Result<bool> {
     let mut futs = vec![];
 
     for t in tabs {
         match t {
-            TabularId::View(id) => {
+            TabularIdentUuid::View(id) => {
                 futs.push(authorizer.is_allowed_view_action(
                     request_metadata,
                     (*id).into(),
                     crate::service::authz::CatalogViewAction::CanUndrop,
                 ));
             }
-            TabularId::Table(id) => {
+            TabularIdentUuid::Table(id) => {
                 futs.push(authorizer.is_allowed_table_action(
                     request_metadata,
                     (*id).into(),

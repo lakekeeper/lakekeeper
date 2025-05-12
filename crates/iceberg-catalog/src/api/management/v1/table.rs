@@ -3,9 +3,9 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         authz::{Authorizer, CatalogTableAction},
-        Catalog, SecretStore, State, TableId, TabularId, Transaction,
+        Catalog, SecretStore, State, TableIdentUuid, TabularIdentUuid, Transaction,
     },
-    WarehouseId,
+    WarehouseIdent,
 };
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> TableManagementService<C, A, S>
@@ -19,8 +19,8 @@ where
     Self: Send + Sync + 'static,
 {
     async fn set_table_protection(
-        table_id: TableId,
-        _warehouse_id: WarehouseId,
+        table_id: TableIdentUuid,
+        _warehouse_id: WarehouseIdent,
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -37,16 +37,19 @@ where
             )
             .await?;
 
-        let status =
-            C::set_tabular_protected(TabularId::Table(*table_id), protected, t.transaction())
-                .await?;
+        let status = C::set_tabular_protected(
+            TabularIdentUuid::Table(*table_id),
+            protected,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
         Ok(status)
     }
 
     async fn get_table_protection(
-        table_id: TableId,
-        _warehouse_id: WarehouseId,
+        table_id: TableIdentUuid,
+        _warehouse_id: WarehouseIdent,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {

@@ -30,7 +30,7 @@ use crate::{
         error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
         StoragePermissions, TableConfig,
     },
-    WarehouseId, CONFIG,
+    WarehouseIdent, CONFIG,
 };
 
 mod sts;
@@ -196,7 +196,7 @@ impl GcsProfile {
 
     #[must_use]
     #[allow(clippy::unused_self)]
-    pub fn generate_catalog_config(&self, _: WarehouseId) -> CatalogConfig {
+    pub fn generate_catalog_config(&self, _: WarehouseIdent) -> CatalogConfig {
         CatalogConfig {
             defaults: HashMap::with_capacity(0),
             overrides: HashMap::with_capacity(0),

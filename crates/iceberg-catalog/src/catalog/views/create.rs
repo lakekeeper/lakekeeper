@@ -22,7 +22,7 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
         endpoint_hooks::EndpointHooks,
         storage::{StorageLocations as _, StoragePermissions},
-        Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
+        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
     },
 };
 
@@ -78,7 +78,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
-    let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7());
+    let view_id: TabularIdentUuid = TabularIdentUuid::View(uuid::Uuid::now_v7());
 
     let view_location = determine_tabular_location(
         &namespace,
@@ -163,7 +163,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     authorizer
         .create_view(
             &request_metadata,
-            ViewId::from(metadata.metadata.uuid()),
+            ViewIdentUuid::from(metadata.metadata.uuid()),
             namespace_id,
         )
         .await?;

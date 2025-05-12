@@ -13,13 +13,13 @@ use crate::{
         tabular_purge_queue::{TabularPurgeInput, TabularPurgeTask},
         TaskQueue, TaskQueueConfig,
     },
-    WarehouseId,
+    WarehouseIdent,
 };
 
 super::impl_pg_task_queue!(TabularPurgeQueue);
 
 impl InputTrait for TabularPurgeInput {
-    fn warehouse_ident(&self) -> WarehouseId {
+    fn warehouse_ident(&self) -> WarehouseIdent {
         self.warehouse_ident
     }
 }

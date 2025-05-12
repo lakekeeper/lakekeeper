@@ -11,7 +11,7 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
         endpoint_hooks::EndpointHooks,
-        Catalog, Result, SecretStore, State, TabularId, Transaction,
+        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction,
     },
 };
 
@@ -77,7 +77,7 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     state
         .v1_state
         .contract_verifiers
-        .check_rename(TabularId::View(*source_id), destination)
+        .check_rename(TabularIdentUuid::View(*source_id), destination)
         .await?
         .into_result()?;
 

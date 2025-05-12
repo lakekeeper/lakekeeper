@@ -18,7 +18,7 @@ use crate::{
             CreateTabular, TabularType,
         },
     },
-    service::{CreateTableResponse, NamespaceId, TableCreation, TableId},
+    service::{CreateTableResponse, NamespaceIdentUuid, TableCreation, TableIdentUuid},
 };
 
 pub(crate) async fn create_table(
@@ -109,11 +109,11 @@ pub(crate) async fn create_table(
 }
 
 async fn maybe_delete_staged_table(
-    namespace_id: NamespaceId,
+    namespace_id: NamespaceIdentUuid,
     transaction: &mut Transaction<'_, Postgres>,
     name: &String,
     // Returns the staged table id if it was deleted
-) -> Result<Option<TableId>> {
+) -> Result<Option<TableIdentUuid>> {
     // we delete any staged table which has the same namespace + name
     // staged tables do not have a metadata_location and can be overwritten
     let staged_tabular_id = sqlx::query!(
@@ -134,7 +134,7 @@ async fn maybe_delete_staged_table(
         );
         e.into_error_model(message)
     })?
-    .map(|row| TableId::from(row.tabular_id));
+    .map(|row| TableIdentUuid::from(row.tabular_id));
 
     if staged_tabular_id.is_some() {
         tracing::debug!(
