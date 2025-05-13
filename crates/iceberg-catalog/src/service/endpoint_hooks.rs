@@ -348,10 +348,10 @@ impl EndpointHookCollection {
 /// An implementation should be light-weight, ideally every longer running task is deferred to a
 /// background task via a channel or is spawned as a tokio task.
 ///
-/// The `EndpointHooks` are passed into the services via the `EndpointHookCollection`. If you want
+/// The `EndpointHooks` are passed into the services via the [`EndpointHookCollection`]. If you want
 /// to provide your own implementation, you'll have to fork and modify the main function to include
 /// your hooks.
-/// 
+///
 /// If the hook fails, it will be logged, but the request will continue to process. This is to ensure
 /// that the request is not blocked by a hook failure.
 #[async_trait::async_trait]
