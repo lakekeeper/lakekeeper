@@ -20,7 +20,6 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
-        endpoint_hooks::EndpointHooks,
         storage::{StorageLocations as _, StoragePermissions},
         Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
     },

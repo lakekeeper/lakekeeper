@@ -10,7 +10,6 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        endpoint_hooks::EndpointHooks,
         Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction,
     },
 };

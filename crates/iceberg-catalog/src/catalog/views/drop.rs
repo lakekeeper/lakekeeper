@@ -11,7 +11,6 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        endpoint_hooks::EndpointHooks,
         task_queue::{
             tabular_expiration_queue::TabularExpirationInput,
             tabular_purge_queue::TabularPurgeInput,

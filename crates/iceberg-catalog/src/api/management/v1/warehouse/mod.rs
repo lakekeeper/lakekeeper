@@ -30,7 +30,6 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        endpoint_hooks::EndpointHooks,
         secrets::SecretStore,
         task_queue::TaskFilter,
         Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,

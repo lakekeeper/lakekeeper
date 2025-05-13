@@ -51,7 +51,6 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
         contract_verification::{ContractVerification, ContractVerificationOutcome},
-        endpoint_hooks::EndpointHooks,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
         task_queue::{

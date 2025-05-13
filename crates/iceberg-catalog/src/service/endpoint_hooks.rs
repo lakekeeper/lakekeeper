@@ -68,9 +68,8 @@ pub struct ViewCommit {
     pub new_metadata_location: Location,
 }
 
-#[async_trait::async_trait]
-impl EndpointHooks for EndpointHookCollection {
-    async fn commit_transaction(
+impl EndpointHookCollection {
+    pub(crate) async fn commit_transaction(
         &self,
         warehouse_id: WarehouseIdent,
         request: Arc<CommitTransactionRequest>,
@@ -87,10 +86,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn drop_table(
+    pub(crate) async fn drop_table(
         &self,
         warehouse_id: WarehouseIdent,
         parameters: TableParameters,
@@ -107,10 +112,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn register_table(
+    pub(crate) async fn register_table(
         &self,
         warehouse_id: WarehouseIdent,
         parameters: NamespaceParameters,
@@ -129,10 +140,17 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn create_table(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_table(
         &self,
         warehouse_id: WarehouseIdent,
         parameters: NamespaceParameters,
@@ -153,10 +171,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn rename_table(
+    pub(crate) async fn rename_table(
         &self,
         warehouse_id: WarehouseIdent,
         table_id: TableIdentUuid,
@@ -171,10 +195,17 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn create_view(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_view(
         &self,
         warehouse_id: WarehouseIdent,
         parameters: NamespaceParameters,
@@ -195,10 +226,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn commit_view(
+    pub(crate) async fn commit_view(
         &self,
         warehouse_id: WarehouseIdent,
         parameters: ViewParameters,
@@ -217,10 +254,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn drop_view(
+    pub(crate) async fn drop_view(
         &self,
         warehouse_id: WarehouseIdent,
         parameters: ViewParameters,
@@ -237,10 +280,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn rename_view(
+    pub(crate) async fn rename_view(
         &self,
         warehouse_id: WarehouseIdent,
         view_id: ViewIdentUuid,
@@ -255,10 +304,16 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 
-    async fn undrop_tabular(
+    pub(crate) async fn undrop_tabular(
         &self,
         warehouse_id: WarehouseIdent,
         request: Arc<UndropTabularsRequest>,
@@ -273,7 +328,13 @@ impl EndpointHooks for EndpointHookCollection {
                 request_metadata.clone(),
             )
         }))
-        .await;
+        .await
+        .into_iter()
+        .for_each(|r| {
+            if let Err(e) = r {
+                tracing::warn!("Hook error: {e:?}");
+            }
+        });
     }
 }
 
@@ -298,8 +359,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _commits: Arc<Vec<CommitContext>>,
         _table_ident_map: Arc<HashMap<TableIdent, TableIdentUuid>>,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
-        // Default implementation does nothing
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     async fn drop_table(
@@ -309,7 +370,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _drop_params: DropParams,
         _table_id: TableIdentUuid,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
     async fn register_table(
         &self,
@@ -319,7 +381,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _metadata: Arc<TableMetadata>,
         _metadata_location: Arc<Location>,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -332,7 +395,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _metadata_location: Option<Arc<Location>>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     async fn rename_table(
@@ -341,7 +405,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _table_id: TableIdentUuid,
         _request: Arc<RenameTableRequest>,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -354,7 +419,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _metadata_location: Arc<Location>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -366,7 +432,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _view_commit: Arc<ViewCommit>,
         _data_access: DataAccess,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     async fn drop_view(
@@ -376,7 +443,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _drop_params: DropParams,
         _view_id: ViewIdentUuid,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     async fn rename_view(
@@ -385,7 +453,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _view_id: ViewIdentUuid,
         _request: Arc<RenameTableRequest>,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     async fn undrop_tabular(
@@ -394,6 +463,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
         _request: Arc<UndropTabularsRequest>,
         _responses: Arc<Vec<UndropTabularResponse>>,
         _request_metadata: Arc<RequestMetadata>,
-    ) {
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }

@@ -30,7 +30,6 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        endpoint_hooks::EndpointHooks,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
         Catalog, NamespaceIdentUuid, State, Transaction, ViewCommit, ViewIdentUuid,
