@@ -1,11 +1,16 @@
-use std::sync::Arc;
-
-use crate::service::{Catalog, State};
+use crate::api::management::v1::project::Service;
+use crate::api::management::v1::role::Service;
+use crate::api::management::v1::ApiServer;
+use crate::api::ApiContext;
+use crate::request_metadata::RequestMetadata;
+use crate::service::authz::Authorizer;
+use crate::service::{Actor, Catalog, SecretStore, State};
 use rmcp::{
     const_string, model::*, schemars, service::RequestContext, tool, Error as McpError, RoleServer,
     ServerHandler,
 };
 use serde_json::json;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -14,42 +19,20 @@ pub struct StructRequest {
     pub b: i32,
 }
 
-#[derive(Clone)]
-pub struct Counter<C: Catalog> {
+pub struct McpService<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
     counter: Arc<Mutex<i32>>,
-    catalog_state: C::State,
+    context: ApiContext<State<A, C, S>>,
 }
 
 #[tool(tool_box)]
-impl<C: Catalog> Counter<C> {
+impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> McpService<C, A, S> {
     #[allow(dead_code)]
-    pub fn new(counter: Arc<Mutex<i32>>, catalog_state: C::State) -> Self {
-        Self {
-            counter,
-            catalog_state,
-        }
+    pub fn new(counter: Arc<Mutex<i32>>, context: ApiContext<State<A, C, S>>) -> Self {
+        Self { counter, context }
     }
 
     fn _create_resource_text(&self, uri: &str, name: &str) -> Resource {
         RawResource::new(uri, name.to_string()).no_annotation()
-    }
-
-    #[tool(description = "Increment the counter by 1")]
-    async fn increment(&self) -> Result<CallToolResult, McpError> {
-        let mut counter = self.counter.lock().await;
-        *counter += 1;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Decrement the counter by 1")]
-    async fn decrement(&self) -> Result<CallToolResult, McpError> {
-        let mut counter = self.counter.lock().await;
-        *counter -= 1;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
     }
 
     #[tool(description = "Get the current counter value")]
@@ -64,29 +47,10 @@ impl<C: Catalog> Counter<C> {
     fn say_hello(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![Content::text("hello")]))
     }
-
-    #[tool(description = "Repeat what you say")]
-    fn echo(
-        &self,
-        #[tool(param)]
-        #[schemars(description = "Repeat what you say")]
-        saying: String,
-    ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(saying)]))
-    }
-
-    #[tool(description = "Calculate the sum of two numbers")]
-    fn sum(
-        &self,
-        #[tool(aggr)] StructRequest { a, b }: StructRequest,
-    ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(
-            (a + b).to_string(),
-        )]))
-    }
 }
 const_string!(Echo = "echo");
-impl<C: Catalog> ServerHandler for Counter<C> {
+
+impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> ServerHandler for McpService<C, A, S> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
@@ -107,7 +71,7 @@ impl<C: Catalog> ServerHandler for Counter<C> {
     ) -> Result<ListResourcesResult, McpError> {
         Ok(ListResourcesResult {
             resources: vec![
-                self._create_resource_text("str:////Users/to/some/path/", "cwd"),
+                self._create_resource_text("/project-list", "cwd"),
                 self._create_resource_text("memo://insights", "memo-name"),
             ],
             next_cursor: None,
@@ -119,6 +83,9 @@ impl<C: Catalog> ServerHandler for Counter<C> {
         ReadResourceRequestParam { uri }: ReadResourceRequestParam,
         _: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
+        // let metadata : RequestMetadata = RequestMetadata::new_test(None, None, Actor::Anonymous, None, None, Default::default());
+        // ApiServer::<C, A, S>::list_projects(*self.context, metadata).await.expect("no resource");
+        // Catalog::get_server_info(&self.context.v1_state).await.expect("TODO: panic message");
         match uri.as_str() {
             "str:////Users/to/some/path/" => {
                 let cwd = "/Users/to/some/path/";

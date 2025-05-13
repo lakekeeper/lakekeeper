@@ -23,7 +23,7 @@ use tower_http::{
 
 use crate::api::mcp;
 use crate::api::mcp::server;
-use crate::api::mcp::tools::Counter;
+use crate::api::mcp::tools::McpService;
 use crate::api::mcp::v1::MCPServer;
 use crate::{
     api::{
@@ -144,9 +144,20 @@ pub fn new_full_router<
         config,
     };
 
+    let api_context = ApiContext {
+        v1_state: State {
+            authz: authorizer.clone(),
+            catalog: catalog_state,
+            secrets: secrets_state,
+            publisher,
+            contract_verifiers: table_change_checkers,
+            queues,
+        },
+    };
     let counter_mutex = Arc::new(Mutex::new(0));
-    let counter = Counter::<C>::new(counter_mutex, catalog_state.clone());
-    sse_server.with_service(move || counter.clone());
+    let cm = counter_mutex.clone();
+    let api_context_mcp = api_context.clone();
+    sse_server.with_service(move || McpService::<C, A, S>::new(cm, api_context_mcp));
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
             .iter()
@@ -178,7 +189,7 @@ pub fn new_full_router<
         option_layer(Some(axum::middleware::from_fn_with_state(
             AuthMiddlewareState {
                 authenticator,
-                authorizer: authorizer.clone(),
+                authorizer,
             },
             auth_middleware_fn,
         )))
@@ -231,16 +242,7 @@ pub fn new_full_router<
                 .layer(maybe_cors_layer)
                 .propagate_x_request_id(),
         )
-        .with_state(ApiContext {
-            v1_state: State {
-                authz: authorizer,
-                catalog: catalog_state,
-                secrets: secrets_state,
-                publisher,
-                contract_verifiers: table_change_checkers,
-                queues,
-            },
-        });
+        .with_state(api_context);
 
     Ok(if let Some(metrics_layer) = metrics_layer {
         router.layer(metrics_layer)
