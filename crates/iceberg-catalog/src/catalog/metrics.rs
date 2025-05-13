@@ -1,4 +1,5 @@
 use super::CatalogServer;
+use crate::service::Transaction;
 use crate::{
     api::iceberg::v1::{ApiContext, Result, TableParameters},
     request_metadata::RequestMetadata,
@@ -12,9 +13,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     async fn report_metrics(
         _: TableParameters,
         _: serde_json::Value,
-        _: ApiContext<State<A, C, S>>,
+        context: ApiContext<State<A, C, S>>,
         _: RequestMetadata,
     ) -> Result<()> {
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        C::create_metric(transaction.transaction()).await;
         Ok(())
     }
 }

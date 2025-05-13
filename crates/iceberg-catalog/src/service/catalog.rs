@@ -785,6 +785,10 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
+
+    async fn create_metric(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

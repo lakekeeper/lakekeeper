@@ -690,4 +690,9 @@ impl Catalog for super::PostgresCatalog {
     ) -> Result<ProtectionResponse> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
+
+    async fn create_metric(
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) {
+    }
 }

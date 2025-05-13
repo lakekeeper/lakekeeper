@@ -107,16 +107,16 @@ fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
     }
 }
 
-async fn maybe_register_user<D: Catalog>(
+async fn maybe_register_user<C: Catalog>(
     request_metadata: &RequestMetadata,
-    state: <D as Catalog>::State,
+    state: <C as Catalog>::State,
 ) -> Result<()> {
     let Some(user_id) = request_metadata.user_id() else {
         return Ok(());
     };
 
     // `parse_create_user_request` can fail - we can't run it for already registered users
-    let user = D::list_user(
+    let user = C::list_user(
         Some(vec![user_id.clone()]),
         None,
         PaginationQuery {
@@ -132,8 +132,8 @@ async fn maybe_register_user<D: Catalog>(
             parse_create_user_request(request_metadata, None)?;
 
         // If the user is authenticated, create a user in the catalog
-        let mut t = D::Transaction::begin_write(state).await?;
-        D::create_or_update_user(
+        let mut t = C::Transaction::begin_write(state).await?;
+        C::create_or_update_user(
             &creation_user_id,
             &name,
             email.as_deref(),
