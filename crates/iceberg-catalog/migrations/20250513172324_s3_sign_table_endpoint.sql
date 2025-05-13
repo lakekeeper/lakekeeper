@@ -1,0 +1,1 @@
+ALTER TYPE api_endpoints ADD VALUE 'sign-s3-request-tabular';

@@ -989,8 +989,9 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_AZURE = 1)]
     pub(crate) mod azure_tests {
-        use crate::service::storage::{
-            AdlsProfile, AzCredential, StorageCredential, StorageProfile,
+        use crate::{
+            api::RequestMetadata,
+            service::storage::{AdlsProfile, AzCredential, StorageCredential, StorageProfile},
         };
 
         pub(crate) fn azure_profile() -> AdlsProfile {
@@ -1037,7 +1038,7 @@ pub(crate) mod test {
                 prof.normalize(Some(&cred.clone().into()))
                     .expect("failed to validate profile");
                 let cred: StorageCredential = cred.into();
-                prof.validate_access(Some(&cred), None)
+                prof.validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
                     .await
                     .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
             }

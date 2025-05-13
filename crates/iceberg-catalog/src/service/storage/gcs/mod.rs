@@ -505,9 +505,12 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_GCS = 1)]
     pub(crate) mod cloud_tests {
-        use crate::service::storage::{
-            gcs::{GcsCredential, GcsProfile, GcsServiceKey},
-            StorageCredential, StorageProfile,
+        use crate::{
+            api::RequestMetadata,
+            service::storage::{
+                gcs::{GcsCredential, GcsProfile, GcsServiceKey},
+                StorageCredential, StorageProfile,
+            },
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
@@ -535,7 +538,10 @@ pub(crate) mod test {
             profile
                 .normalize(Some(&cred))
                 .expect("Failed to normalize profile");
-            profile.validate_access(Some(&cred), None).await.unwrap();
+            profile
+                .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                .await
+                .unwrap();
         }
 
         #[tokio::test]
@@ -555,9 +561,12 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_GCS_HNS = 1)]
     pub(crate) mod gcs_hns_tests {
-        use crate::service::storage::{
-            gcs::{GcsCredential, GcsProfile, GcsServiceKey},
-            StorageCredential, StorageProfile,
+        use crate::{
+            api::RequestMetadata,
+            service::storage::{
+                gcs::{GcsCredential, GcsProfile, GcsServiceKey},
+                StorageCredential, StorageProfile,
+            },
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
@@ -585,7 +594,10 @@ pub(crate) mod test {
             profile
                 .normalize(Some(&cred))
                 .expect("Failed to normalize profile");
-            profile.validate_access(Some(&cred), None).await.unwrap();
+            profile
+                .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                .await
+                .unwrap();
         }
     }
 }

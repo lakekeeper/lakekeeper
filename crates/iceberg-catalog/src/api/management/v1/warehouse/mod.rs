@@ -314,7 +314,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         storage_profile.normalize(storage_credential.as_ref())?;
 
         // Run validation and overlap check in parallel
-        let validation_future = storage_profile.validate_access(storage_credential.as_ref(), None);
+        let validation_future =
+            storage_profile.validate_access(storage_credential.as_ref(), None, &request_metadata);
         let overlap_check_future = async {
             let mut transaction =
                 C::Transaction::begin_read(context.v1_state.catalog.clone()).await?;
@@ -665,7 +666,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         storage_profile.normalize(storage_credential.as_ref())?;
         storage_profile
-            .validate_access(storage_credential.as_ref(), None)
+            .validate_access(storage_credential.as_ref(), None, &request_metadata)
             .await?;
 
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
@@ -738,7 +739,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let storage_profile = warehouse.storage_profile;
 
         storage_profile
-            .validate_access(new_storage_credential.as_ref(), None)
+            .validate_access(new_storage_credential.as_ref(), None, &request_metadata)
             .await?;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {

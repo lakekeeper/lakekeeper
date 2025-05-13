@@ -82,6 +82,12 @@ pub struct TableIdentUuid(uuid::Uuid);
 #[serde(transparent)]
 pub struct WarehouseIdent(pub(crate) uuid::Uuid);
 
+impl Default for WarehouseIdent {
+    fn default() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
 /// Status of a warehouse
 #[derive(
     Debug,

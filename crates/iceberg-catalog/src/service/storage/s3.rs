@@ -21,9 +21,14 @@ use crate::{
         CatalogConfig,
     },
     request_metadata::RequestMetadata,
-    service::storage::{
-        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
-        StoragePermissions, TableConfig,
+    service::{
+        storage::{
+            error::{
+                CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
+            },
+            StoragePermissions, TableConfig,
+        },
+        TabularIdentUuid,
     },
     WarehouseIdent, CONFIG,
 };
@@ -443,6 +448,7 @@ impl S3Profile {
     ///
     /// # Errors
     /// Fails if vended credentials are used - currently not supported.
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_table_config(
         &self,
         DataAccess {
@@ -452,6 +458,9 @@ impl S3Profile {
         s3_credential: Option<&S3Credential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseIdent,
+        tabular_id: TabularIdentUuid,
     ) -> Result<TableConfig, TableConfigError> {
         // If vended_credentials is False and remote_signing is False,
         // use remote_signing.
@@ -538,10 +547,9 @@ impl S3Profile {
 
         if remote_signing {
             config.insert(&s3::RemoteSigningEnabled(true));
-            // Currently per-table signer uris are not supported by Spark.
-            // The URI is cached for one table, and then re-used for another.
-            // let signer_uri = CONFIG.s3_signer_uri_for_table(warehouse_id, namespace_id, table_id);
-            // config.insert("s3.signer.uri".to_string(), signer_uri.to_string());
+            config.insert(&s3::SignerUri(
+                request_metadata.s3_signer_uri_for_table(warehouse_id, tabular_id),
+            ));
         }
 
         Ok(TableConfig { creds, config })
@@ -1637,9 +1645,12 @@ pub(crate) mod test {
     pub(crate) mod s3_compat {
         use std::sync::LazyLock;
 
-        use crate::service::storage::{
-            s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-            StorageProfile,
+        use crate::{
+            api::RequestMetadata,
+            service::storage::{
+                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
+                StorageProfile,
+            },
         };
 
         static TEST_BUCKET: LazyLock<String> =
@@ -1694,7 +1705,10 @@ pub(crate) mod test {
                     let cred: StorageCredential = cred.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1746,7 +1760,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1798,7 +1815,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1856,7 +1876,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );

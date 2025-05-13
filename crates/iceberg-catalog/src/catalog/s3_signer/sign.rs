@@ -39,12 +39,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn sign(
         prefix: Option<Prefix>,
-        _namespace: Option<String>,
-        table: Option<String>,
+        tabular_id: Option<uuid::Uuid>,
         request: S3SignRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<S3SignResponse> {
+        tracing::info!("Signing prefix: {prefix:?} - tabular_id: {tabular_id:?}");
+        let table = None;
         let warehouse_id = require_warehouse_id(prefix.clone())?;
         let authorizer = state.v1_state.authz;
         authorizer

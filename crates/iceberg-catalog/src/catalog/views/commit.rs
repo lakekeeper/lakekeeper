@@ -34,7 +34,7 @@ use crate::{
         Catalog, NamespaceIdentUuid, State, TabularIdentUuid, Transaction, ViewCommit,
         ViewIdentUuid, ViewMetadataWithLocation,
     },
-    SecretIdent,
+    SecretIdent, WarehouseIdent,
 };
 
 /// Commit updates to a view
@@ -112,6 +112,8 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 data_access,
             },
             &state,
+            &request_metadata,
+            warehouse_id,
         )
         .await;
 
@@ -174,6 +176,8 @@ struct CommitViewContext<'a> {
 async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseIdent,
 ) -> Result<LoadViewResult> {
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
@@ -259,6 +263,9 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
             storage_secret.as_ref(),
             &metadata_location,
             StoragePermissions::ReadWriteDelete,
+            request_metadata,
+            warehouse_id,
+            ctx.view_id.into(),
         )
         .await?;
 
