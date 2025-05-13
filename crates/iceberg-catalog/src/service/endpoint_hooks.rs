@@ -88,7 +88,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on commit_transaction",
+                    "Hook '{}' encountered error on commit_transaction: {e:?}",
                     hook.to_string()
                 );
             })
@@ -114,7 +114,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on drop_table",
+                    "Hook '{}' encountered error on drop_table: {e:?}",
                     hook.to_string()
                 );
             })
@@ -142,7 +142,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on register_table",
+                    "Hook '{}' encountered error on register_table: {e:?}",
                     hook.to_string()
                 );
             })
@@ -173,7 +173,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on create_table",
+                    "Hook '{}' encountered error on create_table: {e:?}",
                     hook.to_string()
                 );
             })
@@ -197,7 +197,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on rename_table",
+                    "Hook '{}' encountered error on rename_table: {e:?}",
                     hook.to_string()
                 );
             })
@@ -228,7 +228,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on create_view",
+                    "Hook '{}' encountered error on create_view: {e:?}",
                     hook.to_string()
                 );
             })
@@ -256,7 +256,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on commit_view",
+                    "Hook '{}' encountered error on commit_view: {e:?}",
                     hook.to_string()
                 );
             })
@@ -282,7 +282,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on drop_view",
+                    "Hook '{}' encountered error on drop_view: {e:?}",
                     hook.to_string()
                 );
             })
@@ -306,7 +306,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on rename_view",
+                    "Hook '{}' encountered error on rename_view: {e:?}",
                     hook.to_string()
                 );
             })
@@ -330,7 +330,7 @@ impl EndpointHookCollection {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "Hook '{}' encountered error: {e:?} on undrop_tabular",
+                    "Hook '{}' encountered error on undrop_tabular: {e:?}",
                     hook.to_string()
                 );
             })
@@ -351,6 +351,9 @@ impl EndpointHookCollection {
 /// The `EndpointHooks` are passed into the services via the `EndpointHookCollection`. If you want
 /// to provide your own implementation, you'll have to fork and modify the main function to include
 /// your hooks.
+/// 
+/// If the hook fails, it will be logged, but the request will continue to process. This is to ensure
+/// that the request is not blocked by a hook failure.
 #[async_trait::async_trait]
 pub trait EndpointHooks: Send + Sync + Debug + Display {
     async fn commit_transaction(
