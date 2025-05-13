@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use futures::TryFutureExt;
 use iceberg::{
     spec::{TableMetadata, ViewMetadata},
     TableIdent,
@@ -85,14 +86,14 @@ impl EndpointHookCollection {
                 table_ident_map.clone(),
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on commit_transaction",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn drop_table(
@@ -103,22 +104,22 @@ impl EndpointHookCollection {
         table_id: TableIdentUuid,
         request_metadata: Arc<RequestMetadata>,
     ) {
-        futures::future::join_all(self.0.iter().map(|h| {
-            h.drop_table(
+        futures::future::join_all(self.0.iter().map(|hook| {
+            hook.drop_table(
                 warehouse_id,
                 parameters.clone(),
                 drop_params.clone(),
                 table_id,
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on drop_table",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn register_table(
@@ -139,14 +140,14 @@ impl EndpointHookCollection {
                 metadata_location.clone(),
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on register_table",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -170,14 +171,14 @@ impl EndpointHookCollection {
                 data_access,
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on create_table",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn rename_table(
@@ -194,14 +195,14 @@ impl EndpointHookCollection {
                 request.clone(),
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on rename_table",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -225,14 +226,14 @@ impl EndpointHookCollection {
                 data_access,
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on create_view",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn commit_view(
@@ -253,14 +254,14 @@ impl EndpointHookCollection {
                 data_access,
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on commit_view",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn drop_view(
@@ -279,14 +280,14 @@ impl EndpointHookCollection {
                 view_id,
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on drop_view",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn rename_view(
@@ -303,14 +304,14 @@ impl EndpointHookCollection {
                 request.clone(),
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on rename_view",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 
     pub(crate) async fn undrop_tabular(
@@ -327,14 +328,14 @@ impl EndpointHookCollection {
                 responses.clone(),
                 request_metadata.clone(),
             )
+            .map_err(|e| {
+                tracing::warn!(
+                    "Hook '{}' encountered error: {e:?} on undrop_tabular",
+                    hook.to_string()
+                );
+            })
         }))
-        .await
-        .into_iter()
-        .for_each(|r| {
-            if let Err(e) = r {
-                tracing::warn!("Hook error: {e:?}");
-            }
-        });
+        .await;
     }
 }
 
