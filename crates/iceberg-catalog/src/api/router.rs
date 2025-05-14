@@ -1,10 +1,19 @@
-use std::{fmt::Debug, sync::LazyLock};
-
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderValue, Method};
 use limes::Authenticator;
+use rmcp::transport::common::axum::DEFAULT_AUTO_PING_INTERVAL;
+use rmcp::transport::streamable_http_server::axum::{
+    delete_handler, get_handler, post_handler, App, StreamableHttpServerConfig,
+};
+use rmcp::transport::StreamableHttpServer;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use std::{fmt::Debug, sync::LazyLock};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
@@ -12,10 +21,16 @@ use tower_http::{
     ServiceBuilderExt,
 };
 
+use crate::api::mcp;
+use crate::api::mcp::server;
+use crate::api::mcp::tools::McpService;
+use crate::api::mcp::v1::MCPServer;
 use crate::{
     api::{
         iceberg::v1::new_v1_full_router,
         management::v1::{api_doc as v1_api_doc, ApiServer},
+        mcp::server::get_mcp_router_and_server,
+        mcp::v1::api_doc as v1_mcp_api_doc,
         shutdown_signal, ApiContext,
     },
     request_metadata::create_request_metadata_with_trace_and_project_fn,
@@ -105,6 +120,47 @@ pub fn new_full_router<
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
+
+    let addr = crate::api::mcp::server::BIND_ADDRESS.parse::<SocketAddr>()?;
+
+    let config = StreamableHttpServerConfig {
+        bind: addr,
+        ct: CancellationToken::new(),
+        sse_keep_alive: Some(Duration::from_secs(15)),
+        path: "/".to_string(),
+    };
+
+    let (app, transport_rx) = App::new(config.sse_keep_alive.unwrap_or(DEFAULT_AUTO_PING_INTERVAL));
+
+    let mcp_router = Router::new()
+        .route(
+            &config.path,
+            get(get_handler).post(post_handler).delete(delete_handler),
+        )
+        .with_state(app);
+
+    let sse_server = StreamableHttpServer {
+        transport_rx,
+        config,
+    };
+
+    let api_context = ApiContext {
+        v1_state: State {
+            authz: authorizer.clone(),
+            catalog: catalog_state,
+            secrets: secrets_state,
+            publisher,
+            contract_verifiers: table_change_checkers,
+            queues,
+        },
+    };
+    let counter_mutex = Arc::new(Mutex::new(0));
+    let cm = counter_mutex.clone();
+    // let api_context_mcp = api_context.clone();
+    sse_server.with_service(move || {
+        let api_context = api_context.clone();
+        McpService::<C, A, S>::new(cm, api_context)
+    });
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
             .iter()
@@ -136,17 +192,17 @@ pub fn new_full_router<
         option_layer(Some(axum::middleware::from_fn_with_state(
             AuthMiddlewareState {
                 authenticator,
-                authorizer: authorizer.clone(),
+                authorizer,
             },
             auth_middleware_fn,
         )))
     } else {
         option_layer(None)
     };
-
     let router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        .nest_service("/mcp", mcp_router)
         .layer(axum::middleware::from_fn_with_state(
             endpoint_statistics_tracker_tx,
             crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
@@ -162,6 +218,7 @@ pub fn new_full_router<
         .merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                 .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>())
+                .url("/api-docs/mcp/v1/openapi.json", v1_mcp_api_doc::<A>())
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",
                     ICEBERG_OPENAPI_SPEC_YAML.clone(),
@@ -188,16 +245,7 @@ pub fn new_full_router<
                 .layer(maybe_cors_layer)
                 .propagate_x_request_id(),
         )
-        .with_state(ApiContext {
-            v1_state: State {
-                authz: authorizer,
-                catalog: catalog_state,
-                secrets: secrets_state,
-                publisher,
-                contract_verifiers: table_change_checkers,
-                queues,
-            },
-        });
+        .with_state(api_context);
 
     Ok(if let Some(metrics_layer) = metrics_layer {
         router.layer(metrics_layer)
