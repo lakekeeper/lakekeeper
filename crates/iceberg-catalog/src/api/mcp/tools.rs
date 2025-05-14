@@ -1,5 +1,4 @@
 use crate::api::management::v1::project::Service;
-use crate::api::management::v1::role::Service;
 use crate::api::management::v1::ApiServer;
 use crate::api::ApiContext;
 use crate::request_metadata::RequestMetadata;
@@ -78,7 +77,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> ServerHandler for McpSer
         })
     }
 
-    async fn read_resource(
+    async fn read_resource<>(
         &self,
         ReadResourceRequestParam { uri }: ReadResourceRequestParam,
         _: RequestContext<RoleServer>,

@@ -156,8 +156,11 @@ pub fn new_full_router<
     };
     let counter_mutex = Arc::new(Mutex::new(0));
     let cm = counter_mutex.clone();
-    let api_context_mcp = api_context.clone();
-    sse_server.with_service(move || McpService::<C, A, S>::new(cm, api_context_mcp));
+    // let api_context_mcp = api_context.clone();
+    sse_server.with_service(move || {
+        let api_context = api_context.clone();
+        McpService::<C, A, S>::new(cm, api_context)
+    });
     let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
         let allowed_origin = if origins
             .iter()
