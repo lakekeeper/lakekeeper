@@ -154,7 +154,7 @@ mod test {
             storage::{StorageProfile, TestProfile},
             State,
         },
-        WarehouseIdent,
+        WarehouseId,
     };
 
     pub(crate) async fn setup(
@@ -163,7 +163,7 @@ mod test {
     ) -> (
         ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceIdent,
-        WarehouseIdent,
+        WarehouseId,
     ) {
         let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer, None);
         let state = api_context.v1_state.catalog.clone();

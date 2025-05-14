@@ -20,7 +20,7 @@ use iceberg_ext::{
 };
 use uuid::Uuid;
 
-use super::{TableIdentUuid, UndropTabularResponse, ViewIdentUuid, WarehouseIdent};
+use super::{TableId, UndropTabularResponse, ViewId, WarehouseId};
 use crate::{
     api::{
         iceberg::{
@@ -33,7 +33,7 @@ use crate::{
     catalog::tables::{maybe_body_to_json, CommitContext},
     service::{
         endpoint_hooks::{EndpointHooks, ViewCommit},
-        tabular_idents::TabularIdentUuid,
+        tabular_idents::TabularId,
     },
 };
 
@@ -45,14 +45,14 @@ pub mod nats;
 impl EndpointHooks for CloudEventsPublisher {
     async fn commit_transaction(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
         _commits: Arc<Vec<CommitContext>>,
-        table_ident_map: Arc<HashMap<TableIdent, TableIdentUuid>>,
+        table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         let mut events = vec![];
-        let mut event_table_ids: Vec<(TableIdent, TableIdentUuid)> = vec![];
+        let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
         let mut updates = vec![];
         for commit_table_request in &request.table_changes {
             if let Some(id) = &commit_table_request.identifier {
@@ -73,7 +73,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "updateTable",
                 body,
                 EventMetadata {
-                    tabular_id: TabularIdentUuid::Table(*table_id),
+                    tabular_id: TabularId::Table(*table_id),
                     warehouse_id,
                     name: table_ident.name,
                     namespace: table_ident.namespace.to_url_string(),
@@ -92,10 +92,10 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn drop_table(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         TableParameters { prefix, table }: TableParameters,
         _drop_params: DropParams,
-        table_ident_uuid: TableIdentUuid,
+        table_ident_uuid: TableId,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         self.publish(
@@ -103,7 +103,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "dropTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*table_ident_uuid),
+                tabular_id: TabularId::Table(*table_ident_uuid),
                 warehouse_id,
                 name: table.name,
                 namespace: table.namespace.to_url_string(),
@@ -119,7 +119,7 @@ impl EndpointHooks for CloudEventsPublisher {
     }
     async fn register_table(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         NamespaceParameters { prefix, namespace }: NamespaceParameters,
         request: Arc<RegisterTableRequest>,
         metadata: Arc<TableMetadata>,
@@ -131,7 +131,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "registerTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularIdentUuid::Table(metadata.uuid()),
+                tabular_id: TabularId::Table(metadata.uuid()),
                 warehouse_id,
                 name: request.name.clone(),
                 namespace: namespace.to_url_string(),
@@ -148,7 +148,7 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn create_table(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         NamespaceParameters { prefix, namespace }: NamespaceParameters,
         request: Arc<CreateTableRequest>,
         metadata: Arc<TableMetadata>,
@@ -161,7 +161,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "createTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularIdentUuid::Table(metadata.uuid()),
+                tabular_id: TabularId::Table(metadata.uuid()),
                 warehouse_id,
                 name: request.name.clone(),
                 namespace: namespace.to_url_string(),
@@ -178,8 +178,8 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn rename_table(
         &self,
-        warehouse_id: WarehouseIdent,
-        table_ident_uuid: TableIdentUuid,
+        warehouse_id: WarehouseId,
+        table_ident_uuid: TableId,
         request: Arc<RenameTableRequest>,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
@@ -188,7 +188,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "renameTable",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*table_ident_uuid),
+                tabular_id: TabularId::Table(*table_ident_uuid),
                 warehouse_id,
                 name: request.source.name.clone(),
                 namespace: request.source.namespace.to_url_string(),
@@ -205,7 +205,7 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn create_view(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: NamespaceParameters,
         request: Arc<CreateViewRequest>,
         metadata: Arc<ViewMetadata>,
@@ -218,7 +218,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "createView",
             maybe_body_to_json(&request),
             EventMetadata {
-                tabular_id: TabularIdentUuid::View(metadata.uuid()),
+                tabular_id: TabularId::View(metadata.uuid()),
                 warehouse_id,
                 name: request.name.clone(),
                 namespace: parameters.namespace.to_url_string(),
@@ -238,7 +238,7 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn commit_view(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
         metadata: Arc<ViewCommit>,
@@ -250,7 +250,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "updateView",
             maybe_body_to_json(request),
             EventMetadata {
-                tabular_id: TabularIdentUuid::View(metadata.new_metadata.uuid()),
+                tabular_id: TabularId::View(metadata.new_metadata.uuid()),
                 warehouse_id,
                 name: parameters.view.name,
                 namespace: parameters.view.namespace.to_url_string(),
@@ -270,10 +270,10 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn drop_view(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: ViewParameters,
         _drop_params: DropParams,
-        view_ident_uuid: ViewIdentUuid,
+        view_ident_uuid: ViewId,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         self.publish(
@@ -281,7 +281,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "dropView",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularIdentUuid::View(*view_ident_uuid),
+                tabular_id: TabularId::View(*view_ident_uuid),
                 warehouse_id,
                 name: parameters.view.name,
                 namespace: parameters.view.namespace.to_url_string(),
@@ -301,8 +301,8 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn rename_view(
         &self,
-        warehouse_id: WarehouseIdent,
-        view_ident_uuid: ViewIdentUuid,
+        warehouse_id: WarehouseId,
+        view_ident_uuid: ViewId,
         request: Arc<RenameTableRequest>,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
@@ -311,7 +311,7 @@ impl EndpointHooks for CloudEventsPublisher {
             "renameView",
             serde_json::Value::Null,
             EventMetadata {
-                tabular_id: TabularIdentUuid::View(*view_ident_uuid),
+                tabular_id: TabularId::View(*view_ident_uuid),
                 warehouse_id,
                 name: request.source.name.clone(),
                 namespace: request.source.namespace.to_url_string(),
@@ -328,7 +328,7 @@ impl EndpointHooks for CloudEventsPublisher {
 
     async fn undrop_tabular(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         _request: Arc<UndropTabularsRequest>,
         responses: Arc<Vec<UndropTabularResponse>>,
         request_metadata: Arc<RequestMetadata>,
@@ -341,7 +341,7 @@ impl EndpointHooks for CloudEventsPublisher {
                 "undropTabulars",
                 serde_json::Value::Null,
                 EventMetadata {
-                    tabular_id: TabularIdentUuid::from(utr.table_ident),
+                    tabular_id: TabularId::from(utr.table_ident),
                     warehouse_id,
                     name: utr.name.clone(),
                     namespace: utr.namespace.to_url_string(),
@@ -420,8 +420,8 @@ impl CloudEventsPublisher {
 
 #[derive(Debug, Clone)]
 pub struct EventMetadata {
-    pub tabular_id: TabularIdentUuid,
-    pub warehouse_id: WarehouseIdent,
+    pub tabular_id: TabularId,
+    pub warehouse_id: WarehouseId,
     pub name: String,
     pub namespace: String,
     pub prefix: String,

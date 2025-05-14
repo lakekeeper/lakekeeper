@@ -32,7 +32,7 @@ mod test {
             RequestMetadata,
         },
         catalog::CatalogServer,
-        service::{ListNamespacesQuery, NamespaceIdentUuid, TableIdentUuid},
+        service::{ListNamespacesQuery, NamespaceId, TableId},
         tests::{
             create_ns, create_table, drop_namespace, drop_recursive::setup_drop_test,
             random_request_metadata,
@@ -368,7 +368,7 @@ mod test {
         .await
         .unwrap();
 
-        let ns_id = NamespaceIdentUuid::from(
+        let ns_id = NamespaceId::from(
             *CatalogServer::list_namespaces(
                 Some(Prefix(warehouse.warehouse_id.to_string())),
                 ListNamespacesQuery {
@@ -465,7 +465,7 @@ mod test {
         .unwrap();
 
         ApiServer::set_table_protection(
-            TableIdentUuid::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
+            TableId::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
             warehouse.warehouse_id,
             true,
             ctx.clone(),
@@ -488,7 +488,7 @@ mod test {
         assert_eq!(e.error.code, 409, "{}", e.error);
 
         ApiServer::set_table_protection(
-            TableIdentUuid::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
+            TableId::from(*tables.table_uuids.as_deref().unwrap().first().unwrap()),
             warehouse.warehouse_id,
             false,
             ctx.clone(),

@@ -24,7 +24,7 @@ use crate::{
         ErrorModel, Result,
     },
     service::{authz::Authorizer, secrets::SecretStore, storage::StorageCredential, Catalog},
-    WarehouseIdent,
+    WarehouseId,
 };
 
 pub trait CommonMetadata {
@@ -51,7 +51,7 @@ pub struct CatalogServer<C: Catalog, A: Authorizer + Clone, S: SecretStore> {
     secret_store: PhantomData<S>,
 }
 
-fn require_warehouse_id(prefix: Option<Prefix>) -> Result<WarehouseIdent> {
+fn require_warehouse_id(prefix: Option<Prefix>) -> Result<WarehouseId> {
     prefix
         .ok_or_else(|| {
             tracing::debug!("No prefix specified.");

@@ -3,10 +3,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{service::storage::s3::S3UrlStyleDetectionMode, WarehouseIdent};
+use crate::{service::storage::s3::S3UrlStyleDetectionMode, WarehouseId};
 
 pub(super) static WAREHOUSE_S3_URL_STYLE_CACHE: LazyLock<
-    moka::future::Cache<WarehouseIdent, S3UrlStyleDetectionMode>,
+    moka::future::Cache<WarehouseId, S3UrlStyleDetectionMode>,
 > = LazyLock::new(|| {
     moka::future::Cache::builder()
         .max_capacity(10000)

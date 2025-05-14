@@ -27,8 +27,8 @@ use crate::{
         RequestMetadata,
     },
     catalog::tables::CommitContext,
-    service::{TableIdentUuid, UndropTabularResponse, ViewIdentUuid},
-    WarehouseIdent,
+    service::{TableId, UndropTabularResponse, ViewId},
+    WarehouseId,
 };
 
 #[derive(Clone)]
@@ -72,10 +72,10 @@ pub struct ViewCommit {
 impl EndpointHookCollection {
     pub(crate) async fn commit_transaction(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
         commits: Arc<Vec<CommitContext>>,
-        table_ident_map: Arc<HashMap<TableIdent, TableIdentUuid>>,
+        table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -98,10 +98,10 @@ impl EndpointHookCollection {
 
     pub(crate) async fn drop_table(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: TableParameters,
         drop_params: DropParams,
-        table_id: TableIdentUuid,
+        table_id: TableId,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -124,7 +124,7 @@ impl EndpointHookCollection {
 
     pub(crate) async fn register_table(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: NamespaceParameters,
         request: Arc<RegisterTableRequest>,
         metadata: Arc<TableMetadata>,
@@ -153,7 +153,7 @@ impl EndpointHookCollection {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_table(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: NamespaceParameters,
         request: Arc<CreateTableRequest>,
         metadata: Arc<TableMetadata>,
@@ -183,8 +183,8 @@ impl EndpointHookCollection {
 
     pub(crate) async fn rename_table(
         &self,
-        warehouse_id: WarehouseIdent,
-        table_id: TableIdentUuid,
+        warehouse_id: WarehouseId,
+        table_id: TableId,
         request: Arc<RenameTableRequest>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -208,7 +208,7 @@ impl EndpointHookCollection {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_view(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: NamespaceParameters,
         request: Arc<CreateViewRequest>,
         metadata: Arc<ViewMetadata>,
@@ -238,7 +238,7 @@ impl EndpointHookCollection {
 
     pub(crate) async fn commit_view(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
         view_commit: Arc<ViewCommit>,
@@ -266,10 +266,10 @@ impl EndpointHookCollection {
 
     pub(crate) async fn drop_view(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parameters: ViewParameters,
         drop_params: DropParams,
-        view_id: ViewIdentUuid,
+        view_id: ViewId,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -292,8 +292,8 @@ impl EndpointHookCollection {
 
     pub(crate) async fn rename_view(
         &self,
-        warehouse_id: WarehouseIdent,
-        view_id: ViewIdentUuid,
+        warehouse_id: WarehouseId,
+        view_id: ViewId,
         request: Arc<RenameTableRequest>,
         request_metadata: Arc<RequestMetadata>,
     ) {
@@ -316,7 +316,7 @@ impl EndpointHookCollection {
 
     pub(crate) async fn undrop_tabular(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: Arc<UndropTabularsRequest>,
         responses: Arc<Vec<UndropTabularResponse>>,
         request_metadata: Arc<RequestMetadata>,
@@ -358,10 +358,10 @@ impl EndpointHookCollection {
 pub trait EndpointHooks: Send + Sync + Debug + Display {
     async fn commit_transaction(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _request: Arc<CommitTransactionRequest>,
         _commits: Arc<Vec<CommitContext>>,
-        _table_ident_map: Arc<HashMap<TableIdent, TableIdentUuid>>,
+        _table_ident_map: Arc<HashMap<TableIdent, TableId>>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -369,17 +369,17 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
 
     async fn drop_table(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _parameters: TableParameters,
         _drop_params: DropParams,
-        _table_id: TableIdentUuid,
+        _table_id: TableId,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn register_table(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<RegisterTableRequest>,
         _metadata: Arc<TableMetadata>,
@@ -392,7 +392,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
     #[allow(clippy::too_many_arguments)]
     async fn create_table(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<CreateTableRequest>,
         _metadata: Arc<TableMetadata>,
@@ -405,8 +405,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
 
     async fn rename_table(
         &self,
-        _warehouse_id: WarehouseIdent,
-        _table_id: TableIdentUuid,
+        _warehouse_id: WarehouseId,
+        _table_id: TableId,
         _request: Arc<RenameTableRequest>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
@@ -416,7 +416,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
     #[allow(clippy::too_many_arguments)]
     async fn create_view(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _parameters: NamespaceParameters,
         _request: Arc<CreateViewRequest>,
         _metadata: Arc<ViewMetadata>,
@@ -430,7 +430,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
     #[allow(clippy::too_many_arguments)]
     async fn commit_view(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _parameters: ViewParameters,
         _request: Arc<CommitViewRequest>,
         _view_commit: Arc<ViewCommit>,
@@ -442,10 +442,10 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
 
     async fn drop_view(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _parameters: ViewParameters,
         _drop_params: DropParams,
-        _view_id: ViewIdentUuid,
+        _view_id: ViewId,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -453,8 +453,8 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
 
     async fn rename_view(
         &self,
-        _warehouse_id: WarehouseIdent,
-        _view_id: ViewIdentUuid,
+        _warehouse_id: WarehouseId,
+        _view_id: ViewId,
         _request: Arc<RenameTableRequest>,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
@@ -463,7 +463,7 @@ pub trait EndpointHooks: Send + Sync + Debug + Display {
 
     async fn undrop_tabular(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _request: Arc<UndropTabularsRequest>,
         _responses: Arc<Vec<UndropTabularResponse>>,
         _request_metadata: Arc<RequestMetadata>,
