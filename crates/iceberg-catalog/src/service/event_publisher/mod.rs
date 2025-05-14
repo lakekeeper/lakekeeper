@@ -306,27 +306,25 @@ impl EndpointHooks for CloudEventsPublisher {
         view_ident_uuid: ViewId,
         request: Arc<RenameTableRequest>,
         request_metadata: Arc<RequestMetadata>,
-    ) {
-        let _ = self
-            .publish(
-                Uuid::now_v7(),
-                "renameView",
-                serde_json::Value::Null,
-                EventMetadata {
-                    tabular_id: TabularId::View(*view_ident_uuid),
-                    warehouse_id,
-                    name: request.source.name.clone(),
-                    namespace: request.source.namespace.to_url_string(),
-                    prefix: String::new(),
-                    num_events: 1,
-                    sequence_number: 0,
-                    trace_id: request_metadata.request_id(),
-                },
-            )
-            .await
-            .inspect_err(|e| {
-                tracing::error!("Failed to publish event: {e}");
-            });
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "renameView",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::View(*view_ident_uuid),
+                warehouse_id,
+                name: request.source.name.clone(),
+                namespace: request.source.namespace.to_url_string(),
+                prefix: String::new(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `renameView` event")?;
+        Ok(())
     }
 
     async fn undrop_tabular(
