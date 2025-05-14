@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::SystemTime, vec};
+use std::{collections::HashMap, sync::Arc, time::SystemTime, vec};
 
 use aws_sigv4::{
     http_request::{sign as aws_sign, SignableBody, SignableRequest, SigningSettings},
@@ -39,13 +39,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn sign(
         prefix: Option<Prefix>,
-        tabular_id: Option<uuid::Uuid>,
+        path_table_id: Option<uuid::Uuid>,
         request: S3SignRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<S3SignResponse> {
-        tracing::info!("Signing prefix: {prefix:?} - tabular_id: {tabular_id:?}");
-        let table = None;
         let warehouse_id = require_warehouse_id(prefix.clone())?;
         let authorizer = state.v1_state.authz;
         authorizer
@@ -90,7 +88,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             metadata_location: _,
             storage_secret_ident,
             storage_profile,
-        } = if let Ok(table_id) = require_table_id(table.clone()) {
+        } = if let Some(table_id) = path_table_id.map(Into::into) {
+            tracing::trace!("Got S3 sign request for table {table_id} with URL {request_url}");
             let metadata = C::get_table_metadata_by_id(
                 warehouse_id,
                 table_id,
@@ -111,6 +110,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 )
                 .await?
         } else {
+            tracing::trace!("Got S3 sign request for URL {request_url} without table id. Searching for table id by location");
             let first_location = parsed_url.locations.first().ok_or_else(|| {
                 ErrorModel::internal(
                     "Request URI does not contain a location",
@@ -368,19 +368,6 @@ fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
 
     new_uri.set_path(&new_path_segments.join("/"));
     Ok(new_uri)
-}
-
-fn require_table_id(table_id: Option<String>) -> Result<TableIdentUuid> {
-    table_id
-        .ok_or(
-            ErrorModel::builder()
-                .code(http::StatusCode::BAD_REQUEST.into())
-                .message("A Table ID is required as part of the URL path".to_string())
-                .r#type("TableIdRequired".to_string())
-                .build()
-                .into(),
-        )
-        .and_then(|table_id| TableIdentUuid::from_str(&table_id))
 }
 
 fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
