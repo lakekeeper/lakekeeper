@@ -48,13 +48,13 @@ pub mod v1 {
         #[cfg(feature = "s3-signer")] T: config::Service<S>
             + namespace::NamespaceService<S>
             + tables::TablesService<S>
-            + metrics::Service<S>
+            + metrics::MetricsService<S>
             + s3_signer::Service<S>
             + views::ViewService<S>,
         #[cfg(not(feature = "s3-signer"))] T: config::Service<S>
             + namespace::NamespaceService<S>
             + tables::TablesService<S>
-            + metrics::Service<S>
+            + metrics::MetricsService<S>
             + views::ViewService<S>,
         S: ThreadSafe,
     >() -> Router<ApiContext<S>> {

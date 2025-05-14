@@ -18,7 +18,7 @@ use crate::{
 };
 
 #[async_trait]
-pub trait Service<S: crate::api::ThreadSafe>
+pub trait MetricsService<S: crate::api::ThreadSafe>
 where
     Self: Send + Sync + 'static,
 {
@@ -31,7 +31,7 @@ where
     ) -> Result<()>;
 }
 
-pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
+pub fn router<I: MetricsService<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
     Router::new()
         // /{prefix}/namespaces/{namespace}/tables/{table}/metrics
         .route(
