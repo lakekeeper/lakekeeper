@@ -694,5 +694,6 @@ impl Catalog for super::PostgresCatalog {
     async fn create_metric(
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) {
+        // write to DB
     }
 }
