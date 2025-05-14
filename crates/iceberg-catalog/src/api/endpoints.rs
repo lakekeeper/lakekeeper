@@ -16,6 +16,7 @@ macro_rules! generate_endpoints {
         $(
             paste::paste! {
                 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter)]
+                #[allow(clippy::enum_variant_names)]
                 pub enum [<$enum_name Endpoint>] {
                     $($variant),*
                 }
