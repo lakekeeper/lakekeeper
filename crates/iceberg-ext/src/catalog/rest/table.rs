@@ -1,3 +1,5 @@
+use typed_builder::TypedBuilder;
+
 #[cfg(feature = "axum")]
 use super::impl_into_response;
 use crate::{
@@ -41,11 +43,14 @@ pub struct CreateTableRequest {
     pub properties: Option<std::collections::HashMap<String, String>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypedBuilder)]
 #[serde(rename_all = "kebab-case")]
 pub struct RegisterTableRequest {
     pub name: String,
     pub metadata_location: String,
+    #[serde(default)]
+    #[builder(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
