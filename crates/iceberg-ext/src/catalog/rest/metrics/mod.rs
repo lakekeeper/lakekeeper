@@ -18,6 +18,12 @@ mod unary_expression;
 pub enum ReportMetricsRequest {
     ScanReport(ScanReport),
     CommitReport(CommitReport),
+    DatabaseTest(DatabaseTest),
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DatabaseTest {
+    pub field: String,
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
@@ -55,110 +61,3 @@ pub struct CommitReport {
     #[serde(rename = "metadata", skip_serializing_if = "Option::is_none")]
     pub metadata: Option<std::collections::HashMap<String, String>>,
 }
-
-// #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct MetricResult {
-//     #[serde(rename = "unit")]
-//     pub unit: String,
-//     #[serde(rename = "value")]
-//     pub value: i64,
-//     #[serde(rename = "time-unit")]
-//     pub time_unit: String,
-//     #[serde(rename = "count")]
-//     pub count: i64,
-//     #[serde(rename = "total-duration")]
-//     pub total_duration: i64,
-// }
-//
-// #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct AndOrExpression {
-//     #[serde(rename = "type")]
-//     pub r#type: String,
-//     #[serde(rename = "left")]
-//     pub left: Box<Expression>,
-//     #[serde(rename = "right")]
-//     pub right: Box<Expression>,
-// }
-//
-// #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct NotExpression {
-//     #[serde(rename = "type")]
-//     pub r#type: String,
-//     #[serde(rename = "child")]
-//     pub child: Box<Expression>,
-// }
-//
-// #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct SetExpression {
-//     #[serde(rename = "type")]
-//     pub r#type: String,
-//     #[serde(rename = "term")]
-//     pub term: Box<Term>,
-//     #[serde(rename = "values")]
-//     pub values: Vec<serde_json::Value>,
-// }
-//
-//
-// #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-// pub enum Type {
-//     #[serde(rename = "transform")]
-//     Transform,
-// }
-//
-//
-// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-// #[serde(untagged)]
-// pub enum Term {
-//     Reference(String),
-//     TransformTerm(Box<TransformTerm>),
-// }
-//
-// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-// #[serde(untagged)]
-// pub enum Expression {
-//     TrueExpression(Box<TrueExpression>),
-//     FalseExpression(Box<FalseExpression>),
-//     AndOrExpression(Box<AndOrExpression>),
-//     NotExpression(Box<NotExpression>),
-//     SetExpression(Box<models::SetExpression>),
-//     LiteralExpression(Box<models::LiteralExpression>),
-//     UnaryExpression(Box<models::UnaryExpression>),
-// }
-//
-//
-// #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct TrueExpression {
-//     #[serde(rename = "type")]
-//     pub r#type: String,
-// }
-//
-// #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
-// pub struct FalseExpression {
-//     #[serde(rename = "type")]
-//     pub r#type: String,
-// }
-//
-//
-//
-// impl Default for Expression {
-//     fn default() -> Self {
-//         Self::TrueExpression(Default::default())
-//     }
-// }
-//
-//
-//
-//
-// impl Default for Term {
-//     fn default() -> Self {
-//         Self::Reference(Default::default())
-//     }
-// }
-// ///
-//
-// impl Default for Type {
-//     fn default() -> Type {
-//         Self::Transform
-//     }
-// }
-//

@@ -15,8 +15,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::metrics::MetricsService<State<A, C, S>> for CatalogServer<C, A, S>
 {
     async fn report_metrics(
-        _: TableParameters,
-        _report_metrics_request: ReportMetricsRequest,
+        report_metrics_request: ReportMetricsRequest,
         api_context: ApiContext<State<A, C, S>>,
         metadata: RequestMetadata,
     ) -> Result<()> {
@@ -24,8 +23,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // validation
         // BL innerer catalog
         let mut transaction = C::Transaction::begin_write(api_context.v1_state.catalog).await?;
-        C::create_metric(transaction.transaction()).await;
-        Ok(())
+        C::create_metric(report_metrics_request, transaction.transaction()).await
     }
 }
 
@@ -44,7 +42,7 @@ mod test {
 
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, _) = crate::catalog::test::setup(
             pool.clone(),
             prof,
             None,
@@ -53,17 +51,6 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let ns = crate::catalog::test::create_ns(
-            ctx.clone(),
-            warehouse.warehouse_id.to_string(),
-            "ns1".to_string(),
-        )
-        .await;
-        let table_params = TableParameters {
-            prefix: None,
-            table: TableIdent::new(ns.namespace, "test".into()),
-        };
-
         let metrics = ReportMetricsRequest::CommitReport(CommitReport {
             table_name: "".to_string(),
             snapshot_id: 0,
@@ -72,9 +59,7 @@ mod test {
             metrics: Default::default(),
             metadata: None,
         });
-        // create 10 staged tables
         let _ = CatalogServer::report_metrics(
-            table_params,
             metrics,
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),

@@ -1,15 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use iceberg::{
-    spec::{TableMetadata, ViewMetadata},
-    TableUpdate,
-};
-pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
-use iceberg_ext::{
-    catalog::rest::{CatalogConfig, ErrorModel},
-    configs::Location,
-};
-
 use super::{
     authz::TableUuid, storage::StorageProfile, NamespaceIdentUuid, ProjectId, RoleId,
     TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent, WarehouseStatus,
@@ -38,6 +28,16 @@ use crate::{
         task_queue::TaskId,
     },
     SecretIdent,
+};
+use iceberg::{
+    spec::{TableMetadata, ViewMetadata},
+    TableUpdate,
+};
+use iceberg_ext::catalog::rest::ReportMetricsRequest;
+pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
+use iceberg_ext::{
+    catalog::rest::{CatalogConfig, ErrorModel},
+    configs::Location,
 };
 
 #[async_trait::async_trait]
@@ -787,8 +787,9 @@ where
     ) -> Result<ProtectionResponse>;
 
     async fn create_metric(
+        report_metrics_request: ReportMetricsRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    );
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
