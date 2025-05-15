@@ -185,20 +185,17 @@ impl RequestMetadata {
     }
 
     #[must_use]
-    pub fn s3_signer_uri_for_warehouse(&self, warehouse_id: WarehouseIdent) -> String {
-        format!("{}/v1/{warehouse_id}", self.base_uri_catalog())
+    pub fn s3_signer_uri(&self, _warehouse_id: WarehouseIdent) -> String {
+        format!("{}/", self.base_uri_catalog())
     }
 
     #[must_use]
-    pub fn s3_signer_uri_for_table(
+    pub fn s3_signer_endpoint_for_table(
         &self,
         warehouse_id: WarehouseIdent,
         table_id: TabularIdentUuid,
     ) -> String {
-        format!(
-            "{}/v1/{warehouse_id}/tabular-id/{table_id}",
-            self.base_uri_catalog()
-        )
+        format!("v1/signer/{warehouse_id}/tabular-id/{table_id}/v1/aws/s3/sign")
     }
 
     #[must_use]

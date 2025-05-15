@@ -5,7 +5,6 @@ use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 use aws_config::{identity::IdentityCache, BehaviorVersion, SdkConfig};
 use aws_sdk_sts::config::{ProvideCredentials as _, SharedIdentityCache};
 use iceberg_ext::configs::{
-    self,
     table::{client, custom, s3, TableProperties},
     ConfigProperty, Location,
 };
@@ -406,8 +405,8 @@ impl S3Profile {
     #[must_use]
     pub fn generate_catalog_config(
         &self,
-        warehouse_id: WarehouseIdent,
-        request_metadata: &RequestMetadata,
+        _warehouse_id: WarehouseIdent,
+        _request_metadata: &RequestMetadata,
         delete_profile: TabularDeleteProfile,
     ) -> CatalogConfig {
         let mut defaults = HashMap::new();
@@ -421,12 +420,7 @@ impl S3Profile {
 
         CatalogConfig {
             defaults,
-            overrides: HashMap::from_iter(vec![(
-                configs::table::s3::SignerUri::KEY.to_string(),
-                request_metadata
-                    .s3_signer_uri_for_warehouse(warehouse_id)
-                    .to_string(),
-            )]),
+            overrides: HashMap::new(),
             endpoints: supported_endpoints().to_vec(),
         }
     }
@@ -540,15 +534,16 @@ impl S3Profile {
                 creds.insert(&s3::SecretAccessKey(secret_access_key));
                 creds.insert(&s3::SessionToken(session_token));
             } else {
-                insert_pyiceberg_hack(&mut config);
+                push_fsspec_fileio_with_s3v4restsigner(&mut config);
                 remote_signing = true;
             }
         }
 
         if remote_signing {
             config.insert(&s3::RemoteSigningEnabled(true));
-            config.insert(&s3::SignerUri(
-                request_metadata.s3_signer_uri_for_table(warehouse_id, tabular_id),
+            config.insert(&s3::SignerUri(request_metadata.s3_signer_uri(warehouse_id)));
+            config.insert(&s3::SignerEndpoint(
+                request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id),
             ));
         }
 
@@ -1189,7 +1184,7 @@ fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn insert_pyiceberg_hack(config: &mut TableProperties) {
+fn push_fsspec_fileio_with_s3v4restsigner(config: &mut TableProperties) {
     config.insert(&s3::Signer("S3V4RestSigner".to_string()));
     config.insert(&custom::CustomConfig {
         key: "py-io-impl".to_string(),

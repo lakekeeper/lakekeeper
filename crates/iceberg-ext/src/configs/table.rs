@@ -65,6 +65,7 @@ pub mod s3 {
             RemoteSigningEnabled, bool, "s3.remote-signing-enabled", "s3_remote_signing_enabled";
             Signer, String, "s3.signer", "s3_signer";
             SignerUri, String, "s3.signer.uri", "s3_signer_uri";
+            SignerEndpoint, String, "s3.signer.endpoint", "s3_signer_endpoint";
          }
     );
 }

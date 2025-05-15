@@ -59,7 +59,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
             ),
         )
         .route(
-            "/{prefix}/tabular-id/{tabular_id}/v1/aws/s3/sign",
+            "/signer/{prefix}/tabular-id/{tabular_id}/v1/aws/s3/sign",
             post(
                 |Path((prefix, tabular_id)): Path<(Prefix, uuid::Uuid)>,
                  State(api_context): State<ApiContext<S>>,
