@@ -336,6 +336,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     }
 
     /// Register a table in the given namespace using given metadata file location
+    #[allow(clippy::too_many_lines)]
     async fn register_table(
         parameters: NamespaceParameters,
         request: RegisterTableRequest,
@@ -352,7 +353,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
         let namespace_id = authorized_namespace_ident_to_id::<C, _>(
             authorizer.clone(),
             &request_metadata,
@@ -416,7 +417,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
 
-        let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let tabular_id = TableIdentUuid::from(table_metadata.uuid());
 
         let CreateTableResponse {
@@ -424,7 +424,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
-                namespace_id: namespace.namespace_id,
+                namespace_id,
                 table_ident: &table,
                 table_metadata,
                 metadata_location: Some(&metadata_location),
@@ -435,10 +435,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let config = storage_profile
             .generate_table_config(
-                DataAccess {
-                    vended_credentials: false,
-                    remote_signing: false,
-                },
+                DataAccess::not_specified(),
                 storage_secret.as_ref(),
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
@@ -2077,7 +2074,7 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2232,7 +2229,7 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2293,7 +2290,7 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2373,7 +2370,7 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2419,7 +2416,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2461,7 +2458,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2504,7 +2501,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2582,7 +2579,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2644,7 +2641,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2701,7 +2698,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2739,7 +2736,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2828,7 +2825,7 @@ pub(crate) mod test {
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2838,7 +2835,7 @@ pub(crate) mod test {
         CatalogServer::create_table(
             ns_params.clone(),
             create_request_2,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2858,7 +2855,7 @@ pub(crate) mod test {
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2868,7 +2865,7 @@ pub(crate) mod test {
         CatalogServer::create_table(
             ns_params.clone(),
             create_request_2,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2888,7 +2885,7 @@ pub(crate) mod test {
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2898,7 +2895,7 @@ pub(crate) mod test {
         let e = CatalogServer::create_table(
             ns_params.clone(),
             create_request_2,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2921,7 +2918,7 @@ pub(crate) mod test {
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2931,7 +2928,7 @@ pub(crate) mod test {
         let e = CatalogServer::create_table(
             ns_params.clone(),
             create_request_2,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2954,7 +2951,7 @@ pub(crate) mod test {
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2964,7 +2961,7 @@ pub(crate) mod test {
         let e = CatalogServer::create_table(
             ns_params.clone(),
             create_request_2,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2986,7 +2983,7 @@ pub(crate) mod test {
         let _ = CatalogServer::create_table(
             ns_params.clone(),
             create_request_1,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -2996,7 +2993,7 @@ pub(crate) mod test {
         let e = CatalogServer::create_table(
             ns_params.clone(),
             create_request_2,
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3043,7 +3040,7 @@ pub(crate) mod test {
             let tab = CatalogServer::create_table(
                 ns_params.clone(),
                 create_request,
-                DataAccess::none(),
+                DataAccess::not_specified(),
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
             )
@@ -3284,7 +3281,7 @@ pub(crate) mod test {
         let tab = CatalogServer::create_table(
             ns_params.clone(),
             create_request(Some("tab-1".to_string()), Some(false)),
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3353,7 +3350,7 @@ pub(crate) mod test {
         let tab = CatalogServer::create_table(
             ns_params.clone(),
             create_request(Some("tab-1".to_string()), Some(false)),
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3394,7 +3391,7 @@ pub(crate) mod test {
         let initial_table = CatalogServer::create_table(
             ns_params.clone(),
             create_request(Some("test_overwrite".to_string()), Some(false)),
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3422,7 +3419,7 @@ pub(crate) mod test {
         let second_table = CatalogServer::create_table(
             ns_params.clone(),
             create_request(Some("second_table".to_string()), Some(false)),
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )
@@ -3491,7 +3488,7 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident,
             },
-            DataAccess::none(),
+            DataAccess::not_specified(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )

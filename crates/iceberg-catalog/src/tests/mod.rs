@@ -118,7 +118,7 @@ pub(crate) async fn create_table<T: Authorizer>(
             namespace: NamespaceIdent::new(ns_name.into()),
         },
         crate::catalog::tables::test::create_request(Some(name.into()), Some(stage)),
-        DataAccess::none(),
+        DataAccess::not_specified(),
         api_context,
         random_request_metadata(),
     )
@@ -162,7 +162,7 @@ pub(crate) async fn create_view<T: Authorizer>(
         },
         crate::catalog::views::create::test::create_view_request(Some(name), location),
         api_context,
-        DataAccess::none(),
+        DataAccess::not_specified(),
         random_request_metadata(),
     )
     .await
