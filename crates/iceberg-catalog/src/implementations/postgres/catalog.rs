@@ -55,7 +55,6 @@ use crate::{
     },
     SecretIdent,
 };
-use http::StatusCode;
 use iceberg::spec::ViewMetadata;
 use iceberg_ext::catalog::rest::ReportMetricsRequest;
 use iceberg_ext::{

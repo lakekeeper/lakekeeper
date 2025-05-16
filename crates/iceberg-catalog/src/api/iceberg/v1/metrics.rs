@@ -25,6 +25,7 @@ where
 {
     /// Send a metrics report to this endpoint to be processed by the backend
     async fn report_metrics(
+        table_parameters: TableParameters,
         request: ReportMetricsRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
@@ -41,9 +42,22 @@ pub fn router<I: MetricsService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCo
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<ReportMetricsRequest>| async {
-                    { I::report_metrics(request, api_context, metadata) }
-                        .await
-                        .map(|()| StatusCode::NO_CONTENT.into_response())
+                    {
+                        I::report_metrics(
+                            TableParameters {
+                                prefix: Some(prefix),
+                                table: TableIdent {
+                                    namespace: namespace.into(),
+                                    name: table,
+                                },
+                            },
+                            request,
+                            api_context,
+                            metadata,
+                        )
+                    }
+                    .await
+                    .map(|()| StatusCode::NO_CONTENT.into_response())
                 },
             ),
         )

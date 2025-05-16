@@ -15,6 +15,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::metrics::MetricsService<State<A, C, S>> for CatalogServer<C, A, S>
 {
     async fn report_metrics(
+        _table_parameters: TableParameters,
         report_metrics_request: ReportMetricsRequest,
         api_context: ApiContext<State<A, C, S>>,
         metadata: RequestMetadata,
@@ -32,7 +33,7 @@ mod test {
     use super::*;
     use crate::api::iceberg::v1::metrics::MetricsService;
     use crate::service::authz::tests::HidingAuthorizer;
-    use iceberg::TableIdent;
+    use iceberg::{NamespaceIdent, TableIdent};
     use iceberg_ext::catalog::rest::metrics::CommitReport;
     use iceberg_ext::catalog::rest::{ReportMetricsRequest, ScanReport};
 
@@ -41,6 +42,13 @@ mod test {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz = HidingAuthorizer::new();
+        let table_parameters = TableParameters {
+            prefix: None,
+            table: TableIdent {
+                namespace: NamespaceIdent::new("".to_string()),
+                name: "".to_string(),
+            },
+        };
 
         let (ctx, _) = crate::catalog::test::setup(
             pool.clone(),
@@ -60,6 +68,7 @@ mod test {
             metadata: None,
         });
         let _ = CatalogServer::report_metrics(
+            table_parameters.clone(),
             commit_report,
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
@@ -77,6 +86,7 @@ mod test {
             metadata: None,
         });
         let _ = CatalogServer::report_metrics(
+            table_parameters,
             scan_report,
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
