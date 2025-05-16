@@ -1,12 +1,3 @@
-use std::collections::{HashMap, HashSet};
-
-use iceberg::spec::ViewMetadata;
-use iceberg_ext::{
-    catalog::rest::{CatalogConfig, ErrorModel},
-    configs::Location,
-};
-use itertools::Itertools;
-
 use super::{
     bootstrap::{bootstrap, get_validation_data},
     namespace::{
@@ -26,6 +17,7 @@ use super::{
     },
     CatalogState, PostgresTransaction,
 };
+use crate::implementations::postgres::metrics::create_metric;
 use crate::{
     api::{
         iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
@@ -63,6 +55,14 @@ use crate::{
     },
     SecretIdent,
 };
+use iceberg::spec::ViewMetadata;
+use iceberg_ext::catalog::rest::ReportMetricsRequest;
+use iceberg_ext::{
+    catalog::rest::{CatalogConfig, ErrorModel},
+    configs::Location,
+};
+use itertools::Itertools;
+use std::collections::{HashMap, HashSet};
 
 #[async_trait::async_trait]
 impl Catalog for super::PostgresCatalog {
@@ -689,5 +689,12 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
+    }
+
+    async fn create_metric(
+        report_metrics_request: ReportMetricsRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        create_metric(report_metrics_request, transaction).await
     }
 }

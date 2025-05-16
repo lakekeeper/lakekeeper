@@ -19,6 +19,8 @@ pub mod rest {
         OAuthTokenExchangeRequest, OAuthTokenRequest, OAuthTokenResponse, OAuthTokenType,
     };
 
+    pub mod metrics;
+    pub use metrics::{ReportMetricsRequest, ScanReport};
     mod error;
     #[cfg(feature = "axum")]
     pub(crate) use error::impl_into_response;
