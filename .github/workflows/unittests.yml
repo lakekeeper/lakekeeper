@@ -215,6 +215,13 @@ jobs:
       - name: Setup openfga
         run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
 
+      - name: Setup minio
+        run: |
+          wget https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x ./mc
+          ./mc alias set mb http://localhost:9000 minio-root-user minio-root-password
+          ./mc admin user add mb read-only-user read-only-password
+          ./mc admin policy attach mb readonly --user read-only-user
       - name: Test
         run: cargo nextest run --profile ci --all-targets --all-features --workspace
         env:
@@ -231,6 +238,8 @@ jobs:
           LAKEKEEPER_TEST__S3_ACCESS_KEY: minio-root-user
           LAKEKEEPER_TEST__S3_SECRET_KEY: minio-root-password
           LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:9000
+          LAKEKEEPER_TEST__S3_READ_ONLY_USER: read-only-user
+          LAKEKEEPER_TEST__S3_READ_ONLY_PASSWORD: read-only-password
 
           LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
           LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true

@@ -724,17 +724,19 @@ mod tests {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         Option<Prefix>,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
+            None,
+            1,
         )
         .await;
 
@@ -781,14 +783,16 @@ mod tests {
 
     #[sqlx::test]
     async fn cannot_drop_protected_namespace(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let prof = crate::tests::test_io_profile();
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             AllowAllAuthorizer,
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
+            None,
+            1,
         )
         .await;
         let ns = CatalogServer::create_namespace(
@@ -879,17 +883,19 @@ mod tests {
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::tests::test_io_profile();
 
         let authz = HidingAuthorizer::new();
 
-        let (ctx, warehouse) = crate::catalog::test::setup(
+        let (ctx, warehouse) = crate::tests::setup(
             pool.clone(),
             prof,
             None,
             authz.clone(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
+            None,
+            1,
         )
         .await;
         for n in 0..10 {

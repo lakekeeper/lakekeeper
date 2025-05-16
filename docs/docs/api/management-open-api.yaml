@@ -2522,6 +2522,9 @@ components:
           description: |-
             Project ID in which to create the warehouse.
             Deprecated: Please use the `x-project-id` header instead.
+        storage-access-validation:
+          $ref: '#/components/schemas/StorageValidation'
+          description: Options for the storage profile access validation.
         storage-credential:
           oneOf:
             - type: 'null'
@@ -4017,6 +4020,46 @@ components:
                     - gcs
           title: StorageProfileGcs
       description: Storage profile for a warehouse.
+    StorageValidation:
+      oneOf:
+        - type: object
+          description: Perform read-only validation checks.
+          required:
+            - read
+          properties:
+            read:
+              type: object
+              description: Perform read-only validation checks.
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                  description: |-
+                    A path within the given storage profile pointing at a file that can be used to verify read
+                    access.
+
+                    This does NOT include any s3://, wasb://, hdfs://, etc. prefix.
+                    This does NOT include any `key_prefix`
+
+                    The path that will be checked is the concatenation of any potential `key_prefix` in the
+                    provided profile and this path.
+        - type: object
+          description: Perform full validation checks, including read, write, and delete operations.
+          required:
+            - read-write-delete
+          properties:
+            read-write-delete:
+              type: object
+              description: Perform full validation checks, including read, write, and delete operations.
+        - type: object
+          description: Skip validation checks entirely.
+          required:
+            - skip
+          properties:
+            skip:
+              type: object
+              description: Skip validation checks entirely.
     TableAction:
       type: string
       enum:
@@ -4365,6 +4408,8 @@ components:
               description: |-
                 New storage credential to use for the warehouse.
                 If not specified, the existing credential is removed.
+        storage-access-validation:
+          $ref: '#/components/schemas/StorageValidation'
     UpdateWarehouseDeleteProfileRequest:
       type: object
       required:
@@ -4377,6 +4422,9 @@ components:
       required:
         - storage-profile
       properties:
+        storage-access-validation:
+          $ref: '#/components/schemas/StorageValidation'
+          description: Options for the storage profile access validation.
         storage-credential:
           oneOf:
             - type: 'null'
