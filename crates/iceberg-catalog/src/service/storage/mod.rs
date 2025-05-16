@@ -221,12 +221,16 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the underlying storage profile's generation fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_table_config(
         &self,
         data_access: DataAccess,
         secret: Option<&StorageCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseIdent,
+        tabular_id: TabularIdentUuid,
     ) -> Result<TableConfig, TableConfigError> {
         match self {
             StorageProfile::S3(profile) => {
@@ -236,6 +240,9 @@ impl StorageProfile {
                         secret.map(|s| s.try_to_s3()).transpose()?,
                         table_location,
                         storage_permissions,
+                        request_metadata,
+                        warehouse_id,
+                        tabular_id,
                     )
                     .await
             }
@@ -313,6 +320,7 @@ impl StorageProfile {
         &self,
         credential: Option<&StorageCredential>,
         location: Option<&Location>,
+        request_metadata: &RequestMetadata,
     ) -> Result<(), ValidationError> {
         let file_io = self.file_io(credential).await?;
 
@@ -338,8 +346,12 @@ impl StorageProfile {
         let direct_validation = self.validate_read_write(&file_io, &test_location, false);
         let vended_validation = async {
             if test_vended_credentials {
-                self.validate_vended_credentials_access(credential, &test_location)
-                    .await?;
+                self.validate_vended_credentials_access(
+                    credential,
+                    &test_location,
+                    request_metadata,
+                )
+                .await?;
             }
             Ok::<(), ValidationError>(())
         };
@@ -396,6 +408,7 @@ impl StorageProfile {
         &self,
         credential: Option<&StorageCredential>,
         test_location: &Location,
+        request_metadata: &RequestMetadata,
     ) -> Result<(), ValidationError> {
         tracing::debug!("Validating vended credentials access to: {test_location}");
 
@@ -408,6 +421,11 @@ impl StorageProfile {
                 credential,
                 test_location,
                 StoragePermissions::ReadWriteDelete,
+                // The following arguments are used only for generating the remote signing configuration
+                // and are not used in the vended credentials case.
+                request_metadata,
+                WarehouseIdent::default(),
+                TableIdentUuid::default().into(),
             )
             .await?;
 
@@ -1147,7 +1165,7 @@ mod tests {
         let profile: StorageProfile = profile.into();
         let cred: StorageCredential = credential.into();
         profile
-            .validate_access(Some(&cred), None)
+            .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
             .await
             .expect("Failed to validate access");
     }
@@ -1192,6 +1210,9 @@ mod tests {
                 Some(cred),
                 &table_location1,
                 StoragePermissions::ReadWriteDelete,
+                &RequestMetadata::new_unauthenticated(),
+                WarehouseIdent::default(),
+                TableIdentUuid::default().into(),
             )
             .await
             .unwrap();
@@ -1205,6 +1226,9 @@ mod tests {
                 Some(cred),
                 &table_location2,
                 StoragePermissions::ReadWriteDelete,
+                &RequestMetadata::new_unauthenticated(),
+                WarehouseIdent::default(),
+                TableIdentUuid::default().into(),
             )
             .await
             .unwrap();

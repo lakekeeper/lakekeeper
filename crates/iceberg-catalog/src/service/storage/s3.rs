@@ -5,7 +5,6 @@ use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 use aws_config::{identity::IdentityCache, BehaviorVersion, SdkConfig};
 use aws_sdk_sts::config::{ProvideCredentials as _, SharedIdentityCache};
 use iceberg_ext::configs::{
-    self,
     table::{client, custom, s3, TableProperties},
     ConfigProperty, Location,
 };
@@ -21,9 +20,14 @@ use crate::{
         CatalogConfig,
     },
     request_metadata::RequestMetadata,
-    service::storage::{
-        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
-        StoragePermissions, TableConfig,
+    service::{
+        storage::{
+            error::{
+                CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
+            },
+            StoragePermissions, TableConfig,
+        },
+        TabularIdentUuid,
     },
     WarehouseIdent, CONFIG,
 };
@@ -401,8 +405,8 @@ impl S3Profile {
     #[must_use]
     pub fn generate_catalog_config(
         &self,
-        warehouse_id: WarehouseIdent,
-        request_metadata: &RequestMetadata,
+        _warehouse_id: WarehouseIdent,
+        _request_metadata: &RequestMetadata,
         delete_profile: TabularDeleteProfile,
     ) -> CatalogConfig {
         let mut defaults = HashMap::new();
@@ -416,12 +420,7 @@ impl S3Profile {
 
         CatalogConfig {
             defaults,
-            overrides: HashMap::from_iter(vec![(
-                configs::table::s3::SignerUri::KEY.to_string(),
-                request_metadata
-                    .s3_signer_uri_for_warehouse(warehouse_id)
-                    .to_string(),
-            )]),
+            overrides: HashMap::new(),
             endpoints: supported_endpoints().to_vec(),
         }
     }
@@ -443,6 +442,7 @@ impl S3Profile {
     ///
     /// # Errors
     /// Fails if vended credentials are used - currently not supported.
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_table_config(
         &self,
         DataAccess {
@@ -452,6 +452,9 @@ impl S3Profile {
         s3_credential: Option<&S3Credential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseIdent,
+        tabular_id: TabularIdentUuid,
     ) -> Result<TableConfig, TableConfigError> {
         // If vended_credentials is False and remote_signing is False,
         // use remote_signing.
@@ -531,17 +534,17 @@ impl S3Profile {
                 creds.insert(&s3::SecretAccessKey(secret_access_key));
                 creds.insert(&s3::SessionToken(session_token));
             } else {
-                insert_pyiceberg_hack(&mut config);
+                push_fsspec_fileio_with_s3v4restsigner(&mut config);
                 remote_signing = true;
             }
         }
 
         if remote_signing {
             config.insert(&s3::RemoteSigningEnabled(true));
-            // Currently per-table signer uris are not supported by Spark.
-            // The URI is cached for one table, and then re-used for another.
-            // let signer_uri = CONFIG.s3_signer_uri_for_table(warehouse_id, namespace_id, table_id);
-            // config.insert("s3.signer.uri".to_string(), signer_uri.to_string());
+            config.insert(&s3::SignerUri(request_metadata.s3_signer_uri(warehouse_id)));
+            config.insert(&s3::SignerEndpoint(
+                request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id),
+            ));
         }
 
         Ok(TableConfig { creds, config })
@@ -1181,7 +1184,7 @@ fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn insert_pyiceberg_hack(config: &mut TableProperties) {
+fn push_fsspec_fileio_with_s3v4restsigner(config: &mut TableProperties) {
     config.insert(&s3::Signer("S3V4RestSigner".to_string()));
     config.insert(&custom::CustomConfig {
         key: "py-io-impl".to_string(),
@@ -1637,9 +1640,12 @@ pub(crate) mod test {
     pub(crate) mod s3_compat {
         use std::sync::LazyLock;
 
-        use crate::service::storage::{
-            s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-            StorageProfile,
+        use crate::{
+            api::RequestMetadata,
+            service::storage::{
+                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
+                StorageProfile,
+            },
         };
 
         static TEST_BUCKET: LazyLock<String> =
@@ -1694,7 +1700,10 @@ pub(crate) mod test {
                     let cred: StorageCredential = cred.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1746,7 +1755,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1798,7 +1810,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );
@@ -1856,7 +1871,10 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile.validate_access(Some(&cred), None).await.unwrap();
+                    profile
+                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                        .await
+                        .unwrap();
                 },
                 true,
             );

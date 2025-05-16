@@ -43,12 +43,14 @@ use crate::{
         management::v1::{warehouse::TabularDeleteProfile, TabularType},
         set_not_found_status_code,
     },
-    catalog,
-    catalog::{compression_codec::CompressionCodec, tabular::list_entities},
+    catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
     request_metadata::RequestMetadata,
     retry::retry_fn,
     service::{
-        authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
+        authz::{
+            Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            TableUuid,
+        },
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         event_publisher::{CloudEventsPublisher, EventMetadata},
         secrets::SecretStore,
@@ -283,6 +285,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 storage_secret.as_ref(),
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
+                &request_metadata,
+                warehouse_id,
+                table_id.into(),
             )
             .await?;
 
@@ -405,6 +410,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 storage_secret.as_ref(),
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
+                &request_metadata,
+                warehouse_id,
+                tabular_id.into(),
             )
             .await?;
 
@@ -477,7 +485,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let catalog = state.v1_state.catalog;
         let mut t = C::Transaction::begin_read(catalog).await?;
 
-        let (table_id, storage_permissions) = Self::resolve_and_authorize_table_access(
+        let (tabular_details, storage_permissions) = Self::resolve_and_authorize_table_access(
             &request_metadata,
             &table,
             warehouse_id,
@@ -490,20 +498,20 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // ------------------- BUSINESS LOGIC -------------------
         let mut metadatas = C::load_tables(
             warehouse_id,
-            vec![table_id.ident],
+            vec![tabular_details.ident],
             list_flags.include_deleted,
             t.transaction(),
         )
         .await?;
         t.commit().await?;
         let CatalogLoadTableResult {
-            table_id: _,
+            table_id,
             namespace_id: _,
             table_metadata,
             metadata_location,
             storage_secret_ident,
             storage_profile,
-        } = take_table_metadata(&table_id.ident, &table, &mut metadatas)?;
+        } = take_table_metadata(&tabular_details.ident, &table, &mut metadatas)?;
         require_not_staged(metadata_location.as_ref())?;
 
         let table_location =
@@ -521,6 +529,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         storage_secret.as_ref(),
                         &table_location,
                         storage_permissions,
+                        &request_metadata,
+                        warehouse_id,
+                        table_id.into(),
                     )
                     .await?,
             )
@@ -558,7 +569,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let warehouse_id = require_warehouse_id(prefix)?;
 
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-        let (table_id, storage_permissions) = Self::resolve_and_authorize_table_access(
+        let (tabular_details, storage_permissions) = Self::resolve_and_authorize_table_access(
             &request_metadata,
             &table,
             warehouse_id,
@@ -578,7 +589,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         ))?;
 
         let (storage_secret_ident, storage_profile) =
-            C::load_storage_profile(warehouse_id, table_id.ident, t.transaction()).await?;
+            C::load_storage_profile(warehouse_id, tabular_details.ident, t.transaction()).await?;
         let storage_secret =
             maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
         let storage_config = storage_profile
@@ -586,10 +597,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 data_access,
                 storage_secret.as_ref(),
                 &parse_location(
-                    table_id.location.as_str(),
+                    tabular_details.location.as_str(),
                     StatusCode::INTERNAL_SERVER_ERROR,
                 )?,
                 storage_permission,
+                &request_metadata,
+                warehouse_id,
+                tabular_details.table_uuid().into(),
             )
             .await?;
 
@@ -597,7 +611,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             vec![]
         } else {
             vec![StorageCredential {
-                prefix: table_id.location.clone(),
+                prefix: tabular_details.location.clone(),
                 config: storage_config.creds.into(),
             }]
         };

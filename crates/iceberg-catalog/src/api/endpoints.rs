@@ -16,6 +16,7 @@ macro_rules! generate_endpoints {
         $(
             paste::paste! {
                 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter)]
+                #[allow(clippy::enum_variant_names)]
                 pub enum [<$enum_name Endpoint>] {
                     $($variant),*
                 }
@@ -167,6 +168,7 @@ generate_endpoints! {
     enum Sign {
         S3RequestGlobal(POST, "/catalog/v1/aws/s3/sign"),
         S3RequestPrefix(POST, "/catalog/v1/{prefix}/v1/aws/s3/sign"),
+        S3RequestTabular(POST, "/catalog/v1/signer/{prefix}/tabular-id/{tabular_id}/v1/aws/s3/sign"),
     }
 
     enum ManagementV1 {

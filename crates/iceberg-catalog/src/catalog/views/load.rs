@@ -105,6 +105,9 @@ pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &view_location,
             // TODO: This should be a permission based on authz
             StoragePermissions::ReadWriteDelete,
+            &request_metadata,
+            warehouse_id,
+            view_id.into(),
         )
         .await?;
     let load_table_result = LoadViewResult {

@@ -24,8 +24,7 @@ where
     /// If a request is recieved at `/aws/s3/sign`, table and namespace will be `None`.
     async fn sign(
         prefix: Option<Prefix>,
-        namespace: Option<String>,
-        table: Option<String>,
+        tabular_id: Option<uuid::Uuid>,
         request: S3SignRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
@@ -41,7 +40,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<S3SignRequest>| {
                     {
-                        I::sign(None, None, None, request, api_context, metadata)
+                        I::sign(None, None, request, api_context, metadata)
                     }
                 },
             ),
@@ -54,7 +53,26 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                  Extension(metadata): Extension<RequestMetadata>,
                  Json(request): Json<S3SignRequest>| {
                     {
-                        I::sign(Some(prefix), None, None, request, api_context, metadata)
+                        I::sign(Some(prefix), None, request, api_context, metadata)
+                    }
+                },
+            ),
+        )
+        .route(
+            "/signer/{prefix}/tabular-id/{tabular_id}/v1/aws/s3/sign",
+            post(
+                |Path((prefix, tabular_id)): Path<(Prefix, uuid::Uuid)>,
+                 State(api_context): State<ApiContext<S>>,
+                 Extension(metadata): Extension<RequestMetadata>,
+                 Json(request): Json<S3SignRequest>| {
+                    {
+                        I::sign(
+                            Some(prefix),
+                            Some(tabular_id),
+                            request,
+                            api_context,
+                            metadata,
+                        )
                     }
                 },
             ),

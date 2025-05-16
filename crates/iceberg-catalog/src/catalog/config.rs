@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use super::CatalogServer;
+use super::{CatalogServer, DEFAULT_PAGE_SIZE};
 use crate::{
     api::{
         iceberg::v1::{
@@ -68,8 +68,11 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
         .await?;
 
         config
-            .overrides
+            .defaults
             .insert("prefix".to_string(), CONFIG.warehouse_prefix(warehouse_id));
+        config
+            .defaults
+            .insert("rest-page-size".to_string(), DEFAULT_PAGE_SIZE.to_string());
 
         config
             .overrides
