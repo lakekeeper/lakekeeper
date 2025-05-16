@@ -34,7 +34,7 @@ mod test {
     use crate::service::authz::tests::HidingAuthorizer;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::metrics::CommitReport;
-    use iceberg_ext::catalog::rest::ReportMetricsRequest;
+    use iceberg_ext::catalog::rest::{ReportMetricsRequest, ScanReport};
 
     #[sqlx::test]
     async fn test_store_metric(pool: sqlx::PgPool) {
@@ -51,7 +51,7 @@ mod test {
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )
         .await;
-        let metrics = ReportMetricsRequest::CommitReport(CommitReport {
+        let commit_report = ReportMetricsRequest::CommitReport(CommitReport {
             table_name: "".to_string(),
             snapshot_id: 0,
             sequence_number: 0,
@@ -60,7 +60,24 @@ mod test {
             metadata: None,
         });
         let _ = CatalogServer::report_metrics(
-            metrics,
+            commit_report,
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        let scan_report = ReportMetricsRequest::ScanReport(ScanReport {
+            table_name: "".to_string(),
+            snapshot_id: 0,
+            filter: Box::new(Default::default()),
+            schema_id: 0,
+            projected_field_ids: vec![],
+            projected_field_names: vec![],
+            metrics: Default::default(),
+            metadata: None,
+        });
+        let _ = CatalogServer::report_metrics(
+            scan_report,
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
         )

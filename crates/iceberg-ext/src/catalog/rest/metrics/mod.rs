@@ -18,7 +18,6 @@ mod unary_expression;
 pub enum ReportMetricsRequest {
     ScanReport(ScanReport),
     CommitReport(CommitReport),
-    DatabaseTest(DatabaseTest),
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
