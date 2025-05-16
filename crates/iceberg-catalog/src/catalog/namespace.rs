@@ -23,7 +23,7 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
-        task_queue::{tabular_purge_queue::TabularPurgeInput, TaskFilter},
+        task_queue::{tabular_purge_queue::TabularPurge, TaskFilter, TaskMetadata},
         Catalog, GetWarehouseResponse, NamespaceId, State, TabularId, Transaction,
     },
     WarehouseId, CONFIG,
@@ -444,19 +444,9 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
     {
         let drop_info =
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
-        // commit before starting the purge tasks so that we cannot end in the situation where
-        // data is deleted but the transaction is not committed, meaning dangling pointers.
-        t.commit().await?;
-        state
-            .v1_state
-            .authz
-            .delete_namespace(request_metadata, namespace_id)
-            .await?;
+
         // cancel pending tasks
-        state
-            .v1_state
-            .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(drop_info.open_tasks))
+        C::cancel_tabular_expiration(TaskFilter::TaskIds(drop_info.open_tasks), t.transaction())
             .await?;
 
         if flags.purge {
@@ -465,19 +455,31 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
                     TabularId::Table(id) => (id, TabularType::Table),
                     TabularId::View(id) => (id, TabularType::View),
                 };
-                state
-                    .v1_state
-                    .queues
-                    .queue_tabular_purge(TabularPurgeInput {
-                        tabular_id,
-                        warehouse_ident: warehouse.id,
-                        tabular_type,
-                        parent_id: None,
+                C::queue_tabular_purge(
+                    TaskMetadata {
+                        idempotency_key: tabular_id,
+                        warehouse_id,
+                        tabular_id: None,
+                        parent_task_id: None,
+                        suspend_until: None,
+                    },
+                    TabularPurge {
                         tabular_location,
-                    })
-                    .await?;
+                        tabular_type,
+                    },
+                    t.transaction(),
+                )
+                .await?;
             }
         }
+        // commit before starting the purge tasks so that we cannot end in the situation where
+        // data is deleted but the transaction is not committed, meaning dangling pointers.
+        t.commit().await?;
+        state
+            .v1_state
+            .authz
+            .delete_namespace(request_metadata, namespace_id)
+            .await?;
         Ok(())
     } else {
         Err(ErrorModel::bad_request(

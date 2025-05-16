@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH history as (\n                INSERT INTO task_log(task_id, warehouse_id, queue_name, state, status)\n                SELECT task_id, warehouse_id, queue_name, state, 'failed'\n                FROM task WHERE task_id = $1\n            )\n            DELETE FROM task\n            WHERE task_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f13c64f2382434c6ec159993210e6240f5619f8ab2007c5b0973ae8b5401894"
+}

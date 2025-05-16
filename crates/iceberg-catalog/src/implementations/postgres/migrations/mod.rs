@@ -120,6 +120,9 @@ async fn run_checks(
 pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
     let mut conn = pool.acquire().await?;
     let m = sqlx::migrate!();
+    let sha_patches = get_sha_patches();
+    tracing::info!("SHA patches: {:?}", sha_patches.iter().collect::<Vec<_>>());
+
     let applied_migrations = match conn.list_applied_migrations().await {
         Ok(migrations) => migrations,
         Err(e) => {
@@ -140,10 +143,12 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
         .migrations
         .iter()
         .map(|mig| (mig.version, &*mig.checksum))
+        .filter(|(v, _)| !sha_patches.contains(v))
         .collect::<HashSet<_>>();
     let applied = applied_migrations
         .iter()
         .map(|mig| (mig.version, &*mig.checksum))
+        .filter(|(v, _)| !sha_patches.contains(v))
         .collect::<HashSet<_>>();
     let missing = to_be_applied.difference(&applied).collect::<HashSet<_>>();
 

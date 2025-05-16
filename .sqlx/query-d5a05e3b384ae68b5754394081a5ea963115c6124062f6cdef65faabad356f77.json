@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE task\n            SET status = 'pending',\n                last_error_details = $2\n            WHERE task_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d5a05e3b384ae68b5754394081a5ea963115c6124062f6cdef65faabad356f77"
+}

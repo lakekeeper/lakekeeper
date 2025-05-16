@@ -870,14 +870,21 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        api::{iceberg::types::PageToken, management::v1::warehouse::WarehouseStatus},
+        api::{
+            iceberg::types::PageToken,
+            management::v1::{warehouse::WarehouseStatus, DeleteKind},
+        },
         catalog::tables::create_table_request_into_table_metadata,
         implementations::postgres::{
             namespace::tests::initialize_namespace,
             tabular::{mark_tabular_as_deleted, table::create::create_table},
             warehouse::{set_warehouse_status, test::initialize_warehouse},
+            PostgresCatalog,
         },
-        service::{ListFlags, NamespaceId, TableCreation},
+        service::{
+            task_queue::{tabular_expiration_queue::TabularExpiration, TaskMetadata},
+            Catalog, ListFlags, NamespaceId, TableCreation,
+        },
     };
 
     fn create_request(
@@ -1774,6 +1781,24 @@ pub(crate) mod tests {
         let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
 
         let mut transaction = pool.begin().await.unwrap();
+
+        let _ = PostgresCatalog::queue_tabular_expiration(
+            TaskMetadata {
+                tabular_id: Some(*table.table_id),
+                idempotency_key: *table.table_id,
+                warehouse_id,
+                parent_task_id: None,
+                suspend_until: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+            },
+            TabularExpiration {
+                tabular_type: crate::api::management::v1::TabularType::Table,
+                deletion_kind: DeleteKind::Purge,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+
         mark_tabular_as_deleted(
             TabularId::Table(*table.table_id),
             false,

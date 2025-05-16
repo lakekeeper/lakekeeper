@@ -35,7 +35,10 @@ use crate::{
         authn::UserId,
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
-        task_queue::TaskId,
+        task_queue::{
+            tabular_expiration_queue::TabularExpiration, tabular_purge_queue::TabularPurge,
+            TaskFilter, TaskId, TaskInput, TaskMetadata,
+        },
     },
     SecretIdent,
 };
@@ -785,6 +788,95 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
+
+    /// Tasks
+    async fn enqueue_task_batch(
+        queue_name: &str,
+        task: Vec<TaskInput>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskId>>;
+    async fn enqueue_task(
+        queue_name: &str,
+        task: TaskInput,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskId> {
+        Self::enqueue_task_batch(queue_name, vec![task], transaction)
+            .await
+            .map(|v| v.into_iter().next())
+            .transpose()
+            .ok_or_else(|| {
+                ErrorModel::internal("Failed to enqueue task", "TaskEnqueueError", None)
+            })?
+    }
+    async fn cancel_pending_tasks(
+        queue_name: &str,
+        filter: TaskFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    #[tracing::instrument(skip(transaction))]
+    async fn queue_tabular_expiration(
+        task_metadata: TaskMetadata,
+        payload: TabularExpiration,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskId> {
+        if task_metadata.tabular_id.is_none() {
+            return Err(ErrorModel::internal(
+                "Tabular ID in TaskMetadata is required for tabular expiration. This is likely a bug.",
+                "TabularIdRequired",
+                None,
+            )
+            .into());
+        }
+
+        Self::enqueue_task(
+            // FIXME: make me a constant and share everywhere
+            "tabular_expiration",
+            TaskInput {
+                task_metadata,
+                payload: serde_json::to_value(&payload).map_err(|e| {
+                    ErrorModel::internal(
+                        format!("Failed to serialize task payload: {e}"),
+                        "TaskPayloadSerializationError",
+                        Some(Box::new(e)),
+                    )
+                })?,
+            },
+            transaction,
+        )
+        .await
+    }
+
+    #[tracing::instrument(skip(transaction))]
+    async fn cancel_tabular_expiration(
+        filter: TaskFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> crate::api::Result<()> {
+        Self::cancel_pending_tasks("tabular_expiration", filter, transaction).await
+    }
+
+    #[tracing::instrument(skip(transaction))]
+    async fn queue_tabular_purge(
+        task_metadata: TaskMetadata,
+        task: TabularPurge,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<TaskId> {
+        Self::enqueue_task(
+            "tabular_purge",
+            TaskInput {
+                task_metadata,
+                payload: serde_json::to_value(&task).map_err(|e| {
+                    ErrorModel::internal(
+                        format!("Failed to serialize task payload: {e}"),
+                        "TaskPayloadSerializationError",
+                        Some(Box::new(e)),
+                    )
+                })?,
+            },
+            transaction,
+        )
+        .await
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

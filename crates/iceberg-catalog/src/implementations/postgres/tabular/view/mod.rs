@@ -533,14 +533,17 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use crate::{
-        api::iceberg::v1::PaginationQuery,
+        api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
         implementations::postgres::{
             namespace::tests::initialize_namespace,
             tabular::{mark_tabular_as_deleted, view::load_view},
             warehouse::test::initialize_warehouse,
-            CatalogState,
+            CatalogState, PostgresCatalog,
         },
-        service::{TabularId, ViewId},
+        service::{
+            task_queue::{tabular_expiration_queue::TabularExpiration, TaskMetadata},
+            Catalog, TabularId, ViewId,
+        },
         WarehouseId,
     };
 
@@ -796,8 +799,25 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn soft_drop_view(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
+
+        let _ = PostgresCatalog::queue_tabular_expiration(
+            TaskMetadata {
+                tabular_id: Some(created_meta.uuid()),
+                idempotency_key: created_meta.uuid(),
+                warehouse_id,
+                parent_task_id: None,
+                suspend_until: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+            },
+            TabularExpiration {
+                tabular_type: crate::api::management::v1::TabularType::Table,
+                deletion_kind: DeleteKind::Purge,
+            },
+            &mut tx,
+        )
+        .await
+        .unwrap();
         mark_tabular_as_deleted(TabularId::View(created_meta.uuid()), false, None, &mut tx)
             .await
             .unwrap();

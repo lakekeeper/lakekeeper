@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": " WITH updated_task AS (\n        SELECT task_id, warehouse_id\n        FROM task\n        WHERE (status = 'pending' AND queue_name = $1 AND ((suspend_until < now() AT TIME ZONE 'UTC') OR (suspend_until IS NULL)))\n                OR (status = 'running' AND (now() - picked_up_at) > $3)\n        FOR UPDATE SKIP LOCKED\n        LIMIT 1\n    ),\n    cfg AS (SELECT config from task_config WHERE queue_name = $1 and warehouse_id = any(select warehouse_id from updated_task))\n    UPDATE task\n    SET status = 'running', picked_up_at = $2, attempt = task.attempt + 1\n    FROM updated_task\n    WHERE task.task_id = updated_task.task_id\n    RETURNING task.task_id, task.tabular_id, task.warehouse_id, task.state, task.suspend_until, task.idempotency_key, task.status as \"status: TaskStatus\", task.picked_up_at, task.attempt, task.parent_task_id, task.queue_name, (select config from cfg)\n    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "state",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "suspend_until",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "idempotency_key",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "status: TaskStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_status",
+            "kind": {
+              "Enum": [
+                "pending",
+                "running",
+                "done",
+                "failed",
+                "cancelled"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "picked_up_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "attempt",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "queue_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "config",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Interval"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "9a608ff8fc4a4a21802f74daa48f66ff8835908176d589b5e6a22e24cb9de5bd"
+}

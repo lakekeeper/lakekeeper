@@ -32,8 +32,7 @@ use crate::{
     },
     catalog::CatalogServer,
     implementations::postgres::{
-        task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-        CatalogState, PostgresCatalog, ReadWrite, SecretsState,
+        task_queues::PgQueue, CatalogState, PostgresCatalog, SecretsState,
     },
     request_metadata::RequestMetadata,
     service::{
@@ -197,7 +196,6 @@ pub(crate) async fn setup<T: Authorizer>(
     authorizer: T,
     delete_profile: TabularDeleteProfile,
     user_id: Option<UserId>,
-    q_config: Option<TaskQueueConfig>,
     number_of_warehouses: usize,
 ) -> (
     ApiContext<State<T, PostgresCatalog, SecretsState>>,
@@ -208,7 +206,7 @@ pub(crate) async fn setup<T: Authorizer>(
         "Number of warehouses must be greater than 0",
     );
 
-    let api_context = get_api_context(&pool, authorizer, q_config);
+    let api_context = get_api_context(&pool, authorizer);
 
     let metadata = if let Some(user_id) = user_id {
         RequestMetadata::random_human(user_id)
@@ -273,31 +271,13 @@ pub(crate) async fn setup<T: Authorizer>(
 pub(crate) fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
-    queue_config: Option<TaskQueueConfig>,
 ) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
-    let q_config = queue_config.unwrap_or_else(|| CONFIG.queue_config.clone());
     ApiContext {
         v1_state: State {
             authz: auth,
             catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
             secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
             contract_verifiers: ContractVerifiers::new(vec![]),
-            queues: TaskQueues::new(
-                Arc::new(
-                    TabularExpirationQueue::from_config(
-                        ReadWrite::from_pools(pool.clone(), pool.clone()),
-                        q_config.clone(),
-                    )
-                    .unwrap(),
-                ),
-                Arc::new(
-                    TabularPurgeQueue::from_config(
-                        ReadWrite::from_pools(pool.clone(), pool.clone()),
-                        q_config.clone(),
-                    )
-                    .unwrap(),
-                ),
-            ),
             hooks: EndpointHookCollection::new(vec![]),
         },
     }
@@ -309,18 +289,18 @@ pub(crate) fn random_request_metadata() -> RequestMetadata {
 
 pub(crate) fn spawn_drop_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    queue_config: Option<TaskQueueConfig>,
 ) {
+    let q_config = queue_config.unwrap_or_else(|| CONFIG.queue_config.clone());
     let ctx = ctx.clone();
-    tokio::task::spawn(async move {
-        ctx.clone()
-            .v1_state
-            .queues
-            .spawn_queues::<PostgresCatalog, SecretsState, T>(
-                ctx.v1_state.catalog,
-                ctx.v1_state.secrets,
-                ctx.v1_state.authz,
-            )
-            .await
-            .unwrap();
-    });
+
+    let queues = TaskQueues::new(Arc::new(
+        PgQueue::from_config(ctx.v1_state.catalog.read_write.clone(), q_config.clone()).unwrap(),
+    ));
+    tokio::task::spawn(queues.spawn_queues::<PostgresCatalog, _, T>(
+        ctx.v1_state.catalog.clone(),
+        ctx.v1_state.secrets.clone(),
+        ctx.v1_state.authz.clone(),
+        q_config.poll_interval,
+    ));
 }

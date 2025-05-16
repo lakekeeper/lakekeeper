@@ -6,6 +6,7 @@ use iceberg_ext::{
     configs::Location,
 };
 use itertools::Itertools;
+use uuid::Uuid;
 
 use super::{
     bootstrap::{bootstrap, get_validation_data},
@@ -47,18 +48,22 @@ use crate::{
             table::{commit_table_transaction, create_table, load_storage_profile},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
+        task_queues::{cancel_pending_tasks, queue_task_batch},
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
     },
     request_metadata::RequestMetadata,
     service::{
-        authn::UserId, storage::StorageProfile, Catalog, CreateNamespaceRequest,
-        CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse,
-        GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
-        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceId,
-        NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, StartupValidationData,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
-        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
+        authn::UserId,
+        storage::StorageProfile,
+        task_queue::{TaskFilter, TaskId, TaskInput},
+        Catalog, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
+        CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
+        GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
+        NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId,
+        StartupValidationData, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
+        TabularId, TabularInfo, Transaction, UndropTabularResponse, ViewCommit, ViewId,
+        WarehouseId, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -688,5 +693,37 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
+    }
+
+    async fn enqueue_task_batch(
+        queue_name: &str,
+        tasks: Vec<TaskInput>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskId>> {
+        // TODO: lift this into the trait
+        let tasks = tasks
+            .into_iter()
+            .map(|mut t| {
+                t.task_metadata.idempotency_key = Uuid::new_v5(
+                    &t.task_metadata.warehouse_id,
+                    t.task_metadata.idempotency_key.as_bytes(),
+                );
+                t
+            })
+            .collect_vec();
+
+        let queued = queue_task_batch(transaction, queue_name, tasks).await?;
+
+        tracing::debug!("Queued {} tasks", queued.len());
+
+        Ok(queued.into_iter().map(|t| t.task_id.into()).collect())
+    }
+
+    async fn cancel_pending_tasks(
+        queue_name: &str,
+        filter: TaskFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        cancel_pending_tasks(&mut *transaction, filter, queue_name).await
     }
 }

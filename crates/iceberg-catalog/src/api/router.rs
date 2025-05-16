@@ -25,7 +25,6 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -43,7 +42,6 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub authorizer: A,
     pub catalog_state: C::State,
     pub secrets_state: S,
-    pub queues: TaskQueues,
     pub table_change_checkers: ContractVerifiers,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
@@ -60,7 +58,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
             .field("authorizer", &"Authorizer")
             .field("catalog_state", &"CatalogState")
             .field("secrets_state", &"SecretsState")
-            .field("queues", &self.queues)
             .field("table_change_checkers", &self.table_change_checkers)
             .field("authenticator", &self.authenticator)
             .field("svhp", &self.service_health_provider)
@@ -93,7 +90,6 @@ pub fn new_full_router<
         authorizer,
         catalog_state,
         secrets_state,
-        queues,
         table_change_checkers,
         service_health_provider,
         cors_origins,
@@ -194,7 +190,6 @@ pub fn new_full_router<
                 catalog: catalog_state,
                 secrets: secrets_state,
                 contract_verifiers: table_change_checkers,
-                queues,
                 hooks,
             },
         });

@@ -41,7 +41,7 @@ use crate::{
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
-        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
         set_not_found_status_code,
     },
     catalog,
@@ -54,8 +54,8 @@ use crate::{
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
         task_queue::{
-            tabular_expiration_queue::TabularExpirationInput,
-            tabular_purge_queue::TabularPurgeInput,
+            tabular_expiration_queue::TabularExpiration, tabular_purge_queue::TabularPurge,
+            TaskMetadata,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
@@ -692,45 +692,57 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         match warehouse.tabular_delete_profile {
             TabularDeleteProfile::Hard {} => {
                 let location = C::drop_table(table_id, force, t.transaction()).await?;
-                // committing here means maybe dangling data if queue_tabular_purge fails
-                // commiting after queuing means we may end up with a table pointing nowhere
-                // I feel that some undeleted files are less bad than a table that's there but can't be loaded
-                t.commit().await?;
 
                 if purge_requested {
-                    state
-                        .v1_state
-                        .queues
-                        .queue_tabular_purge(TabularPurgeInput {
-                            tabular_id: *table_id,
+                    C::queue_tabular_purge(
+                        TaskMetadata {
+                            // tabular_purges run after the tabular is purged from the db
+                            // we set it to None here to avoid FK constraint conflicts
+                            tabular_id: None,
+                            idempotency_key: *table_id,
+                            warehouse_id,
+                            parent_task_id: None,
+                            suspend_until: None,
+                        },
+                        TabularPurge {
                             tabular_location: location,
-                            warehouse_ident: warehouse_id,
                             tabular_type: TabularType::Table,
-                            parent_id: None,
-                        })
-                        .await?;
+                        },
+                        t.transaction(),
+                    )
+                    .await?;
 
                     tracing::debug!("Queued purge task for dropped table '{table_id}'.");
                 }
+                t.commit().await?;
                 authorizer.delete_table(table_id).await?;
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
+                let _ = C::queue_tabular_expiration(
+                    TaskMetadata {
+                        tabular_id: Some(*table_id),
+                        idempotency_key: *table_id,
+                        warehouse_id,
+                        parent_task_id: None,
+                        suspend_until: Some(chrono::Utc::now() + expiration_seconds),
+                    },
+                    TabularExpiration {
+                        tabular_type: TabularType::Table,
+                        deletion_kind: if purge_requested {
+                            DeleteKind::Purge
+                        } else {
+                            DeleteKind::Default
+                        },
+                    },
+                    t.transaction(),
+                )
+                .await?;
+
                 C::mark_tabular_as_deleted(TabularId::Table(*table_id), force, t.transaction())
                     .await?;
-                t.commit().await?;
 
-                state
-                    .v1_state
-                    .queues
-                    .queue_tabular_expiration(TabularExpirationInput {
-                        tabular_id: table_id.into(),
-                        warehouse_ident: warehouse_id,
-                        tabular_type: TabularType::Table,
-                        purge: purge_requested,
-                        expire_at: chrono::Utc::now() + expiration_seconds,
-                    })
-                    .await?;
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
+                t.commit().await?;
             }
         }
 

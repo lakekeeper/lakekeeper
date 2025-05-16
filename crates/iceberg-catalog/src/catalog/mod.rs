@@ -335,7 +335,6 @@ pub(crate) mod test {
             authorizer,
             delete_profile,
             user_id,
-            None,
             1,
         )
         .await

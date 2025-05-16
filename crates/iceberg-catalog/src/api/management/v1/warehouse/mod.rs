@@ -809,16 +809,16 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .collect::<Vec<_>>();
         let undrop_tabular_responses =
             C::undrop_tabulars(&tabs, warehouse_id, transaction.transaction()).await?;
-        context
-            .v1_state
-            .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(
+        C::cancel_tabular_expiration(
+            TaskFilter::TaskIds(
                 undrop_tabular_responses
                     .iter()
                     .map(|r| r.task_id.clone())
                     .collect(),
-            ))
-            .await?;
+            ),
+            transaction.transaction(),
+        )
+        .await?;
         transaction.commit().await?;
 
         context

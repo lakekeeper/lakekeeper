@@ -1,13 +1,14 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{Location, ParseFromStr},
 };
+use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use uuid::Uuid;
 
-use super::random_ms_duration;
+use super::TaskMetadata;
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
@@ -18,49 +19,43 @@ use crate::{
     WarehouseId,
 };
 
-pub type TabularPurgeQueue =
-    Arc<dyn TaskQueue<Task = TabularPurgeTask, Input = TabularPurgeInput> + Send + Sync + 'static>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabularPurge {
+    pub tabular_location: String,
+    pub tabular_type: TabularType,
+}
 
 // TODO: concurrent workers
 pub async fn purge_task<C: Catalog, S: SecretStore>(
-    fetcher: TabularPurgeQueue,
+    fetcher: async_channel::Receiver<Task>,
+    queues: Arc<dyn TaskQueue + Send + Sync + 'static>,
     catalog_state: C::State,
     secret_state: S,
 ) {
-    loop {
-        // add some jitter to avoid syncing with other queues
-        tokio::time::sleep(random_ms_duration()).await;
-
-        let purge_task = match fetcher.pick_new_task().await {
-            Ok(expiration) => expiration,
+    while let Ok(task) = fetcher.recv().await {
+        let state = match task.task_state::<TabularPurge>() {
+            Ok(state) => state,
             Err(err) => {
-                // TODO: add retry counter + exponential backoff
-                tracing::error!("Failed to fetch deletion: {:?}", err);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tracing::error!("Failed to deserialize task state: {:?}", err);
+                // TODO: record fatal error
                 continue;
             }
         };
-
-        let Some(purge_task) = purge_task else {
-            tokio::time::sleep(fetcher.config().poll_interval).await;
-            continue;
-        };
-
         let span = tracing::debug_span!(
             "tabular_purge",
-            tabular_id = %purge_task.tabular_id,
-            location = %purge_task.tabular_location,
-            warehouse_id = %purge_task.warehouse_ident,
-            tabular_type = %purge_task.tabular_type,
-            queue_name = %purge_task.task.queue_name,
-            task = ?purge_task.task,
+            location = %state.tabular_location,
+            warehouse_id = %task.task_metadata.warehouse_id,
+            tabular_type = %state.tabular_type,
+            queue_name = %task.queue_name,
+            task = ?task,
         );
 
         instrumented_purge::<_, C>(
-            fetcher.clone(),
+            queues.clone(),
             catalog_state.clone(),
             &secret_state,
-            &purge_task,
+            &state,
+            &task,
         )
         .instrument(span.or_current())
         .await;
@@ -68,41 +63,52 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
 }
 
 async fn instrumented_purge<S: SecretStore, C: Catalog>(
-    fetcher: Arc<dyn TaskQueue<Task = TabularPurgeTask, Input = TabularPurgeInput> + Send + Sync>,
+    queues: Arc<dyn TaskQueue + Send + Sync + 'static>,
     catalog_state: C::State,
     secret_state: &S,
-    purge_task: &TabularPurgeTask,
+    purge_task: &TabularPurge,
+    task: &Task,
 ) {
-    match purge::<C, S>(purge_task, secret_state, catalog_state.clone()).await {
+    match purge::<C, S>(
+        purge_task,
+        &task.task_metadata,
+        secret_state,
+        catalog_state.clone(),
+    )
+    .await
+    {
         Ok(()) => {
-            fetcher.retrying_record_success(&purge_task.task).await;
+            queues.retrying_record_success(task).await;
             tracing::info!(
-                "Successfully cleaned up tabular {} at location {}",
-                purge_task.tabular_id,
+                "Successfully cleaned up tabular at location {}",
                 purge_task.tabular_location
             );
         }
         Err(err) => {
             tracing::error!(
-                "Failed to expire table {}: {}",
-                purge_task.tabular_id,
+                "Failed to expire tabular at location {} due to: {}",
+                purge_task.tabular_location,
                 err.error
             );
-            fetcher
-                .retrying_record_failure(&purge_task.task, &err.error.to_string())
+            queues
+                .retrying_record_failure(task, &err.error.to_string())
                 .await;
         }
     };
 }
 
 async fn purge<C, S>(
-    TabularPurgeTask {
-        tabular_id,
+    TabularPurge {
         tabular_location,
-        warehouse_ident,
         tabular_type: _,
-        task: _,
-    }: &TabularPurgeTask,
+    }: &TabularPurge,
+    TaskMetadata {
+        idempotency_key: _,
+        tabular_id: _,
+        warehouse_id,
+        parent_task_id: _,
+        suspend_until: _,
+    }: &TaskMetadata,
     secret_state: &S,
     catalog_state: C::State,
 ) -> Result<()>
@@ -117,7 +123,7 @@ where
             e
         })?;
 
-    let warehouse = C::require_warehouse(*warehouse_ident, trx.transaction())
+    let warehouse = C::require_warehouse(*warehouse_id, trx.transaction())
         .await
         .map_err(|e| {
             tracing::error!("Failed to get warehouse: {:?}", e);
@@ -160,7 +166,7 @@ where
     remove_all(&file_io, &tabular_location).await.map_err(|e| {
         tracing::error!(
             ?e,
-            "Failed to purge '{tabular_id}' at location: '{tabular_location}'",
+            "Failed to purge tabular at location: '{tabular_location}'",
         );
         ErrorModel::internal(
             "Failed to remove location.",
