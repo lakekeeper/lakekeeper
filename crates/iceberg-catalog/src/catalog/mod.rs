@@ -6,7 +6,7 @@ mod metrics;
 pub(crate) mod namespace;
 #[cfg(feature = "s3-signer")]
 mod s3_signer;
-pub(crate) mod tables;
+pub mod tables;
 pub(crate) mod tabular;
 pub(crate) mod views;
 

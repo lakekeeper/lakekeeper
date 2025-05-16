@@ -3187,6 +3187,7 @@ version = "0.8.4"
 dependencies = [
  "anyhow",
  "async-nats",
+ "async-trait",
  "axum 0.8.4",
  "clap",
  "iceberg-catalog",
@@ -3196,11 +3197,14 @@ dependencies = [
  "moka",
  "rdkafka",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]

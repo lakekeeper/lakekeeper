@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Context, Error};
 #[cfg(feature = "ui")]
 use axum::routing::get;
 use iceberg_catalog::{
@@ -26,13 +26,16 @@ use iceberg_catalog::{
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
+        task_queue::{QueueConfig, TaskQueue, TaskQueues},
         Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
     SecretBackend, CONFIG,
 };
 use limes::{Authenticator, AuthenticatorEnum};
+use moka::future::FutureExt;
 use reqwest::Url;
+
+use crate::external_queue::{ExternalQueueConfig, TestHook};
 
 const OIDC_IDP_ID: &str = "oidc";
 const K8S_IDP_ID: &str = "kubernetes";
@@ -341,17 +344,62 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     );
 
     let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
-    let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
-        cloud_events_tx.clone(),
-    ))]);
+
+    let hooks = EndpointHookCollection::new(vec![
+        Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())),
+        Arc::new(TestHook::<PostgresCatalog> {
+            state: catalog_state.clone(),
+        }),
+    ]);
     let queue_interface = Arc::new(
         iceberg_catalog::implementations::postgres::task_queues::PgQueue::from_config(
             ReadWrite::from_pools(catalog_state.read_pool(), catalog_state.write_pool()),
             CONFIG.queue_config.clone(),
         )?,
     );
-    let queues = TaskQueues::new(queue_interface.clone());
+    let mut queues = TaskQueues::new(queue_interface.clone());
+    queues.register_queue(
+        TestHook::<PostgresCatalog>::name().to_string(),
+        QueueConfig {
+            config: CONFIG.queue_config.clone(),
+            channel_size: 1000,
+            default_configuration: serde_json::to_value(&ExternalQueueConfig { max_filesize: 100 })
+                .context("Failed to serialize ExternalQueueConfig")?,
+        },
+        Arc::new(move |rx, cfg| {
+            let qi = queue_interface.clone();
+            async move {
+                while let Ok(task) = rx.recv().await {
+                    tracing::info!("Received task: {task:?}");
+                    if let Err(e) = qi.record_success(task.task_id).await {
+                        tracing::error!("Failed to record success: {}", e.error);
+                    }
 
+                    let task_config = task.task_config::<ExternalQueueConfig>();
+                    match task_config {
+                        Ok(Some(config)) => {
+                            tracing::info!("Task config: {config:?}");
+                            if let Some(max_filesize) = config.max_filesize {
+                                tracing::info!(
+                                    "Processing with override max filesize: {max_filesize}"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                "No task config override provided, proceeding with defaults."
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to deserialize task config: {}", e);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            .boxed()
+        }),
+    );
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),

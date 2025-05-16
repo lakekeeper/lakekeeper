@@ -10,6 +10,7 @@ use iceberg_catalog::{
 };
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
+mod external_queue;
 mod healthcheck;
 mod serve;
 #[cfg(feature = "ui")]
