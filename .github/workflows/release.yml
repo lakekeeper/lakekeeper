@@ -73,34 +73,37 @@ jobs:
             os: ubuntu-22.04
             name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
             docker-build: false
+            hdfs: false
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
             docker-build: true
+            hdfs: false
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
             docker-build: true
+            hdfs: false
+
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: iceberg-catalog-x86_64-unknown-linux-gnu-hdfs.tar.gz
+            docker-build: false
+            hdfs: true
+
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            name: iceberg-catalog-aarch64-unknown-linux-musl-hdfs.tar.gz
+            docker-build: true
+            hdfs: true
 
           - target: aarch64-apple-darwin
             os: macos-14
             name: iceberg-catalog-aarch64-apple-darwin.tar.gz
             docker-build: false
-
-    #          - target: x86_64-pc-windows-msvc
-    #            os: windows-latest
-    #            name: iceberg-catalog-x86_64-pc-windows-msvc.zip
-    #            rustflags: -C target-feature=+crt-static
-    #            # Windows with cross is extremely slow
-    #            cross: false
-    #
-    #          - target: aarch64-pc-windows-msvc
-    #            os: windows-latest
-    #            name: iceberg-catalog-aarch64-pc-windows-msvc.zip
-    #            rustflags: -C target-feature=+crt-static
-    #            cross: false
+            hdfs: false
 
     runs-on: ${{ matrix.os }}
     continue-on-error: true
@@ -125,15 +128,12 @@ jobs:
           node-version: 23
 
       - name: Build [Cargo]
-        if: matrix.docker-build == false
-        run: cargo build --all-features --release --locked --target ${{ matrix.target }}
+        if: matrix.docker-build == false && matrix.hdfs == false
+        run: cargo build --features "authz-openfga,nats,kafka,ui" --release --locked --target ${{ matrix.target }}
 
-      #      - name: Prepare artifacts [Windows]
-      #        if: matrix.os == 'windows-latest'
-      #        run: |
-      #          cd target/${{ matrix.target }}/release
-      #          7z a ../../../${{ matrix.name }} iceberg-catalog.exe
-      #          cd -
+      - name: Build [Cargo - HDFS]
+        if: matrix.docker-build == false && matrix.hdfs == true
+        run: cargo build --all-features --release --locked --target ${{ matrix.target }}
 
       - name: Prepare Docker [Docker build]
         if: matrix.docker-build == true
@@ -146,7 +146,15 @@ jobs:
             -f docker-build/build-with-alpine.Dockerfile .
 
       - name: Build [Docker Build]
-        if: matrix.docker-build == true
+        if: matrix.docker-build == true && matrix.hdfs == false
+        run: |
+          docker run \
+            -w /build --mount type=bind,src=$(pwd),target=/build \
+            localhost/build-lakekeeper:latest \
+            cargo build --release --features "authz-openfga,nats,kafka,ui" --locked --target ${{ matrix.target }}
+
+      - name: Build [Docker Build - HDFS]
+        if: matrix.docker-build == true && matrix.hdfs == true
         run: |
           docker run \
             -w /build --mount type=bind,src=$(pwd),target=/build \
@@ -172,20 +180,6 @@ jobs:
     needs:
       - build-binary
       - release_please
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -203,6 +197,12 @@ jobs:
           cd -
           cd bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
           tar xzvf iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
+          cd -
+          cd bin-iceberg-catalog-x86_64-unknown-linux-gnu-hdfs.tar.gz
+          tar xzvf iceberg-catalog-x86_64-unknown-linux-gnu-hdfs.tar.gz
+          cd -
+          cd bin-iceberg-catalog-aarch64-unknown-linux-musl-hdfs.tar.gz
+          tar xzvf iceberg-catalog-aarch64-unknown-linux-musl-hdfs.tar.gz
           ls -Rlh
 
       - name: Set up QEMU
@@ -215,6 +215,7 @@ jobs:
         run: |
           DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
             -f docker/bin.Dockerfile \
+            --target lakekeeper \
             --build-arg "ARCH=amd64" \
             --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
             --build-arg "BIN=bin-iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz/iceberg-catalog" .
@@ -225,10 +226,32 @@ jobs:
           DOCKER_BUILDKIT=1 docker build \
             --platform linux/arm64 -t localhost/iceberg-catalog-local:arm64 \
             -f docker/bin.Dockerfile \
+            --target lakekeeper \
             --build-arg "ARCH=arm64" \
             --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
             --build-arg "BIN=bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz/iceberg-catalog" .
           docker save -o /tmp/docker-iceberg-catalog-arm64.tar localhost/iceberg-catalog-local:arm64
+
+      - name: Build Docker image (amd64-hdfs)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64-hdfs \
+            -f docker/bin.Dockerfile \
+            --target lakekeeper-hdfs \
+            --build-arg "ARCH=amd64" \
+            --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
+            --build-arg "BIN=bin-iceberg-catalog-x86_64-unknown-linux-gnu-hdfs.tar.gz/iceberg-catalog" .
+          docker save -o /tmp/docker-iceberg-catalog-amd64-hdfs.tar localhost/iceberg-catalog-local:amd64-hdfs
+  
+      - name: Build Docker image (arm64-hdfs)
+        run: |
+          DOCKER_BUILDKIT=1 docker build \
+            --platform linux/arm64 -t localhost/iceberg-catalog-local:arm64-hdfs \
+            -f docker/bin.Dockerfile \
+            --target lakekeeper-hdfs \
+            --build-arg "ARCH=arm64" \
+            --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
+            --build-arg "BIN=bin-iceberg-catalog-aarch64-unknown-linux-musl-hdfs.tar.gz/iceberg-catalog" .
+          docker save -o /tmp/docker-iceberg-catalog-arm64-hdfs.tar localhost/iceberg-catalog-local:arm64-hdfs
 
       - name: Save Docker
         uses: actions/upload-artifact@v4
@@ -282,7 +305,47 @@ jobs:
           AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_S3_REGION: ${{ secrets.AWS_S3_REGION }}
+          AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+          AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
+          AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
 
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
+  
+  test-hdfs:
+    name: Test HDFS
+    runs-on: ubuntu-24.04
+    needs:
+      - build-docker
+      - release_please
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Load Docker
+        run: |
+          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64-hdfs.tar
+          docker images
+
+      - name: Test HDFS
+        run: |
+          cd examples/hdfs
+          sed -i '/pull_policy: always/d' docker-compose.yaml
+          docker compose run --quiet-pull jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Spark.ipynb"
+        env:
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64-hdfs
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
@@ -305,9 +368,13 @@ jobs:
         run: |
           docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
           docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64-hdfs.tar
+          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64-hdfs.tar
           docker images
           docker inspect localhost/iceberg-catalog-local:amd64
           docker inspect localhost/iceberg-catalog-local:arm64
+          docker inspect localhost/iceberg-catalog-local:amd64-hdfs
+          docker inspect localhost/iceberg-catalog-local:arm64-hdfs
 
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
@@ -327,7 +394,8 @@ jobs:
       - build-binary
       - release_please
       - test-docker
-    if: ${{ needs.release_please.outputs.releases_created != 'true' }} && github.ref == 'refs/heads/main'
+      - test-hdfs
+    if: ${{ needs.release_please.outputs.releases_created != 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
     steps:
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -343,6 +411,8 @@ jobs:
         run: |
           docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
           docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64-hdfs.tar
+          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64-hdfs.tar
           docker images
 
       - name: Push Full Tag to quay.io
@@ -354,6 +424,12 @@ jobs:
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest create quay.io/lakekeeper/catalog:latest-main quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest push quay.io/lakekeeper/catalog:latest-main
+          docker tag localhost/iceberg-catalog-local:amd64-hdfs quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64-hdfs
+          docker tag localhost/iceberg-catalog-local:arm64-hdfs quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64-hdfs
+          docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64-hdfs
+          docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64-hdfs
+          docker manifest create quay.io/lakekeeper/catalog:latest-main-hdfs quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64-hdfs quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64-hdfs
+          docker manifest push quay.io/lakekeeper/catalog:latest-main-hdfs
 
   # Create GitHub release with Rust build targets and release notes
   publish-binary:
@@ -364,6 +440,7 @@ jobs:
       - build-docker
       - release_please
       - test-docker
+      - test-hdfs
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts

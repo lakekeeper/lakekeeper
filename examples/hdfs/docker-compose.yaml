@@ -1,0 +1,368 @@
+services:
+  jupyter:
+    image: quay.io/jupyter/pyspark-notebook:2024-10-14
+    depends_on:
+      server:
+        condition: service_healthy
+      kerberos-sidecar:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_healthy
+      kerberos-permission-fixer:
+        condition: service_started
+      bootstrap:
+        condition: service_completed_successfully
+    command: start-notebook.sh --NotebookApp.token=''
+    environment:
+      - KRB5CCNAME=FILE:/tickets/krb5cc_0
+      - KRB5_CONFIG=/etc/krb5.conf
+      - HADOOP_CONF_DIR=/etc/hadoop
+      - KRB5_TRACE=/dev/stderr
+    volumes:
+      - ./notebooks:/home/jovyan/examples/
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - ./hdfs/hadoop-config/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./hdfs/hadoop-config/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+    networks:
+      iceberg_net:
+    ports:
+      - "8888:8888"
+
+  server:
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.8.3-hdfs-preview}
+    pull_policy: always
+    environment:
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__ENABLE_HDFS_WITH_SYSTEM_CREDENTIALS=true
+      - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
+      - KRB5CCNAME=FILE:/tickets/krb5cc_0
+      - KRB5_CONFIG=/etc/krb5.conf
+      - HADOOP_CONF_DIR=/etc/hadoop
+      - RUST_LOG=debug,hdfs_native=trace
+    command: [ "serve" ]
+    healthcheck:
+      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 3s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      kerberos-sidecar:
+        condition: service_healthy
+    volumes:
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - ./hdfs/hadoop-config/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./hdfs/hadoop-config/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+    networks:
+      iceberg_net:
+    ports:
+      - "8181:8181"
+
+  migrate:
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:v0.8.3-hdfs-preview}
+    pull_policy: always
+    environment:
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__ENABLE_HDFS_WITH_SYSTEM_CREDENTIALS=true
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - RUST_LOG=info
+    restart: "no"
+    command: [ "migrate" ]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  bootstrap:
+    image: curlimages/curl
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - -w
+      - "%{http_code}"
+      - "-X"
+      - "POST"
+      - "-v"
+      - "http://server:8181/management/v1/bootstrap"
+      - "-H"
+      - "Content-Type: application/json"
+      - "--data"
+      - '{"accept-terms-of-use": true}'
+      - "-o"
+      - "/dev/null"
+      # - "--fail-with-body"
+    networks:
+      iceberg_net:
+  db:
+    image: bitnami/postgresql:16.3.0
+    environment:
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_PASSWORD=postgres
+      - POSTGRESQL_DATABASE=postgres
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      iceberg_net:
+
+  kdc:
+    image: ubuntu:24.04
+    hostname: kdc.example.com
+    entrypoint: [ "/bin/bash", "-c" ]
+    environment:
+      - DEBIAN_FRONTEND=noninteractive
+    command: |
+      "
+      # Remove any existing keytabs
+      rm -f /keytabs/*.keytab
+      rm -f /keytabs/ready
+
+      # Install Kerberos KDC
+      apt-get update -yqq
+      apt-get install -yqq krb5-kdc krb5-admin-server
+
+      # Stop services to reconfigure
+      # service krb5-admin-server stop
+      # service krb5-kdc stop
+
+      # Initialize new database
+      mkdir -p /var/log/kerberos
+      kdb5_util -P masterkey -r EXAMPLE.COM create -s
+
+      # Create principals
+      kadmin.local -q 'addprinc -pw admin admin/admin'
+      echo '*/admin@EXAMPLE.COM *' > /etc/krb5kdc/kadm5.acl
+      
+      # Service principals
+      kadmin.local -q 'addprinc -randkey hdfs/namenode.hdfs_iceberg_net@EXAMPLE.COM'
+      kadmin.local -q 'addprinc -randkey HTTP/namenode.hdfs_iceberg_net@EXAMPLE.COM'
+      kadmin.local -q 'addprinc -randkey hdfs/datanode@EXAMPLE.COM'
+      
+      # Client principal
+      kadmin.local -q 'addprinc -randkey hdfs/server@EXAMPLE.COM'
+      
+      # Create keytabs
+      kadmin.local -q 'ktadd -k /keytabs/dn.keytab hdfs/datanode@EXAMPLE.COM'
+      kadmin.local -q 'ktadd -k /keytabs/app.keytab hdfs/server@EXAMPLE.COM'
+      kadmin.local -q 'ktadd -k /keytabs/nn.keytab hdfs/namenode.hdfs_iceberg_net@EXAMPLE.COM HTTP/namenode.hdfs_iceberg_net@EXAMPLE.COM'
+
+      # Create ready file explicitly
+      echo 'Creating ready file'
+      echo 'Keytab created' > /keytabs/ready
+      chmod 644 /keytabs/ready
+
+      # Start services
+      /usr/sbin/krb5kdc -n & /usr/sbin/kadmind -nofork
+      "
+    volumes:
+      - keytab-volume:/keytabs
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - ./hdfs/kdc.conf:/var/kerberos/krb5kdc/kdc.conf:ro
+    healthcheck:
+      test: bash -c "if [ -f /keytabs/ready ]; then exit 0; else exit 1; fi"
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      iceberg_net:
+        aliases:
+          - kdc.example.com
+  # HDFS NameNode with Kerberos
+  namenode:
+    image: apache/hadoop:3
+    hostname: namenode
+    container_name: namenode
+    user: root
+    ports:
+      - "9871:9871"
+    depends_on:
+      kerberos-sidecar:
+        condition: service_healthy
+    environment:
+      HADOOP_CONF_DIR: /etc/hadoop
+      KRB5_CONFIG: /etc/krb5.conf
+      HADOOP_OPTS: "-Djava.security.krb5.conf=/etc/krb5.conf"
+#     HADOOP_OPTS: "-Djava.security.krb5.conf=/etc/krb5.conf -Dsun.security.spnego.debug=true -Djava.security.krb5.debug=true -Dsun.security.krb5.debug=true"
+      KRB5CCNAME: /tickets/krb5cc_0
+      HADOOP_JAAS_DEBUG: "true"
+    volumes:
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/hadoop-config/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./hdfs/hadoop-config/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+      - ./hdfs/hadoop-config/ssl-server.xml:/etc/hadoop/ssl-server.xml:ro
+      - hadoop-ssl:/etc/hadoop/ssl:rw
+      - keytab-volume:/etc/hadoop/keytabs:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - namenode-data:/hadoop/dfs/name
+    command: >
+      bash -c '
+        keytool -genkeypair -alias localhost -keyalg RSA -keysize 2048 -dname "CN=localhost" \
+          -keypass password -keystore /etc/hadoop/ssl/server.keystore.jks -storepass password
+        cp /etc/hadoop/ssl/server.keystore.jks /etc/hadoop/ssl/client.truststore.jks
+        echo "Formatting namenode directory"
+        hdfs namenode -format -force
+        hdfs namenode
+      '
+    healthcheck:
+      test: ["CMD", "bash", "-c", "export KRB5CCNAME=/tmp/ticks && kinit -kt /etc/hadoop/keytabs/nn.keytab hdfs/namenode.hdfs_iceberg_net@EXAMPLE.COM && hdfs dfsadmin -report"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      iceberg_net:
+        aliases:
+          - namenode
+  # HDFS DataNode with Kerberos
+  datanode:
+    image: apache/hadoop:3
+    user: root
+    depends_on:
+      namenode:
+        condition: service_healthy
+      kerberos-sidecar:
+        condition: service_healthy
+    environment:
+      HADOOP_CONF_DIR: /etc/hadoop
+      KRB5_CONFIG: /etc/krb5.conf
+      HADOOP_OPTS: "-Djava.security.krb5.conf=/etc/krb5.conf -Dhadoop.ssl.server.conf=/etc/hadoop/ssl-server.xml"
+      #  -Dsun.security.spnego.debug=true -Djava.security.krb5.debug=true -Dsun.security.krb5.debug=true
+      KRB5CCNAME: /tickets/krb5cc_0
+    volumes:
+      - kerberos-tickets:/tickets:ro
+      - ./hdfs/hadoop-config/core-site.xml:/etc/hadoop/core-site.xml:ro
+      - ./hdfs/hadoop-config/hdfs-site.xml:/etc/hadoop/hdfs-site.xml:ro
+      - ./hdfs/hadoop-config/ssl-server.xml:/etc/hadoop/ssl-server.xml:ro
+      - keytab-volume:/etc/hadoop/keytabs:ro
+      - ./hdfs/krb5.conf:/etc/krb5.conf:ro
+      - datanode-data:/hadoop/dfs/data
+      - hadoop-ssl:/etc/hadoop/ssl:ro
+    command: >
+      bash -c '
+        # Wait for keystore files to exist
+        while [ ! -f /etc/hadoop/ssl/server.keystore.jks ]; do
+          echo "Waiting for keystore files..."
+          sleep 2
+        done
+      
+        # Ensure permissions are correct
+        chmod 644 /etc/hadoop/ssl/*.jks
+      
+        # Start datanode
+        hdfs datanode
+      '
+    healthcheck:
+      test: ["CMD", "bash", "-c", "export KRB5CCNAME=/tmp/ticks && kinit -kt /etc/hadoop/keytabs/dn.keytab hdfs/datanode@EXAMPLE.COM && hdfs dfsadmin -report | grep 'Live datanodes'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      iceberg_net:
+        aliases:
+          - datanode
+  # Kerberos authentication sidecar
+  kerberos-sidecar:
+    image: ubuntu:22.04
+    depends_on:
+      kdc:
+        condition: service_healthy
+    volumes:
+      - kerberos-tickets:/tickets
+      - keytab-volume:/keytabs:ro
+      - ./hdfs/krb5.conf:/tmp/krb5.conf:ro
+    environment:
+      - DEBIAN_FRONTEND=noninteractive
+      - KRB5CCNAME=/tickets/krb5cc_0
+    command: >
+      bash -c '
+        echo "Using mounted krb5.conf:"
+        cat /etc/krb5.conf
+        # Install Kerberos client
+        apt-get update
+        apt-get install -y --no-install-recommends krb5-user
+        # Now copy our configuration over the installed one
+        cp /tmp/krb5.conf /etc/krb5.conf
+        # Wait for ready signal
+        while [ ! -f /keytabs/ready ]; do
+          echo "Waiting for keytab..."
+          sleep 5
+        done
+        echo "running"
+
+        klist -kte /keytabs/app.keytab
+      
+        # Try both principals for authentication
+        kinit -kt /keytabs/app.keytab hdfs/server@EXAMPLE.COM
+        
+        # Make tickets folder readable by everyone
+      
+        if [ $? -eq 0 ]; then
+          echo "SUCCESS: Authentication worked!"
+          klist
+          while true; do
+            sleep 3600
+            kinit -kt /keytabs/app.keytab hdfs/server@EXAMPLE.COM
+          done
+        else
+          echo "FAILED: Authentication failed"
+          klist
+          exit 1
+        fi
+      '
+    networks:
+      iceberg_net:
+    healthcheck:
+      test: ["CMD", "kinit", "-kt", "/keytabs/app.keytab", "hdfs/server@EXAMPLE.COM"]
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    
+  kerberos-permission-fixer:
+    image: ubuntu:22.04
+    depends_on:
+      kerberos-sidecar:
+        condition: service_healthy
+    volumes:
+      - kerberos-tickets:/tickets
+    user: root
+    command: >
+      bash -c '
+        echo "Starting permission fixer service"
+        while true; do
+          if [ -f /tickets/krb5cc_0 ]; then
+            chmod 644 /tickets/krb5cc_0
+          fi
+          sleep 0.1
+        done
+      '
+    networks:
+      iceberg_net:
+
+networks:
+  iceberg_net:
+
+volumes:
+  namenode-data:
+  datanode-data:
+  kerberos-tickets:
+  keytab-volume:
+  hadoop-ssl:

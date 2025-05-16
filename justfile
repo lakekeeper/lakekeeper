@@ -7,6 +7,7 @@ check-format:
 	cargo +nightly fmt --all -- --check
 
 check-clippy:
+	cargo clippy --all-targets --features "sqlx-postgres,router,s3-signer,vendored-protoc" --workspace -- -D warnings
 	cargo clippy --all-targets --all-features --workspace -- -D warnings
 
 check-cargo-sort:

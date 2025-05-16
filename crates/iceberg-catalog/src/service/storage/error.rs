@@ -108,7 +108,7 @@ pub enum FileIoError {
     #[error("{0} not supported")]
     UnsupportedAction(String),
     #[error(transparent)]
-    FileIoCreationFailed(#[from] iceberg::Error),
+    FileIoCreationFailed(#[from] Box<dyn std::error::Error + 'static + Send + Sync>),
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
 }

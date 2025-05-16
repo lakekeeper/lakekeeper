@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://namenode:8020</value>
+    </property>
+
+    <!-- Security properties -->
+    <property>
+        <name>hadoop.security.authentication</name>
+        <value>kerberos</value>
+    </property>
+    <property>
+        <name>hadoop.security.authorization</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>hadoop.rpc.protection</name>
+        <value>privacy</value>
+    </property>
+    <property>
+        <name>dfs.data.transfer.protection</name>
+        <value>privacy</value>
+    </property>
+
+    <property>
+        <name>hadoop.http.authentication.kerberos.keytab</name>
+        <value>/etc/hadoop/keytabs/nn.keytab</value>
+    </property>
+    <property>
+        <name>hadoop.http.authentication.kerberos.principal</name>
+        <value>HTTP/namenode.hdfs_iceberg_net@EXAMPLE.COM</value>
+    </property>
+
+    <!-- Specify the kerberos principal to be used -->
+    <property>
+        <name>hadoop.security.auth_to_local</name>
+        <value>
+            RULE:[1:$1]
+            RULE:[2:$1]
+            DEFAULT
+        </value>
+        <description>Rules for mapping Kerberos principals to local user names</description>
+    </property>
+    <!-- Required for secure DataNode -->
+    <property>
+        <name>hadoop.http.authentication.type</name>
+        <value>kerberos</value>
+    </property>
+    <property>
+        <name>hadoop.http.filter.initializers</name>
+        <value>org.apache.hadoop.security.AuthenticationFilterInitializer</value>
+    </property>
+    <property>
+        <name>dfs.http.policy</name>
+        <value>HTTPS_ONLY</value>
+    </property>
+    <property>
+        <name>hadoop.security.service.user.name.key</name>
+        <value>hdfs/namenode.hdfs_iceberg_net@EXAMPLE.COM</value>
+    </property>
+</configuration>
