@@ -22,7 +22,6 @@ ui = ["dep:lakekeeper-console", "dep:mime_guess", "dep:moka"]
 
 [dependencies]
 anyhow = { workspace = true }
-async-nats = { workspace = true }
 axum = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
 iceberg-catalog = { path = "../iceberg-catalog", features = ["all"] }

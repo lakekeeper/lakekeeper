@@ -18,10 +18,15 @@ pub(crate) mod utils;
 pub mod api;
 mod request_metadata;
 
+pub use axum;
+pub use limes;
+#[cfg(feature = "kafka")]
 pub use rdkafka;
 pub(crate) use request_metadata::{
     X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PROTO_HEADER,
 };
+pub use tokio;
+pub use utoipa;
 
 #[cfg(feature = "router")]
 pub mod metrics;

@@ -3185,7 +3185,6 @@ name = "iceberg-catalog-bin"
 version = "0.8.5"
 dependencies = [
  "anyhow",
- "async-nats",
  "axum 0.8.4",
  "clap",
  "iceberg-catalog",
