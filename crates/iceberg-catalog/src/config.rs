@@ -741,7 +741,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::net::Ipv6Addr;
+    use std::{collections::HashMap, io::Write as _, net::Ipv6Addr};
 
     #[allow(unused_imports)]
     use super::*;
@@ -1098,6 +1098,77 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__USE_X_FORWARDED_HEADERS", "false");
             let config = get_config();
             assert!(!config.use_x_forwarded_headers);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kafka_config_env_var() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__KAFKA_TOPIC", "test_topic");
+            jail.set_env(
+                "LAKEKEEPER_TEST__KAFKA_CONFIG",
+                r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#,
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__KAFKA_CONFIG_FILE",
+                r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#,
+            );
+            let config = get_config();
+            assert_eq!(config.kafka_topic, Some("test_topic".to_string()));
+            assert_eq!(
+                config.kafka_config,
+                Some(KafkaConfig {
+                    sasl_password: Some("my_pw".to_string()),
+                    sasl_oauthbearer_client_secret: None,
+                    ssl_key_password: None,
+                    ssl_keystore_password: None,
+                    conf: HashMap::from_iter([
+                        (
+                            "bootstrap.servers".to_string(),
+                            "host1:port,host2:port".to_string()
+                        ),
+                        ("security.protocol".to_string(), "SSL".to_string()),
+                    ]),
+                })
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kafka_config_file() {
+        let named_tmp_file = tempfile::NamedTempFile::new().unwrap();
+        named_tmp_file
+            .as_file()
+            .write_all(
+                r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#.as_bytes(),
+            )
+            .unwrap();
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__KAFKA_TOPIC", "test_topic");
+            jail.set_env(
+                "LAKEKEEPER_TEST__KAFKA_CONFIG_FILE",
+                named_tmp_file.path().to_str().unwrap(),
+            );
+            let config = get_config();
+            assert_eq!(config.kafka_topic, Some("test_topic".to_string()));
+            assert_eq!(
+                config.kafka_config,
+                Some(KafkaConfig {
+                    sasl_password: Some("my_pw".to_string()),
+                    sasl_oauthbearer_client_secret: None,
+                    ssl_key_password: None,
+                    ssl_keystore_password: None,
+                    conf: HashMap::from_iter([
+                        (
+                            "bootstrap.servers".to_string(),
+                            "host1:port,host2:port".to_string()
+                        ),
+                        ("security.protocol".to_string(), "SSL".to_string()),
+                    ]),
+                })
+            );
             Ok(())
         });
     }

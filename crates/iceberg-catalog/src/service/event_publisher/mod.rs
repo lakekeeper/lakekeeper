@@ -39,6 +39,7 @@ use crate::{
 
 #[cfg(feature = "kafka")]
 pub mod kafka;
+#[cfg(feature = "nats")]
 pub mod nats;
 
 #[async_trait::async_trait]
@@ -493,13 +494,11 @@ impl CloudEventsPublisherBackgroundTask {
                 .extension("name", name.to_string())
                 .extension("namespace", namespace.to_string())
                 .extension("prefix", prefix.to_string())
-                // TODO: decide what to do with these numbers, likely they are never anywhere close to
-                // saturating the respective int types, so probably a non-issue. Still we are converting
-                // the numbers to_string here to avoid usize -> i64 which is what EventBuilderV10
-                // uses to represent integers. The CloudEvents spec states i32 would be the correct int
-                // type.
-                .extension("num-events", num_events.to_string())
-                .extension("sequence-number", sequence_number.to_string())
+                .extension("num-events", i64::try_from(num_events).unwrap_or(i64::MAX))
+                .extension(
+                    "sequence-number",
+                    i64::try_from(sequence_number).unwrap_or(i64::MAX),
+                )
                 // Implement distributed tracing: https://github.com/lakekeeper/lakekeeper/issues/63
                 .extension("trace-id", trace_id.to_string())
                 .build()?;
@@ -532,8 +531,9 @@ pub struct TracingPublisher;
 #[async_trait::async_trait]
 impl CloudEventBackend for TracingPublisher {
     async fn publish(&self, event: Event) -> anyhow::Result<()> {
-        let data = serde_json::to_string(&event).unwrap_or("Serialization failed".to_string());
-        tracing::info!("Received event: {data}'");
+        let data =
+            serde_json::to_value(&event).unwrap_or(serde_json::json!("Event serialization failed"));
+        tracing::info!(event=%data, "CloudEvent");
         Ok(())
     }
 
