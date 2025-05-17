@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-05-17)
+
+
+### Features
+
+* Add hooks for Catalog Endpoints, Implement EventPublisher as Hook ([#1075](https://github.com/lakekeeper/lakekeeper/issues/1075)) ([9933949](https://github.com/lakekeeper/lakekeeper/commit/9933949e5d0196e983b2881863ea2c5a60dc12f1))
+
 ## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
 
 
