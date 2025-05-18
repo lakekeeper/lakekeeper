@@ -4,6 +4,7 @@ import pyarrow as pa
 import pytest
 import time
 import pyiceberg.io as io
+from pyiceberg import exceptions as exc
 import requests
 from urllib.parse import quote_plus, quote
 import uuid
@@ -76,6 +77,14 @@ def test_create_namespace(warehouse: conftest.Warehouse):
     assert namespace in catalog.list_namespaces()
 
 
+def test_create_namespace_already_exists(warehouse: conftest.Warehouse):
+    catalog = warehouse.pyiceberg_catalog
+    namespace = ("test_namespace_already_exists",)
+    catalog.create_namespace(namespace)
+    with pytest.raises(exc.NamespaceAlreadyExistsError):
+        catalog.create_namespace(namespace)
+
+
 def test_list_namespaces(warehouse: conftest.Warehouse):
     catalog = warehouse.pyiceberg_catalog
     catalog.create_namespace(("test_list_namespaces_1",))
@@ -132,6 +141,12 @@ def test_drop_namespace(warehouse: conftest.Warehouse):
     assert namespace not in catalog.list_namespaces()
 
 
+def test_drop_unknown_namespace(warehouse: conftest.Warehouse):
+    catalog = warehouse.pyiceberg_catalog
+    with pytest.raises(exc.NoSuchNamespaceError):
+        catalog.drop_namespace(("unknown_namespace",))
+
+
 def test_create_table(warehouse: conftest.Warehouse):
     catalog = warehouse.pyiceberg_catalog
     namespace = ("test_create_table",)
@@ -144,14 +159,28 @@ def test_create_table(warehouse: conftest.Warehouse):
         ]
     )
     # Namespace is required:
-    with pytest.raises(Exception) as e:
+    with pytest.raises(exc.NoSuchTableError):
         catalog.create_table(table_name, schema=schema)
-        assert "NamespaceNotFound" in str(e)
 
     catalog.create_namespace(namespace)
     catalog.create_table((*namespace, table_name), schema=schema)
     loaded_table = catalog.load_table((*namespace, table_name))
     assert len(loaded_table.schema().fields) == 3
+
+
+def test_create_table_already_exists(namespace: conftest.Namespace):
+    catalog = namespace.pyiceberg_catalog
+    table_name = "duplicate_table"
+    schema = pa.schema(
+        [
+            pa.field("my_ints", pa.int64()),
+            pa.field("my_floats", pa.float64()),
+            pa.field("strings", pa.string()),
+        ]
+    )
+    catalog.create_table((*namespace.name, table_name), schema=schema)
+    with pytest.raises(exc.TableAlreadyExistsError):
+        catalog.create_table((*namespace.name, table_name), schema=schema)
 
 
 def test_drop_table(namespace: conftest.Namespace):
@@ -167,9 +196,20 @@ def test_drop_table(namespace: conftest.Namespace):
     catalog.create_table((*namespace.name, table_name), schema=schema)
     assert catalog.load_table((*namespace.name, table_name))
     catalog.drop_table((*namespace.name, table_name))
-    with pytest.raises(Exception) as e:
+    with pytest.raises(exc.NoSuchTableError):
         catalog.load_table((*namespace.name, table_name))
-        assert "NoSuchTableError" in str(e)
+
+
+def test_drop_unknown_table(namespace: conftest.Namespace):
+    catalog = namespace.pyiceberg_catalog
+    with pytest.raises(exc.ForbiddenError):
+        catalog.drop_table((*namespace.name, "missing_table"))
+
+
+def test_load_unknown_table(namespace: conftest.Namespace):
+    catalog = namespace.pyiceberg_catalog
+    with pytest.raises(exc.NoSuchTableError):
+        catalog.load_table((*namespace.name, "missing_table"))
 
 
 def test_drop_purge_table(namespace: conftest.Namespace, storage_config):
@@ -202,9 +242,8 @@ def test_drop_purge_table(namespace: conftest.Namespace, storage_config):
 
     catalog.drop_table((*namespace.name, table_name), purge_requested=True)
 
-    with pytest.raises(Exception) as e:
+    with pytest.raises(exc.NoSuchTableError):
         catalog.load_table((*namespace.name, table_name))
-        assert "NoSuchTableError" in str(e)
 
     location = tab.location().rstrip("/") + "/"
 
@@ -216,9 +255,8 @@ def test_drop_purge_table(namespace: conftest.Namespace, storage_config):
     inp = file_io.new_input(location)
     assert not inp.exists(), f"Table location {location} still exists"
 
-    with pytest.raises(Exception) as e:
+    with pytest.raises(exc.NoSuchTableError):
         catalog.load_table((*namespace.name, table_name))
-        assert "NoSuchTableError" in str(e)
 
 
 def test_table_properties(namespace: conftest.Namespace):
