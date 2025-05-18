@@ -17,7 +17,6 @@ use super::{
     },
     CatalogState, PostgresTransaction,
 };
-use crate::implementations::postgres::metrics::create_metric;
 use crate::{
     api::{
         iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
@@ -31,6 +30,7 @@ use crate::{
     },
     implementations::postgres::{
         endpoint_statistics::list::list_statistics,
+        metrics::create_metric,
         namespace::{get_namespace_protected, set_namespace_protected},
         role::search_role,
         tabular::{

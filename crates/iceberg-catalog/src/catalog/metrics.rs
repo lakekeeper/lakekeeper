@@ -1,8 +1,5 @@
 use super::CatalogServer;
-use crate::api::iceberg::v1::tables::TablesService;
-use crate::api::management::v1::bootstrap::Service;
-use crate::api::management::v1::warehouse::TabularDeleteProfile;
-use crate::service::{Transaction, UserId};
+use crate::service::Transaction;
 use crate::{
     api::iceberg::v1::{ApiContext, Result, TableParameters},
     request_metadata::RequestMetadata,
@@ -18,7 +15,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         _table_parameters: TableParameters,
         report_metrics_request: ReportMetricsRequest,
         api_context: ApiContext<State<A, C, S>>,
-        metadata: RequestMetadata,
+        _metadata: RequestMetadata,
     ) -> Result<()> {
         // Authorisierung authz
         // validation
@@ -32,7 +29,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 mod test {
     use super::*;
     use crate::api::iceberg::v1::metrics::MetricsService;
+    use crate::api::management::v1::warehouse::TabularDeleteProfile;
     use crate::service::authz::tests::HidingAuthorizer;
+    use crate::service::UserId;
     use iceberg::{NamespaceIdent, TableIdent};
     use iceberg_ext::catalog::rest::metrics::CommitReport;
     use iceberg_ext::catalog::rest::{ReportMetricsRequest, ScanReport};

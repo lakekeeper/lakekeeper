@@ -14,8 +14,11 @@ pub(crate) async fn create_metric(
 
             sqlx::query_scalar!(
                 r#"
-                INSERT INTO table_metrics_scan_report (table_name, snapshot_id, filter, schema_id, projected_field_ids, projected_field_names, metrics, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                WITH tabular_id_selector AS (
+                    SELECT tabular_id FROM tabular WHERE name = $1)
+                INSERT INTO table_metrics_scan_report (table_id, snapshot_id, filter, schema_id, projected_field_ids, projected_field_names, metrics, metadata)
+                SELECT tabular_id_selector.tabular_id, $2, $3, $4, $5, $6, $7, $8
+                FROM tabular_id_selector
                 RETURNING metric_id;
                 "#,
                 report.table_name,
@@ -33,8 +36,11 @@ pub(crate) async fn create_metric(
             let report_metadata = serde_json::to_value(report.metadata).unwrap();
             sqlx::query_scalar!(
                 r#"
-                INSERT INTO table_metrics_commit_report (table_name, snapshot_id, sequence_number, operation, metrics, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                WITH tabular_id_selector AS (
+                    SELECT tabular_id FROM tabular WHERE name = $1)
+                INSERT INTO table_metrics_commit_report (table_id, snapshot_id, sequence_number, operation, metrics, metadata)
+                SELECT tabular_id_selector.tabular_id, $2, $3, $4, $5, $6
+                FROM tabular_id_selector
                 RETURNING metric_id;
                 "#,
                 report.table_name,
@@ -47,7 +53,7 @@ pub(crate) async fn create_metric(
         }
     };
 
-    query.fetch_one(&mut **transaction).await.map_err(|e| {
+    let _ = query.fetch_one(&mut **transaction).await.map_err(|e| {
         tracing::warn!(?e, "Error");
         e.into_error_model(format!("Error creating metric"))
     })?;
