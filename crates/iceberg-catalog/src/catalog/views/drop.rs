@@ -1,11 +1,8 @@
-use uuid::Uuid;
+use std::sync::Arc;
 
 use crate::{
     api::{
-        iceberg::{
-            types::{DropParams, Prefix},
-            v1::ViewParameters,
-        },
+        iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{warehouse::TabularDeleteProfile, TabularType},
         set_not_found_status_code, ApiContext,
     },
@@ -14,7 +11,6 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        event_publisher::EventMetadata,
         task_queue::{
             tabular_expiration_queue::TabularExpirationInput,
             tabular_purge_queue::TabularPurgeInput,
@@ -33,9 +29,9 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     request_metadata: RequestMetadata,
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
-    let ViewParameters { prefix, view } = parameters;
+    let ViewParameters { prefix, view } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.clone())?;
-    validate_table_or_view_ident(&view)?;
+    validate_table_or_view_ident(view)?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
@@ -47,7 +43,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // Can't fail before authz
+    let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
 
     let view_id: ViewIdentUuid = authorizer
         .require_view_action(&request_metadata, view_id, CatalogViewAction::CanDrop)
@@ -111,23 +107,18 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         }
     }
 
-    let _ = state
+    state
         .v1_state
-        .publisher
-        .publish(
-            Uuid::now_v7(),
-            "dropView",
-            serde_json::Value::Null,
-            EventMetadata {
-                tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id,
-                name: view.name.clone(),
-                namespace: view.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+        .hooks
+        .drop_view(
+            warehouse_id,
+            parameters,
+            DropParams {
+                purge_requested,
+                force,
             },
+            view_id,
+            Arc::new(request_metadata),
         )
         .await;
 

@@ -1,18 +1,15 @@
+use std::sync::Arc;
+
 use http::StatusCode;
 use iceberg_ext::catalog::rest::RenameTableRequest;
-use uuid::Uuid;
 
 use crate::{
     api::{iceberg::types::Prefix, ApiContext},
-    catalog::{
-        require_warehouse_id,
-        tables::{maybe_body_to_json, validate_table_or_view_ident},
-    },
+    catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        event_publisher::EventMetadata,
         Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction,
     },
 };
@@ -66,7 +63,6 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     if source == destination {
         return Ok(());
     }
-    let body = maybe_body_to_json(&request);
 
     C::rename_view(
         warehouse_id,
@@ -86,23 +82,14 @@ pub(crate) async fn rename_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
     t.commit().await?;
 
-    let _ = state
+    state
         .v1_state
-        .publisher
-        .publish(
-            Uuid::now_v7(),
-            "renameView",
-            body,
-            EventMetadata {
-                tabular_id: TabularIdentUuid::View(*source_id),
-                warehouse_id,
-                name: request.source.name,
-                namespace: request.source.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
-            },
+        .hooks
+        .rename_view(
+            warehouse_id,
+            source_id,
+            Arc::new(request),
+            Arc::new(request_metadata),
         )
         .await;
 

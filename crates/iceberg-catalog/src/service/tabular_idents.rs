@@ -13,6 +13,7 @@ use super::{TableIdentUuid, ViewIdentUuid};
 
 #[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
+#[schema(as=TabularIdentUuid)]
 pub enum TabularIdentUuid {
     Table(Uuid),
     View(Uuid),

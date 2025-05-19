@@ -24,7 +24,8 @@ If applicable, add screenshots to help explain your problem.
 
 **System Information:**
  - Deployment Type: [e.g. Minimal Example, Docker-Compose, Binary]
- - Lakekeeper Version: [e.g. 0.5.1]
+ - Lakekeeper Version: [e.g. 0.8.5]
+ - Query Engine [e.g. Spark 3.5.5 with Iceberg 1.9.1]
  - Authentication Provider: [e.g. None, EntraID, Keycloak]
  - Authorization Provider: [e.g. None, OpenFGA]
  - OS: [e.g. Ubuntu]

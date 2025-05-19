@@ -1,12 +1,13 @@
 mod undrop;
 
+use std::sync::Arc;
+
 use futures::FutureExt;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 use utoipa::ToSchema;
-use uuid::Uuid;
 
 use super::{default_page_size, DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
@@ -29,7 +30,6 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        event_publisher::EventMetadata,
         secrets::SecretStore,
         task_queue::TaskFilter,
         Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
@@ -805,6 +805,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
         let tabs = request
             .targets
+            .clone()
             .into_iter()
             .map(|i| TableIdentUuid::from(*i))
             .collect::<Vec<_>>();
@@ -822,28 +823,16 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
         transaction.commit().await?;
 
-        let num_tabulars = tabs.len();
-        for (i, utr) in undrop_tabular_responses.iter().enumerate() {
-            let _ = context
-                .v1_state
-                .publisher
-                .publish(
-                    Uuid::now_v7(),
-                    "undropTabulars",
-                    serde_json::Value::Null,
-                    EventMetadata {
-                        tabular_id: TabularIdentUuid::from(utr.table_ident),
-                        warehouse_id,
-                        name: utr.name.clone(),
-                        namespace: utr.namespace.to_url_string(),
-                        prefix: warehouse_id.0.into(),
-                        num_events: num_tabulars,
-                        sequence_number: i,
-                        trace_id: request_metadata.request_id(),
-                    },
-                )
-                .await;
-        }
+        context
+            .v1_state
+            .hooks
+            .undrop_tabular(
+                warehouse_id,
+                Arc::new(request),
+                Arc::new(undrop_tabular_responses),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(())
     }

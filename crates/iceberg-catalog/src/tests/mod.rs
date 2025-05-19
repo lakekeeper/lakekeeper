@@ -39,7 +39,7 @@ use crate::{
     service::{
         authz::Authorizer,
         contract_verification::ContractVerifiers,
-        event_publisher::CloudEventsPublisher,
+        endpoint_hooks::EndpointHookCollection,
         storage::{
             s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
             StorageProfile, TestProfile,
@@ -275,14 +275,12 @@ pub(crate) fn get_api_context<T: Authorizer>(
     auth: T,
     queue_config: Option<TaskQueueConfig>,
 ) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
-    let (tx, _) = tokio::sync::mpsc::channel(1000);
     let q_config = queue_config.unwrap_or_else(|| CONFIG.queue_config.clone());
     ApiContext {
         v1_state: State {
             authz: auth,
             catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
             secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
-            publisher: CloudEventsPublisher::new(tx.clone()),
             contract_verifiers: ContractVerifiers::new(vec![]),
             queues: TaskQueues::new(
                 Arc::new(
@@ -300,6 +298,7 @@ pub(crate) fn get_api_context<T: Authorizer>(
                     .unwrap(),
                 ),
             ),
+            hooks: EndpointHookCollection::new(vec![]),
         },
     }
 }
