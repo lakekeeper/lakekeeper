@@ -397,7 +397,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
             if let Some(previous_table_id) = previous_table_id {
                 tracing::debug!(
-                    "Dropping existing table '{}' in namespace '{:?}' with id {previous_table_id} for overwrite operation",
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' with id {previous_table_id} for overwrite operation",
                     table.name, table.namespace
                 );
                 // Verify authorization to drop the table first
@@ -445,10 +445,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
+        let mut auth_needs_delete = false;
         // Delete the previous table from authorizer if it exists and differs from the new one
         if let Some(previous_table_id) = previous_table_id {
             if previous_table_id != tabular_id {
-                authorizer.delete_table(previous_table_id).await.ok();
+                auth_needs_delete = true;
                 // Only create authorization for the new table if it's different
                 authorizer
                     .create_table(&request_metadata, tabular_id, namespace_id)
@@ -459,6 +460,22 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer
                 .create_table(&request_metadata, tabular_id, namespace_id)
                 .await?;
+        }
+
+        // Commit the transaction
+        t_write.commit().await?;
+
+        // If we need to delete the previous table from authorizer
+        if auth_needs_delete {
+            if let Some(previous_table_id) = previous_table_id {
+                authorizer.delete_table(previous_table_id).await.map_err({
+                    |e| {
+                        tracing::warn!(
+                            "Failed to delete previous table {previous_table_id} from authorizer on overwrite via table register endpoint: {e}"
+                        );
+                    }
+                }).ok();
+            }
         }
 
         // If a staged table was overwritten, delete it from authorizer
