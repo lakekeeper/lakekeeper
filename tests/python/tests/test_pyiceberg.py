@@ -159,7 +159,7 @@ def test_create_table(warehouse: conftest.Warehouse):
         ]
     )
     # Namespace is required:
-    with pytest.raises(exc.NoSuchTableError):
+    with pytest.raises(exc.NoSuchIdentifierError):
         catalog.create_table(table_name, schema=schema)
 
     catalog.create_namespace(namespace)

@@ -72,13 +72,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             request_body.as_deref(),
         )?;
 
-        // Unfortunately there is currently no way to pass information about warehouse_id & table_id
-        // to this function from a get_table or create_table process without exchanging the token.
-        // Spark does not support per-table signer.uri.
-        // Tabular uses a token-exchange to include the information.
-        // We are looking for the path in the database, which allows us to also work with AuthN solutions
-        // that do not support custom data in tokens. Perspectively, we should
-        // try to get per-table signer.uri support in Spark.
         let GetTableMetadataResponse {
             table: _,
             table_id,
@@ -89,26 +82,40 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             storage_secret_ident,
             storage_profile,
         } = if let Some(table_id) = path_table_id.map(Into::into) {
-            let metadata_by_id = get_table_metadata_by_id(
+            let metadata_by_id = get_unauthorized_table_metadata_by_id(
                 warehouse_id,
                 table_id,
                 include_staged,
                 &request_url,
                 &state,
-                &request_metadata,
-                authorizer.clone(),
             )
-            .await?;
+            .await;
+            // Can't fail here before AuthZ!
+
             // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
             // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
             // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
             // To keep backward compatibility we move to location based lookup if the location does not match.
             // This will will be removed in a future version of Lakekeeper.
-            let uri_matches = validate_uri(&parsed_url, &metadata_by_id.location).is_ok();
-            if uri_matches {
-                metadata_by_id
-            } else {
-                tracing::warn!("Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1", metadata_by_id.location);
+            // We only perform the fallback if:
+            // 1. the requested table id is not found (probably deleted)
+            // 2. the location of the table does not match the request URI
+
+            let mut fallback_to_location = false;
+            match &metadata_by_id {
+                Ok(None) => {
+                    fallback_to_location = true;
+                }
+                Ok(Some(metadata_by_id)) => {
+                    if validate_uri(&parsed_url, &metadata_by_id.location).is_err() {
+                        tracing::warn!("Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1", metadata_by_id.location);
+                        fallback_to_location = true;
+                    }
+                }
+                _ => {}
+            }
+
+            if fallback_to_location {
                 get_table_metadata_by_location(
                     warehouse_id,
                     &parsed_url,
@@ -119,6 +126,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     authorizer.clone(),
                 )
                 .await?
+            } else {
+                authorizer
+                    .require_table_action(
+                        &request_metadata,
+                        metadata_by_id,
+                        CatalogTableAction::CanGetMetadata,
+                    )
+                    .await?
             }
         } else {
             get_table_metadata_by_location(
@@ -408,17 +423,19 @@ async fn authorize_operation<A: Authorizer>(
 }
 
 /// Helper function for fetching table metadata by ID
-async fn get_table_metadata_by_id<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn get_unauthorized_table_metadata_by_id<
+    C: Catalog,
+    A: Authorizer + Clone,
+    S: SecretStore,
+>(
     warehouse_id: WarehouseIdent,
     table_id: TableIdentUuid,
     include_staged: bool,
     request_url: &url::Url,
     state: &ApiContext<State<A, C, S>>,
-    request_metadata: &RequestMetadata,
-    authorizer: A,
-) -> Result<GetTableMetadataResponse> {
+) -> Result<Option<GetTableMetadataResponse>> {
     tracing::trace!("Got S3 sign request for table {table_id} with URL {request_url}");
-    let metadata = C::get_table_metadata_by_id(
+    C::get_table_metadata_by_id(
         warehouse_id,
         table_id,
         ListFlags {
@@ -429,15 +446,7 @@ async fn get_table_metadata_by_id<C: Catalog, A: Authorizer + Clone, S: SecretSt
         },
         state.v1_state.catalog.clone(),
     )
-    .await;
-
-    authorizer
-        .require_table_action(
-            request_metadata,
-            metadata,
-            CatalogTableAction::CanGetMetadata,
-        )
-        .await
+    .await
 }
 
 /// Helper function for fetching table metadata by location

@@ -213,11 +213,6 @@ def test_drop_table(
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "s3":
-        pytest.skip(
-            "S3 fails to purge tables since it tries to sign a DELETE request for the bucket location which we don't want to sign."
-        )
-
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
         "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
@@ -340,11 +335,6 @@ def drop_table_and_assert_that_table_is_gone(
 
 
 def test_undrop_table_purge_http(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "adls":
-        # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
-        # https://github.com/apache/iceberg-python/issues/1146 is resolved
-        pytest.skip("ADLS currently doesn't work with pyiceberg.")
-
     namespace = "test_undrop_table_purge_http"
     spark.sql(f"CREATE NAMESPACE {namespace}")
     dfs = []
@@ -414,16 +404,15 @@ def undrop_table(table_0, warehouse):
         headers={"Authorization": f"Bearer {warehouse.access_token}"},
     )
     resp.raise_for_status()
-    time.sleep(5)
 
 
 def test_undropped_table_can_be_purged_again_http(
     spark, warehouse: conftest.Warehouse, storage_config
 ):
-    if storage_config["storage-profile"]["type"] == "adls":
-        # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
-        # https://github.com/apache/iceberg-python/issues/1146 is resolved
-        pytest.skip("ADLS currently doesn't work with pyiceberg.")
+    # if storage_config["storage-profile"]["type"] == "adls":
+    #     # pyiceberg load_table doesn't contain any of the adls properties so this test doesn't work until
+    #     # https://github.com/apache/iceberg-python/issues/1146 is resolved
+    #     pytest.skip("ADLS currently doesn't work with pyiceberg.")
 
     namespace = "test_undropped_table_can_be_purged_again_http"
     spark.sql(f"CREATE NAMESPACE {namespace}")
