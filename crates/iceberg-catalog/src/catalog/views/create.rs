@@ -1,13 +1,11 @@
+use std::sync::Arc;
+
 use iceberg::{spec::ViewMetadataBuilder, TableIdent, ViewCreation};
 use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
-use uuid::Uuid;
 
 use crate::{
     api::{
-        iceberg::{
-            types::Prefix,
-            v1::{DataAccess, NamespaceParameters},
-        },
+        iceberg::v1::{DataAccess, NamespaceParameters},
         ApiContext,
     },
     catalog::{
@@ -15,17 +13,15 @@ use crate::{
         io::write_metadata_file,
         maybe_get_secret, require_warehouse_id,
         tables::{
-            determine_tabular_location, maybe_body_to_json, require_active_warehouse,
-            validate_table_or_view_ident,
+            determine_tabular_location, require_active_warehouse, validate_table_or_view_ident,
         },
         views::validate_view_properties,
     },
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction},
-        event_publisher::EventMetadata,
         storage::{StorageLocations as _, StoragePermissions},
-        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
+        Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
@@ -40,7 +36,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
     // ------------------- VALIDATIONS -------------------
-    let NamespaceParameters { namespace, prefix } = parameters;
+    let NamespaceParameters { namespace, prefix } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.clone())?;
     let view = TableIdent::new(namespace.clone(), request.name.clone());
 
@@ -66,7 +62,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-    let namespace_id = C::namespace_to_id(warehouse_id, &namespace, t.transaction()).await; // Cannot fail before authz;
+    let namespace_id = C::namespace_to_id(warehouse_id, namespace, t.transaction()).await; // Cannot fail before authz;
     let namespace_id = authorizer
         .require_namespace_action(
             &request_metadata,
@@ -81,7 +77,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let storage_profile = warehouse.storage_profile;
     require_active_warehouse(warehouse.status)?;
 
-    let view_id: TabularIdentUuid = TabularIdentUuid::View(uuid::Uuid::now_v7());
+    let view_id: TabularId = TabularId::View(uuid::Uuid::now_v7());
 
     let view_location = determine_tabular_location(
         &namespace,
@@ -102,13 +98,11 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
         0,
     );
 
-    // serialize body before moving it
-    let body = maybe_body_to_json(&request);
     let view_creation = ViewMetadataBuilder::from_view_creation(ViewCreation {
         name: view.name.clone(),
         location: view_location.to_string(),
         representations: request.view_version.representations().clone(),
-        schema: request.schema,
+        schema: request.schema.clone(),
         properties: request.properties.clone(),
         default_namespace: request.view_version.default_namespace().clone(),
         default_catalog: request.view_version.default_catalog().cloned(),
@@ -168,30 +162,24 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     authorizer
         .create_view(
             &request_metadata,
-            ViewIdentUuid::from(metadata.metadata.uuid()),
+            ViewId::from(metadata.metadata.uuid()),
             namespace_id,
         )
         .await?;
 
     t.commit().await?;
 
-    let _ = state
+    state
         .v1_state
-        .publisher
-        .publish(
-            Uuid::now_v7(),
-            "createView",
-            body,
-            EventMetadata {
-                tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id,
-                name: view.name,
-                namespace: view.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
-            },
+        .hooks
+        .create_view(
+            warehouse_id,
+            parameters.clone(),
+            Arc::new(request),
+            Arc::new(metadata.metadata.clone()),
+            Arc::new(metadata_location.clone()),
+            data_access,
+            Arc::new(request_metadata),
         )
         .await;
 
@@ -209,9 +197,11 @@ pub(crate) mod test {
     use iceberg::NamespaceIdent;
     use serde_json::json;
     use sqlx::PgPool;
+    use uuid::Uuid;
 
     use super::*;
     use crate::{
+        api::iceberg::types::Prefix,
         implementations::postgres::{
             namespace::tests::initialize_namespace, secrets::SecretsState,
         },

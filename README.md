@@ -25,7 +25,7 @@ This is Lakekeeper: An Apache-Licensed, **secure**, **fast** and **easy to use**
 
 # Quickstart
 
-A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/lakekeeper?tab=info).
+A Docker Container is available on [quay.io](https://quay.io/repository/lakekeeper/catalog?tab=info).
 We have prepared a minimal docker-compose file to demonstrate how to use the Lakekeeper catalog with common query engines.
 
 ```sh
@@ -99,7 +99,7 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 
 | Backend | Status  | Comment |
 | ------- | :-----: | ------- |
-| Nats    | ![done] |         |
+| NATS    | ![done] |         |
 | Kafka   | ![done] |         |
 
 ### Supported Operations - Management API

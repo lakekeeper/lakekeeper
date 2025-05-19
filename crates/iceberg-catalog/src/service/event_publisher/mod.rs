@@ -1,20 +1,379 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
+use anyhow::Context;
 use async_trait::async_trait;
 use cloudevents::Event;
+use iceberg::{
+    spec::{TableMetadata, ViewMetadata},
+    TableIdent,
+};
+use iceberg_ext::{
+    catalog::rest::{
+        CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
+        RegisterTableRequest, RenameTableRequest,
+    },
+    configs::Location,
+};
 use uuid::Uuid;
 
-use super::WarehouseIdent;
-use crate::service::tabular_idents::TabularIdentUuid;
+use super::{TableId, UndropTabularResponse, ViewId, WarehouseId};
+use crate::{
+    api::{
+        iceberg::{
+            types::{DropParams, Prefix},
+            v1::{DataAccess, NamespaceParameters, TableParameters, ViewParameters},
+        },
+        management::v1::warehouse::UndropTabularsRequest,
+        RequestMetadata,
+    },
+    catalog::tables::{maybe_body_to_json, CommitContext},
+    service::{
+        endpoint_hooks::{EndpointHooks, ViewCommit},
+        tabular_idents::TabularId,
+    },
+};
 
 #[cfg(feature = "kafka")]
 pub mod kafka;
+#[cfg(feature = "nats")]
 pub mod nats;
+
+#[async_trait::async_trait]
+impl EndpointHooks for CloudEventsPublisher {
+    async fn commit_transaction(
+        &self,
+        warehouse_id: WarehouseId,
+        request: Arc<CommitTransactionRequest>,
+        _commits: Arc<Vec<CommitContext>>,
+        table_ident_map: Arc<HashMap<TableIdent, TableId>>,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        let mut events = vec![];
+        let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
+        let mut updates = vec![];
+        for commit_table_request in &request.table_changes {
+            if let Some(id) = &commit_table_request.identifier {
+                if let Some(uuid) = table_ident_map.get(id) {
+                    events.push(maybe_body_to_json(commit_table_request));
+                    event_table_ids.push((id.clone(), *uuid));
+                    updates.push(commit_table_request.updates.clone());
+                }
+            }
+        }
+        let number_of_events = events.len();
+        let mut futs = Vec::with_capacity(number_of_events);
+        for (event_sequence_number, (body, (table_ident, table_id))) in
+            events.into_iter().zip(event_table_ids).enumerate()
+        {
+            futs.push(self.publish(
+                Uuid::now_v7(),
+                "updateTable",
+                body,
+                EventMetadata {
+                    tabular_id: TabularId::Table(*table_id),
+                    warehouse_id,
+                    name: table_ident.name,
+                    namespace: table_ident.namespace.to_url_string(),
+                    prefix: String::new(),
+                    num_events: number_of_events,
+                    sequence_number: event_sequence_number,
+                    trace_id: request_metadata.request_id(),
+                },
+            ));
+        }
+        futures::future::try_join_all(futs)
+            .await
+            .context("Failed to publish `updateTable` event")?;
+        Ok(())
+    }
+
+    async fn drop_table(
+        &self,
+        warehouse_id: WarehouseId,
+        TableParameters { prefix, table }: TableParameters,
+        _drop_params: DropParams,
+        table_ident_uuid: TableId,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "dropTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::Table(*table_ident_uuid),
+                warehouse_id,
+                name: table.name,
+                namespace: table.namespace.to_url_string(),
+                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `dropTable` event")?;
+        Ok(())
+    }
+    async fn register_table(
+        &self,
+        warehouse_id: WarehouseId,
+        NamespaceParameters { prefix, namespace }: NamespaceParameters,
+        request: Arc<RegisterTableRequest>,
+        metadata: Arc<TableMetadata>,
+        _metadata_location: Arc<Location>,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "registerTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::Table(metadata.uuid()),
+                warehouse_id,
+                name: request.name.clone(),
+                namespace: namespace.to_url_string(),
+                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `registerTable` event")?;
+        Ok(())
+    }
+
+    async fn create_table(
+        &self,
+        warehouse_id: WarehouseId,
+        NamespaceParameters { prefix, namespace }: NamespaceParameters,
+        request: Arc<CreateTableRequest>,
+        metadata: Arc<TableMetadata>,
+        _metadata_location: Option<Arc<Location>>,
+        _data_access: DataAccess,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "createTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::Table(metadata.uuid()),
+                warehouse_id,
+                name: request.name.clone(),
+                namespace: namespace.to_url_string(),
+                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `createTable` event")?;
+        Ok(())
+    }
+
+    async fn rename_table(
+        &self,
+        warehouse_id: WarehouseId,
+        table_ident_uuid: TableId,
+        request: Arc<RenameTableRequest>,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "renameTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::Table(*table_ident_uuid),
+                warehouse_id,
+                name: request.source.name.clone(),
+                namespace: request.source.namespace.to_url_string(),
+                prefix: String::new(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `renameTable` event")?;
+        Ok(())
+    }
+
+    async fn create_view(
+        &self,
+        warehouse_id: WarehouseId,
+        parameters: NamespaceParameters,
+        request: Arc<CreateViewRequest>,
+        metadata: Arc<ViewMetadata>,
+        _metadata_location: Arc<Location>,
+        _data_access: DataAccess,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "createView",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::View(metadata.uuid()),
+                warehouse_id,
+                name: request.name.clone(),
+                namespace: parameters.namespace.to_url_string(),
+                prefix: parameters
+                    .prefix
+                    .map(Prefix::into_string)
+                    .unwrap_or_default(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `createView` event")?;
+        Ok(())
+    }
+
+    async fn commit_view(
+        &self,
+        warehouse_id: WarehouseId,
+        parameters: ViewParameters,
+        request: Arc<CommitViewRequest>,
+        metadata: Arc<ViewCommit>,
+        _data_access: DataAccess,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "updateView",
+            maybe_body_to_json(request),
+            EventMetadata {
+                tabular_id: TabularId::View(metadata.new_metadata.uuid()),
+                warehouse_id,
+                name: parameters.view.name,
+                namespace: parameters.view.namespace.to_url_string(),
+                prefix: parameters
+                    .prefix
+                    .map(Prefix::into_string)
+                    .unwrap_or_default(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `updateView` event")?;
+        Ok(())
+    }
+
+    async fn drop_view(
+        &self,
+        warehouse_id: WarehouseId,
+        parameters: ViewParameters,
+        _drop_params: DropParams,
+        view_ident_uuid: ViewId,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "dropView",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::View(*view_ident_uuid),
+                warehouse_id,
+                name: parameters.view.name,
+                namespace: parameters.view.namespace.to_url_string(),
+                prefix: parameters
+                    .prefix
+                    .map(Prefix::into_string)
+                    .unwrap_or_default(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `dropView` event")?;
+        Ok(())
+    }
+
+    async fn rename_view(
+        &self,
+        warehouse_id: WarehouseId,
+        view_ident_uuid: ViewId,
+        request: Arc<RenameTableRequest>,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        self.publish(
+            Uuid::now_v7(),
+            "renameView",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::View(*view_ident_uuid),
+                warehouse_id,
+                name: request.source.name.clone(),
+                namespace: request.source.namespace.to_url_string(),
+                prefix: String::new(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+            },
+        )
+        .await
+        .context("Failed to publish `renameView` event")?;
+        Ok(())
+    }
+
+    async fn undrop_tabular(
+        &self,
+        warehouse_id: WarehouseId,
+        _request: Arc<UndropTabularsRequest>,
+        responses: Arc<Vec<UndropTabularResponse>>,
+        request_metadata: Arc<RequestMetadata>,
+    ) -> anyhow::Result<()> {
+        let num_tabulars = responses.len();
+        let mut futs = Vec::with_capacity(responses.len());
+        for (idx, utr) in responses.iter().enumerate() {
+            futs.push(self.publish(
+                Uuid::now_v7(),
+                "undropTabulars",
+                serde_json::Value::Null,
+                EventMetadata {
+                    tabular_id: TabularId::from(utr.table_ident),
+                    warehouse_id,
+                    name: utr.name.clone(),
+                    namespace: utr.namespace.to_url_string(),
+                    prefix: String::new(),
+                    num_events: num_tabulars,
+                    sequence_number: idx,
+                    trace_id: request_metadata.request_id(),
+                },
+            ));
+        }
+        futures::future::try_join_all(futs)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to publish event: {e}");
+                e
+            })
+            .context("Failed to publish `undropTabulars` event")?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CloudEventsPublisher {
     tx: tokio::sync::mpsc::Sender<CloudEventsMessage>,
     timeout: tokio::time::Duration,
+}
+
+impl Display for CloudEventsPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CloudEventsPublisher")
+    }
 }
 
 impl CloudEventsPublisher {
@@ -62,8 +421,8 @@ impl CloudEventsPublisher {
 
 #[derive(Debug, Clone)]
 pub struct EventMetadata {
-    pub tabular_id: TabularIdentUuid,
-    pub warehouse_id: WarehouseIdent,
+    pub tabular_id: TabularId,
+    pub warehouse_id: WarehouseId,
     pub name: String,
     pub namespace: String,
     pub prefix: String,
@@ -135,13 +494,11 @@ impl CloudEventsPublisherBackgroundTask {
                 .extension("name", name.to_string())
                 .extension("namespace", namespace.to_string())
                 .extension("prefix", prefix.to_string())
-                // TODO: decide what to do with these numbers, likely they are never anywhere close to
-                // saturating the respective int types, so probably a non-issue. Still we are converting
-                // the numbers to_string here to avoid usize -> i64 which is what EventBuilderV10
-                // uses to represent integers. The CloudEvents spec states i32 would be the correct int
-                // type.
-                .extension("num-events", num_events.to_string())
-                .extension("sequence-number", sequence_number.to_string())
+                .extension("num-events", i64::try_from(num_events).unwrap_or(i64::MAX))
+                .extension(
+                    "sequence-number",
+                    i64::try_from(sequence_number).unwrap_or(i64::MAX),
+                )
                 // Implement distributed tracing: https://github.com/lakekeeper/lakekeeper/issues/63
                 .extension("trace-id", trace_id.to_string())
                 .build()?;
@@ -174,8 +531,9 @@ pub struct TracingPublisher;
 #[async_trait::async_trait]
 impl CloudEventBackend for TracingPublisher {
     async fn publish(&self, event: Event) -> anyhow::Result<()> {
-        let data = serde_json::to_string(&event).unwrap_or("Serialization failed".to_string());
-        tracing::info!("Received event: {data}'");
+        let data =
+            serde_json::to_value(&event).unwrap_or(serde_json::json!("Event serialization failed"));
+        tracing::info!(event=%data, "CloudEvent");
         Ok(())
     }
 

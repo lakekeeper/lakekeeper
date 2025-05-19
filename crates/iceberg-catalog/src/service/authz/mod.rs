@@ -5,8 +5,8 @@ use strum::EnumIter;
 use strum_macros::EnumString;
 
 use super::{
-    health::HealthExt, Actor, Catalog, NamespaceIdentUuid, ProjectId, RoleId, SecretStore, State,
-    TableIdentUuid, TabularDetails, ViewIdentUuid, WarehouseIdent,
+    health::HealthExt, Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
+    TabularDetails, ViewId, WarehouseId,
 };
 use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
 
@@ -123,17 +123,17 @@ pub enum CatalogViewAction {
 }
 
 pub trait TableUuid {
-    fn table_uuid(&self) -> TableIdentUuid;
+    fn table_uuid(&self) -> TableId;
 }
 
-impl TableUuid for TableIdentUuid {
-    fn table_uuid(&self) -> TableIdentUuid {
+impl TableUuid for TableId {
+    fn table_uuid(&self) -> TableId {
         *self
     }
 }
 
 impl TableUuid for TabularDetails {
-    fn table_uuid(&self) -> TableIdentUuid {
+    fn table_uuid(&self) -> TableId {
         self.ident
     }
 }
@@ -148,8 +148,8 @@ pub enum ListProjectsResponse {
 
 #[derive(Debug, Clone)]
 pub enum NamespaceParent {
-    Warehouse(WarehouseIdent),
-    Namespace(NamespaceIdentUuid),
+    Warehouse(WarehouseId),
+    Namespace(NamespaceId),
 }
 
 #[async_trait::async_trait]
@@ -225,7 +225,7 @@ where
     async fn is_allowed_warehouse_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         action: CatalogWarehouseAction,
     ) -> Result<bool>;
 
@@ -234,7 +234,7 @@ where
     async fn is_allowed_namespace_action<A>(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         action: A,
     ) -> Result<bool>
     where
@@ -245,7 +245,7 @@ where
     async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableIdentUuid,
+        table_id: TableId,
         action: A,
     ) -> Result<bool>
     where
@@ -256,7 +256,7 @@ where
     async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
-        view_id: ViewIdentUuid,
+        view_id: ViewId,
         action: A,
     ) -> Result<bool>
     where
@@ -296,7 +296,7 @@ where
     async fn create_warehouse(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parent_project_id: &ProjectId,
     ) -> Result<()>;
 
@@ -305,7 +305,7 @@ where
     async fn delete_warehouse(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
     ) -> Result<()>;
 
     /// Hook that is called when a new namespace is created.
@@ -313,7 +313,7 @@ where
     async fn create_namespace(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         parent: NamespaceParent,
     ) -> Result<()>;
 
@@ -322,7 +322,7 @@ where
     async fn delete_namespace(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a new table is created.
@@ -330,26 +330,26 @@ where
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableIdentUuid,
-        parent: NamespaceIdentUuid,
+        table_id: TableId,
+        parent: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a table is deleted.
     /// This is used to clean up permissions for the table.
-    async fn delete_table(&self, table_id: TableIdentUuid) -> Result<()>;
+    async fn delete_table(&self, table_id: TableId) -> Result<()>;
 
     /// Hook that is called when a new view is created.
     /// This is used to set up the initial permissions for the view.
     async fn create_view(
         &self,
         metadata: &RequestMetadata,
-        view_id: ViewIdentUuid,
-        parent: NamespaceIdentUuid,
+        view_id: ViewId,
+        parent: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a view is deleted.
     /// This is used to clean up permissions for the view.
-    async fn delete_view(&self, view_id: ViewIdentUuid) -> Result<()>;
+    async fn delete_view(&self, view_id: ViewId) -> Result<()>;
 
     async fn require_search_users(&self, metadata: &RequestMetadata) -> Result<()> {
         if self.can_search_users(metadata).await? {
@@ -449,7 +449,7 @@ where
     async fn require_warehouse_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         action: CatalogWarehouseAction,
     ) -> Result<()> {
         if self
@@ -474,9 +474,9 @@ where
         // Outer error: Internal error that failed to fetch the namespace.
         // Ok(None): Namespace does not exist.
         // Ok(Some(namespace_id)): Namespace exists.
-        namespace_id: Result<Option<NamespaceIdentUuid>>,
+        namespace_id: Result<Option<NamespaceId>>,
         action: impl From<CatalogNamespaceAction> + std::fmt::Display + Send,
-    ) -> Result<NamespaceIdentUuid> {
+    ) -> Result<NamespaceId> {
         // It is important to throw the same error if the namespace does not exist (None) or if the action is not allowed,
         // to avoid leaking information about the existence of the namespace.
         let actor = metadata.actor();
@@ -544,9 +544,9 @@ where
     async fn require_view_action(
         &self,
         metadata: &RequestMetadata,
-        view_id: Result<Option<ViewIdentUuid>>,
+        view_id: Result<Option<ViewId>>,
         action: impl From<CatalogViewAction> + std::fmt::Display + Send,
-    ) -> Result<ViewIdentUuid> {
+    ) -> Result<ViewId> {
         let actor = metadata.actor();
         let msg = format!("View not found or action {action} forbidden for {actor}");
         let typ = "ViewActionForbidden";
@@ -756,7 +756,7 @@ pub(crate) mod tests {
         async fn is_allowed_warehouse_action(
             &self,
             _metadata: &RequestMetadata,
-            warehouse_id: WarehouseIdent,
+            warehouse_id: WarehouseId,
             _action: CatalogWarehouseAction,
         ) -> Result<bool> {
             Ok(self.check_available(format!("warehouse:{warehouse_id}").as_str()))
@@ -765,7 +765,7 @@ pub(crate) mod tests {
         async fn is_allowed_namespace_action<A>(
             &self,
             _metadata: &RequestMetadata,
-            namespace_id: NamespaceIdentUuid,
+            namespace_id: NamespaceId,
             _action: A,
         ) -> Result<bool>
         where
@@ -777,7 +777,7 @@ pub(crate) mod tests {
         async fn is_allowed_table_action<A>(
             &self,
             _metadata: &RequestMetadata,
-            table_id: TableIdentUuid,
+            table_id: TableId,
             _action: A,
         ) -> Result<bool>
         where
@@ -789,7 +789,7 @@ pub(crate) mod tests {
         async fn is_allowed_view_action<A>(
             &self,
             _metadata: &RequestMetadata,
-            view_id: ViewIdentUuid,
+            view_id: ViewId,
             _action: A,
         ) -> Result<bool>
         where
@@ -834,7 +834,7 @@ pub(crate) mod tests {
         async fn create_warehouse(
             &self,
             _metadata: &RequestMetadata,
-            _warehouse_id: WarehouseIdent,
+            _warehouse_id: WarehouseId,
             _parent_project_id: &ProjectId,
         ) -> Result<()> {
             Ok(())
@@ -843,7 +843,7 @@ pub(crate) mod tests {
         async fn delete_warehouse(
             &self,
             _metadata: &RequestMetadata,
-            _warehouse_id: WarehouseIdent,
+            _warehouse_id: WarehouseId,
         ) -> Result<()> {
             Ok(())
         }
@@ -851,7 +851,7 @@ pub(crate) mod tests {
         async fn create_namespace(
             &self,
             _metadata: &RequestMetadata,
-            _namespace_id: NamespaceIdentUuid,
+            _namespace_id: NamespaceId,
             _parent: NamespaceParent,
         ) -> Result<()> {
             Ok(())
@@ -860,7 +860,7 @@ pub(crate) mod tests {
         async fn delete_namespace(
             &self,
             _metadata: &RequestMetadata,
-            _namespace_id: NamespaceIdentUuid,
+            _namespace_id: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
@@ -868,26 +868,26 @@ pub(crate) mod tests {
         async fn create_table(
             &self,
             _metadata: &RequestMetadata,
-            _table_id: TableIdentUuid,
-            _parent: NamespaceIdentUuid,
+            _table_id: TableId,
+            _parent: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn delete_table(&self, _table_id: TableIdentUuid) -> Result<()> {
+        async fn delete_table(&self, _table_id: TableId) -> Result<()> {
             Ok(())
         }
 
         async fn create_view(
             &self,
             _metadata: &RequestMetadata,
-            _view_id: ViewIdentUuid,
-            _parent: NamespaceIdentUuid,
+            _view_id: ViewId,
+            _parent: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn delete_view(&self, _view_id: ViewIdentUuid) -> Result<()> {
+        async fn delete_view(&self, _view_id: ViewId) -> Result<()> {
             Ok(())
         }
     }

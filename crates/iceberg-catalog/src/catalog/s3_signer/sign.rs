@@ -20,9 +20,9 @@ use crate::{
         storage::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Location, S3Profile, StorageCredential,
         },
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid, Transaction,
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +198,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
 async fn s3_url_style_detection<C: Catalog>(
     state: C::State,
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
 ) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
     let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
         .try_get_with(warehouse_id, async {
@@ -369,7 +369,7 @@ fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
     Ok(new_uri)
 }
 
-fn require_table_id(table_id: Option<String>) -> Result<TableIdentUuid> {
+fn require_table_id(table_id: Option<String>) -> Result<TableId> {
     table_id
         .ok_or(
             ErrorModel::builder()
@@ -379,7 +379,7 @@ fn require_table_id(table_id: Option<String>) -> Result<TableIdentUuid> {
                 .build()
                 .into(),
         )
-        .and_then(|table_id| TableIdentUuid::from_str(&table_id))
+        .and_then(|table_id| TableId::from_str(&table_id))
 }
 
 fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
@@ -398,7 +398,7 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn authorize_operation<A: Authorizer>(
     method: Operation,
     metadata: &RequestMetadata,
-    table_id: TableIdentUuid,
+    table_id: TableId,
     authorizer: A,
 ) -> Result<()> {
     // First check - fail fast if requested table is not allowed.

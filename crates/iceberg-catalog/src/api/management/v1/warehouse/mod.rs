@@ -1,12 +1,13 @@
 mod undrop;
 
+use std::sync::Arc;
+
 use futures::FutureExt;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 use utoipa::ToSchema;
-use uuid::Uuid;
 
 use super::{default_page_size, DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
@@ -29,13 +30,11 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
-        event_publisher::EventMetadata,
         secrets::SecretStore,
         task_queue::TaskFilter,
-        Catalog, ListFlags, NamespaceIdentUuid, State, TableIdentUuid, TabularIdentUuid,
-        Transaction,
+        Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
     },
-    ProjectId, WarehouseIdent, DEFAULT_PROJECT_ID,
+    ProjectId, WarehouseId, DEFAULT_PROJECT_ID,
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -44,7 +43,7 @@ pub struct ListDeletedTabularsQuery {
     /// Filter by Namespace ID
     #[serde(default)]
     #[param(value_type=uuid::Uuid)]
-    pub namespace_id: Option<NamespaceIdentUuid>,
+    pub namespace_id: Option<NamespaceId>,
     /// Next page token
     #[serde(default)]
     pub page_token: Option<String>,
@@ -144,7 +143,7 @@ impl Default for TabularDeleteProfile {
 pub struct CreateWarehouseResponse {
     /// ID of the created warehouse.
     #[schema(value_type=uuid::Uuid)]
-    pub warehouse_id: WarehouseIdent,
+    pub warehouse_id: WarehouseId,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]
@@ -271,7 +270,7 @@ pub struct WarehouseStatisticsResponse {
 #[serde(rename_all = "kebab-case")]
 pub struct UndropTabularsRequest {
     /// Tabulars to undrop
-    pub targets: Vec<TabularIdentUuid>,
+    pub targets: Vec<TabularId>,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -426,7 +425,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn get_warehouse(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetWarehouseResponse> {
@@ -448,7 +447,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn get_warehouse_statistics(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         query: GetWarehouseStatisticsQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -473,7 +472,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn delete_warehouse(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -500,7 +499,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn set_warehouse_protection(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         protection: bool,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -526,7 +525,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn rename_warehouse(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: RenameWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -553,7 +552,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn update_warehouse_delete_profile(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: UpdateWarehouseDeleteProfileRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -582,7 +581,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn deactivate_warehouse(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -612,7 +611,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn activate_warehouse(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -642,7 +641,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn update_storage(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: UpdateWarehouseStorageRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -712,7 +711,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn update_storage_credential(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request: UpdateWarehouseCredentialRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -780,7 +779,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn undrop_tabulars(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request_metadata: RequestMetadata,
         request: UndropTabularsRequest,
         context: ApiContext<State<A, C, S>>,
@@ -804,8 +803,9 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let mut transaction = C::Transaction::begin_write(catalog.clone()).await?;
         let tabs = request
             .targets
+            .clone()
             .into_iter()
-            .map(|i| TableIdentUuid::from(*i))
+            .map(|i| TableId::from(*i))
             .collect::<Vec<_>>();
         let undrop_tabular_responses =
             C::undrop_tabulars(&tabs, warehouse_id, transaction.transaction()).await?;
@@ -821,35 +821,23 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .await?;
         transaction.commit().await?;
 
-        let num_tabulars = tabs.len();
-        for (i, utr) in undrop_tabular_responses.iter().enumerate() {
-            let _ = context
-                .v1_state
-                .publisher
-                .publish(
-                    Uuid::now_v7(),
-                    "undropTabulars",
-                    serde_json::Value::Null,
-                    EventMetadata {
-                        tabular_id: TabularIdentUuid::from(utr.table_ident),
-                        warehouse_id,
-                        name: utr.name.clone(),
-                        namespace: utr.namespace.to_url_string(),
-                        prefix: warehouse_id.0.into(),
-                        num_events: num_tabulars,
-                        sequence_number: i,
-                        trace_id: request_metadata.request_id(),
-                    },
-                )
-                .await;
-        }
+        context
+            .v1_state
+            .hooks
+            .undrop_tabular(
+                warehouse_id,
+                Arc::new(request),
+                Arc::new(undrop_tabular_responses),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
     async fn list_soft_deleted_tabulars(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         query: ListDeletedTabularsQuery,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -899,12 +887,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             Vec<_>,
                             Vec<bool>,
                         ) = futures::future::try_join_all(ids.iter().map(|tid| match tid {
-                            TabularIdentUuid::View(id) => authorizer.is_allowed_view_action(
+                            TabularId::View(id) => authorizer.is_allowed_view_action(
                                 &request_metadata,
                                 (*id).into(),
                                 crate::service::authz::CatalogViewAction::CanIncludeInList,
                             ),
-                            TabularIdentUuid::Table(id) => authorizer.is_allowed_table_action(
+                            TabularId::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
                                 (*id).into(),
                                 crate::service::authz::CatalogTableAction::CanIncludeInList,
@@ -1075,7 +1063,7 @@ mod test {
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
         service::{authz::tests::HidingAuthorizer, State, UserId},
-        WarehouseIdent,
+        WarehouseId,
     };
 
     async fn setup_pagination_test(
@@ -1084,7 +1072,7 @@ mod test {
         hidden_ranges: &[(usize, usize)],
     ) -> (
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
-        WarehouseIdent,
+        WarehouseId,
     ) {
         let prof = crate::catalog::test::test_io_profile();
 

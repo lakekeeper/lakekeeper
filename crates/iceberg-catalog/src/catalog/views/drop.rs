@@ -1,11 +1,8 @@
-use uuid::Uuid;
+use std::sync::Arc;
 
 use crate::{
     api::{
-        iceberg::{
-            types::{DropParams, Prefix},
-            v1::ViewParameters,
-        },
+        iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{warehouse::TabularDeleteProfile, TabularType},
         set_not_found_status_code, ApiContext,
     },
@@ -14,12 +11,11 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
-        event_publisher::EventMetadata,
         task_queue::{
             tabular_expiration_queue::TabularExpirationInput,
             tabular_purge_queue::TabularPurgeInput,
         },
-        Catalog, Result, SecretStore, State, TabularIdentUuid, Transaction, ViewIdentUuid,
+        Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
 };
 
@@ -33,9 +29,9 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     request_metadata: RequestMetadata,
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
-    let ViewParameters { prefix, view } = parameters;
+    let ViewParameters { prefix, view } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.clone())?;
-    validate_table_or_view_ident(&view)?;
+    validate_table_or_view_ident(view)?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
@@ -47,9 +43,9 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let view_id = C::view_to_id(warehouse_id, &view, t.transaction()).await; // Can't fail before authz
+    let view_id = C::view_to_id(warehouse_id, view, t.transaction()).await; // Can't fail before authz
 
-    let view_id: ViewIdentUuid = authorizer
+    let view_id: ViewId = authorizer
         .require_view_action(&request_metadata, view_id, CatalogViewAction::CanDrop)
         .await
         .map_err(set_not_found_status_code)?;
@@ -61,7 +57,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     state
         .v1_state
         .contract_verifiers
-        .check_drop(TabularIdentUuid::View(*view_id))
+        .check_drop(TabularId::View(*view_id))
         .await?
         .into_result()?;
 
@@ -92,8 +88,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer.delete_view(view_id).await?;
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
-            C::mark_tabular_as_deleted(TabularIdentUuid::View(*view_id), force, t.transaction())
-                .await?;
+            C::mark_tabular_as_deleted(TabularId::View(*view_id), force, t.transaction()).await?;
             t.commit().await?;
 
             state
@@ -111,23 +106,18 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         }
     }
 
-    let _ = state
+    state
         .v1_state
-        .publisher
-        .publish(
-            Uuid::now_v7(),
-            "dropView",
-            serde_json::Value::Null,
-            EventMetadata {
-                tabular_id: TabularIdentUuid::View(*view_id),
-                warehouse_id,
-                name: view.name.clone(),
-                namespace: view.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
+        .hooks
+        .drop_view(
+            warehouse_id,
+            parameters,
+            DropParams {
+                purge_requested,
+                force,
             },
+            view_id,
+            Arc::new(request_metadata),
         )
         .await;
 
@@ -156,7 +146,7 @@ mod test {
         },
         request_metadata::RequestMetadata,
         tests::random_request_metadata,
-        WarehouseIdent,
+        WarehouseId,
     };
 
     #[sqlx::test]
@@ -250,7 +240,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseIdent::from_str(prefix.as_str()).unwrap(),
+            WarehouseId::from_str(prefix.as_str()).unwrap(),
             true,
             api_context.clone(),
             random_request_metadata(),
@@ -277,7 +267,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseIdent::from_str(prefix.as_str()).unwrap(),
+            WarehouseId::from_str(prefix.as_str()).unwrap(),
             false,
             api_context.clone(),
             random_request_metadata(),
@@ -346,7 +336,7 @@ mod test {
 
         ManagementApiServer::set_view_protection(
             loaded_view.metadata.uuid().into(),
-            WarehouseIdent::from_str(prefix.as_str()).unwrap(),
+            WarehouseId::from_str(prefix.as_str()).unwrap(),
             true,
             api_context.clone(),
             random_request_metadata(),

@@ -24,9 +24,9 @@ use crate::{
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
             ListProjectsResponse, Result,
         },
-        NamespaceIdentUuid, TableIdentUuid,
+        NamespaceId, TableId,
     },
-    ProjectId, WarehouseIdent, CONFIG,
+    ProjectId, WarehouseId, CONFIG,
 };
 
 pub(super) mod api;
@@ -65,7 +65,7 @@ use crate::{
             CatalogRoleAction, CatalogUserAction, NamespaceParent,
         },
         health::Health,
-        Catalog, RoleId, SecretStore, State, ViewIdentUuid,
+        Catalog, RoleId, SecretStore, State, ViewId,
     },
 };
 
@@ -301,7 +301,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_warehouse_action(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         action: CatalogWarehouseAction,
     ) -> Result<bool> {
         self.check(CheckRequestTupleKey {
@@ -316,7 +316,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_namespace_action<A>(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         action: A,
     ) -> Result<bool>
     where
@@ -334,7 +334,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableIdentUuid,
+        table_id: TableId,
         action: A,
     ) -> Result<bool>
     where
@@ -352,7 +352,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
-        view_id: ViewIdentUuid,
+        view_id: ViewId,
         action: A,
     ) -> Result<bool>
     where
@@ -455,7 +455,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_warehouse(
         &self,
         metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         parent_project_id: &ProjectId,
     ) -> Result<()> {
         let actor = metadata.actor();
@@ -493,7 +493,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn delete_warehouse(
         &self,
         _metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
     ) -> Result<()> {
         self.delete_all_relations(&warehouse_id).await
     }
@@ -501,7 +501,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_namespace(
         &self,
         metadata: &RequestMetadata,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         parent: NamespaceParent,
     ) -> Result<()> {
         let actor = metadata.actor();
@@ -550,7 +550,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn delete_namespace(
         &self,
         _metadata: &RequestMetadata,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
     ) -> Result<()> {
         self.delete_all_relations(&namespace_id).await
     }
@@ -558,8 +558,8 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableIdentUuid,
-        parent: NamespaceIdentUuid,
+        table_id: TableId,
+        parent: NamespaceId,
     ) -> Result<()> {
         let actor = metadata.actor();
         let parent_id = parent.to_openfga();
@@ -596,15 +596,15 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn delete_table(&self, table_id: TableIdentUuid) -> Result<()> {
+    async fn delete_table(&self, table_id: TableId) -> Result<()> {
         self.delete_all_relations(&table_id).await
     }
 
     async fn create_view(
         &self,
         metadata: &RequestMetadata,
-        view_id: ViewIdentUuid,
-        parent: NamespaceIdentUuid,
+        view_id: ViewId,
+        parent: NamespaceId,
     ) -> Result<()> {
         let actor = metadata.actor();
         let parent_id = parent.to_openfga();
@@ -639,7 +639,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn delete_view(&self, view_id: ViewIdentUuid) -> Result<()> {
+    async fn delete_view(&self, view_id: ViewId) -> Result<()> {
         self.delete_all_relations(&view_id).await
     }
 }

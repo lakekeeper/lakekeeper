@@ -10,7 +10,7 @@ pub mod catalog;
 mod config;
 pub mod service;
 pub use config::{AuthZBackend, OpenFGAAuth, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
-pub use service::{ProjectId, SecretIdent, WarehouseIdent};
+pub use service::{ProjectId, SecretIdent, WarehouseId};
 
 pub mod implementations;
 pub(crate) mod utils;
@@ -18,9 +18,15 @@ pub(crate) mod utils;
 pub mod api;
 mod request_metadata;
 
+pub use axum;
+pub use limes;
+#[cfg(feature = "kafka")]
+pub use rdkafka;
 pub(crate) use request_metadata::{
     X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PROTO_HEADER,
 };
+pub use tokio;
+pub use utoipa;
 
 #[cfg(feature = "router")]
 pub mod metrics;

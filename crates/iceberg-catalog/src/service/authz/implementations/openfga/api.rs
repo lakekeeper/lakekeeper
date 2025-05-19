@@ -40,10 +40,9 @@ use crate::{
         authz::implementations::openfga::{
             entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
         },
-        Actor, Catalog, NamespaceIdentUuid, Result, RoleId, SecretStore, State, TableIdentUuid,
-        ViewIdentUuid,
+        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
     },
-    ProjectId, WarehouseIdent,
+    ProjectId, WarehouseId,
 };
 
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
@@ -441,7 +440,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseIdent>,
+    Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -476,7 +475,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseIdent>,
+    Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<(StatusCode, Json<GetWarehouseAuthPropertiesResponse>)> {
@@ -510,7 +509,7 @@ async fn get_warehouse_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseIdent>,
+    Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<SetManagedAccessRequest>,
@@ -543,7 +542,7 @@ async fn set_warehouse_managed_access<C: Catalog, S: SecretStore>(
     )
 )]
 async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
-    Path(namespace_id): Path<NamespaceIdentUuid>,
+    Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<SetManagedAccessRequest>,
@@ -575,7 +574,7 @@ async fn set_namespace_managed_access<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
-    Path(namespace_id): Path<NamespaceIdentUuid>,
+    Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<(StatusCode, Json<GetNamespaceAuthPropertiesResponse>)> {
@@ -620,7 +619,7 @@ async fn get_namespace_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
-    Path(namespace_id): Path<NamespaceIdentUuid>,
+    Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -656,7 +655,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
-    Path(table_id): Path<TableIdentUuid>,
+    Path(table_id): Path<TableId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -692,7 +691,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
-    Path(view_id): Path<ViewIdentUuid>,
+    Path(view_id): Path<ViewId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -869,7 +868,7 @@ async fn get_project_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseIdent>,
+    Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetWarehouseAssignmentsQuery>,
@@ -901,7 +900,7 @@ async fn get_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(namespace_id): Path<NamespaceIdentUuid>,
+    Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetNamespaceAssignmentsQuery>,
@@ -937,7 +936,7 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(table_id): Path<TableIdentUuid>,
+    Path(table_id): Path<TableId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetTableAssignmentsQuery>,
@@ -969,7 +968,7 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(view_id): Path<ViewIdentUuid>,
+    Path(view_id): Path<ViewId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetViewAssignmentsQuery>,
@@ -1092,7 +1091,7 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseIdent>,
+    Path(warehouse_id): Path<WarehouseId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
@@ -1124,7 +1123,7 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(namespace_id): Path<NamespaceIdentUuid>,
+    Path(namespace_id): Path<NamespaceId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
@@ -1156,7 +1155,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(table_id): Path<TableIdentUuid>,
+    Path(table_id): Path<TableId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateTableAssignmentsRequest>,
@@ -1188,7 +1187,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(view_id): Path<ViewIdentUuid>,
+    Path(view_id): Path<ViewId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateViewAssignmentsRequest>,
@@ -1967,7 +1966,7 @@ mod tests {
         async fn test_set_namespace_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let namespace_id = NamespaceIdentUuid::from(Uuid::now_v7());
+            let namespace_id = NamespaceId::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &namespace_id)
                 .await
                 .unwrap();
@@ -2000,7 +1999,7 @@ mod tests {
         async fn test_warehouse_managed_access() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let warehouse_id = WarehouseIdent::from(Uuid::now_v7());
+            let warehouse_id = WarehouseId::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &warehouse_id)
                 .await
                 .unwrap();

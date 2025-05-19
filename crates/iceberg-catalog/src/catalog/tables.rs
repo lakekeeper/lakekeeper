@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr as _,
+    sync::Arc,
 };
 
 use futures::FutureExt;
@@ -50,7 +51,6 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
         contract_verification::{ContractVerification, ContractVerificationOutcome},
-        event_publisher::{CloudEventsPublisher, EventMetadata},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
         task_queue::{
@@ -58,10 +58,10 @@ use crate::{
             tabular_purge_queue::TabularPurgeInput,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
-        LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation,
-        TableIdentUuid, TabularDetails, TabularIdentUuid, Transaction, WarehouseStatus,
+        LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
+        TabularDetails, TabularId, Transaction, WarehouseStatus,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
@@ -146,7 +146,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
         // ------------------- VALIDATIONS -------------------
-        let NamespaceParameters { namespace, prefix } = parameters;
+        let NamespaceParameters { namespace, prefix } = parameters.clone();
         let warehouse_id = require_warehouse_id(prefix.clone())?;
         let table = TableIdent::new(namespace.clone(), request.name.clone());
         validate_table_or_view_ident(&table)?;
@@ -170,8 +170,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- BUSINESS LOGIC -------------------
         let id = Uuid::now_v7();
-        let tabular_id = TabularIdentUuid::Table(id);
-        let table_id = TableIdentUuid::from(id);
+        let tabular_id = TabularId::Table(id);
+        let table_id = TableId::from(id);
 
         let namespace = C::get_namespace(warehouse_id, namespace_id, t.transaction()).await?;
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
@@ -202,10 +202,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             ))
         };
 
-        // serialize body before moving it
-        let body = maybe_body_to_json(&request);
-
-        let table_metadata = create_table_request_into_table_metadata(table_id, request)?;
+        let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
 
         let CreateTableResponse {
             table_metadata,
@@ -294,18 +291,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         });
 
         let load_table_result = LoadTableResult {
-            metadata_location: metadata_location.map(|l| l.to_string()),
-            metadata: table_metadata,
+            metadata_location: metadata_location.as_ref().map(ToString::to_string),
+            metadata: table_metadata.clone(),
             config: Some(config.config.into()),
             storage_credentials,
         };
 
         authorizer
-            .create_table(
-                &request_metadata,
-                TableIdentUuid::from(*tabular_id),
-                namespace_id,
-            )
+            .create_table(&request_metadata, TableId::from(*tabular_id), namespace_id)
             .await?;
 
         // Metadata file written, now we can commit the transaction
@@ -316,22 +309,20 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer.delete_table(staged_table_id).await.ok();
         }
 
-        emit_change_event(
-            EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*tabular_id),
+        state
+            .v1_state
+            .hooks
+            .create_table(
                 warehouse_id,
-                name: table.name.clone(),
-                namespace: table.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
-            },
-            body,
-            "createTable",
-            state.v1_state.publisher.clone(),
-        )
-        .await;
+                parameters,
+                Arc::new(request),
+                Arc::new(table_metadata),
+                metadata_location.map(Arc::new),
+                data_access,
+                Arc::new(request_metadata),
+            )
+            .await;
+
         Ok(load_table_result)
     }
 
@@ -344,7 +335,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
         // ------------------- VALIDATIONS -------------------
-        let NamespaceParameters { namespace, prefix } = parameters;
+        let NamespaceParameters { namespace, prefix } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.clone())?;
         let table = TableIdent::new(namespace.clone(), request.name.clone());
         validate_table_or_view_ident(&table)?;
@@ -358,7 +349,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer.clone(),
             &request_metadata,
             &warehouse_id,
-            &namespace,
+            namespace,
             CatalogNamespaceAction::CanCreateTable,
             t_read.transaction(),
         )
@@ -420,7 +411,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
 
-        let tabular_id = TableIdentUuid::from(table_metadata.uuid());
+        let tabular_id = TableId::from(table_metadata.uuid());
 
         let CreateTableResponse {
             table_metadata,
@@ -484,23 +475,19 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer.delete_table(staged_table_id).await.ok();
         }
 
-        // ------------------- CHANGE Event -------------------
-        emit_change_event(
-            EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*tabular_id),
+        // Fire hooks
+        state
+            .v1_state
+            .hooks
+            .register_table(
                 warehouse_id,
-                name: table.name.clone(),
-                namespace: table.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
-            },
-            maybe_body_to_json(&request),
-            "registerTable",
-            state.v1_state.publisher.clone(),
-        )
-        .await;
+                parameters,
+                Arc::new(request),
+                Arc::new(table_metadata.clone()),
+                Arc::new(metadata_location.clone()),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(LoadTableResult {
             metadata_location: Some(metadata_location.to_string()),
@@ -681,7 +668,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
         request.identifier = Some(determine_table_ident(
-            parameters.table,
+            &parameters.table,
             request.identifier.as_ref(),
         )?);
         let t = commit_tables_internal(
@@ -721,9 +708,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<()> {
         // ------------------- VALIDATIONS -------------------
-        let TableParameters { prefix, table } = parameters;
+        let TableParameters { prefix, table } = &parameters;
         let warehouse_id = require_warehouse_id(prefix.clone())?;
-        validate_table_or_view_ident(&table)?;
+        validate_table_or_view_ident(table)?;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
@@ -742,7 +729,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let table_id = C::table_to_id(
             warehouse_id,
-            &table,
+            table,
             ListFlags {
                 include_active,
                 include_staged,
@@ -763,7 +750,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_drop(TabularIdentUuid::Table(*table_id))
+            .check_drop(TabularId::Table(*table_id))
             .await?
             .into_result()?;
 
@@ -793,12 +780,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer.delete_table(table_id).await?;
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
-                C::mark_tabular_as_deleted(
-                    TabularIdentUuid::Table(*table_id),
-                    force,
-                    t.transaction(),
-                )
-                .await?;
+                C::mark_tabular_as_deleted(TabularId::Table(*table_id), force, t.transaction())
+                    .await?;
                 t.commit().await?;
 
                 state
@@ -816,24 +799,20 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             }
         }
 
-        emit_change_event(
-            EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*table_id),
+        state
+            .v1_state
+            .hooks
+            .drop_table(
                 warehouse_id,
-                name: table.name,
-                namespace: table.namespace.to_url_string(),
-                prefix: prefix
-                    .map(crate::api::iceberg::types::Prefix::into_string)
-                    .unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
-            },
-            serde_json::Value::Null,
-            "dropTable",
-            state.v1_state.publisher,
-        )
-        .await;
+                parameters,
+                DropParams {
+                    purge_requested,
+                    force,
+                },
+                TableId::from(*table_id),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(())
     }
@@ -882,13 +861,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     ) -> Result<()> {
         // ------------------- VALIDATIONS -------------------
         let warehouse_id = require_warehouse_id(prefix.clone())?;
-        let body = maybe_body_to_json(&request);
         let RenameTableRequest {
             source,
             destination,
-        } = request;
-        validate_table_or_view_ident(&source)?;
-        validate_table_or_view_ident(&destination)?;
+        } = &request;
+        validate_table_or_view_ident(source)?;
+        validate_table_or_view_ident(destination)?;
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
@@ -902,7 +880,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             authorizer.clone(),
             &request_metadata,
             warehouse_id,
-            &source,
+            source,
             list_flags,
             CatalogTableAction::CanRename,
             t.transaction(),
@@ -929,8 +907,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         C::rename_table(
             warehouse_id,
             source_table_id,
-            &source,
-            &destination,
+            source,
+            destination,
             t.transaction(),
         )
         .await?;
@@ -938,28 +916,22 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state
             .v1_state
             .contract_verifiers
-            .check_rename(TabularIdentUuid::Table(*source_table_id), &destination)
+            .check_rename(TabularId::Table(*source_table_id), destination)
             .await?
             .into_result()?;
 
         t.commit().await?;
 
-        emit_change_event(
-            EventMetadata {
-                tabular_id: TabularIdentUuid::Table(*source_table_id),
+        state
+            .v1_state
+            .hooks
+            .rename_table(
                 warehouse_id,
-                name: source.name,
-                namespace: source.namespace.to_url_string(),
-                prefix: prefix.map(Prefix::into_string).unwrap_or_default(),
-                num_events: 1,
-                sequence_number: 0,
-                trace_id: request_metadata.request_id(),
-            },
-            body,
-            "renameTable",
-            state.v1_state.publisher.clone(),
-        )
-        .await;
+                source_table_id,
+                Arc::new(request),
+                Arc::new(request_metadata),
+            )
+            .await;
 
         Ok(())
     }
@@ -981,7 +953,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
     async fn resolve_and_authorize_table_access(
         request_metadata: &RequestMetadata,
         table: &TableIdent,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         list_flags: ListFlags,
         authorizer: A,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
@@ -1106,11 +1078,13 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .collect::<Vec<_>>();
 
     let table_uuids = futures::future::try_join_all(authz_checks).await?;
-    let table_ids = table_ids
-        .into_iter()
-        .zip(table_uuids)
-        .map(|((table_ident, _), table_uuid)| (table_ident, table_uuid))
-        .collect::<HashMap<_, _>>();
+    let table_ids = Arc::new(
+        table_ids
+            .into_iter()
+            .zip(table_uuids)
+            .map(|((table_ident, _), table_uuid)| (table_ident, table_uuid))
+            .collect::<HashMap<_, _>>(),
+    );
 
     // ------------------- BUSINESS LOGIC -------------------
 
@@ -1124,7 +1098,7 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     }
 
     let mut events = vec![];
-    let mut event_table_ids: Vec<(TableIdent, TableIdentUuid)> = vec![];
+    let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
     let mut updates = vec![];
     for commit_table_request in &request.table_changes {
         if let Some(id) = &commit_table_request.identifier {
@@ -1150,32 +1124,18 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
         match result {
             Ok(commits) => {
-                // Emit events after successful commit
-                let number_of_events = events.len();
-
-                for (event_sequence_number, (body, (table_ident, table_id))) in
-                    events.into_iter().zip(event_table_ids).enumerate()
-                {
-                    emit_change_event(
-                        EventMetadata {
-                            tabular_id: TabularIdentUuid::Table(*table_id),
-                            warehouse_id,
-                            name: table_ident.name,
-                            namespace: table_ident.namespace.to_url_string(),
-                            prefix: prefix
-                                .clone()
-                                .map(|p| p.as_str().to_string())
-                                .unwrap_or_default(),
-                            num_events: number_of_events,
-                            sequence_number: event_sequence_number,
-                            trace_id: request_metadata.request_id(),
-                        },
-                        body,
-                        "updateTable",
-                        state.v1_state.publisher.clone(),
+                // Fire hooks
+                state
+                    .v1_state
+                    .hooks
+                    .commit_transaction(
+                        warehouse_id,
+                        Arc::new(request),
+                        Arc::new(commits.clone()),
+                        table_ids,
+                        Arc::new(request_metadata),
                     )
                     .await;
-                }
                 return Ok(commits);
             }
             Err(e)
@@ -1200,8 +1160,8 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
 #[allow(clippy::too_many_lines)]
 async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     request: &CommitTransactionRequest,
-    warehouse_id: WarehouseIdent,
-    table_ids: HashMap<TableIdent, TableIdentUuid>,
+    warehouse_id: WarehouseId,
+    table_ids: Arc<HashMap<TableIdent, TableId>>,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
 ) -> Result<Vec<CommitContext>> {
@@ -1369,12 +1329,12 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     table_ident: &TableIdent,
     list_flags: ListFlags,
     action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<TableIdentUuid> {
+) -> Result<TableId> {
     authorizer
         .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
@@ -1403,7 +1363,8 @@ pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Optio
     }
 }
 
-struct CommitContext {
+#[derive(Clone, Debug)]
+pub struct CommitContext {
     pub new_metadata: iceberg::spec::TableMetadata,
     pub new_metadata_location: Location,
     pub previous_metadata: iceberg::spec::TableMetadata,
@@ -1608,14 +1569,14 @@ pub(crate) struct TableMetadataDiffs {
 }
 
 pub(crate) fn determine_table_ident(
-    parameters_ident: TableIdent,
+    parameters_ident: &TableIdent,
     request_ident: Option<&TableIdent>,
 ) -> Result<TableIdent> {
     let Some(identifier) = request_ident else {
-        return Ok(parameters_ident);
+        return Ok(parameters_ident.clone());
     };
 
-    if identifier == &parameters_ident {
+    if identifier == parameters_ident {
         return Ok(identifier.clone());
     }
 
@@ -1659,7 +1620,7 @@ pub(super) fn parse_location(location: &str, code: StatusCode) -> Result<Locatio
 pub(super) fn determine_tabular_location(
     namespace: &GetNamespaceResponse,
     request_table_location: Option<String>,
-    table_id: TabularIdentUuid,
+    table_id: TabularId,
     storage_profile: &StorageProfile,
 ) -> Result<Location> {
     let request_table_location = request_table_location
@@ -1694,10 +1655,7 @@ pub(super) fn determine_tabular_location(
     Ok(location)
 }
 
-fn require_table_id(
-    table_ident: &TableIdent,
-    table_id: Option<TableIdentUuid>,
-) -> Result<TableIdentUuid> {
+fn require_table_id(table_ident: &TableIdent, table_id: Option<TableId>) -> Result<TableId> {
     table_id.ok_or_else(|| {
         ErrorModel::not_found(
             format!(
@@ -1726,9 +1684,9 @@ fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
 }
 
 fn take_table_metadata<T>(
-    table_id: &TableIdentUuid,
+    table_id: &TableId,
     table_ident: &TableIdent,
-    metadatas: &mut HashMap<TableIdentUuid, T>,
+    metadatas: &mut HashMap<TableId, T>,
 ) -> Result<T> {
     metadatas
         .remove(table_id)
@@ -1756,17 +1714,6 @@ pub(crate) fn require_active_warehouse(status: WarehouseStatus) -> Result<()> {
             .into());
     }
     Ok(())
-}
-
-async fn emit_change_event(
-    parameters: EventMetadata,
-    body: serde_json::Value,
-    operation_id: &str,
-    publisher: CloudEventsPublisher,
-) {
-    let _ = publisher
-        .publish(Uuid::now_v7(), operation_id, body, parameters)
-        .await;
 }
 
 // Quick validation of properties for early fails.
@@ -1853,7 +1800,7 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
 }
 
 pub(crate) fn create_table_request_into_table_metadata(
-    table_id: TableIdentUuid,
+    table_id: TableId,
     request: CreateTableRequest,
 ) -> Result<TableMetadata> {
     let CreateTableRequest {
@@ -1961,7 +1908,7 @@ pub(crate) mod test {
             State, UserId,
         },
         tests::random_request_metadata,
-        WarehouseIdent,
+        WarehouseId,
     };
 
     #[test]
@@ -3309,7 +3256,7 @@ pub(crate) mod test {
 
         ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
-            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            WarehouseId::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             true,
             ctx.clone(),
             random_request_metadata(),
@@ -3335,7 +3282,7 @@ pub(crate) mod test {
 
         ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
-            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            WarehouseId::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             false,
             ctx.clone(),
             random_request_metadata(),
@@ -3378,7 +3325,7 @@ pub(crate) mod test {
 
         ManagementApiServer::set_table_protection(
             tab.metadata.uuid().into(),
-            WarehouseIdent::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
+            WarehouseId::from_str(ns_params.prefix.clone().unwrap().as_str()).unwrap(),
             true,
             ctx.clone(),
             random_request_metadata(),
