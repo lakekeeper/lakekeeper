@@ -287,8 +287,9 @@ def drop_table_and_assert_that_table_is_gone(
             pytest.skip(
                 "S3 purge test requires s3 credentials to be set in the storage profile."
             )
-        # Gotta use the s3 creds here since the prefix no longer exists after deletion & at least minio will not allow
-        # listing a location that doesn't exist with our downscoped cred
+        # We use s3 credentials from the config, as fileio configured for
+        # remote signing can't work after the table is deleted. We want to check
+        # that the location is deleted after the table is purged.
         properties = dict()
         properties["s3.access-key-id"] = storage_config["storage-credential"][
             "aws-access-key-id"
@@ -305,9 +306,13 @@ def drop_table_and_assert_that_table_is_gone(
     file_io = io._infer_file_io_from_scheme(table_0.location(), properties)
     # sleep to give time for the table to be gone
     time.sleep(5)
+    # On filesystems with hierarchies like HDFS and ADLS we might leave
+    # empty directories. This is a known issue:
+    # https://github.com/lakekeeper/lakekeeper/issues/1064
     location = table_0.location().rstrip("/") + "/"
     inp = file_io.new_input(location)
-    assert not inp.exists(), f"Table location {location} still exists"
+    if storage_config["storage-profile"]["type"] != "adls":
+        assert not inp.exists(), f"Table location {location} still exists"
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
     assert len(tables) == 1
     for n, ((_, table), df) in enumerate(zip(sorted(tables), dfs[1:]), 1):
