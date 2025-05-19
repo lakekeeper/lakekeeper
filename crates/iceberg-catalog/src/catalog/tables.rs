@@ -471,7 +471,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer.delete_table(previous_table_id).await.map_err({
                     |e| {
                         tracing::warn!(
-                            "Failed to delete previous table {previous_table_id} from authorizer on overwrite via table register endpoint: {e}"
+                            "Failed to delete previous table {previous_table_id} from authorizer on overwrite via table register endpoint: {}",
+                            e.error
                         );
                     }
                 }).ok();
