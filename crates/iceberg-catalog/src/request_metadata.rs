@@ -11,8 +11,8 @@ use limes::Authentication;
 use uuid::Uuid;
 
 use crate::{
-    service::{authn::Actor, TabularIdentUuid},
-    ProjectId, WarehouseIdent, CONFIG, DEFAULT_PROJECT_ID,
+    service::{authn::Actor, TabularId},
+    ProjectId, WarehouseId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
 const PROJECT_ID_HEADER_DEPRECATED: &str = "x-project-ident";
@@ -185,15 +185,15 @@ impl RequestMetadata {
     }
 
     #[must_use]
-    pub fn s3_signer_uri(&self, _warehouse_id: WarehouseIdent) -> String {
+    pub fn s3_signer_uri(&self, _warehouse_id: WarehouseId) -> String {
         format!("{}/", self.base_uri_catalog())
     }
 
     #[must_use]
     pub fn s3_signer_endpoint_for_table(
         &self,
-        warehouse_id: WarehouseIdent,
-        table_id: TabularIdentUuid,
+        warehouse_id: WarehouseId,
+        table_id: TabularId,
     ) -> String {
         format!("v1/signer/{warehouse_id}/tabular-id/{table_id}/v1/aws/s3/sign")
     }

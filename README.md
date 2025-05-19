@@ -99,7 +99,7 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 
 | Backend | Status  | Comment |
 | ------- | :-----: | ------- |
-| Nats    | ![done] |         |
+| NATS    | ![done] |         |
 | Kafka   | ![done] |         |
 
 ### Supported Operations - Management API

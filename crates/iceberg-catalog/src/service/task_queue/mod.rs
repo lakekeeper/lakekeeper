@@ -8,7 +8,7 @@ use sqlx::FromRow;
 use strum::EnumIter;
 use uuid::Uuid;
 
-use super::{authz::Authorizer, WarehouseIdent};
+use super::{authz::Authorizer, WarehouseId};
 use crate::{
     service::{
         task_queue::{
@@ -156,7 +156,7 @@ impl Deref for TaskId {
 /// A filter to select tasks
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskFilter {
-    WarehouseId(WarehouseIdent),
+    WarehouseId(WarehouseId),
     TaskIds(Vec<TaskId>),
 }
 

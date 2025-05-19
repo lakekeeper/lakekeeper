@@ -15,7 +15,7 @@ use crate::{
         task_queue::{Task, TaskQueue},
         Catalog, SecretStore, Transaction,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 pub type TabularPurgeQueue =
@@ -176,7 +176,7 @@ where
 pub struct TabularPurgeTask {
     pub tabular_id: Uuid,
     pub tabular_location: String,
-    pub warehouse_ident: WarehouseIdent,
+    pub warehouse_ident: WarehouseId,
     pub tabular_type: TabularType,
     pub task: Task,
 }
@@ -184,7 +184,7 @@ pub struct TabularPurgeTask {
 #[derive(Debug, Clone)]
 pub struct TabularPurgeInput {
     pub tabular_id: Uuid,
-    pub warehouse_ident: WarehouseIdent,
+    pub warehouse_ident: WarehouseId,
     pub tabular_type: TabularType,
     pub parent_id: Option<Uuid>,
     pub tabular_location: String,

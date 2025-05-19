@@ -6,9 +6,9 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
-        Catalog, Result, SecretStore, State, Transaction, ViewIdentUuid,
+        Catalog, Result, SecretStore, State, Transaction, ViewId,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -42,11 +42,11 @@ pub(crate) async fn view_exists<C: Catalog, A: Authorizer + Clone, S: SecretStor
 pub(crate) async fn authorized_view_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     view_ident: &TableIdent,
     action: impl From<CatalogViewAction> + std::fmt::Display + Send,
     transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
-) -> Result<ViewIdentUuid> {
+) -> Result<ViewId> {
     authorizer
         .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;

@@ -55,11 +55,10 @@ use crate::{
         authn::UserId, storage::StorageProfile, Catalog, CreateNamespaceRequest,
         CreateNamespaceResponse, CreateOrUpdateUserResponse, CreateTableResponse,
         GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse, GetWarehouseResponse,
-        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceIdent,
-        NamespaceIdentUuid, NamespaceInfo, ProjectId, Result, RoleId, StartupValidationData,
-        TableCommit, TableCreation, TableIdent, TableIdentUuid, TableInfo, TabularIdentUuid,
-        TabularInfo, Transaction, UndropTabularResponse, ViewCommit, ViewIdentUuid, WarehouseIdent,
-        WarehouseStatus,
+        ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo, NamespaceId,
+        NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, StartupValidationData,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
+        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -195,12 +194,12 @@ impl Catalog for super::PostgresCatalog {
         warehouse_name: &str,
         project_id: &ProjectId,
         catalog_state: CatalogState,
-    ) -> Result<Option<WarehouseIdent>> {
+    ) -> Result<Option<WarehouseId>> {
         get_warehouse_by_name(warehouse_name, project_id, catalog_state).await
     }
 
     async fn get_config_for_warehouse(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         catalog_state: CatalogState,
         request_metadata: &RequestMetadata,
     ) -> Result<Option<CatalogConfig>> {
@@ -208,16 +207,16 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn list_namespaces<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         query: &ListNamespacesQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<PaginatedMapping<NamespaceIdentUuid, NamespaceInfo>> {
+    ) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>> {
         list_namespaces(warehouse_id, query, transaction).await
     }
 
     async fn create_namespace<'a>(
-        warehouse_id: WarehouseIdent,
-        namespace_id: NamespaceIdentUuid,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
         request: CreateNamespaceRequest,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<CreateNamespaceResponse> {
@@ -225,24 +224,24 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_namespace<'a>(
-        warehouse_id: WarehouseIdent,
-        namespace_id: NamespaceIdentUuid,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<GetNamespaceResponse> {
         get_namespace(warehouse_id, namespace_id, transaction).await
     }
 
     async fn namespace_to_id<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<NamespaceIdentUuid>> {
+    ) -> Result<Option<NamespaceId>> {
         namespace_to_id(warehouse_id, namespace, transaction).await
     }
 
     async fn drop_namespace<'a>(
-        warehouse_id: WarehouseIdent,
-        namespace_id: NamespaceIdentUuid,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
         flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<NamespaceDropInfo> {
@@ -250,8 +249,8 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn update_namespace_properties<'a>(
-        warehouse_id: WarehouseIdent,
-        namespace_id: NamespaceIdentUuid,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
         properties: HashMap<String, String>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
@@ -266,12 +265,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn list_tables<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TableIdentUuid, TableInfo>> {
+    ) -> Result<PaginatedMapping<TableId, TableInfo>> {
         list_tables(
             warehouse_id,
             namespace,
@@ -283,7 +282,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn resolve_table_ident(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         table: &TableIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -292,46 +291,46 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn table_to_id<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         table: &TableIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<TableIdentUuid>> {
+    ) -> Result<Option<TableId>> {
         resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction)
             .await
             .map(|x| x.map(|x| x.ident))
     }
 
     async fn table_idents_to_ids(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         tables: HashSet<&TableIdent>,
         list_flags: ListFlags,
         catalog_state: Self::State,
-    ) -> Result<HashMap<TableIdent, Option<TableIdentUuid>>> {
+    ) -> Result<HashMap<TableIdent, Option<TableId>>> {
         table_idents_to_ids(warehouse_id, tables, list_flags, &catalog_state.read_pool()).await
     }
 
     // Should also load staged tables but not tables of inactive warehouses
     async fn load_tables<'a>(
-        warehouse_id: WarehouseIdent,
-        tables: impl IntoIterator<Item = TableIdentUuid> + Send,
+        warehouse_id: WarehouseId,
+        tables: impl IntoIterator<Item = TableId> + Send,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<HashMap<TableIdentUuid, LoadTableResponse>> {
+    ) -> Result<HashMap<TableId, LoadTableResponse>> {
         load_tables(warehouse_id, tables, include_deleted, transaction).await
     }
 
     async fn load_storage_profile(
-        warehouse_id: WarehouseIdent,
-        tabular_id: TableIdentUuid,
+        warehouse_id: WarehouseId,
+        tabular_id: TableId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<(Option<SecretIdent>, StorageProfile)> {
         load_storage_profile(warehouse_id, tabular_id, transaction).await
     }
 
     async fn get_table_metadata_by_id(
-        warehouse_id: WarehouseIdent,
-        table: TableIdentUuid,
+        warehouse_id: WarehouseId,
+        table: TableId,
         list_flags: ListFlags,
         catalog_state: Self::State,
     ) -> Result<Option<GetTableMetadataResponse>> {
@@ -339,7 +338,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_table_metadata_by_s3_location(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         location: &Location,
         list_flags: ListFlags,
         catalog_state: Self::State,
@@ -348,8 +347,8 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn rename_table<'a>(
-        warehouse_id: WarehouseIdent,
-        source_id: TableIdentUuid,
+        warehouse_id: WarehouseId,
+        source_id: TableId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
@@ -358,7 +357,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn drop_table<'a>(
-        table_id: TableIdentUuid,
+        table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String> {
@@ -366,8 +365,8 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn undrop_tabulars(
-        tabular_ids: &[TableIdentUuid],
-        warehouse_id: WarehouseIdent,
+        tabular_ids: &[TableId],
+        warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>> {
         clear_tabular_deleted_at(
@@ -379,7 +378,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn mark_tabular_as_deleted(
-        table_id: TabularIdentUuid,
+        table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
@@ -387,7 +386,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn commit_table_transaction<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         commits: impl IntoIterator<Item = TableCommit> + Send,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
@@ -401,7 +400,7 @@ impl Catalog for super::PostgresCatalog {
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<WarehouseIdent> {
+    ) -> Result<WarehouseId> {
         create_warehouse(
             warehouse_name,
             project_id,
@@ -462,14 +461,14 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_warehouse<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<Option<GetWarehouseResponse>> {
         get_warehouse(warehouse_id, transaction).await
     }
 
     async fn delete_warehouse<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         query: DeleteWarehouseQuery,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
@@ -477,7 +476,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn rename_warehouse<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         new_name: &str,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
@@ -485,7 +484,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn set_warehouse_deletion_profile<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         deletion_profile: &TabularDeleteProfile,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()> {
@@ -493,7 +492,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn set_warehouse_status<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         status: WarehouseStatus,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
@@ -501,7 +500,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn update_storage_profile<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         storage_profile: StorageProfile,
         storage_secret_id: Option<SecretIdent>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
@@ -516,15 +515,15 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn view_to_id<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         view: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<ViewIdentUuid>> {
+    ) -> Result<Option<ViewId>> {
         view_ident_to_id(warehouse_id, view, false, &mut **transaction).await
     }
 
     async fn create_view<'a>(
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,
         metadata_location: &'_ Location,
@@ -543,7 +542,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn load_view<'a>(
-        view_id: ViewIdentUuid,
+        view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<crate::implementations::postgres::tabular::view::ViewMetadataWithLocation> {
@@ -551,12 +550,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn list_views<'a>(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<ViewIdentUuid, TableInfo>> {
+    ) -> Result<PaginatedMapping<ViewId, TableInfo>> {
         list_views(
             warehouse_id,
             namespace,
@@ -592,7 +591,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn drop_view<'a>(
-        view_id: ViewIdentUuid,
+        view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String> {
@@ -600,8 +599,8 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn rename_view(
-        warehouse_id: WarehouseIdent,
-        source_id: ViewIdentUuid,
+        warehouse_id: WarehouseId,
+        source_id: ViewId,
         source: &TableIdent,
         destination: &TableIdent,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -610,12 +609,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn list_tabulars(
-        warehouse_id: WarehouseIdent,
-        namespace_id: Option<NamespaceIdentUuid>,
+        warehouse_id: WarehouseId,
+        namespace_id: Option<NamespaceId>,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         pagination_query: PaginationQuery,
-    ) -> Result<PaginatedMapping<TabularIdentUuid, TabularInfo>> {
+    ) -> Result<PaginatedMapping<TabularId, TabularInfo>> {
         list_tabulars(
             warehouse_id,
             None,
@@ -629,7 +628,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_warehouse_stats(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         pagination_query: PaginationQuery,
         state: Self::State,
     ) -> Result<WarehouseStatisticsResponse> {
@@ -654,7 +653,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn set_tabular_protected(
-        tabular_id: TabularIdentUuid,
+        tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
@@ -662,14 +661,14 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_tabular_protected(
-        tabular_id: TabularIdentUuid,
+        tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
         get_tabular_protected(tabular_id, transaction).await
     }
 
     async fn set_namespace_protected(
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
@@ -677,14 +676,14 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_namespace_protected(
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
         get_namespace_protected(namespace_id, transaction).await
     }
 
     async fn set_warehouse_protected(
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {

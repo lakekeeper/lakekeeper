@@ -47,7 +47,7 @@ use crate::{
         task_queue::{TaskQueueConfig, TaskQueues},
         Catalog, SecretStore, State, UserId,
     },
-    WarehouseIdent, CONFIG,
+    WarehouseId, CONFIG,
 };
 
 pub(crate) fn test_io_profile() -> StorageProfile {
@@ -184,9 +184,9 @@ pub(crate) async fn drop_namespace<A: Authorizer, C: Catalog, S: SecretStore>(
 
 #[derive(Debug)]
 pub struct TestWarehouseResponse {
-    pub warehouse_id: WarehouseIdent,
+    pub warehouse_id: WarehouseId,
     pub warehouse_name: String,
-    pub additional_warehouses: Vec<(WarehouseIdent, String)>,
+    pub additional_warehouses: Vec<(WarehouseId, String)>,
 }
 
 #[allow(clippy::too_many_arguments)]

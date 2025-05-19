@@ -79,18 +79,18 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 | `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL`        | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
 | `LAKEKEEPER__QUEUE_CONFIG__NUM_WORKERS`          | 2          | Number of workers launched for each queue. Default: 2 |
 
-### Nats
+### NATS
 
-Lakekeeper can publish change events to Nats (Kafka is coming soon). The following configuration options are available:
+Lakekeeper can publish change events to NATS. The following configuration options are available:
 
 | Variable                                   | Example                 | Description |
 |--------------------------------------------|-------------------------|-------|
 | `LAKEKEEPER__NATS_ADDRESS`                 | `nats://localhost:4222` | The URL of the NATS server to connect to |
 | `LAKEKEEPER__NATS_TOPIC`                   | `iceberg`               | The subject to publish events to |
-| `LAKEKEEPER__NATS_USER`                    | `test-user`             | User to authenticate against nats, needs `LAKEKEEPER__NATS_PASSWORD` |
+| `LAKEKEEPER__NATS_USER`                    | `test-user`             | User to authenticate against NATS, needs `LAKEKEEPER__NATS_PASSWORD` |
 | `LAKEKEEPER__NATS_PASSWORD`                | `test-password`         | Password to authenticate against nats, needs `LAKEKEEPER__NATS_USER` |
-| <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing nats credentials |
-| `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | Nats token to use for authentication |
+| <nobr>`LAKEKEEPER__NATS_CREDS_FILE`</nobr> | `/path/to/file.creds`   | Path to a file containing NATS credentials |
+| `LAKEKEEPER__NATS_TOKEN`                   | `xyz`                   | NATS token to use for authentication |
 
 ### Kafka
 

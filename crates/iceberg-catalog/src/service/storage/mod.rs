@@ -18,7 +18,7 @@ use iceberg_ext::{
 pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
 use serde::{Deserialize, Serialize};
 
-use super::{secrets::SecretInStorage, NamespaceIdentUuid, TableIdentUuid};
+use super::{secrets::SecretInStorage, NamespaceId, TableId};
 use crate::{
     api::{
         iceberg::v1::DataAccess, management::v1::warehouse::TabularDeleteProfile, CatalogConfig,
@@ -26,8 +26,8 @@ use crate::{
     catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
     retry::retry_fn,
-    service::tabular_idents::TabularIdentUuid,
-    WarehouseIdent,
+    service::tabular_idents::TabularId,
+    WarehouseId,
 };
 
 /// Storage profile for a warehouse.
@@ -85,7 +85,7 @@ impl StorageProfile {
     #[must_use]
     pub fn generate_catalog_config(
         &self,
-        warehouse_id: WarehouseIdent,
+        warehouse_id: WarehouseId,
         request_metadata: &RequestMetadata,
         delete_profile: TabularDeleteProfile,
     ) -> CatalogConfig {
@@ -197,7 +197,7 @@ impl StorageProfile {
     /// Fails if the `key_prefix` is not valid for S3 URLs.
     pub fn default_namespace_location(
         &self,
-        namespace_id: NamespaceIdentUuid,
+        namespace_id: NamespaceId,
     ) -> Result<Location, ValidationError> {
         let mut base_location: Location = self.base_location()?;
         base_location
@@ -229,8 +229,8 @@ impl StorageProfile {
         table_location: &Location,
         storage_permissions: StoragePermissions,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
-        tabular_id: TabularIdentUuid,
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
         match self {
             StorageProfile::S3(profile) => {
@@ -294,8 +294,8 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         // ------------- Common validations -------------
         // Test if we can generate a default namespace location
-        let ns_location = self.default_namespace_location(NamespaceIdentUuid::default())?;
-        self.default_tabular_location(&ns_location, TableIdentUuid::default().into());
+        let ns_location = self.default_namespace_location(NamespaceId::default())?;
+        self.default_tabular_location(&ns_location, TableId::default().into());
 
         // ------------- Profile specific validations -------------
         match self {
@@ -324,8 +324,8 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         let file_io = self.file_io(credential).await?;
 
-        let ns_id = NamespaceIdentUuid::default();
-        let table_id = TableIdentUuid::default();
+        let ns_id = NamespaceId::default();
+        let table_id = TableId::default();
         let ns_location = self.default_namespace_location(ns_id)?;
         let test_location = location.map_or_else(
             || self.default_tabular_location(&ns_location, table_id.into()),
@@ -424,8 +424,8 @@ impl StorageProfile {
                 // The following arguments are used only for generating the remote signing configuration
                 // and are not used in the vended credentials case.
                 request_metadata,
-                WarehouseIdent::default(),
-                TableIdentUuid::default().into(),
+                WarehouseId::default(),
+                TableId::default().into(),
             )
             .await?;
 
@@ -646,7 +646,7 @@ pub trait StorageLocations {
     fn default_tabular_location(
         &self,
         namespace_location: &Location,
-        table_id: TabularIdentUuid,
+        table_id: TabularId,
     ) -> Location {
         let mut l = namespace_location.clone();
         l.without_trailing_slash().push(&table_id.to_string());
@@ -916,10 +916,9 @@ mod tests {
 
         let target_location = "s3://my-bucket/subfolder/00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002";
 
-        let namespace_id: NamespaceIdentUuid =
-            uuid::uuid!("00000000-0000-0000-0000-000000000001").into();
+        let namespace_id: NamespaceId = uuid::uuid!("00000000-0000-0000-0000-000000000001").into();
         let namespace_location = profile.default_namespace_location(namespace_id).unwrap();
-        let table_id = TabularIdentUuid::View(uuid::uuid!("00000000-0000-0000-0000-000000000002"));
+        let table_id = TabularId::View(uuid::uuid!("00000000-0000-0000-0000-000000000002"));
         let table_location = profile.default_tabular_location(&namespace_location, table_id);
         assert_eq!(table_location.to_string(), target_location);
 
@@ -1211,8 +1210,8 @@ mod tests {
                 &table_location1,
                 StoragePermissions::ReadWriteDelete,
                 &RequestMetadata::new_unauthenticated(),
-                WarehouseIdent::default(),
-                TableIdentUuid::default().into(),
+                WarehouseId::default(),
+                TableId::default().into(),
             )
             .await
             .unwrap();
@@ -1227,8 +1226,8 @@ mod tests {
                 &table_location2,
                 StoragePermissions::ReadWriteDelete,
                 &RequestMetadata::new_unauthenticated(),
-                WarehouseIdent::default(),
-                TableIdentUuid::default().into(),
+                WarehouseId::default(),
+                TableId::default().into(),
             )
             .await
             .unwrap();

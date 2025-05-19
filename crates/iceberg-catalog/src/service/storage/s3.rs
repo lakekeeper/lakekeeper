@@ -27,9 +27,9 @@ use crate::{
             },
             StoragePermissions, TableConfig,
         },
-        TabularIdentUuid,
+        TabularId,
     },
-    WarehouseIdent, CONFIG,
+    WarehouseId, CONFIG,
 };
 
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
@@ -405,7 +405,7 @@ impl S3Profile {
     #[must_use]
     pub fn generate_catalog_config(
         &self,
-        _warehouse_id: WarehouseIdent,
+        _warehouse_id: WarehouseId,
         _request_metadata: &RequestMetadata,
         delete_profile: TabularDeleteProfile,
     ) -> CatalogConfig {
@@ -453,8 +453,8 @@ impl S3Profile {
         table_location: &Location,
         storage_permissions: StoragePermissions,
         request_metadata: &RequestMetadata,
-        warehouse_id: WarehouseIdent,
-        tabular_id: TabularIdentUuid,
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
         // If vended_credentials is False and remote_signing is False,
         // use remote_signing.
@@ -1393,8 +1393,8 @@ pub(crate) mod test {
     use super::*;
     use crate::service::{
         storage::{StorageLocations as _, StorageProfile},
-        tabular_idents::TabularIdentUuid,
-        NamespaceIdentUuid,
+        tabular_idents::TabularId,
+        NamespaceId,
     };
 
     #[test]
@@ -1578,8 +1578,8 @@ pub(crate) mod test {
         };
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceIdentUuid::from(uuid::Uuid::now_v7());
-        let table_id = TabularIdentUuid::Table(uuid::Uuid::now_v7());
+        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
+        let table_id = TabularId::Table(uuid::Uuid::now_v7());
         let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, table_id);
@@ -1622,7 +1622,7 @@ pub(crate) mod test {
         };
 
         let namespace_location = Location::from_str("s3://test-bucket/foo/").unwrap();
-        let table_id = TabularIdentUuid::Table(uuid::Uuid::now_v7());
+        let table_id = TabularId::Table(uuid::Uuid::now_v7());
         // Prefix should be ignored as we specify the namespace_location explicitly.
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
         let expected = format!("s3://test-bucket/foo/{table_id}");

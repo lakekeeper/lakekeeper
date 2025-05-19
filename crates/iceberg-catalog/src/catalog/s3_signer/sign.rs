@@ -20,9 +20,9 @@ use crate::{
         storage::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Location, S3Profile, StorageCredential,
         },
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableIdentUuid, Transaction,
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
     },
-    WarehouseIdent,
+    WarehouseId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,7 +206,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
 async fn s3_url_style_detection<C: Catalog>(
     state: C::State,
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
 ) -> Result<S3UrlStyleDetectionMode, IcebergErrorResponse> {
     let t = super::cache::WAREHOUSE_S3_URL_STYLE_CACHE
         .try_get_with(warehouse_id, async {
@@ -393,7 +393,7 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn authorize_operation<A: Authorizer>(
     method: Operation,
     metadata: &RequestMetadata,
-    table_id: TableIdentUuid,
+    table_id: TableId,
     authorizer: A,
 ) -> Result<()> {
     // First check - fail fast if requested table is not allowed.
@@ -428,8 +428,8 @@ async fn get_unauthorized_table_metadata_by_id<
     A: Authorizer + Clone,
     S: SecretStore,
 >(
-    warehouse_id: WarehouseIdent,
-    table_id: TableIdentUuid,
+    warehouse_id: WarehouseId,
+    table_id: TableId,
     include_staged: bool,
     request_url: &url::Url,
     state: &ApiContext<State<A, C, S>>,
@@ -451,7 +451,7 @@ async fn get_unauthorized_table_metadata_by_id<
 
 /// Helper function for fetching table metadata by location
 async fn get_table_metadata_by_location<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
     parsed_url: &s3_utils::ParsedSignRequest,
     include_staged: bool,
     request_url: &url::Url,

@@ -32,10 +32,9 @@ use crate::{
         contract_verification::ContractVerification,
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile},
-        Catalog, NamespaceIdentUuid, State, Transaction, ViewCommit, ViewIdentUuid,
-        ViewMetadataWithLocation,
+        Catalog, NamespaceId, State, Transaction, ViewCommit, ViewId, ViewMetadataWithLocation,
     },
-    SecretIdent, WarehouseIdent,
+    SecretIdent, WarehouseId,
 };
 
 /// Commit updates to a view
@@ -151,8 +150,8 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
 // Context structure to hold static parameters for retry function
 struct CommitViewContext<'a> {
-    namespace_id: NamespaceIdentUuid,
-    view_id: ViewIdentUuid,
+    namespace_id: NamespaceId,
+    view_id: ViewId,
     identifier: &'a TableIdent,
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretIdent>,
@@ -165,7 +164,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
-    warehouse_id: WarehouseIdent,
+    warehouse_id: WarehouseId,
 ) -> Result<(LoadViewResult, crate::service::endpoint_hooks::ViewCommit)> {
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
@@ -284,10 +283,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ))
 }
 
-fn check_asserts(
-    requirements: Option<&Vec<ViewRequirement>>,
-    view_id: ViewIdentUuid,
-) -> Result<()> {
+fn check_asserts(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {
     if let Some(requirements) = requirements {
         for assertion in requirements {
             match assertion {

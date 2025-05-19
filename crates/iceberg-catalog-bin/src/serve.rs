@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error};
+use anyhow::anyhow;
 #[cfg(feature = "ui")]
 use axum::routing::get;
 use iceberg_catalog::{
@@ -22,8 +22,7 @@ use iceberg_catalog::{
         endpoint_hooks::EndpointHookCollection,
         endpoint_statistics::{EndpointStatisticsMessage, EndpointStatisticsTracker, FlushMode},
         event_publisher::{
-            kafka::{KafkaBackend, KafkaConfig},
-            nats::NatsBackend,
+            kafka::build_kafka_publisher_from_config, nats::build_nats_publisher_from_config,
             CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
@@ -34,7 +33,6 @@ use iceberg_catalog::{
     SecretBackend, CONFIG,
 };
 use limes::{Authenticator, AuthenticatorEnum};
-use reqwest::Url;
 
 const OIDC_IDP_ID: &str = "oidc";
 const K8S_IDP_ID: &str = "kubernetes";
@@ -322,27 +320,20 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
 
     let mut cloud_event_sinks = vec![];
 
-    if let Some(nat_addr) = &CONFIG.nats_address {
-        let nats_publisher = build_nats_client(nat_addr).await?;
+    if let Some(nats_publisher) = build_nats_publisher_from_config().await? {
         cloud_event_sinks
             .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    } else {
-        tracing::info!("Running without NATS publisher.");
     };
-
-    if let (Some(kafka_config), Some(kafka_topic)) = (&CONFIG.kafka_config, &CONFIG.kafka_topic) {
-        let kafka_publisher = build_kafka_producer(kafka_config, kafka_topic)?;
+    if let Some(kafka_publisher) = build_kafka_publisher_from_config()? {
         cloud_event_sinks
             .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    } else {
-        tracing::info!("Running without Kafka publisher.");
     }
 
     if let Some(true) = &CONFIG.log_cloudevents {
         let tracing_publisher = TracingPublisher;
         cloud_event_sinks
             .push(Arc::new(tracing_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-        tracing::info!("Logging Cloudevents.");
+        tracing::info!("Logging Cloudevents to Console.");
     } else {
         tracing::info!("Running without logging Cloudevents.");
     }
@@ -436,86 +427,4 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     publisher_handle.await?;
     stats_handle.await?;
     Ok(())
-}
-
-async fn build_nats_client(nat_addr: &Url) -> Result<NatsBackend, Error> {
-    tracing::info!("Running with nats publisher, connecting to: {nat_addr}");
-    let builder = async_nats::ConnectOptions::new();
-
-    let builder = if let Some(file) = &CONFIG.nats_creds_file {
-        builder.credentials_file(file).await?
-    } else {
-        builder
-    };
-
-    let builder = if let (Some(user), Some(pw)) = (&CONFIG.nats_user, &CONFIG.nats_password) {
-        builder.user_and_password(user.clone(), pw.clone())
-    } else {
-        builder
-    };
-
-    let builder = if let Some(token) = &CONFIG.nats_token {
-        builder.token(token.clone())
-    } else {
-        builder
-    };
-
-    let nats_publisher = NatsBackend {
-        client: builder.connect(nat_addr.to_string()).await?,
-        topic: CONFIG
-            .nats_topic
-            .clone()
-            .ok_or(anyhow::anyhow!("Missing nats topic."))?,
-    };
-    Ok(nats_publisher)
-}
-
-fn build_kafka_producer(
-    kafka_config: &KafkaConfig,
-    topic: &String,
-) -> anyhow::Result<KafkaBackend> {
-    if !(kafka_config.conf.contains_key("bootstrap.servers")
-        || kafka_config.conf.contains_key("metadata.broker.list"))
-    {
-        return Err(anyhow::anyhow!(
-            "Kafka config map does not contain 'bootstrap.servers' or 'metadata.broker.list'. You need to provide either of those, in addition with any other parameters you need."
-        ));
-    }
-    let mut producer_client_config = rdkafka::ClientConfig::new();
-    for (key, value) in kafka_config.conf.iter() {
-        producer_client_config.set(key, value);
-    }
-    if let Some(sasl_password) = kafka_config.sasl_password.clone() {
-        producer_client_config.set("sasl.password", sasl_password);
-    }
-    if let Some(sasl_oauthbearer_client_secret) =
-        kafka_config.sasl_oauthbearer_client_secret.clone()
-    {
-        producer_client_config.set(
-            "sasl.oauthbearer.client.secret",
-            sasl_oauthbearer_client_secret,
-        );
-    }
-    if let Some(ssl_key_password) = kafka_config.ssl_key_password.clone() {
-        producer_client_config.set("ssl.key.password", ssl_key_password);
-    }
-    if let Some(ssl_keystore_password) = kafka_config.ssl_keystore_password.clone() {
-        producer_client_config.set("ssl.keystore.password", ssl_keystore_password);
-    }
-    let producer = producer_client_config.create()?;
-    let kafka_backend = KafkaBackend {
-        producer,
-        topic: topic.clone(),
-    };
-    let kafka_brokers = kafka_config
-        .conf
-        .get("bootstrap.servers")
-        .or(kafka_config.conf.get("metadata.broker.list"))
-        .unwrap();
-    tracing::info!(
-        "Running with kafka publisher, initial brokers are: {}. Topic: {}.",
-        kafka_brokers,
-        topic
-    );
-    Ok(kafka_backend)
 }
