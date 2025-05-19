@@ -213,11 +213,6 @@ def test_drop_table(
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "s3":
-        pytest.skip(
-            "S3 fails to purge tables since it tries to sign a DELETE request for the bucket location which we don't want to sign."
-        )
-
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
         "CREATE TABLE test_drop_table_purge_spark.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg"
@@ -1003,8 +998,6 @@ def test_register_table(
     table = warehouse.pyiceberg_catalog.load_table((*namespace.name, "my_table"))
     assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 1
 
-    # ToDo: Cannot re-register a table
-
     # Remove table from catalog
     delete_uri = (
         warehouse.server.catalog_url.strip("/")
@@ -1023,10 +1016,12 @@ def test_register_table(
     requests.delete(
         delete_uri, headers={"Authorization": f"Bearer {warehouse.access_token}"}
     ).raise_for_status()
-    time.sleep(3)
 
     # Can't query table anymore
     assert spark.sql(f"SHOW TABLES IN {namespace.spark_name}").toPandas().shape[0] == 0
+
+    # Wait for expiration of soft delete
+    time.sleep(3)
 
     spark.sql(
         f"""
