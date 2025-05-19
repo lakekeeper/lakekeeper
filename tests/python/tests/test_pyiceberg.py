@@ -324,3 +324,50 @@ def test_write_read(namespace: conftest.Namespace):
     read_df = read_table.to_pandas()
 
     assert read_df.equals(df)
+
+
+def test_write_read_multiple_tables(namespace: conftest.Namespace):
+    catalog = namespace.pyiceberg_catalog
+    table_name_1 = "my_table_1"
+    table_name_2 = "my_table_2"
+    schema = pa.schema(
+        [
+            pa.field("my_ints", pa.int64()),
+            pa.field("my_floats", pa.float64()),
+            pa.field("strings", pa.string()),
+        ]
+    )
+    catalog.create_table((*namespace.name, table_name_1), schema=schema)
+    catalog.create_table((*namespace.name, table_name_2), schema=schema)
+
+    table_1 = catalog.load_table((*namespace.name, table_name_1))
+    table_2 = catalog.load_table((*namespace.name, table_name_2))
+
+    df_1 = pd.DataFrame(
+        {
+            "my_ints": [1, 2, 3],
+            "my_floats": [1.1, 2.2, 3.3],
+            "strings": ["a", "b", "c"],
+        }
+    )
+    data_1 = pa.Table.from_pandas(df_1)
+    table_1.append(data_1)
+
+    df_2 = pd.DataFrame(
+        {
+            "my_ints": [4, 5, 6],
+            "my_floats": [4.4, 5.5, 6.6],
+            "strings": ["d", "e", "f"],
+        }
+    )
+    data_2 = pa.Table.from_pandas(df_2)
+    table_2.append(data_2)
+
+    read_table_1 = table_1.scan().to_arrow()
+    read_df_1 = read_table_1.to_pandas()
+
+    read_table_2 = table_2.scan().to_arrow()
+    read_df_2 = read_table_2.to_pandas()
+
+    assert read_df_1.equals(df_1)
+    assert read_df_2.equals(df_2)
