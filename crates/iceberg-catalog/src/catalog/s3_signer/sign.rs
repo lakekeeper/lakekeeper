@@ -45,7 +45,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         request_metadata: RequestMetadata,
     ) -> Result<S3SignResponse> {
         let warehouse_id = require_warehouse_id(prefix.clone())?;
-        let authorizer = state.v1_state.authz;
+        let authorizer = state.v1_state.authz.clone();
         authorizer
             .require_warehouse_action(
                 &request_metadata,
@@ -89,56 +89,48 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             storage_secret_ident,
             storage_profile,
         } = if let Some(table_id) = path_table_id.map(Into::into) {
-            tracing::trace!("Got S3 sign request for table {table_id} with URL {request_url}");
-            let metadata = C::get_table_metadata_by_id(
+            let metadata_by_id = get_table_metadata_by_id(
                 warehouse_id,
                 table_id,
-                ListFlags {
-                    include_staged,
-                    // we were able to resolve the table to id so we know the table is not deleted
-                    include_deleted: false,
-                    include_active: true,
-                },
-                state.v1_state.catalog,
+                include_staged,
+                &request_url,
+                &state,
+                &request_metadata,
+                authorizer.clone(),
             )
-            .await;
-            authorizer
-                .require_table_action(
+            .await?;
+            // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
+            // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
+            // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
+            // To keep backward compatibility we move to location based lookup if the location does not match.
+            // This will will be removed in a future version of Lakekeeper.
+            let uri_matches = validate_uri(&parsed_url, &metadata_by_id.location).is_ok();
+            if uri_matches {
+                metadata_by_id
+            } else {
+                tracing::warn!("Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1", metadata_by_id.location);
+                get_table_metadata_by_location(
+                    warehouse_id,
+                    &parsed_url,
+                    include_staged,
+                    &request_url,
+                    &state,
                     &request_metadata,
-                    metadata,
-                    CatalogTableAction::CanGetMetadata,
+                    authorizer.clone(),
                 )
                 .await?
+            }
         } else {
-            tracing::trace!("Got S3 sign request for URL {request_url} without table id. Searching for table id by location");
-            let first_location = parsed_url.locations.first().ok_or_else(|| {
-                ErrorModel::internal(
-                    "Request URI does not contain a location",
-                    "UriNoLocation",
-                    None,
-                )
-            })?;
-            let metadata = C::get_table_metadata_by_s3_location(
+            get_table_metadata_by_location(
                 warehouse_id,
-                first_location.location(),
-                ListFlags {
-                    include_staged,
-                    // spark iceberg drops the table and then checks for existence of metadata files
-                    // which in turn needs to sign HEAD requests for files reachable from the
-                    // dropped table.
-                    include_deleted: true,
-                    include_active: true,
-                },
-                state.v1_state.catalog.clone(),
+                &parsed_url,
+                include_staged,
+                &request_url,
+                &state,
+                &request_metadata,
+                authorizer.clone(),
             )
-            .await;
-            authorizer
-                .require_table_action(
-                    &request_metadata,
-                    metadata,
-                    CatalogTableAction::CanGetMetadata,
-                )
-                .await?
+            .await?
         };
 
         // First check - fail fast if requested table is not allowed.
@@ -415,7 +407,82 @@ async fn authorize_operation<A: Authorizer>(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+/// Helper function for fetching table metadata by ID
+async fn get_table_metadata_by_id<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    warehouse_id: WarehouseIdent,
+    table_id: TableIdentUuid,
+    include_staged: bool,
+    request_url: &url::Url,
+    state: &ApiContext<State<A, C, S>>,
+    request_metadata: &RequestMetadata,
+    authorizer: A,
+) -> Result<GetTableMetadataResponse> {
+    tracing::trace!("Got S3 sign request for table {table_id} with URL {request_url}");
+    let metadata = C::get_table_metadata_by_id(
+        warehouse_id,
+        table_id,
+        ListFlags {
+            include_staged,
+            // we were able to resolve the table to id so we know the table is not deleted
+            include_deleted: false,
+            include_active: true,
+        },
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+
+    authorizer
+        .require_table_action(
+            request_metadata,
+            metadata,
+            CatalogTableAction::CanGetMetadata,
+        )
+        .await
+}
+
+/// Helper function for fetching table metadata by location
+async fn get_table_metadata_by_location<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    warehouse_id: WarehouseIdent,
+    parsed_url: &s3_utils::ParsedSignRequest,
+    include_staged: bool,
+    request_url: &url::Url,
+    state: &ApiContext<State<A, C, S>>,
+    request_metadata: &RequestMetadata,
+    authorizer: A,
+) -> Result<GetTableMetadataResponse> {
+    tracing::trace!("Got S3 sign request for URL {request_url} without table id. Searching for table id by location");
+    let first_location = parsed_url.locations.first().ok_or_else(|| {
+        ErrorModel::internal(
+            "Request URI does not contain a location",
+            "UriNoLocation",
+            None,
+        )
+    })?;
+
+    let metadata = C::get_table_metadata_by_s3_location(
+        warehouse_id,
+        first_location.location(),
+        ListFlags {
+            include_staged,
+            // spark iceberg drops the table and then checks for existence of metadata files
+            // which in turn needs to sign HEAD requests for files reachable from the
+            // dropped table.
+            include_deleted: true,
+            include_active: true,
+        },
+        state.v1_state.catalog.clone(),
+    )
+    .await;
+
+    authorizer
+        .require_table_action(
+            request_metadata,
+            metadata,
+            CatalogTableAction::CanGetMetadata,
+        )
+        .await
+}
+
 fn validate_uri(
     // i.e. https://bucket.s3.region.amazonaws.com/key
     parsed_url: &s3_utils::ParsedSignRequest,
