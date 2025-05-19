@@ -10,7 +10,8 @@ pub(crate) type OpenFGAResult<T> = Result<T, OpenFGAError>;
 pub(crate) enum OpenFGAError {
     #[error("OpenFGA client error: {0}")]
     ClientError(#[source] OpenFGAClientError),
-    #[error("Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!")]
+    #[error("Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!"
+    )]
     ActiveAuthModelNotFound(String),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
     StoreNotFound(String),
@@ -36,6 +37,10 @@ pub(crate) enum OpenFGAError {
     },
     #[error("Cannot assign {0} to itself")]
     SelfAssignment(String),
+    #[error("Assignement to non-existing user(s): {0}")]
+    AssignementToNonExistingUsers(String),
+    #[error("Cannot validate assignment request")]
+    CannotValidateRequest,
 }
 
 impl OpenFGAError {
@@ -69,6 +74,9 @@ impl From<OpenFGAError> for ErrorModel {
             }
             e @ OpenFGAError::SelfAssignment { .. } => {
                 ErrorModel::bad_request(err_msg, "SelfAssignment", Some(Box::new(e)))
+            }
+            e @ OpenFGAError::AssignementToNonExistingUsers(_) => {
+                ErrorModel::bad_request(err_msg, "AssignementToNonExistingUsers", Some(Box::new(e)))
             }
             OpenFGAError::ClientError(client_error) => {
                 let tonic_msg = match &client_error {
