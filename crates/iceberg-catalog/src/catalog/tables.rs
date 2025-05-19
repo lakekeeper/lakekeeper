@@ -353,19 +353,19 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz.clone();
-        let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
+        let mut t_read = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
         let namespace_id = authorized_namespace_ident_to_id::<C, _>(
             authorizer.clone(),
             &request_metadata,
             &warehouse_id,
             &namespace,
             CatalogNamespaceAction::CanCreateTable,
-            t.transaction(),
+            t_read.transaction(),
         )
         .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
+        let warehouse = C::require_warehouse(warehouse_id, t_read.transaction()).await?;
         let storage_profile = &warehouse.storage_profile;
 
         require_active_warehouse(warehouse.status)?;
@@ -379,6 +379,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // Check if we need to handle overwrite
         let mut previous_table_id = None;
+
+        let mut t_write = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if request.overwrite {
             // Check if table exists
             previous_table_id = C::table_to_id(
@@ -389,7 +391,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     include_staged: true,
                     include_deleted: false,
                 },
-                t.transaction(),
+                t_read.transaction(),
             )
             .await?;
 
@@ -409,10 +411,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
                 // Drop the existing table to overwrite it
                 let _previous_table_location =
-                    C::drop_table(previous_table_id, false, t.transaction()).await?;
+                    C::drop_table(previous_table_id, false, t_write.transaction()).await?;
                 // We don't drop the files for the previous table on overwrite
             }
         }
+        t_read.commit().await?;
 
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
@@ -429,7 +432,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 table_metadata,
                 metadata_location: Some(&metadata_location),
             },
-            t.transaction(),
+            t_write.transaction(),
         )
         .await?;
 
@@ -457,8 +460,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .create_table(&request_metadata, tabular_id, namespace_id)
                 .await?;
         }
-
-        t.commit().await?;
 
         // If a staged table was overwritten, delete it from authorizer
         if let Some(staged_table_id) = staged_table_id {
