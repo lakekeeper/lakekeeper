@@ -580,17 +580,19 @@ paths:
       description: >
         Fetches the result of scan planning for a plan-id.
 
-
         Responses must include a valid status
 
-        - When "completed" the planning operation has produced plan-tasks and file-scan-tasks that must be returned in the response
+        - When "completed" the planning operation has produced plan-tasks and
 
-        - When "submitted" the planning operation has not completed; the client should wait to call this endpoint again to fetch a completed response
+          file-scan-tasks that must be returned in the response
+
+        - When "submitted" the planning operation has not completed; the client
+
+          should wait to call this endpoint again to fetch a completed response
 
         - When "failed" the response must be a valid error response
 
         - When "cancelled" the plan-id is invalid and should be discarded
-
 
         The response for a "completed" planning operation includes two types of tasks (file scan tasks and plan tasks) and both may be included in the response. Tasks must not be included for any other response status.
 
@@ -630,31 +632,13 @@ paths:
       description: >
         Cancels scan planning for a plan-id.
 
-
         This notifies the service that it can release resources held for the scan. Clients should cancel scans that are no longer needed, either while the plan-id returns a "submitted" status or while there are remaining plan tasks that have not been fetched.
-
 
         Cancellation is not necessary when
 
         - Scan tasks for each plan task have been fetched using fetchScanTasks
 
         - A plan-id has produced a "failed" or "cancelled" status from
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
           planTableScan or fetchPlanningResult
       responses:
@@ -1566,9 +1550,7 @@ components:
       description: >
         Optional signal to the server that the client supports delegated access via a comma-separated list of access mechanisms.  The server may choose to supply access via any or none of the requested mechanisms.
 
-
         Specific properties and handling for `vended-credentials` is documented in the `LoadTableResult` schema section of this spec document.
-
 
         The protocol and specification for `remote-signing` is documented in  the `s3-signer-open-api.yaml` OpenApi spec in the `aws` module.
 
@@ -2861,16 +2843,13 @@ components:
       description: >
         Scan and planning tasks for server-side scan planning
 
-
         - `plan-tasks` contains opaque units of planning work
 
         - `file-scan-tasks` contains a partial or complete list of table scan tasks
 
         - `delete-files` contains delete files referenced by file scan tasks
 
-
         Each plan task must be passed to the fetchScanTasks endpoint to fetch the file scan tasks for the plan task.
-
 
         The list of delete files must contain all delete files referenced by the file scan tasks.
 
@@ -3082,7 +3061,6 @@ components:
     LoadViewResult:
       description: |
         Result used when a view is successfully loaded.
-
 
         The view metadata JSON is returned in the `metadata` field. The corresponding file location of view metadata is returned in the `metadata-location` field.
         Clients can check whether metadata has changed by comparing metadata locations after the view has been created.

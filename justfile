@@ -41,6 +41,12 @@ update-rest-openapi:
     just add-return-uuid-to-rest-openapi
     just add-return-protection-status-to-rest-openapi
     just add-namespace-delete-extension-to-rest-openapi
+    # Remove multiple empty lines due to https://github.com/mikefarah/yq/issues/2074
+    if [[ "$(uname)" == "Darwin" ]]; then \
+      sed -i '' '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
+    else \
+      sed -i '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
+    fi
 
 update-openfga:
     bash -c 'BASE_PATH=authz/openfga; \
