@@ -34,7 +34,7 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 
 ### Persistence Store
 
-Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_*` or use the `PG_*` environment variables. Connection strings take precedence:
+Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_*` or use the `PG_*` environment variables. Connection strings take precedence. Postgres needs to be Version 15 or higher.
 
 | Variable                                               | Example                                               | Description |
 |--------------------------------------------------------|-------------------------------------------------------|-----|
