@@ -125,7 +125,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tryhard = { version = "0.5.1" }
 urlencoding = "^2.1"
 async-stream = "0.3.6"
-utoipa = { git = "https://github.com/twuebi/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
+utoipa = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
     "axum_extras",
     "chrono",
     "url",
@@ -133,7 +133,7 @@ utoipa = { git = "https://github.com/twuebi/utoipa.git", rev = "bb1b59f01005ae31
     "yaml",
 ] }
 serde_yml = "0.0.12"
-utoipa-swagger-ui = { git = "https://github.com/twuebi/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = ["axum"] }
+utoipa-swagger-ui = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = ["axum"] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"

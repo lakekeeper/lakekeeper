@@ -7425,7 +7425,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "utoipa"
 version = "5.3.1"
-source = "git+https://github.com/twuebi/utoipa.git?rev=bb1b59f01005ae3199d8a49e7395edcd538a935c#bb1b59f01005ae3199d8a49e7395edcd538a935c"
+source = "git+https://github.com/lakekeeper/utoipa.git?rev=bb1b59f01005ae3199d8a49e7395edcd538a935c#bb1b59f01005ae3199d8a49e7395edcd538a935c"
 dependencies = [
  "indexmap 2.9.0",
  "serde",
@@ -7437,7 +7437,7 @@ dependencies = [
 [[package]]
 name = "utoipa-gen"
 version = "5.3.1"
-source = "git+https://github.com/twuebi/utoipa.git?rev=bb1b59f01005ae3199d8a49e7395edcd538a935c#bb1b59f01005ae3199d8a49e7395edcd538a935c"
+source = "git+https://github.com/lakekeeper/utoipa.git?rev=bb1b59f01005ae3199d8a49e7395edcd538a935c#bb1b59f01005ae3199d8a49e7395edcd538a935c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7450,7 +7450,7 @@ dependencies = [
 [[package]]
 name = "utoipa-swagger-ui"
 version = "9.0.1"
-source = "git+https://github.com/twuebi/utoipa.git?rev=bb1b59f01005ae3199d8a49e7395edcd538a935c#bb1b59f01005ae3199d8a49e7395edcd538a935c"
+source = "git+https://github.com/lakekeeper/utoipa.git?rev=bb1b59f01005ae3199d8a49e7395edcd538a935c#bb1b59f01005ae3199d8a49e7395edcd538a935c"
 dependencies = [
  "axum 0.8.4",
  "base64 0.22.1",
