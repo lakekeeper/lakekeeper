@@ -485,7 +485,7 @@ where
 
         match namespace_id {
             Ok(None) => {
-                tracing::debug!("Namespace not found, returning forbidden.");
+                tracing::debug!("Namespace not found.");
                 Err(ErrorModel::not_found(msg, typ, None).into())
             }
             Ok(Some(namespace_id)) => {
