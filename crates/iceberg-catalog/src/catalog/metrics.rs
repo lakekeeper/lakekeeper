@@ -21,7 +21,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         // validation
         // BL innerer catalog
         let mut transaction = C::Transaction::begin_write(api_context.v1_state.catalog).await?;
-        C::create_metric(report_metrics_request, transaction.transaction()).await
+        C::create_metric(report_metrics_request, transaction.transaction()).await?;
+        transaction.commit().await?;
+        Ok(())
     }
 }
 
