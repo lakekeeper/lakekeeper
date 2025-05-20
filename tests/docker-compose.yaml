@@ -128,7 +128,7 @@ services:
       interval: 2s
       timeout: 10s
       retries: 2
-      start_period: 10s
+      start_period: 20s
     ports:
       - "31102:2345"
     networks:

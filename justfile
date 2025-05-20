@@ -38,6 +38,15 @@ test: doc-test
 update-rest-openapi:
     # Download from https://raw.githubusercontent.com/apache/iceberg/main/open-api/rest-catalog-open-api.yaml and put into api folder
     curl -o docs/docs/api/rest-catalog-open-api.yaml https://raw.githubusercontent.com/apache/iceberg/main/open-api/rest-catalog-open-api.yaml
+    just add-return-uuid-to-rest-openapi
+    just add-return-protection-status-to-rest-openapi
+    just add-namespace-delete-extension-to-rest-openapi
+    # Remove multiple empty lines due to https://github.com/mikefarah/yq/issues/2074
+    if [[ "$(uname)" == "Darwin" ]]; then \
+      sed -i '' '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
+    else \
+      sed -i '/^$/N;/^\n$/D' docs/docs/api/rest-catalog-open-api.yaml; \
+    fi
 
 update-openfga:
     bash -c 'BASE_PATH=authz/openfga; \
@@ -57,7 +66,7 @@ add-return-uuid-to-rest-openapi:
     yq eval '.paths."/v1/{prefix}/namespaces".get.parameters += [{"name": "returnUuids", "in": "query", "description": "If true, include the `namespace-uuids` field in the response", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.paths."/v1/{prefix}/namespaces/{namespace}/tables".get.parameters += [{"name": "returnUuids", "in": "query", "description": "If true, include the `table-uuids` field in the response", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.paths."/v1/{prefix}/namespaces/{namespace}/views".get.parameters += [{"name": "returnUuids", "in": "query", "description": "If true, include the `table-uuids` field in the response", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml
-    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".get.parameters += [{"name": "returnUuid", "in": "query", "description": "If true, include the `namespace-uuid` field in the response"]' -i docs/docs/api/rest-catalog-open-api.yaml
+    yq eval '.paths."/v1/{prefix}/namespaces/{namespace}".get.parameters += [{"name": "returnUuid", "in": "query", "description": "If true, include the `namespace-uuid` field in the response", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.components.schemas.ListNamespacesResponse.properties["namespace-uuids"] = {"type": "array", "uniqueItems": true, "nullable": true, "items": {"type": "string"}}' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.components.schemas.GetNamespaceResponse.properties["namespace-uuid"] = {"type": "string", "nullable": true, "type": "string"}' -i docs/docs/api/rest-catalog-open-api.yaml
     yq eval '.components.schemas.ListTablesResponse.properties["table-uuids"] = {"type": "array", "uniqueItems": true, "nullable": true, "items": {"type": "string"}}' -i docs/docs/api/rest-catalog-open-api.yaml

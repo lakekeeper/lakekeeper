@@ -360,9 +360,8 @@ pub struct DataAccess {
 }
 
 impl DataAccess {
-    #[cfg(test)]
     #[must_use]
-    pub fn none() -> Self {
+    pub(crate) fn not_specified() -> Self {
         Self {
             vended_credentials: false,
             remote_signing: false,
