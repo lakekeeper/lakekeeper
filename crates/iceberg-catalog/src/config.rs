@@ -102,6 +102,8 @@ pub struct DynAppConfig {
     pub use_x_forwarded_headers: bool,
     /// If true (default), the NIL uuid is used as default project id.
     pub enable_default_project: bool,
+    /// If true, the swagger UI is served at /swagger-ui
+    pub serve_swagger_ui: bool,
     /// Template to obtain the "prefix" for a warehouse,
     /// may contain `{warehouse_id}` placeholder.
     ///
@@ -503,6 +505,7 @@ impl Default for DynAppConfig {
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
+            serve_swagger_ui: true,
         }
     }
 }

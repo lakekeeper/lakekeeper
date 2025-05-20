@@ -29,6 +29,7 @@ use crate::{
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
+    CONFIG,
 };
 
 static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {
@@ -158,15 +159,8 @@ pub fn new_full_router<
                 let health = service_health_provider.collect_health().await;
                 Json(health).into_response()
             }),
-        )
-        .merge(
-            utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-                .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>())
-                .external_url_unchecked(
-                    "/api-docs/catalog/v1/openapi.json",
-                    ICEBERG_OPENAPI_SPEC_YAML.clone(),
-                ),
-        )
+        );
+    let router = maybe_merge_swagger_router(router)
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
         ))
@@ -204,6 +198,23 @@ pub fn new_full_router<
     } else {
         router
     })
+}
+
+fn maybe_merge_swagger_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    router: Router<ApiContext<State<A, C, S>>>,
+) -> Router<ApiContext<State<A, C, S>>> {
+    if CONFIG.serve_swagger_ui {
+        router.merge(
+            utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
+                .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>())
+                .external_url_unchecked(
+                    "/api-docs/catalog/v1/openapi.json",
+                    ICEBERG_OPENAPI_SPEC_YAML.clone(),
+                ),
+        )
+    } else {
+        router
+    }
 }
 
 /// Serve the given router on the given listener
