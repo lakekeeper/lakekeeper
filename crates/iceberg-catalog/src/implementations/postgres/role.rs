@@ -195,7 +195,7 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         LIMIT $9
         "#,
         filter_project_id.is_none(),
-        &filter_project_id.unwrap_or_default(),
+        &filter_project_id.unwrap_or(ProjectId::new_random()),
         filter_role_id.is_none(),
         filter_role_id
             .unwrap_or_default()
@@ -260,8 +260,8 @@ mod test {
     #[sqlx::test]
     async fn test_create_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = ProjectId::default();
-        let role_id = RoleId::default();
+        let project_id = ProjectId::new_random();
+        let role_id = RoleId::new_random();
         let role_name = "Role 1";
 
         // Yield 404 on project not found
@@ -304,7 +304,7 @@ mod test {
         assert_eq!(role.project_id, project_id);
 
         // Duplicate name yields conflict (case-insensitive) (409)
-        let new_role_id = RoleId::default();
+        let new_role_id = RoleId::new_random();
         let err = create_role(
             new_role_id,
             &project_id,
@@ -320,8 +320,8 @@ mod test {
     #[sqlx::test]
     async fn test_rename_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = ProjectId::default();
-        let role_id = RoleId::default();
+        let project_id = ProjectId::new_random();
+        let role_id = RoleId::new_random();
         let role_name = "Role 1";
 
         let mut t = PostgresTransaction::begin_write(state.clone())
@@ -365,8 +365,8 @@ mod test {
     #[sqlx::test]
     async fn test_rename_role_conflicts(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = ProjectId::default();
-        let role_id = RoleId::default();
+        let project_id = ProjectId::new_random();
+        let role_id = RoleId::new_random();
         let role_name = "Role 1";
         let role_name_2 = "Role 2";
 
@@ -394,7 +394,7 @@ mod test {
         .unwrap();
 
         let role = create_role(
-            RoleId::default(),
+            RoleId::new_random(),
             &project_id,
             role_name_2,
             Some("Role 2 description"),
@@ -421,11 +421,11 @@ mod test {
     #[sqlx::test]
     async fn test_list_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project1_id = ProjectId::default();
-        let project2_id = ProjectId::default();
+        let project1_id = ProjectId::new_random();
+        let project2_id = ProjectId::new_random();
 
-        let role1_id = RoleId::default();
-        let role2_id = RoleId::default();
+        let role1_id = RoleId::new_random();
+        let role2_id = RoleId::new_random();
 
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
@@ -538,7 +538,7 @@ mod test {
     #[sqlx::test]
     async fn test_paginate_roles(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project1_id = ProjectId::default();
+        let project1_id = ProjectId::new_random();
 
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
@@ -556,7 +556,7 @@ mod test {
 
         for i in 0..10 {
             create_role(
-                RoleId::default(),
+                RoleId::new_random(),
                 &project1_id,
                 &format!("Role-{i}"),
                 Some(&format!("Role-{i} description")),
@@ -636,8 +636,8 @@ mod test {
     #[sqlx::test]
     async fn test_delete_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = ProjectId::default();
-        let role_id = RoleId::default();
+        let project_id = ProjectId::new_random();
+        let role_id = RoleId::new_random();
         let role_name = "Role 1";
 
         let mut t = PostgresTransaction::begin_write(state.clone())
@@ -687,8 +687,8 @@ mod test {
     #[sqlx::test]
     async fn test_search_role(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let project_id = ProjectId::default();
-        let role_id = RoleId::default();
+        let project_id = ProjectId::new_random();
+        let role_id = RoleId::new_random();
         let role_name = "Role 1";
 
         let mut t = PostgresTransaction::begin_write(state.clone())

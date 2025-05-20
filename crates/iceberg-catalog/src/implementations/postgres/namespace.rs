@@ -638,7 +638,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let namespace_id = NamespaceId::default();
+        let namespace_id = NamespaceId::new_random();
 
         let response = PostgresCatalog::create_namespace(
             warehouse_id,
@@ -1094,7 +1094,7 @@ pub(crate) mod tests {
 
         let response = PostgresCatalog::create_namespace(
             warehouse_id,
-            NamespaceId::default(),
+            NamespaceId::new_random(),
             CreateNamespaceRequest {
                 namespace: namespace_1.clone(),
                 properties: None,
@@ -1114,7 +1114,7 @@ pub(crate) mod tests {
 
         let response = PostgresCatalog::create_namespace(
             warehouse_id,
-            NamespaceId::default(),
+            NamespaceId::new_random(),
             CreateNamespaceRequest {
                 namespace: namespace_2.clone(),
                 properties: None,

@@ -15,7 +15,7 @@ impl HealthExt for OpenFGAAuthorizer {
     async fn update_health(&self) {
         let check_result = self
             .check(CheckRequestTupleKey {
-                user: ProjectId::default().to_openfga(),
+                user: ProjectId::new_random().to_openfga(),
                 relation: ServerRelation::Project.to_string(),
                 object: OPENFGA_SERVER.to_string(),
             })

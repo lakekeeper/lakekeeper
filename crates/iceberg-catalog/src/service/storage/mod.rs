@@ -294,8 +294,8 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         // ------------- Common validations -------------
         // Test if we can generate a default namespace location
-        let ns_location = self.default_namespace_location(NamespaceId::default())?;
-        self.default_tabular_location(&ns_location, TableId::default().into());
+        let ns_location = self.default_namespace_location(NamespaceId::new_random())?;
+        self.default_tabular_location(&ns_location, TableId::new_random().into());
 
         // ------------- Profile specific validations -------------
         match self {
@@ -324,8 +324,8 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         let file_io = self.file_io(credential).await?;
 
-        let ns_id = NamespaceId::default();
-        let table_id = TableId::default();
+        let ns_id = NamespaceId::new_random();
+        let table_id = TableId::new_random();
         let ns_location = self.default_namespace_location(ns_id)?;
         let test_location = location.map_or_else(
             || self.default_tabular_location(&ns_location, table_id.into()),
@@ -424,8 +424,8 @@ impl StorageProfile {
                 // The following arguments are used only for generating the remote signing configuration
                 // and are not used in the vended credentials case.
                 request_metadata,
-                WarehouseId::default(),
-                TableId::default().into(),
+                WarehouseId::new_random(),
+                TableId::new_random().into(),
             )
             .await?;
 
@@ -1210,8 +1210,8 @@ mod tests {
                 &table_location1,
                 StoragePermissions::ReadWriteDelete,
                 &RequestMetadata::new_unauthenticated(),
-                WarehouseId::default(),
-                TableId::default().into(),
+                WarehouseId::new_random(),
+                TableId::new_random().into(),
             )
             .await
             .unwrap();
@@ -1226,8 +1226,8 @@ mod tests {
                 &table_location2,
                 StoragePermissions::ReadWriteDelete,
                 &RequestMetadata::new_unauthenticated(),
-                WarehouseId::default(),
-                TableId::default().into(),
+                WarehouseId::new_random(),
+                TableId::new_random().into(),
             )
             .await
             .unwrap();

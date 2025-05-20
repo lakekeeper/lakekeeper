@@ -225,7 +225,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         // ------------------- BUSINESS LOGIC -------------------
-        let namespace_id = NamespaceId::default();
+        let namespace_id = NamespaceId::new_random();
         let warehouse = C::require_warehouse(warehouse_id, t.transaction()).await?;
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())

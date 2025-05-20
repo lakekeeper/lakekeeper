@@ -426,7 +426,7 @@ mod test {
             None,
             None,
             Actor::Anonymous,
-            Some(ProjectId::default()),
+            Some(ProjectId::new_random()),
             Some(Arc::from(path)),
             method,
         );

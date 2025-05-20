@@ -166,8 +166,9 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         // -------------------- Business Logic --------------------
         let description = request.description.filter(|d| !d.is_empty());
-        let role_id = RoleId::default();
-        let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let role_id = RoleId::new_random();
+        let mut t: <C as Catalog>::Transaction =
+            C::Transaction::begin_write(context.v1_state.catalog).await?;
         let user = C::create_role(
             role_id,
             &project_id,
