@@ -617,7 +617,7 @@ pub(crate) mod tests {
         *,
     };
     use crate::{
-        api::iceberg::types::PageToken,
+        api::{iceberg::types::PageToken, management::v1::DeleteWarehouseQuery},
         implementations::postgres::{
             tabular::{
                 set_tabular_protected,
@@ -655,6 +655,36 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
 
         (namespace_id, response)
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_nonempty_warehouse(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let _namespace = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &NamespaceIdent::from_vec(vec!["test".to_string()]).unwrap(),
+            None,
+        )
+        .await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+
+        let delete_query = DeleteWarehouseQuery { force: false };
+        let result = PostgresCatalog::delete_warehouse(
+            warehouse_id,
+            delete_query,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(result.error.code, StatusCode::CONFLICT);
+        assert_eq!(result.error.r#type, "WarehouseNotEmpty");
     }
 
     #[sqlx::test]

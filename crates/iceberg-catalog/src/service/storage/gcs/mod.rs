@@ -160,7 +160,9 @@ impl GcsProfile {
             }
         }
 
-        Ok(builder.build()?)
+        builder
+            .build()
+            .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))
     }
 
     /// Validate the GCS profile.
@@ -380,10 +382,11 @@ impl GcsProfile {
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("gcs")
+    iceberg::io::FileIOBuilder::new("gcs")
         .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
-        .build()?)
+        .build()
+        .map_err(|e| FileIoError::FileIoCreationFailed(Box::new(e)))
 }
 
 fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
