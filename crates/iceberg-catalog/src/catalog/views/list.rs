@@ -8,9 +8,7 @@ use crate::{
         ApiContext, Result,
     },
     catalog::{
-        namespace::{authorized_namespace_ident_to_id, validate_namespace_ident},
-        require_warehouse_id,
-        tabular::list_entities,
+        namespace::authorized_namespace_ident_to_id, require_warehouse_id, tabular::list_entities,
     },
     request_metadata::RequestMetadata,
     service::{
@@ -29,7 +27,6 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = parameters;
     let warehouse_id = require_warehouse_id(prefix)?;
-    validate_namespace_ident(&namespace)?;
 
     // ------------------- AUTHZ -------------------
     let authorizer = state.v1_state.authz;
