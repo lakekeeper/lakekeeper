@@ -4,6 +4,7 @@ use iceberg::spec::ViewMetadata;
 use iceberg_ext::{
     catalog::rest::{CatalogConfig, ErrorModel},
     configs::Location,
+    spec::Metrics as ExtMetrics,
 };
 use itertools::Itertools;
 
@@ -688,5 +689,38 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
+    }
+
+    async fn report_table_metrics<'a>(
+        table_id: TableId,
+        metrics: ExtMetrics,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<()> {
+        let table_uuid = *table_id;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO table_metrics (
+                table_id,
+                total_records,
+                total_files_size_bytes,
+                total_data_files,
+                total_delete_files,
+                total_position_deletes,
+                total_equality_deletes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+            table_uuid,
+            metrics.total_records,
+            metrics.total_files_size_bytes,
+            metrics.total_data_files,
+            metrics.total_delete_files,
+            metrics.total_position_deletes,
+            metrics.total_equality_deletes
+        )
+        .execute(&mut **transaction)
+        .await?;
+
+        Ok(())
     }
 }
