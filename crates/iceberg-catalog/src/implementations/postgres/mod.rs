@@ -2,6 +2,7 @@ mod bootstrap;
 mod catalog;
 pub(crate) mod dbutils;
 pub mod endpoint_statistics;
+mod metrics;
 pub mod migrations;
 pub(crate) mod namespace;
 mod pagination;
