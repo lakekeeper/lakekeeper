@@ -1,6 +1,7 @@
 mod drop_recursive;
 mod drop_warehouse;
 mod endpoint_stats;
+mod metrics_api_test;
 mod stats;
 
 use std::sync::Arc;

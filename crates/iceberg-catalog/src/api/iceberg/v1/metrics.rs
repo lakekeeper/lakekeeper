@@ -8,6 +8,7 @@ use axum::{
 use http::StatusCode;
 use iceberg_ext::TableIdent;
 
+use super::metrics_types::ReportMetricsRequest;
 use super::namespace::NamespaceIdentUrl;
 use crate::{
     api::{
@@ -25,7 +26,7 @@ where
     /// Send a metrics report to this endpoint to be processed by the backend
     async fn report_metrics(
         parameters: TableParameters,
-        request: serde_json::Value,
+        request: ReportMetricsRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
@@ -40,7 +41,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>,
-                 Json(request): Json<serde_json::Value>| async {
+                 Json(request): Json<ReportMetricsRequest>| async {
                     {
                         I::report_metrics(
                             TableParameters {

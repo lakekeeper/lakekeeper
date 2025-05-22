@@ -5,3 +5,6 @@ pub use iceberg::spec::{
     SortDirection, SortField, SortOrder, StatisticsFile, TableMetadata, TableMetadataBuildResult,
     TableMetadataBuilder, UnboundPartitionField, UnboundPartitionSpec, ViewMetadata, ViewVersion,
 };
+
+mod metrics;
+pub use metrics::Metrics;

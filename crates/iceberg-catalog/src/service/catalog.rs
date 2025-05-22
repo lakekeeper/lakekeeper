@@ -8,6 +8,7 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use iceberg_ext::{
     catalog::rest::{CatalogConfig, ErrorModel},
     configs::Location,
+    spec::Metrics as ExtMetrics,
 };
 
 use super::{
@@ -785,6 +786,12 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
+
+    async fn report_table_metrics<'a>(
+        table_id: TableId,
+        metrics: ExtMetrics,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
