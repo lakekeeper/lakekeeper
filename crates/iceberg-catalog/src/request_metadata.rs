@@ -22,6 +22,7 @@ pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 pub(crate) const X_FORWARDED_HOST_HEADER: &str = "x-forwarded-host";
 pub(crate) const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub(crate) const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
+pub(crate) const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
@@ -231,7 +232,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         })
         .unwrap_or(Uuid::now_v7());
 
-    let Some(host) = determine_base_uri(&headers) else {
+    let Some(base_uri) = determine_base_uri(&headers) else {
         return IcebergErrorResponse::from(ErrorModel::bad_request(
             "base_uri is not set and neither x-forwarded-host nor host header are set. Either send the appropriate headers or configure the base_uri according to the documentation.".to_string(),
             "NoHostHeader",
@@ -261,7 +262,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
-        base_url: host,
+        base_url: base_uri,
         actor: Actor::Anonymous,
         project_id,
         matched_path,
@@ -297,6 +298,10 @@ fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
         let x_forwarded_port = headers
             .get(X_FORWARDED_PORT_HEADER)
             .and_then(|hv| hv.to_str().ok());
+        let x_fowarded_prefix = headers
+            .get(X_FORWARDED_PREFIX_HEADER)
+            .and_then(|hv| hv.to_str().ok())
+            .map(|s| s.trim_matches('/'));
 
         let mut base_uri = String::new();
         let proto = x_forwarded_proto.unwrap_or({
@@ -320,6 +325,12 @@ fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
             }
         }
 
+        // Append the x-forwarded prefix if present
+        if let Some(prefix) = x_fowarded_prefix {
+            base_uri.push('/');
+            base_uri.push_str(prefix);
+        }
+
         Some(base_uri)
     } else {
         // If no BASE_URI is set and no x-forwarded headers are present, the encryption is unencrypted,
@@ -332,10 +343,7 @@ fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
 mod test {
     use http::{header::HeaderValue, HeaderMap};
 
-    use crate::request_metadata::{
-        determine_base_uri, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
-        X_FORWARDED_PROTO_HEADER,
-    };
+    use super::*;
 
     #[test]
     fn test_determine_host_without_host_header_with_config_provided_base_uri() {
@@ -549,5 +557,59 @@ mod test {
 
         let result = determine_base_uri(&headers);
         assert_eq!(result, Some("http://example.com:8080".to_string()));
+    }
+
+    #[test]
+    fn test_determine_host_with_prefix_clean() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_HOST_HEADER,
+            HeaderValue::from_static("example.com"),
+        );
+        headers.insert(X_FORWARDED_PROTO_HEADER, HeaderValue::from_static("https"));
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("/lakekeeper"),
+        );
+
+        let result = determine_base_uri(&headers);
+        assert_eq!(result, Some("https://example.com/lakekeeper".to_string()));
+    }
+
+    #[test]
+    fn test_determine_host_with_prefix_no_prefix_slash() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_HOST_HEADER,
+            HeaderValue::from_static("example.com"),
+        );
+        headers.insert(X_FORWARDED_PROTO_HEADER, HeaderValue::from_static("https"));
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("lakekeeper"),
+        );
+
+        let result = determine_base_uri(&headers);
+        assert_eq!(result, Some("https://example.com/lakekeeper".to_string()));
+    }
+
+    #[test]
+    fn test_determine_host_with_prefix_trailing_slash() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_HOST_HEADER,
+            HeaderValue::from_static("example.com"),
+        );
+        headers.insert(X_FORWARDED_PROTO_HEADER, HeaderValue::from_static("https"));
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("api/lakekeeper/"),
+        );
+
+        let result = determine_base_uri(&headers);
+        assert_eq!(
+            result,
+            Some("https://example.com/api/lakekeeper".to_string())
+        );
     }
 }
