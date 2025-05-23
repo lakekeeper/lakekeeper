@@ -23,12 +23,17 @@ use iceberg_catalog::{
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
-        Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
+        task_queue::{TaskQueues, DEFAULT_MAX_AGE},
+        Catalog, EndpointStatisticsTrackerTx, StartupValidationData, Transaction,
     },
     SecretBackend, CONFIG,
 };
 use limes::{Authenticator, AuthenticatorEnum};
+
+use crate::{
+    external_queue,
+    external_queue::{ExternalQueueConfig, TestHook},
+};
 
 const OIDC_IDP_ID: &str = "oidc";
 const K8S_IDP_ID: &str = "kubernetes";
@@ -223,7 +228,7 @@ async fn serve_with_authn<A: Authorizer>(
                 health_provider,
                 listener,
             )
-            .await
+                .await
         }
         (None, Some(auth1), Some(auth2))
         | (Some(auth1), None, Some(auth2))
@@ -241,7 +246,7 @@ async fn serve_with_authn<A: Authorizer>(
                 health_provider,
                 listener,
             )
-            .await
+                .await
         }
         (Some(auth), None, None) | (None, Some(auth), None) | (None, None, Some(auth)) => {
             serve_inner(
@@ -252,7 +257,7 @@ async fn serve_with_authn<A: Authorizer>(
                 health_provider,
                 listener,
             )
-            .await
+                .await
         }
         (None, None, None) => {
             tracing::warn!("Authentication is disabled. This is not suitable for production!");
@@ -264,7 +269,7 @@ async fn serve_with_authn<A: Authorizer>(
                 health_provider,
                 listener,
             )
-            .await
+                .await
         }
     }
 }
@@ -331,9 +336,12 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     );
 
     let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
-    let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
-        cloud_events_tx.clone(),
-    ))]);
+    let hooks = EndpointHookCollection::new(vec![
+        Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())),
+        Arc::new(TestHook::<PostgresCatalog> {
+            state: catalog_state.clone(),
+        }),
+    ]);
     let mut queues = TaskQueues::new();
     queues.register_built_in_queues::<PostgresCatalog, Secrets, A>(
         catalog_state.clone(),
@@ -341,7 +349,61 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
         authorizer.clone(),
         CONFIG.task_poll_interval,
     );
+    let catalog_clone = catalog_state.clone();
 
+    queues.register_queue::<ExternalQueueConfig>(
+        external_queue::QUEUE_NAME,
+        Arc::new(move || {
+            let default_config = ExternalQueueConfig::default();
+            let catalog = catalog_clone.clone();
+            Box::pin(async move {
+                loop {
+                    let task = match PostgresCatalog::pick_new_task(external_queue::QUEUE_NAME, DEFAULT_MAX_AGE, catalog.clone()).await {
+                        Ok(task) => task,
+                        Err(err) => {
+                            tracing::error!("Failed to fetch task: {:?}", err);
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
+                    let Some(task) = task else {
+                        tracing::debug!("No task available, sleeping for {:?}", CONFIG.task_poll_interval);
+                        tokio::time::sleep(CONFIG.task_poll_interval).await;
+                        continue;
+                    };
+                    let task_config = task.task_config::<ExternalQueueConfig>();
+                    match task_config {
+                        Ok(Some(config)) => {
+                            tracing::info!("Task config: {config:?}");
+                            tracing::info!(
+                                "Processing with override max filesize: {}",
+                                config.max_filesize
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                "No task config override provided, proceeding with defaults: {default_config:?}."
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to deserialize task config: {}", e.error);
+                        }
+                    }
+                    let mut transaction = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog.clone())
+                        .await
+                        .unwrap();
+                    PostgresCatalog::retrying_record_task_success(task.task_id, Some("Compacted 100 files."), transaction.transaction())
+                        .await;
+                    let _ = transaction.commit().await.inspect_err(|e| {
+                        tracing::error!("Failed to commit transaction: {}", e.error);
+                    });
+
+                }
+            }
+            )
+        }),
+        2,
+    );
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),

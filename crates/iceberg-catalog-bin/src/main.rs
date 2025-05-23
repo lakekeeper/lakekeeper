@@ -15,6 +15,7 @@ use iceberg_catalog::{
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 use utoipa::{PartialSchema, ToSchema};
 
+mod external_queue;
 mod healthcheck;
 mod serve;
 #[cfg(feature = "ui")]
@@ -185,6 +186,11 @@ async fn main() -> anyhow::Result<()> {
                     tabular_expiration_queue::QUEUE_NAME,
                     ExpirationQueueConfig::name().to_string(),
                     ExpirationQueueConfig::schema(),
+                ),
+                (
+                    external_queue::QUEUE_NAME,
+                    external_queue::ExternalQueueConfig::name().to_string(),
+                    external_queue::ExternalQueueConfig::schema(),
                 ),
             ];
             let doc = match CONFIG.authz_backend {

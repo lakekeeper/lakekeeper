@@ -3187,6 +3187,8 @@ name = "iceberg-catalog-bin"
 version = "0.8.5"
 dependencies = [
  "anyhow",
+ "async-nats",
+ "async-trait",
  "axum 0.8.4",
  "clap",
  "iceberg-catalog",
@@ -3195,11 +3197,14 @@ dependencies = [
  "mime_guess",
  "moka",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]

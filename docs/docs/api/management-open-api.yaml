@@ -2321,6 +2321,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/{warehouse_id}/task-queue/test_queue/config:
+    get:
+      tags:
+        - warehouse
+      summary: Get task-queue config
+      operationId: get_task_queue_config_test_queue
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: queue_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set task-queue config
+      operationId: set_task_queue_config_test_queue
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
 components:
   schemas:
     AdlsProfile:
@@ -2847,6 +2911,14 @@ components:
           description: Internal type definition of the error
     ExpirationQueueConfig:
       type: object
+    ExternalQueueConfig:
+      type: object
+      required:
+        - max_filesize
+      properties:
+        max_filesize:
+          type: integer
+          minimum: 0
     GcsCredential:
       oneOf:
         - type: object
