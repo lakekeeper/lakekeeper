@@ -5,7 +5,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
     implementations::postgres::{PostgresCatalog, SecretsState},
-    service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig, State, UserId},
+    service::{authz::AllowAllAuthorizer, State, UserId},
     tests::TestWarehouseResponse,
 };
 
@@ -603,12 +603,6 @@ async fn setup_drop_test(
         AllowAllAuthorizer,
         delete_profile,
         Some(UserId::new_unchecked("oidc", "test-user-id")),
-        Some(TaskQueueConfig {
-            max_retries: 1,
-            max_age: chrono::Duration::seconds(60),
-            poll_interval: std::time::Duration::from_secs(10),
-            num_workers: 2,
-        }),
         1,
     )
     .await;

@@ -19,7 +19,7 @@ use crate::{
         },
     },
     catalog::CatalogServer,
-    service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig},
+    service::authz::AllowAllAuthorizer,
     tests::{get_api_context, random_request_metadata, spawn_drop_queues},
 };
 
@@ -27,13 +27,8 @@ use crate::{
 async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     let storage_profile = crate::tests::test_io_profile();
     let authorizer = AllowAllAuthorizer {};
-    let q_config = TaskQueueConfig {
-        max_retries: 1,
-        max_age: chrono::Duration::seconds(60),
-        poll_interval: std::time::Duration::from_secs(1),
-        num_workers: 2,
-    };
-    let api_context = get_api_context(&pool, authorizer, Some(q_config));
+
+    let api_context = get_api_context(&pool, authorizer);
 
     // Bootstrap
     ApiServer::bootstrap(
@@ -110,7 +105,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     .expect_err("Warehouse deletion should fail due to purge tasks");
 
     // Spawn task queue workers
-    spawn_drop_queues(&api_context);
+    spawn_drop_queues(&api_context, Some(std::time::Duration::from_secs(1)));
 
     // Wait for tables to be dropped
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;

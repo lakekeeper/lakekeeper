@@ -37,7 +37,10 @@ pub mod v1 {
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
         User,
     };
-    use utoipa::{openapi::security::SecurityScheme, OpenApi, ToSchema};
+    use utoipa::{
+        openapi::{security::SecurityScheme, KnownFormat, RefOr, Schema},
+        OpenApi, ToSchema,
+    };
     use view::ViewManagementService as _;
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
@@ -54,7 +57,9 @@ pub mod v1 {
             management::v1::{
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
                 user::{ListUsersQuery, ListUsersResponse},
-                warehouse::UndropTabularsRequest,
+                warehouse::{
+                    GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, UndropTabularsRequest,
+                },
             },
             ApiContext, IcebergErrorResponse, Result,
         },
@@ -122,6 +127,8 @@ pub mod v1 {
             search_user,
             set_namespace_protection,
             set_table_protection,
+            set_task_queue_config,
+            get_task_queue_config,
             set_view_protection,
             set_warehouse_protection,
             get_namespace_protection,
@@ -1451,6 +1458,59 @@ pub mod v1 {
         .await
     }
 
+    /// Set task-queue config
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetTaskQueueConfig.path(),
+        params(("warehouse_id" = Uuid,)),
+        responses(
+            (status = 204, description = "Task queue config set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn set_task_queue_config<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<SetTaskQueueConfigRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::set_task_queue_config(
+            warehouse_id.into(),
+            queue_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    /// Get task-queue config
+    #[utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetTaskQueueConfig.path(),
+        params(("warehouse_id" = Uuid,),("queue_name" = String,)),
+        responses(
+            (status = 200, body = GetTaskQueueConfigResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_task_queue_config<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<GetTaskQueueConfigResponse> {
+        ApiServer::<C, A, S>::get_task_queue_config(
+            warehouse_id.into(),
+            &queue_name,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     #[derive(Debug, Serialize, utoipa::ToSchema)]
     #[serde(rename_all = "kebab-case")]
     pub struct ListDeletedTabularsResponse {
@@ -1492,7 +1552,9 @@ pub mod v1 {
     }
 
     /// Type of tabular
-    #[derive(Debug, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq)]
+    #[derive(
+        Debug, Deserialize, Serialize, Clone, Copy, utoipa::ToSchema, strum::Display, PartialEq, Eq,
+    )]
     #[serde(rename_all = "kebab-case")]
     pub enum TabularType {
         Table,
@@ -1500,7 +1562,15 @@ pub mod v1 {
     }
 
     #[derive(
-        Debug, Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq, strum_macros::Display,
+        Debug,
+        Deserialize,
+        Serialize,
+        utoipa::ToSchema,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        strum_macros::Display,
     )]
     #[serde(rename_all = "kebab-case")]
     pub enum DeleteKind {
@@ -1508,14 +1578,115 @@ pub mod v1 {
         Purge,
     }
 
-    #[must_use]
-    pub fn api_doc<A: Authorizer>() -> utoipa::openapi::OpenApi {
+    /// Get the `OpenAPI` documentation for the management API.
+    ///
+    /// # Errors
+    ///
+    pub fn api_doc<A: Authorizer>(
+        queue_configs: Vec<(&'static str, String, RefOr<Schema>)>,
+    ) -> utoipa::openapi::OpenApi {
         let mut doc = ManagementApiDoc::openapi();
         doc.merge(A::api_doc());
+
+        let Some(comps) = doc.components.as_mut() else {
+            tracing::warn!(
+                "No components found in the OpenAPI document, not patching queue configs in."
+            );
+            return doc;
+        };
+        let paths = &mut doc.paths.paths;
+        let Some(config_path) = paths.remove(ManagementV1Endpoint::SetTaskQueueConfig.path())
+        else {
+            tracing::warn!("No path found for SetTaskQueueConfig, not patching queue configs in.");
+            return doc;
+        };
+
+        for (q_name, name, q) in queue_configs {
+            let path = ManagementV1Endpoint::SetTaskQueueConfig
+                .path()
+                .replace("{queue_name}", q_name);
+
+            let mut p = config_path.clone();
+
+            let Some(post) = p.post.as_mut() else {
+                tracing::warn!(
+                    "No post method found for '{}', not patching queue configs into the ApiDoc.",
+                    ManagementV1Endpoint::SetTaskQueueConfig.path()
+                );
+                return doc;
+            };
+            post.operation_id = Some(format!(
+                "set_task_queue_config_{}",
+                q_name.replace("-", "_")
+            ));
+            let Some(body) = post.request_body.as_mut() else {
+                tracing::warn!(
+                    "No request body found for the '{}', not patching queue configs into the ApiDoc.",
+                    ManagementV1Endpoint::SetTaskQueueConfig.path()
+                );
+                return doc;
+            };
+            body.content.insert(
+                "application/json".to_string(),
+                utoipa::openapi::ContentBuilder::new()
+                    .schema(Some(RefOr::Ref(
+                        utoipa::openapi::schema::RefBuilder::new()
+                            .ref_location_from_schema_name(name.to_string())
+                            .build(),
+                    )))
+                    .build(),
+            );
+            let Some(get) = p.get.as_mut() else {
+                tracing::warn!(
+                    "No get method found for '{}', not patching queue configs into the ApiDoc.",
+                    ManagementV1Endpoint::SetTaskQueueConfig.path()
+                );
+                return doc;
+            };
+            get.operation_id = Some(format!(
+                "get_task_queue_config_{}",
+                q_name.replace("-", "_")
+            ));
+            let response = utoipa::openapi::response::ResponseBuilder::new()
+                .content(
+                    "application/json",
+                    utoipa::openapi::content::ContentBuilder::new()
+                        .schema(Some(RefOr::Ref(
+                            utoipa::openapi::schema::RefBuilder::new()
+                                .ref_location_from_schema_name(name.to_string())
+                                .build(),
+                        )))
+                        .build(),
+                )
+                .header(
+                    "x-request-id",
+                    utoipa::openapi::HeaderBuilder::new()
+                        .schema(
+                            utoipa::openapi::schema::Object::builder()
+                                .schema_type(utoipa::openapi::schema::SchemaType::new(
+                                    utoipa::openapi::schema::Type::String,
+                                ))
+                                .format(Some(utoipa::openapi::schema::SchemaFormat::KnownFormat(
+                                    KnownFormat::Uuid,
+                                ))),
+                        )
+                        .description(Some("Request identifier, add this to your bug reports."))
+                        .build(),
+                );
+            get.responses
+                .responses
+                .insert("200".to_string(), RefOr::T(response.build()));
+
+            paths.insert(path, p);
+
+            comps.schemas.insert(name.to_string(), q.clone());
+        }
+
         doc
     }
 
     impl<C: Catalog, A: Authorizer, S: SecretStore> ApiServer<C, A, S> {
+        #[allow(clippy::too_many_lines)]
         pub fn new_v1_router(authorizer: &A) -> Router<ApiContext<State<A, C, S>>> {
             Router::new()
                 // Server
@@ -1627,6 +1798,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/protection",
                     post(set_warehouse_protection),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
+                    post(set_task_queue_config).get(get_task_queue_config),
                 )
                 .merge(authorizer.new_router())
         }

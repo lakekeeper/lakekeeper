@@ -8,8 +8,9 @@ use crate::{
     config,
     request_metadata::RequestMetadata,
     service::{
-        authz::Authorizer, Actor, Catalog, Result, SecretStore, StartupValidationData, State,
-        Transaction,
+        authz::Authorizer,
+        task_queue::{Queue, RUNNING_QUEUES},
+        Actor, Catalog, Result, SecretStore, StartupValidationData, State, Transaction,
     },
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
@@ -72,6 +73,8 @@ pub struct ServerInfo {
     pub azure_system_identities_enabled: bool,
     /// If using GCP system identities for GCS storage profiles are enabled.
     pub gcp_system_identities_enabled: bool,
+    /// List of queues that are registered for the server.
+    pub queues: Vec<Queue>,
 }
 
 impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -195,11 +198,16 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {
                 config::AuthZBackend::AllowAll => AuthZBackend::AllowAll,
+                #[cfg(feature = "authz-openfga")]
                 config::AuthZBackend::OpenFGA => AuthZBackend::OpenFGA,
             },
             aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
             azure_system_identities_enabled: CONFIG.enable_azure_system_credentials,
             gcp_system_identities_enabled: CONFIG.enable_gcp_system_credentials,
+            queues: RUNNING_QUEUES
+                .get()
+                .map(|h| h.values().cloned().collect())
+                .unwrap_or_default(),
         })
     }
 }

@@ -107,7 +107,7 @@ pub struct ListNamespacesResponse {
     /// (e.g. `ListTables`). Clients may initiate the first paginated request by
     /// sending an empty query parameter `pageToken` to the server.
     /// Servers that support pagination should identify the `pageToken` parameter and
-    /// return a `next-page-token` in the response if there are more results available.  
+    /// return a `next-page-token` in the response if there are more results available.
     /// After the initial request, the value of `next-page-token` from each response
     /// must be used as the `pageToken` parameter value for the next request.
     /// The server must return `null` value for the `next-page-token` in the last response.

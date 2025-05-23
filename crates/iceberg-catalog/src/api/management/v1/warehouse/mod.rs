@@ -810,16 +810,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .collect::<Vec<_>>();
         let undrop_tabular_responses =
             C::undrop_tabulars(&tabs, warehouse_id, transaction.transaction()).await?;
-        context
-            .v1_state
-            .queues
-            .cancel_tabular_expiration(TaskFilter::TaskIds(
-                undrop_tabular_responses
-                    .iter()
-                    .map(|r| r.task_id.clone())
-                    .collect(),
-            ))
-            .await?;
+        C::cancel_tabular_expiration(
+            TaskFilter::TaskIds(undrop_tabular_responses.iter().map(|r| r.task_id).collect()),
+            transaction.transaction(),
+        )
+        .await?;
         transaction.commit().await?;
 
         context
@@ -953,6 +948,115 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             tabulars,
             next_page_token,
         })
+    }
+
+    async fn set_task_queue_config(
+        warehouse_id: WarehouseId,
+        queue_name: String,
+        request: SetTaskQueueConfigRequest,
+        context: ApiContext<State<A, C, S>>,
+        _request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        // TODO: authz
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+
+        if let Some(queue) = crate::service::task_queue::RUNNING_QUEUES
+            .get()
+            .and_then(|val| val.get(queue_name.as_str()))
+        {
+            queue
+                .validate_config(request.queue_config.0.clone())
+                .map_err(|e| {
+                    ErrorModel::bad_request(
+                        format!(
+                        "Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"
+                    ),
+                        "InvalidQueueConfig",
+                        None,
+                    )
+                })?;
+        } else {
+            tracing::debug!(
+                "Queue '{queue_name}' not found, got queues: {:?}",
+                crate::service::task_queue::RUNNING_QUEUES
+            );
+            let existing_queues = crate::service::task_queue::RUNNING_QUEUES
+                .get()
+                .map(|h| {
+                    h.keys()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            return Err(ErrorModel::bad_request(
+                format!("Queue '{queue_name}' not found! Existing queues: [{existing_queues}]"),
+                "QueueNotFound",
+                None,
+            )
+            .into());
+        }
+
+        C::set_task_queue_config(
+            warehouse_id,
+            queue_name.as_str(),
+            request,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn get_task_queue_config(
+        warehouse_id: WarehouseId,
+        queue_name: &str,
+        context: ApiContext<State<A, C, S>>,
+        _request_metadata: RequestMetadata,
+    ) -> Result<GetTaskQueueConfigResponse> {
+        // TODO: authz
+        let mut transaction = C::Transaction::begin_read(context.v1_state.catalog).await?;
+        let config = C::get_task_queue_config(warehouse_id, queue_name, transaction.transaction())
+            .await?
+            .ok_or(ErrorModel::not_found(
+                "Task queue config not found",
+                "TaskQueueConfigNotFound",
+                None,
+            ))?;
+        transaction.commit().await?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct SetTaskQueueConfigRequest {
+    pub queue_config: QueueConfig,
+    pub max_age_seconds: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct QueueConfig(pub(crate) serde_json::Value);
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct GetTaskQueueConfigResponse {
+    pub queue_config: QueueConfigResponse,
+    pub max_age_seconds: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct QueueConfigResponse {
+    #[serde(flatten)]
+    pub(crate) config: serde_json::Value,
+    pub(crate) queue_name: String,
+}
+
+impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        (http::StatusCode::OK, axum::Json(self)).into_response()
     }
 }
 

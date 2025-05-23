@@ -88,7 +88,7 @@ services:
       - ICEBERG_REST__KAFKA_CONFIG={"bootstrap.servers"="kafka:19092","security.protocol"="PLAINTEXT"}
       - ICEBERG_REST__LOG_CLOUDEVENTS=true
       - ICEBERG_REST__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg/
-      - ICEBERG_REST__QUEUE_CONFIG={max_retries=3, max_age="3600", poll_interval="1"}
+      - LAKEKEEPER__TASK_POLL_INTERVAL="1"
       - RUST_LOG=warn,iceberg_catalog=trace,iceberg_catalog_bin=trace,iceberg_ext=trace
     command: [ "serve" ]
     healthcheck:

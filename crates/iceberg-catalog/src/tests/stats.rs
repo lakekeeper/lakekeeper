@@ -5,7 +5,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     api::{management::v1::warehouse::TabularDeleteProfile, ApiContext},
     implementations::postgres::{PostgresCatalog, SecretsState},
-    service::{authz::AllowAllAuthorizer, task_queue::TaskQueueConfig, State, UserId},
+    service::{authz::AllowAllAuthorizer, State, UserId},
     tests::TestWarehouseResponse,
 };
 
@@ -26,7 +26,7 @@ mod test {
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, 1, 1).await;
-        spawn_drop_queues(&setup.ctx);
+        spawn_drop_queues(&setup.ctx, None);
         let whi = setup.warehouse.warehouse_id;
         let stats = ApiServer::get_warehouse_statistics(
             whi,
@@ -160,12 +160,6 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
         AllowAllAuthorizer,
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
-        Some(TaskQueueConfig {
-            max_retries: 1,
-            max_age: chrono::Duration::seconds(60),
-            poll_interval: std::time::Duration::from_secs(10),
-            num_workers: 2,
-        }),
         1,
     )
     .await;

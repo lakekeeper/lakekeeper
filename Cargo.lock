@@ -3098,6 +3098,7 @@ version = "0.8.5"
 dependencies = [
  "anyhow",
  "assert-json-diff",
+ "async-channel 2.3.1",
  "async-nats",
  "async-stream",
  "async-trait",

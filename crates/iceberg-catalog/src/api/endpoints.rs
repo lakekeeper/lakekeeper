@@ -220,6 +220,8 @@ generate_endpoints! {
         GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
         DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
         RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
+        SetTaskQueueConfig(POST, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
+        GetTaskQueueConfig(GET, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config")
     }
 
     enum PermissionV1 {

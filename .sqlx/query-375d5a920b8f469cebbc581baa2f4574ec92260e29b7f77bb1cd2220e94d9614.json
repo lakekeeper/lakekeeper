@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            t.tabular_id,\n            t.name as \"tabular_name\",\n            namespace_name,\n            t.typ as \"typ: TabularType\",\n            t.created_at,\n            t.deleted_at,\n            tt.suspend_until as \"cleanup_at?\",\n            tt.task_id as \"cleanup_task_id?\",\n            t.protected\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        LEFT JOIN tabular_expirations te ON t.tabular_id = te.tabular_id\n        LEFT JOIN task tt ON te.task_id = tt.task_id\n        WHERE n.warehouse_id = $1\n            AND (namespace_name = $2 OR $2 IS NULL)\n            AND (n.namespace_id = $10 OR $10 IS NULL)\n            AND w.status = 'active'\n            AND (t.typ = $3 OR $3 IS NULL)\n            -- active tables are tables that are not staged and not deleted\n            AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)\n            AND (t.deleted_at IS NULL OR $5)\n            AND (t.metadata_location IS NOT NULL OR $6)\n            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))\n            ORDER BY t.created_at, t.tabular_id ASC\n            LIMIT $9\n        ",
+  "query": "\n        SELECT\n            t.tabular_id,\n            t.name as \"tabular_name\",\n            namespace_name,\n            t.typ as \"typ: TabularType\",\n            t.created_at,\n            t.deleted_at,\n            tt.scheduled_for as \"cleanup_at?\",\n            tt.task_id as \"cleanup_task_id?\",\n            t.protected\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)\n        WHERE (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)\n            AND n.warehouse_id = $1\n            AND (namespace_name = $2 OR $2 IS NULL)\n            AND (n.namespace_id = $10 OR $10 IS NULL)\n            AND w.status = 'active'\n            AND (t.typ = $3 OR $3 IS NULL)\n            -- active tables are tables that are not staged and not deleted\n            AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)\n            AND (t.deleted_at IS NULL OR $5)\n            AND (t.metadata_location IS NOT NULL OR $6)\n            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))\n            ORDER BY t.created_at, t.tabular_id ASC\n            LIMIT $9\n        ",
   "describe": {
     "columns": [
       {
@@ -90,10 +90,10 @@
       false,
       false,
       true,
-      true,
+      false,
       false,
       false
     ]
   },
-  "hash": "0986a68703cc635011bb294e4d1c9b8ef2e9be5765b96d8389e997433de6eadd"
+  "hash": "375d5a920b8f469cebbc581baa2f4574ec92260e29b7f77bb1cd2220e94d9614"
 }

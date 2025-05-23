@@ -12,7 +12,6 @@ use crate::{
     service::{
         authz::AllowAllAuthorizer,
         endpoint_statistics::{EndpointStatisticsTracker, FlushMode},
-        task_queue::TaskQueueConfig,
         EndpointStatisticsTrackerTx, State, UserId,
     },
     tests::TestWarehouseResponse,
@@ -654,12 +653,6 @@ async fn setup_stats_test(
         AllowAllAuthorizer,
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
-        Some(TaskQueueConfig {
-            max_retries: 1,
-            max_age: chrono::Duration::seconds(60),
-            poll_interval: std::time::Duration::from_secs(10),
-            num_workers: 2,
-        }),
         number_of_warehouses,
     )
     .await;
