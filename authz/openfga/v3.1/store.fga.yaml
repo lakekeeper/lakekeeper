@@ -140,6 +140,10 @@ tuples:
   - user: user:namespace_2_1_role_owner
     relation: assignee
     object: role:namespace_2_1_owner
+  # Make user owner of role
+  - user: user:owner_of_role_namespace_2_1_owner
+    relation: ownership
+    object: role:namespace_2_1_owner
 tests:
   - name: Test Almighty Operator
     check:
@@ -1204,4 +1208,29 @@ tests:
           can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
-
+  - name: Owner of Role has same permissions as assignee
+    check:
+      - user: user:owner_of_role_namespace_2_1_owner
+        object: role:namespace_2_1_owner
+        assertions:
+          can_assume: true
+      - user: user:owner_of_role_namespace_2_1_owner
+        object: namespace:namespace_2_1
+        assertions:
+          can_create_table: true
+          can_create_view: true
+          can_create_namespace: true
+          can_delete: true
+          can_update_properties: true
+          can_get_metadata: true
+          can_list_tables: true
+          can_list_views: true
+          can_list_namespaces: true
+          can_include_in_list: true
+          can_grant_create: false
+          can_grant_describe: false
+          can_grant_modify: false
+          can_grant_select: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_change_ownership: false
