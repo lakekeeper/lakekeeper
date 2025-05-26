@@ -127,7 +127,7 @@ create type task_intermediate_status as enum ('running', 'scheduled', 'should-st
 alter table task
     alter column status type task_intermediate_status using status::task_intermediate_status;
 
-create index task_queue_name_status_idx on task (queue_name, status);
+create index task_queue_name_status_idx on task (queue_name, status, scheduled_for);
 create index task_warehouse_queue_name_idx on task (warehouse_id, queue_name);
 create index if not exists task_entity_type_entity_id_idx
     on task (warehouse_id, entity_type, entity_id);
