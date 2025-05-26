@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO task_config (queue_name, warehouse_id, config, max_age)\n        VALUES ($1, $2, $3, $4)\n        ON CONFLICT (queue_name, warehouse_id) DO UPDATE\n        SET config = $3, max_age = COALESCE($4, task_config.max_age )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Interval"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "896510a032fe5fdfae24f685fd2165aab7d6846165fb27b3f9be72e9ed91e66d"
+}
