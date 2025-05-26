@@ -6,6 +6,7 @@ use axum::{
     Extension, Json, Router,
 };
 use http::StatusCode;
+use iceberg_ext::catalog::rest::ReportMetricsRequest;
 use iceberg_ext::TableIdent;
 
 use super::namespace::NamespaceIdentUrl;
@@ -18,20 +19,20 @@ use crate::{
 };
 
 #[async_trait]
-pub trait Service<S: crate::api::ThreadSafe>
+pub trait MetricsService<S: crate::api::ThreadSafe>
 where
     Self: Send + Sync + 'static,
 {
     /// Send a metrics report to this endpoint to be processed by the backend
     async fn report_metrics(
-        parameters: TableParameters,
-        request: serde_json::Value,
+        table_parameters: TableParameters,
+        request: ReportMetricsRequest,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
 }
 
-pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
+pub fn router<I: MetricsService<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
     Router::new()
         // /{prefix}/namespaces/{namespace}/tables/{table}/metrics
         .route(
@@ -40,7 +41,7 @@ pub fn router<I: Service<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>,
-                 Json(request): Json<serde_json::Value>| async {
+                 Json(request): Json<ReportMetricsRequest>| async {
                     {
                         I::report_metrics(
                             TableParameters {
