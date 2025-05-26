@@ -297,9 +297,9 @@ pub(crate) async fn record_failure(
             *task_id,
             TaskOutcome::Failed as _,
         )
-        .execute(conn)
-        .await
-        .map_err(|e| e.into_error_model("failed to log and delete failed task"))?;
+            .execute(conn)
+            .await
+            .map_err(|e| e.into_error_model("failed to log and delete failed task"))?;
     } else {
         sqlx::query!(
             r#"
@@ -317,9 +317,9 @@ pub(crate) async fn record_failure(
             TaskStatus::Scheduled as _,
             TaskOutcome::Failed as _,
         )
-        .execute(conn)
-        .await
-        .map_err(|e| e.into_error_model("failed to update task status"))?;
+            .execute(conn)
+            .await
+            .map_err(|e| e.into_error_model("failed to update task status"))?;
     }
 
     Ok(())
@@ -381,8 +381,8 @@ pub(crate) async fn set_task_queue_config(
     };
     sqlx::query!(
         r#"
-        INSERT INTO task_config (queue_name, warehouse_id, config)
-        VALUES ($1, $2, $3)
+        INSERT INTO task_config (queue_name, warehouse_id, config, max_age)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (queue_name, warehouse_id) DO UPDATE
         SET config = $3, max_age = COALESCE($4, task_config.max_age )
         "#,
@@ -564,7 +564,7 @@ mod test {
 
     use super::*;
     use crate::{
-        api::management::v1::warehouse::TabularDeleteProfile,
+        api::management::v1::warehouse::{QueueConfig, TabularDeleteProfile},
         service::{
             authz::AllowAllAuthorizer,
             task_queue::{EntityId, TaskId, TaskInput, TaskStatus, DEFAULT_MAX_AGE},
@@ -1287,5 +1287,99 @@ mod test {
         record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_set_get_task_config(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup(pool.clone()).await;
+        let queue_name = "test_queue";
+
+        assert!(get_task_queue_config(&mut conn, warehouse_id, queue_name)
+            .await
+            .unwrap()
+            .is_none());
+
+        let config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
+            max_age_seconds: Some(3600),
+        };
+
+        set_task_queue_config(&mut conn, queue_name, warehouse_id, config)
+            .await
+            .unwrap();
+
+        let response = get_task_queue_config(&mut conn, warehouse_id, queue_name)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(response.queue_config.queue_name, queue_name);
+        assert_eq!(
+            response.queue_config.config,
+            serde_json::json!({"max_attempts": 5})
+        );
+        assert_eq!(response.max_age_seconds, Some(3600));
+    }
+
+    #[sqlx::test]
+    async fn test_set_task_config_yields_a_task_with_config(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup(pool.clone()).await;
+        let queue_name = "test_queue";
+
+        let config = SetTaskQueueConfigRequest {
+            queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
+            max_age_seconds: Some(3600),
+        };
+
+        set_task_queue_config(&mut conn, queue_name, warehouse_id, config)
+            .await
+            .unwrap();
+        let payload = serde_json::json!("our-task");
+        let _task = queue_task(
+            &mut conn,
+            queue_name,
+            None,
+            EntityId::Tabular(Uuid::now_v7()),
+            warehouse_id,
+            None,
+            Some(payload.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let task = pick_task(&pool, queue_name, DEFAULT_MAX_AGE)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(task.queue_name, queue_name);
+        assert_eq!(task.config, Some(serde_json::json!({"max_attempts": 5})));
+        assert_eq!(task.state, payload);
+
+        let other_queue = "other-queue";
+        let other_payload = serde_json::json!("other-task");
+        let _task = queue_task(
+            &mut conn,
+            other_queue,
+            None,
+            EntityId::Tabular(Uuid::now_v7()),
+            warehouse_id,
+            None,
+            Some(other_payload.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let task = pick_task(&pool, other_queue, DEFAULT_MAX_AGE)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.queue_name, other_queue);
+        assert_eq!(task.config, None);
+        assert_eq!(task.state, other_payload);
     }
 }

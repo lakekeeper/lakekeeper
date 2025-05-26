@@ -186,7 +186,7 @@ impl TaskQueues {
     ///
     /// # Errors
     /// Fails if any of the queue handlers exit unexpectedly.
-    pub async fn spawn_queues(mut self) -> Result<(), anyhow::Error> {
+    pub async fn spawn_queues(mut self, keep_running_on_exit: bool) -> Result<(), anyhow::Error> {
         let mut queue_tasks = vec![];
         let mut qs = HashMap::with_capacity(0);
         let mut queue_info = HashMap::with_capacity(self.registered_queues.len());
@@ -223,13 +223,19 @@ impl TaskQueues {
             tracing::error!("Failed to set schema validators");
             anyhow::anyhow!("Failed to set schema validators")
         })?;
-        let (res, index, _) = futures::future::select_all(queue_tasks).await;
-        if let Err(e) = res {
-            tracing::error!(?e, "Task queue {index} panicked: {e}");
-            return Err(anyhow::anyhow!("Task queue {index} panicked: {e}"));
+        while !queue_tasks.is_empty() {
+            let (res, index, new_queue_tasks) = futures::future::select_all(queue_tasks).await;
+            queue_tasks = new_queue_tasks;
+            if let Err(e) = res {
+                tracing::error!(?e, "Task queue {index} panicked: {e}");
+                return Err(anyhow::anyhow!("Task queue {index} panicked: {e}"));
+            }
+            if !keep_running_on_exit {
+                tracing::error!("Task queue {index} exited unexpectedly");
+                return Err(anyhow::anyhow!("Task queue {index} exited unexpectedly"));
+            }
         }
-        tracing::error!("Task queue {index} exited unexpectedly");
-        Err(anyhow::anyhow!("Task queue {index} exited unexpectedly"))
+        Ok(())
     }
 }
 
@@ -475,7 +481,7 @@ mod test {
             auth,
             std::time::Duration::from_millis(100),
         );
-        let _queue_task = tokio::task::spawn(queues.spawn_queues());
+        let _queue_task = tokio::task::spawn(queues.spawn_queues(false));
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),

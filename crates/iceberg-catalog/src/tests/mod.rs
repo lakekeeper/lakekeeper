@@ -2,6 +2,7 @@ mod drop_recursive;
 mod drop_warehouse;
 mod endpoint_stats;
 mod stats;
+mod tasks;
 
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
@@ -296,5 +297,5 @@ pub(crate) fn spawn_drop_queues<T: Authorizer>(
         ctx.v1_state.authz.clone(),
         poll_interval.unwrap_or(CONFIG.task_poll_interval),
     );
-    tokio::task::spawn(queues.spawn_queues());
+    tokio::task::spawn(queues.spawn_queues(false));
 }

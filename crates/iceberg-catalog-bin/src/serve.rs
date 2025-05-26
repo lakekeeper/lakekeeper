@@ -384,7 +384,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     let stats_handle = tokio::task::spawn(tracker.run());
 
     tokio::select!(
-        _ = queues.spawn_queues() => tracing::error!("Tabular queue task failed"),
+        _ = queues.spawn_queues(false) => tracing::error!("Tabular queue task failed"),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
         _ = metrics_future => tracing::error!("Metrics server failed"),
     );

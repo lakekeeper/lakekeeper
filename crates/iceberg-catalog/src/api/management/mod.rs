@@ -1617,7 +1617,7 @@ pub mod v1 {
             };
             post.operation_id = Some(format!(
                 "set_task_queue_config_{}",
-                q_name.replace("-", "_")
+                q_name.replace('-', "_")
             ));
             let Some(body) = post.request_body.as_mut() else {
                 tracing::warn!(
