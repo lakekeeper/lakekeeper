@@ -3103,7 +3103,7 @@ components:
       required:
         - queue-config
       properties:
-        max-age-seconds:
+        max-seconds-since-last-heartbeat:
           type:
             - integer
             - 'null'
@@ -4009,7 +4009,7 @@ components:
       required:
         - queue-config
       properties:
-        max-age-seconds:
+        max-seconds-since-last-heartbeat:
           type:
             - integer
             - 'null'
