@@ -23,7 +23,7 @@ mod test {
         service::{
             task_queue::{
                 EntityId, QueueConfig as QueueConfigTrait, TaskInput, TaskMetadata, TaskQueues,
-                DEFAULT_MAX_AGE,
+                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },
             Catalog, Transaction,
         },
@@ -63,7 +63,7 @@ mod test {
 
                     let task = PostgresCatalog::pick_new_task(
                         queue_name,
-                        DEFAULT_MAX_AGE,
+                        DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
                         ctx.v1_state.catalog.clone(),
                     )
                     .await
@@ -94,7 +94,7 @@ mod test {
                     })
                     .unwrap(),
                 ),
-                max_age_seconds: None,
+                max_seconds_since_last_heartbeat: None,
             },
             transaction.transaction(),
         )

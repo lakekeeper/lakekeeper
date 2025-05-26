@@ -7,7 +7,7 @@ use tracing::Instrument;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::{QueueConfig, TaskMetadata, DEFAULT_MAX_AGE};
+use super::{QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT};
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
@@ -34,7 +34,12 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
     poll_interval: std::time::Duration,
 ) {
     loop {
-        let task = match C::pick_new_task(QUEUE_NAME, DEFAULT_MAX_AGE, catalog_state.clone()).await
+        let task = match C::pick_new_task(
+            QUEUE_NAME,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            catalog_state.clone(),
+        )
+        .await
         {
             Ok(expiration) => expiration,
             Err(err) => {

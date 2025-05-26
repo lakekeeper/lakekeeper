@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT config, max_age\n        FROM task_config\n        WHERE warehouse_id = $1 AND queue_name = $2\n        ",
+  "query": "\n        SELECT config, max_time_since_last_heartbeat\n        FROM task_config\n        WHERE warehouse_id = $1 AND queue_name = $2\n        ",
   "describe": {
     "columns": [
       {
@@ -10,7 +10,7 @@
       },
       {
         "ordinal": 1,
-        "name": "max_age",
+        "name": "max_time_since_last_heartbeat",
         "type_info": "Interval"
       }
     ],
@@ -25,5 +25,5 @@
       true
     ]
   },
-  "hash": "66efc01d8b81d505223f5e6d2adbb7d21f0882459f937f04c702215b129a7110"
+  "hash": "44036578dcf5472f7c9ecd1351734856662fb002475eaf3f3a57d86e7f85ea0c"
 }

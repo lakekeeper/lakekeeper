@@ -3,7 +3,7 @@ use tracing::Instrument;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::{EntityId, QueueConfig, TaskMetadata, DEFAULT_MAX_AGE};
+use super::{EntityId, QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT};
 use crate::{
     api::{
         management::v1::{DeleteKind, TabularType},
@@ -35,16 +35,21 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
     poll_interval: std::time::Duration,
 ) {
     loop {
-        let expiration =
-            match C::pick_new_task(QUEUE_NAME, DEFAULT_MAX_AGE, catalog_state.clone()).await {
-                Ok(expiration) => expiration,
-                Err(err) => {
-                    // TODO: add retry counter + exponential backoff
-                    tracing::error!("Failed to fetch expiration: {:?}", err);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
-                }
-            };
+        let expiration = match C::pick_new_task(
+            QUEUE_NAME,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            catalog_state.clone(),
+        )
+        .await
+        {
+            Ok(expiration) => expiration,
+            Err(err) => {
+                // TODO: add retry counter + exponential backoff
+                tracing::error!("Failed to fetch expiration: {:?}", err);
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
+            }
+        };
         let Some(expiration) = expiration else {
             tokio::time::sleep(poll_interval).await;
             continue;

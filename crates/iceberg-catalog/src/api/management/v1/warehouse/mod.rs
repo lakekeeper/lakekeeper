@@ -1032,7 +1032,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 #[serde(rename_all = "kebab-case")]
 pub struct SetTaskQueueConfigRequest {
     pub queue_config: QueueConfig,
-    pub max_age_seconds: Option<i64>,
+    pub max_seconds_since_last_heartbeat: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -1043,7 +1043,7 @@ pub struct QueueConfig(pub(crate) serde_json::Value);
 #[serde(rename_all = "kebab-case")]
 pub struct GetTaskQueueConfigResponse {
     pub queue_config: QueueConfigResponse,
-    pub max_age_seconds: Option<i64>,
+    pub max_seconds_since_last_heartbeat: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

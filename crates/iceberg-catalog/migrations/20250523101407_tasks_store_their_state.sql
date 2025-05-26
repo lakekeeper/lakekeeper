@@ -44,10 +44,10 @@ alter table task
 
 create table task_config
 (
-    warehouse_id uuid references warehouse (warehouse_id) on delete cascade not null,
-    queue_name   text                                                       not null,
-    config       jsonb                                                      not null,
-    max_age      interval,
+    warehouse_id                  uuid references warehouse (warehouse_id) on delete cascade not null,
+    queue_name                    text                                                       not null,
+    config                        jsonb                                                      not null,
+    max_time_since_last_heartbeat interval,
     primary key (warehouse_id, queue_name)
 );
 

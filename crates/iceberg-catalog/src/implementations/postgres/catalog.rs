@@ -703,13 +703,13 @@ impl Catalog for super::PostgresCatalog {
 
     async fn pick_new_task(
         queue_name: &str,
-        max_age: Duration,
+        max_time_since_last_heartbeat: Duration,
         state: Self::State,
     ) -> Result<Option<Task>> {
         crate::implementations::postgres::task_queues::pick_task(
             &state.write_pool(),
             queue_name,
-            max_age,
+            max_time_since_last_heartbeat,
         )
         .await
     }

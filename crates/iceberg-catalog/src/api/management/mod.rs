@@ -1645,7 +1645,7 @@ pub mod v1 {
             };
             get.operation_id = Some(format!(
                 "get_task_queue_config_{}",
-                q_name.replace("-", "_")
+                q_name.replace('-', "_")
             ));
             let response = utoipa::openapi::response::ResponseBuilder::new()
                 .content(

@@ -24,7 +24,8 @@ use crate::service::{
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 
-pub const DEFAULT_MAX_AGE: chrono::Duration = valid_max_age(3600);
+pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
+    valid_max_time_since_last_heartbeat(3600);
 pub const DEFAULT_MAX_RETRIES: i32 = 5;
 pub const DEFAULT_NUM_WORKERS: usize = 2;
 
@@ -33,8 +34,8 @@ pub type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> +
 pub(crate) static RUNNING_QUEUES: OnceLock<HashMap<&'static str, Queue>> = OnceLock::new();
 
 pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
-    fn max_age(&self) -> chrono::Duration {
-        DEFAULT_MAX_AGE
+    fn max_time_since_last_heartbeat(&self) -> chrono::Duration {
+        DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT
     }
     fn max_retries(&self) -> i32 {
         DEFAULT_MAX_RETRIES
@@ -433,8 +434,11 @@ pub(crate) async fn record_error_with_catalog<C: Catalog>(
     });
 }
 
-const fn valid_max_age(num: i64) -> chrono::Duration {
-    assert!(num > 0, "max_age must be greater than 0");
+const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
+    assert!(
+        num > 0,
+        "max_seconds_since_last_heartbeat must be greater than 0"
+    );
     let dur = chrono::Duration::seconds(num);
     assert!(dur.num_microseconds().is_some());
     dur

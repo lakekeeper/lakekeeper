@@ -799,7 +799,7 @@ where
     // Tasks
     async fn pick_new_task(
         queue_name: &str,
-        max_age: chrono::Duration,
+        max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
     async fn record_task_success(

@@ -135,16 +135,18 @@ pub(crate) async fn queue_task_batch(
 pub(crate) async fn pick_task(
     pool: &PgPool,
     queue_name: &str,
-    max_age: chrono::Duration,
+    max_time_since_last_heartbeat: chrono::Duration,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
-    let max_age = PgInterval {
+    let max_time_since_last_heartbeat = PgInterval {
         months: 0,
         days: 0,
-        microseconds: max_age.num_microseconds().ok_or(ErrorModel::internal(
-            "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
-            "InternalError",
-            None,
-        ))?,
+        microseconds: max_time_since_last_heartbeat.num_microseconds().ok_or(
+            ErrorModel::internal(
+                "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
+                "InternalError",
+                None,
+            ),
+        )?,
     };
     let x = sqlx::query!(
         r#"WITH updated_task AS (
@@ -155,7 +157,7 @@ pub(crate) async fn pick_task(
                    AND tc.warehouse_id = t.warehouse_id
         WHERE (status = $3 AND t.queue_name = $1
                    AND scheduled_for < now() AT TIME ZONE 'UTC')
-           OR (status = $4 AND (now() - last_heartbeat_at) > COALESCE(tc.max_age, $2))
+           OR (status = $4 AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
         -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
         -- transactions locked, this is our queue right there.
         FOR UPDATE OF t SKIP LOCKED
@@ -183,7 +185,7 @@ pub(crate) async fn pick_task(
         (select config from updated_task)
     "#,
         queue_name,
-        max_age,
+        max_time_since_last_heartbeat,
         TaskStatus::Scheduled as _,
         TaskStatus::Running as _,
     )
@@ -332,7 +334,7 @@ pub(crate) async fn get_task_queue_config(
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
     let result = sqlx::query!(
         r#"
-        SELECT config, max_age
+        SELECT config, max_time_since_last_heartbeat
         FROM task_config
         WHERE warehouse_id = $1 AND queue_name = $2
         "#,
@@ -353,7 +355,9 @@ pub(crate) async fn get_task_queue_config(
             config: result.config,
             queue_name: queue_name.to_string(),
         },
-        max_age_seconds: result.max_age.map(|x| x.microseconds / 1_000_000),
+        max_seconds_since_last_heartbeat: result
+            .max_time_since_last_heartbeat
+            .map(|x| x.microseconds / 1_000_000),
     }))
 }
 
@@ -364,32 +368,33 @@ pub(crate) async fn set_task_queue_config(
     config: SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
     let serialized = config.queue_config.0;
-    let max_age = if let Some(max_age) = config.max_age_seconds {
-        Some(PgInterval {
-            months: 0,
-            days: 0,
-            microseconds: chrono::Duration::seconds(max_age)
-                .num_microseconds()
-                .ok_or(ErrorModel::internal(
+    let max_time_since_last_heartbeat =
+        if let Some(max_seconds_since_last_heartbeat) = config.max_seconds_since_last_heartbeat {
+            Some(PgInterval {
+                months: 0,
+                days: 0,
+                microseconds: chrono::Duration::seconds(max_seconds_since_last_heartbeat)
+                    .num_microseconds()
+                    .ok_or(ErrorModel::internal(
                     "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
                     "InternalError",
                     None,
                 ))?,
-        })
-    } else {
-        None
-    };
+            })
+        } else {
+            None
+        };
     sqlx::query!(
         r#"
-        INSERT INTO task_config (queue_name, warehouse_id, config, max_age)
+        INSERT INTO task_config (queue_name, warehouse_id, config, max_time_since_last_heartbeat)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (queue_name, warehouse_id) DO UPDATE
-        SET config = $3, max_age = COALESCE($4, task_config.max_age )
+        SET config = $3, max_time_since_last_heartbeat = COALESCE($4, task_config.max_time_since_last_heartbeat )
         "#,
         queue_name,
         *warehouse_id,
         serialized,
-        max_age
+        max_time_since_last_heartbeat
     )
     .execute(transaction)
     .await
@@ -567,7 +572,9 @@ mod test {
         api::management::v1::warehouse::{QueueConfig, TabularDeleteProfile},
         service::{
             authz::AllowAllAuthorizer,
-            task_queue::{EntityId, TaskId, TaskInput, TaskStatus, DEFAULT_MAX_AGE},
+            task_queue::{
+                EntityId, TaskId, TaskInput, TaskStatus, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            },
         },
         WarehouseId,
     };
@@ -663,7 +670,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -679,7 +686,7 @@ mod test {
             .await
             .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -694,10 +701,12 @@ mod test {
             .await
             .unwrap();
 
-        assert!(pick_task(&pool, "test", DEFAULT_MAX_AGE)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[sqlx::test]
@@ -718,7 +727,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -734,10 +743,12 @@ mod test {
             .await
             .unwrap();
 
-        assert!(pick_task(&pool, "test", DEFAULT_MAX_AGE)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[sqlx::test]
@@ -760,7 +771,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -791,7 +802,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -841,7 +852,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -875,7 +886,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -911,7 +922,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -941,14 +952,16 @@ mod test {
         .unwrap()
         .unwrap();
 
-        assert!(pick_task(&pool, "test", DEFAULT_MAX_AGE)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1035,16 +1048,16 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task2 = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_AGE)
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1107,16 +1120,16 @@ mod test {
         let id = ids[0].task_id;
         let id2 = ids[1].task_id;
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task2 = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_AGE)
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1180,16 +1193,16 @@ mod test {
         let id = ids[0].task_id;
         let id2 = ids[1].task_id;
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task2 = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_AGE)
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1264,7 +1277,7 @@ mod test {
             .unwrap();
 
         // pick one new task, one re-inserted task
-        let task = pick_task(&pool, "test", DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1277,7 +1290,7 @@ mod test {
         assert_eq!(&task.queue_name, "test");
 
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_AGE)
+            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1302,7 +1315,7 @@ mod test {
 
         let config = SetTaskQueueConfigRequest {
             queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
-            max_age_seconds: Some(3600),
+            max_seconds_since_last_heartbeat: Some(3600),
         };
 
         set_task_queue_config(&mut conn, queue_name, warehouse_id, config)
@@ -1319,7 +1332,7 @@ mod test {
             response.queue_config.config,
             serde_json::json!({"max_attempts": 5})
         );
-        assert_eq!(response.max_age_seconds, Some(3600));
+        assert_eq!(response.max_seconds_since_last_heartbeat, Some(3600));
     }
 
     #[sqlx::test]
@@ -1330,7 +1343,7 @@ mod test {
 
         let config = SetTaskQueueConfigRequest {
             queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
-            max_age_seconds: Some(3600),
+            max_seconds_since_last_heartbeat: Some(3600),
         };
 
         set_task_queue_config(&mut conn, queue_name, warehouse_id, config)
@@ -1350,7 +1363,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, queue_name, DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, queue_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1374,7 +1387,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, other_queue, DEFAULT_MAX_AGE)
+        let task = pick_task(&pool, other_queue, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
