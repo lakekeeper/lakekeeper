@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
             let write_pool = iceberg_catalog::implementations::postgres::get_writer_pool(
                 CONFIG
                     .to_pool_opts()
-                    .acquire_timeout(std::time::Duration::from_secs(5)),
+                    .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
             )
             .await?;
 

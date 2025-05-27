@@ -55,6 +55,7 @@ Currently Lakekeeper supports only Postgres as a persistence store. You may eith
 | <nobr>`LAKEKEEPER__PG_ENABLE_STATEMENT_LOGGING`</nobr> | `true`                                                | Enable SQL statement logging |
 | `LAKEKEEPER__PG_TEST_BEFORE_ACQUIRE`                   | `true`                                                | Test connections before acquiring from the pool |
 | `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME`               | `1800`                                                | Maximum lifetime of connections in seconds |
+| `LAKEKEEPER__PG_ACQUIRE_TIMEOUT`                       | `10`                                                  | Timeout to acquire a new postgres connection in seconds. Default: `5` |
 
 ### Vault KV Version 2
 

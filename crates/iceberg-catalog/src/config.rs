@@ -162,6 +162,7 @@ pub struct DynAppConfig {
     pub(crate) pg_connection_max_lifetime: Option<u64>,
     pub pg_read_pool_connections: u32,
     pub pg_write_pool_connections: u32,
+    pub pg_acquire_timeout: u64,
 
     // ------------- NATS CLOUDEVENTS -------------
     pub nats_address: Option<Url>,
@@ -470,6 +471,7 @@ impl Default for DynAppConfig {
             pg_connection_max_lifetime: None,
             pg_read_pool_connections: 10,
             pg_write_pool_connections: 5,
+            pg_acquire_timeout: 5,
             enable_azure_system_credentials: false,
             enable_aws_system_credentials: false,
             s3_enable_direct_system_credentials: false,
