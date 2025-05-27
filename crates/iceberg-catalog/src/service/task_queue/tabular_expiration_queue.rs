@@ -1,9 +1,13 @@
+use std::sync::LazyLock;
+
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-use utoipa::ToSchema;
+use utoipa::{PartialSchema, ToSchema};
 use uuid::Uuid;
 
-use super::{EntityId, QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT};
+use super::{
+    EntityId, QueueApiConfig, QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+};
 use crate::{
     api::{
         management::v1::{DeleteKind, TabularType},
@@ -11,25 +15,32 @@ use crate::{
     },
     service::{
         authz::Authorizer,
-        task_queue::{tabular_purge_queue::TabularPurge, Task},
+        task_queue::{tabular_purge_queue::TabularPurgePayload, Task},
         Catalog, TableId, Transaction, ViewId,
     },
 };
 
-pub const QUEUE_NAME: &str = "tabular_expiration";
+pub(crate) const QUEUE_NAME: &str = "tabular_expiration";
+pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
+    queue_name: QUEUE_NAME,
+    utoipa_type_name: ExpirationQueueConfig::name(),
+    utoipa_schema: ExpirationQueueConfig::schema(),
+});
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TabularExpiration {
-    pub tabular_type: TabularType,
-    pub deletion_kind: DeleteKind,
+/// State stored for a tabular expiration in postgres as `payload` along with the task metadata.
+pub(crate) struct TabularExpirationPayload {
+    pub(crate) tabular_type: TabularType,
+    pub(crate) deletion_kind: DeleteKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
-pub struct ExpirationQueueConfig {}
+/// Warehouse-specific configuration for the expiration queue.
+pub(crate) struct ExpirationQueueConfig {}
 
 impl QueueConfig for ExpirationQueueConfig {}
 
-pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
+pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     poll_interval: std::time::Duration,
@@ -54,7 +65,7 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
             tokio::time::sleep(poll_interval).await;
             continue;
         };
-        let state = match expiration.task_state::<TabularExpiration>() {
+        let state = match expiration.task_state::<TabularExpirationPayload>() {
             Ok(state) => state,
             Err(err) => {
                 tracing::error!("Failed to deserialize task state: {:?}", err);
@@ -98,7 +109,7 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     tabular_id: Uuid,
-    expiration: &TabularExpiration,
+    expiration: &TabularExpirationPayload,
     task: &Task,
 ) {
     match handle_table::<C, A>(
@@ -130,7 +141,7 @@ async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
     tabular_id: Uuid,
-    expiration: &TabularExpiration,
+    expiration: &TabularExpirationPayload,
     task: &Task,
 ) -> Result<()>
 where
@@ -190,7 +201,7 @@ where
                 parent_task_id: Some(task.task_id),
                 schedule_for: None,
             },
-            TabularPurge {
+            TabularPurgePayload {
                 tabular_type: expiration.tabular_type,
                 tabular_location,
             },

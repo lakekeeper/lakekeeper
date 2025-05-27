@@ -12,8 +12,8 @@ use crate::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
         task_queue::{
-            tabular_expiration_queue::TabularExpiration, tabular_purge_queue::TabularPurge,
-            EntityId, TaskMetadata,
+            tabular_expiration_queue::TabularExpirationPayload,
+            tabular_purge_queue::TabularPurgePayload, EntityId, TaskMetadata,
         },
         Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
@@ -75,7 +75,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         parent_task_id: None,
                         schedule_for: None,
                     },
-                    TabularPurge {
+                    TabularPurgePayload {
                         tabular_location: location,
                         tabular_type: TabularType::View,
                     },
@@ -102,7 +102,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     parent_task_id: None,
                     schedule_for: Some(chrono::Utc::now() + expiration_seconds),
                 },
-                TabularExpiration {
+                TabularExpirationPayload {
                     tabular_type: TabularType::View,
                     deletion_kind: if purge_requested {
                         DeleteKind::Purge

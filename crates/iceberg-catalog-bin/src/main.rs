@@ -5,15 +5,11 @@ use iceberg_catalog::{
     api::management::v1::api_doc as v1_api_doc,
     service::{
         authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
-        task_queue::{
-            tabular_expiration_queue, tabular_expiration_queue::ExpirationQueueConfig,
-            tabular_purge_queue, tabular_purge_queue::PurgeQueueConfig,
-        },
+        task_queue::BUILT_IN_API_CONFIGS,
     },
     AuthZBackend, CONFIG,
 };
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
-use utoipa::{PartialSchema, ToSchema};
 
 mod healthcheck;
 mod serve;
@@ -175,20 +171,10 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::ManagementOpenapi {}) => {
-            let queue_configs = vec![
-                (
-                    tabular_purge_queue::QUEUE_NAME,
-                    PurgeQueueConfig::name().to_string(),
-                    PurgeQueueConfig::schema(),
-                ),
-                (
-                    tabular_expiration_queue::QUEUE_NAME,
-                    ExpirationQueueConfig::name().to_string(),
-                    ExpirationQueueConfig::schema(),
-                ),
-            ];
+            let queue_configs_ref = &BUILT_IN_API_CONFIGS;
+            let queue_configs: Vec<&_> = queue_configs_ref.iter().collect();
             let doc = match CONFIG.authz_backend {
-                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(queue_configs),
+                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(queue_configs.clone()),
                 AuthZBackend::OpenFGA => {
                     v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(queue_configs)
                 }

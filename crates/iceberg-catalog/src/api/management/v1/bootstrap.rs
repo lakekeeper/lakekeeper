@@ -8,9 +8,8 @@ use crate::{
     config,
     request_metadata::RequestMetadata,
     service::{
-        authz::Authorizer,
-        task_queue::{Queue, RUNNING_QUEUES},
-        Actor, Catalog, Result, SecretStore, StartupValidationData, State, Transaction,
+        authz::Authorizer, Actor, Catalog, Result, SecretStore, StartupValidationData, State,
+        Transaction,
     },
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
@@ -74,7 +73,7 @@ pub struct ServerInfo {
     /// If using GCP system identities for GCS storage profiles are enabled.
     pub gcp_system_identities_enabled: bool,
     /// List of queues that are registered for the server.
-    pub queues: Vec<Queue>,
+    pub queues: Vec<String>,
 }
 
 impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -204,10 +203,13 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
             azure_system_identities_enabled: CONFIG.enable_azure_system_credentials,
             gcp_system_identities_enabled: CONFIG.enable_gcp_system_credentials,
-            queues: RUNNING_QUEUES
-                .get()
-                .map(|h| h.values().cloned().collect())
-                .unwrap_or_default(),
+            queues: state
+                .v1_state
+                .registered_task_queues
+                .queue_names()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
         })
     }
 }

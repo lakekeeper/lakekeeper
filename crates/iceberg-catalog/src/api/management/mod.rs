@@ -38,7 +38,7 @@ pub mod v1 {
         User,
     };
     use utoipa::{
-        openapi::{security::SecurityScheme, KnownFormat, RefOr, Schema},
+        openapi::{security::SecurityScheme, KnownFormat, RefOr},
         OpenApi, ToSchema,
     };
     use view::ViewManagementService as _;
@@ -65,8 +65,9 @@ pub mod v1 {
         },
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId, authz::Authorizer, Actor, Catalog, CreateOrUpdateUserResponse,
-            NamespaceId, RoleId, SecretStore, State, TableId, TabularId, ViewId,
+            authn::UserId, authz::Authorizer, task_queue::QueueApiConfig, Actor, Catalog,
+            CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State, TableId,
+            TabularId, ViewId,
         },
         ProjectId, WarehouseId,
     };
@@ -1583,7 +1584,7 @@ pub mod v1 {
     /// # Errors
     ///
     pub fn api_doc<A: Authorizer>(
-        queue_configs: Vec<(&'static str, String, RefOr<Schema>)>,
+        queue_api_configs: Vec<&QueueApiConfig>,
     ) -> utoipa::openapi::OpenApi {
         let mut doc = ManagementApiDoc::openapi();
         doc.merge(A::api_doc());
@@ -1601,10 +1602,15 @@ pub mod v1 {
             return doc;
         };
 
-        for (q_name, name, q) in queue_configs {
+        for QueueApiConfig {
+            queue_name,
+            utoipa_type_name,
+            utoipa_schema,
+        } in queue_api_configs
+        {
             let path = ManagementV1Endpoint::SetTaskQueueConfig
                 .path()
-                .replace("{queue_name}", q_name);
+                .replace("{queue_name}", queue_name);
 
             let mut p = config_path.clone();
 
@@ -1617,7 +1623,7 @@ pub mod v1 {
             };
             post.operation_id = Some(format!(
                 "set_task_queue_config_{}",
-                q_name.replace('-', "_")
+                queue_name.replace('-', "_")
             ));
             let Some(body) = post.request_body.as_mut() else {
                 tracing::warn!(
@@ -1631,7 +1637,7 @@ pub mod v1 {
                 utoipa::openapi::ContentBuilder::new()
                     .schema(Some(RefOr::Ref(
                         utoipa::openapi::schema::RefBuilder::new()
-                            .ref_location_from_schema_name(name.to_string())
+                            .ref_location_from_schema_name(utoipa_type_name.to_string())
                             .build(),
                     )))
                     .build(),
@@ -1645,7 +1651,7 @@ pub mod v1 {
             };
             get.operation_id = Some(format!(
                 "get_task_queue_config_{}",
-                q_name.replace('-', "_")
+                queue_name.replace('-', "_")
             ));
             let response = utoipa::openapi::response::ResponseBuilder::new()
                 .content(
@@ -1653,7 +1659,7 @@ pub mod v1 {
                     utoipa::openapi::content::ContentBuilder::new()
                         .schema(Some(RefOr::Ref(
                             utoipa::openapi::schema::RefBuilder::new()
-                                .ref_location_from_schema_name(name.to_string())
+                                .ref_location_from_schema_name(utoipa_type_name.to_string())
                                 .build(),
                         )))
                         .build(),
@@ -1679,7 +1685,9 @@ pub mod v1 {
 
             paths.insert(path, p);
 
-            comps.schemas.insert(name.to_string(), q.clone());
+            comps
+                .schemas
+                .insert(utoipa_type_name.to_string(), utoipa_schema.clone());
         }
 
         doc

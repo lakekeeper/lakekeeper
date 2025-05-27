@@ -23,7 +23,7 @@ use iceberg_catalog::{
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
+        task_queue::TaskQueueRegistry,
         Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
     SecretBackend, CONFIG,
@@ -334,8 +334,8 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
         cloud_events_tx.clone(),
     ))]);
-    let mut queues = TaskQueues::new();
-    queues.register_built_in_queues::<PostgresCatalog, Secrets, A>(
+    let mut task_queue_registry = TaskQueueRegistry::new();
+    task_queue_registry.register_built_in_queues::<PostgresCatalog, Secrets, A>(
         catalog_state.clone(),
         secrets_state.clone(),
         authorizer.clone(),
@@ -353,7 +353,7 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
         hooks,
-        queue_configs: queues.schemas(),
+        registered_task_queues: task_queue_registry.registered_task_queues(),
     })?;
 
     #[cfg(feature = "ui")]
@@ -383,8 +383,9 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     });
     let stats_handle = tokio::task::spawn(tracker.run());
 
+    let task_runner = task_queue_registry.task_queues_runner();
     tokio::select!(
-        _ = queues.spawn_queues(false) => tracing::error!("Tabular queue task failed"),
+        _ = task_runner.run_queue_workers(true) => tracing::error!("Task queues failed."),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
         _ = metrics_future => tracing::error!("Metrics server failed"),
     );

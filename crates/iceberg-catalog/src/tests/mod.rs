@@ -40,7 +40,7 @@ use crate::{
             s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
             StorageProfile, TestProfile,
         },
-        task_queue::TaskQueues,
+        task_queue::TaskQueueRegistry,
         Catalog, SecretStore, State, UserId,
     },
     WarehouseId, CONFIG,
@@ -269,6 +269,17 @@ pub(crate) fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
 ) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
+    let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+    let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
+
+    let mut task_queues = TaskQueueRegistry::new();
+    task_queues.register_built_in_queues::<PostgresCatalog, _, _>(
+        catalog_state,
+        secret_store,
+        auth.clone(),
+        CONFIG.task_poll_interval,
+    );
+    let registered_task_queues = task_queues.registered_task_queues();
     ApiContext {
         v1_state: State {
             authz: auth,
@@ -276,6 +287,7 @@ pub(crate) fn get_api_context<T: Authorizer>(
             secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
             contract_verifiers: ContractVerifiers::new(vec![]),
             hooks: EndpointHookCollection::new(vec![]),
+            registered_task_queues,
         },
     }
 }
@@ -290,12 +302,14 @@ pub(crate) fn spawn_drop_queues<T: Authorizer>(
 ) {
     let ctx = ctx.clone();
 
-    let mut queues = TaskQueues::new();
-    queues.register_built_in_queues::<PostgresCatalog, SecretsState, T>(
+    let mut task_queues = TaskQueueRegistry::new();
+    task_queues.register_built_in_queues::<PostgresCatalog, _, _>(
         ctx.v1_state.catalog.clone(),
         ctx.v1_state.secrets.clone(),
         ctx.v1_state.authz.clone(),
         poll_interval.unwrap_or(CONFIG.task_poll_interval),
     );
-    tokio::task::spawn(queues.spawn_queues(false));
+    let task_runner = task_queues.task_queues_runner();
+
+    tokio::task::spawn(task_runner.run_queue_workers(true));
 }

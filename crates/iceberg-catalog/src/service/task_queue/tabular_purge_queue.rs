@@ -1,34 +1,39 @@
+use std::sync::LazyLock;
+
 use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{Location, ParseFromStr},
 };
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
-use utoipa::ToSchema;
-use uuid::Uuid;
+use utoipa::{PartialSchema, ToSchema};
 
-use super::{QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT};
+use super::{QueueApiConfig, QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT};
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
     service::{task_queue::Task, Catalog, SecretStore, Transaction},
-    WarehouseId,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TabularPurge {
-    pub tabular_location: String,
-    pub tabular_type: TabularType,
+pub(crate) struct TabularPurgePayload {
+    pub(crate) tabular_location: String,
+    pub(crate) tabular_type: TabularType,
 }
 
-pub const QUEUE_NAME: &str = "tabular_purge";
+pub(crate) const QUEUE_NAME: &str = "tabular_purge";
+pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
+    queue_name: QUEUE_NAME,
+    utoipa_type_name: PurgeQueueConfig::name(),
+    utoipa_schema: PurgeQueueConfig::schema(),
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
-pub struct PurgeQueueConfig {}
+pub(crate) struct PurgeQueueConfig {}
 
 impl QueueConfig for PurgeQueueConfig {}
 
-pub async fn purge_task<C: Catalog, S: SecretStore>(
+pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
     poll_interval: std::time::Duration,
@@ -54,7 +59,7 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
             tokio::time::sleep(poll_interval).await;
             continue;
         };
-        let state = match task.task_state::<TabularPurge>() {
+        let state = match task.task_state::<TabularPurgePayload>() {
             Ok(state) => state,
             Err(err) => {
                 tracing::error!("Failed to deserialize task state: {:?}", err);
@@ -89,7 +94,7 @@ pub async fn purge_task<C: Catalog, S: SecretStore>(
 async fn instrumented_purge<S: SecretStore, C: Catalog>(
     catalog_state: C::State,
     secret_state: &S,
-    purge_task: &TabularPurge,
+    purge_task: &TabularPurgePayload,
     task: &Task,
     config: &PurgeQueueConfig,
 ) {
@@ -118,10 +123,10 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
 }
 
 async fn purge<C, S>(
-    TabularPurge {
+    TabularPurgePayload {
         tabular_location,
         tabular_type: _,
-    }: &TabularPurge,
+    }: &TabularPurgePayload,
     Task {
         task_metadata:
             TaskMetadata {
@@ -205,22 +210,4 @@ where
     })?;
 
     Ok(())
-}
-
-#[derive(Debug)]
-pub struct TabularPurgeTask {
-    pub tabular_id: Uuid,
-    pub tabular_location: String,
-    pub warehouse_ident: WarehouseId,
-    pub tabular_type: TabularType,
-    pub task: Task,
-}
-
-#[derive(Debug, Clone)]
-pub struct TabularPurgeInput {
-    pub tabular_id: Uuid,
-    pub warehouse_ident: WarehouseId,
-    pub tabular_type: TabularType,
-    pub parent_id: Option<Uuid>,
-    pub tabular_location: String,
 }

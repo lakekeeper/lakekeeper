@@ -23,7 +23,9 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
-        task_queue::{tabular_purge_queue::TabularPurge, EntityId, TaskFilter, TaskMetadata},
+        task_queue::{
+            tabular_purge_queue::TabularPurgePayload, EntityId, TaskFilter, TaskMetadata,
+        },
         Catalog, GetWarehouseResponse, NamespaceId, State, TabularId, Transaction,
     },
     WarehouseId, CONFIG,
@@ -462,7 +464,7 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
                         parent_task_id: None,
                         schedule_for: None,
                     },
-                    TabularPurge {
+                    TabularPurgePayload {
                         tabular_location,
                         tabular_type,
                     },

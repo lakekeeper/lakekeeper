@@ -541,7 +541,9 @@ pub(crate) mod tests {
             CatalogState, PostgresCatalog,
         },
         service::{
-            task_queue::{tabular_expiration_queue::TabularExpiration, EntityId, TaskMetadata},
+            task_queue::{
+                tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
+            },
             Catalog, TabularId, ViewId,
         },
         WarehouseId,
@@ -809,7 +811,7 @@ pub(crate) mod tests {
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
             },
-            TabularExpiration {
+            TabularExpirationPayload {
                 tabular_type: crate::api::management::v1::TabularType::Table,
                 deletion_kind: DeleteKind::Purge,
             },

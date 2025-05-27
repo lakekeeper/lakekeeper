@@ -1,8 +1,9 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fmt::{Debug, Formatter},
     ops::Deref,
-    sync::{Arc, OnceLock},
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -28,11 +29,20 @@ pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     valid_max_time_since_last_heartbeat(3600);
 pub const DEFAULT_MAX_RETRIES: i32 = 5;
 pub const DEFAULT_NUM_WORKERS: usize = 2;
+#[allow(clippy::declare_interior_mutable_const)]
+pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|| {
+    vec![
+        tabular_expiration_queue::API_CONFIG.clone(),
+        tabular_purge_queue::API_CONFIG.clone(),
+    ]
+});
 
-pub type TaskQueueProducer = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static>;
-pub type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
-pub(crate) static RUNNING_QUEUES: OnceLock<HashMap<&'static str, Queue>> = OnceLock::new();
+/// Infinitely running task worker loop function that polls tasks from a queue and
+/// processes.
+pub type TaskQueueWorker = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static>;
+type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
 
+/// Warehouse specific configuration for a task queue.
 pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
     fn max_time_since_last_heartbeat(&self) -> chrono::Duration {
         DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT
@@ -45,96 +55,129 @@ pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
     }
 }
 
-#[derive(Clone, Serialize, ToSchema)]
-pub struct Queue {
-    #[serde(skip)]
-    validator_fn: ValidatorFn,
-    name: String,
-    num_workers: usize,
+/// A container for registered task queues that can be used for validation and API configuration.
+/// This can be included in the Axum application state.
+#[derive(Clone, Default, Debug)]
+pub struct RegisteredTaskQueues {
+    // Mapping of queue names to their configurations
+    queues: Arc<HashMap<&'static str, RegisteredQueue>>,
 }
 
-impl Queue {
-    /// Validates the incoming config payload against the `validator_fn`.
+impl RegisteredTaskQueues {
+    /// Get the validator function for a queue by name
     ///
-    /// # Errors
-    /// Returns an error if the `payload` is rejected by `validator_fn`.
-    pub fn validate_config(&self, payload: serde_json::Value) -> Result<(), serde_json::Error> {
-        (self.validator_fn)(payload)
+    /// # Returns
+    /// Some(ValidatorFn) if the queue exists, None otherwise
+    #[must_use]
+    pub fn validate_config_fn(&self, queue_name: &str) -> Option<ValidatorFn> {
+        self.queues
+            .get(queue_name)
+            .map(|q| Arc::clone(&q.schema_validator_fn))
+    }
+
+    /// Get the API configuration for all registered queues
+    #[must_use]
+    pub fn api_config(&self) -> Vec<&QueueApiConfig> {
+        self.queues.values().map(|q| &q.api_config).collect()
+    }
+
+    /// Get the names of all registered queues
+    #[must_use]
+    pub fn queue_names(&self) -> Vec<&'static str> {
+        self.queues.keys().copied().collect()
     }
 }
 
-impl Debug for Queue {
+#[derive(Clone)]
+struct RegisteredQueue {
+    /// API configuration for this queue
+    api_config: QueueApiConfig,
+    /// Schema validator function for the queue configuration
+    /// This function is called to validate the configuration payload
+    schema_validator_fn: ValidatorFn,
+}
+
+impl Debug for RegisteredQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Queue")
-            .field("validator_fn", &"Fn(...)")
-            .field("queue_name", &self.name)
+        f.debug_struct("RegisteredQueue")
+            .field("api_config", &self.api_config)
+            .field("schema_validator_fn", &"Fn(...)")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct RegisteredTaskQueueWorker {
+    worker_fn: TaskQueueWorker,
+    /// Number of workers that run locally for this queue
+    num_workers: usize,
+}
+
+impl Debug for RegisteredTaskQueueWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredTaskQueueWorker")
+            .field("worker_fn", &"Fn(...)")
             .field("num_workers", &self.num_workers)
             .finish()
     }
 }
 
-#[derive(Default)]
-pub struct TaskQueues {
+/// Task queue registry used for registering and starting task queues
+#[derive(Debug)]
+pub struct TaskQueueRegistry {
+    // Mapping of queue names to their configurations
     registered_queues: HashMap<&'static str, RegisteredQueue>,
-    schemas: Vec<(
-        &'static str,
-        String,
-        utoipa::openapi::RefOr<utoipa::openapi::Schema>,
-    )>,
-    schema_validators: HashMap<&'static str, ValidatorFn>,
+    // Mapping of queue names to their worker configuration
+    task_workers: HashMap<&'static str, RegisteredTaskQueueWorker>,
 }
 
-impl Debug for TaskQueues {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskQueues")
-            .field("registered_queues", &self.registered_queues.len())
-            .field("schemas", &self.schemas.len())
-            .field("schema_validators", &self.schema_validators.len())
-            .finish()
+impl Default for TaskQueueRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl TaskQueues {
+impl TaskQueueRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
             registered_queues: HashMap::new(),
-            schemas: vec![],
-            schema_validators: HashMap::default(),
+            task_workers: HashMap::new(),
         }
     }
 
     pub fn register_queue<T: QueueConfig>(
         &mut self,
         queue_name: &'static str,
-        queue_task: TaskQueueProducer,
+        worker_fn: TaskQueueWorker,
         num_workers: usize,
-    ) {
-        let des = |v| serde_json::from_value::<T>(v).map(|_| ());
-        self.schema_validators.insert(queue_name, Arc::new(des));
-        self.schemas.push((
+    ) -> &mut Self {
+        let schema_validator_fn = |v| serde_json::from_value::<T>(v).map(|_| ());
+        let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
+        let api_config = QueueApiConfig {
             queue_name,
-            T::name().to_string(),
-            utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_schema_name(T::name())),
-        ));
+            utoipa_type_name: T::name().to_string().into(),
+            utoipa_schema: utoipa::openapi::RefOr::Ref(utoipa::openapi::Ref::from_schema_name(
+                T::name(),
+            )),
+        };
+
         self.registered_queues.insert(
             queue_name,
             RegisteredQueue {
-                queue_task,
+                api_config,
+                schema_validator_fn,
+            },
+        );
+
+        self.task_workers.insert(
+            queue_name,
+            RegisteredTaskQueueWorker {
+                worker_fn,
                 num_workers,
             },
         );
-    }
-
-    #[must_use]
-    pub fn schemas(
-        &self,
-    ) -> Vec<(
-        &'static str,
-        String,
-        utoipa::openapi::RefOr<utoipa::openapi::Schema>,
-    )> {
-        self.schemas.clone()
+        self
     }
 
     pub fn register_built_in_queues<C: Catalog, S: SecretStore, A: Authorizer>(
@@ -143,7 +186,7 @@ impl TaskQueues {
         secret_store: S,
         authorizer: A,
         poll_interval: Duration,
-    ) {
+    ) -> &mut Self {
         let catalog_state_clone = catalog_state.clone();
         self.register_queue::<ExpirationQueueConfig>(
             tabular_expiration_queue::QUEUE_NAME,
@@ -152,7 +195,7 @@ impl TaskQueues {
                 let catalog_state_clone = catalog_state_clone.clone();
                 Box::pin({
                     async move {
-                        tabular_expiration_queue::tabular_expiration_task::<C, A>(
+                        tabular_expiration_queue::tabular_expiration_worker::<C, A>(
                             catalog_state_clone.clone(),
                             authorizer.clone(),
                             poll_interval,
@@ -170,7 +213,7 @@ impl TaskQueues {
                 let catalog_state_clone = catalog_state.clone();
                 let secret_store = secret_store.clone();
                 Box::pin(async move {
-                    tabular_purge_queue::purge_task::<C, S>(
+                    tabular_purge_queue::tabular_purge_worker::<C, S>(
                         catalog_state_clone.clone(),
                         secret_store.clone(),
                         poll_interval,
@@ -180,76 +223,165 @@ impl TaskQueues {
             }),
             2,
         );
+
+        self
     }
 
-    /// Spawns the built-in queues, currently `tabular_expiration_queue` and `tabular_purge_queue` alongside any
-    /// registered custom queues.
-    ///
-    /// # Errors
-    /// Fails if any of the queue handlers exit unexpectedly.
-    pub async fn spawn_queues(mut self, keep_running_on_exit: bool) -> Result<(), anyhow::Error> {
-        let mut queue_tasks = vec![];
-        let mut qs = HashMap::with_capacity(0);
-        let mut queue_info = HashMap::with_capacity(self.registered_queues.len());
+    /// Creates [`RegisteredTaskQueues`] for use in application state
+    #[must_use]
+    pub fn registered_task_queues(&self) -> RegisteredTaskQueues {
+        RegisteredTaskQueues {
+            queues: Arc::new(self.registered_queues.clone()),
+        }
+    }
 
-        std::mem::swap(&mut self.registered_queues, &mut qs);
-        for (
-            name,
-            RegisteredQueue {
-                num_workers,
-                queue_task: task_fn,
-            },
-        ) in qs
-        {
-            tracing::info!("Starting task queue {name} with {} workers", num_workers);
-            for n in 0..num_workers {
-                tracing::debug!("Starting task queue {name} worker {n}");
-                let task_fut = task_fn();
-                queue_tasks.push(tokio::task::spawn(task_fut));
+    /// Creates a [`TaskQueuesRunner`] that can be used to start the task queue workers
+    #[must_use]
+    pub fn task_queues_runner(&self) -> TaskQueuesRunner {
+        let mut registered_task_queues = HashMap::new();
+
+        for name in self.registered_queues.keys() {
+            if let Some(worker) = self.task_workers.get(name) {
+                registered_task_queues.insert(
+                    *name,
+                    QueueWorkerConfig {
+                        worker_fn: Arc::clone(&worker.worker_fn),
+                        num_workers: worker.num_workers,
+                    },
+                );
             }
-            queue_info.insert(
-                name,
-                Queue {
-                    validator_fn: self
-                        .schema_validators
-                        .remove(name)
-                        .ok_or(anyhow::anyhow!("Validator function not found"))?,
-                    name: name.to_string(),
-                    num_workers,
-                },
+        }
+
+        TaskQueuesRunner {
+            registered_queues: Arc::new(registered_task_queues),
+        }
+    }
+}
+
+/// Runner for task queues that manages the worker processes
+#[derive(Debug, Clone)]
+pub struct TaskQueuesRunner {
+    registered_queues: Arc<HashMap<&'static str, QueueWorkerConfig>>,
+}
+
+impl TaskQueuesRunner {
+    /// Runs all registered task queue workers and monitors them, restarting any that exit.
+    pub async fn run_queue_workers(self, restart_workers: bool) {
+        // Create a structure to track worker information and hold task handles
+        struct WorkerInfo {
+            queue_name: &'static str,
+            worker_id: usize,
+            handle: tokio::task::JoinHandle<()>,
+        }
+
+        let mut workers = Vec::new();
+        let registered_queues = Arc::clone(&self.registered_queues);
+
+        // Initialize all workers
+        for (queue_name, queue) in registered_queues.iter() {
+            tracing::info!(
+                "Starting task queue {queue_name} with {} workers",
+                queue.num_workers
             );
+
+            for worker_id in 0..queue.num_workers {
+                let task_fn = Arc::clone(&queue.worker_fn);
+                tracing::debug!("Starting task queue {queue_name} worker {worker_id}");
+                workers.push(WorkerInfo {
+                    queue_name,
+                    worker_id,
+                    handle: tokio::task::spawn(task_fn()),
+                });
+            }
         }
 
-        RUNNING_QUEUES.set(queue_info).map_err(|_| {
-            tracing::error!("Failed to set schema validators");
-            anyhow::anyhow!("Failed to set schema validators")
-        })?;
-        while !queue_tasks.is_empty() {
-            let (res, index, new_queue_tasks) = futures::future::select_all(queue_tasks).await;
-            queue_tasks = new_queue_tasks;
-            if let Err(e) = res {
-                tracing::error!(?e, "Task queue {index} panicked: {e}");
-                return Err(anyhow::anyhow!("Task queue {index} panicked: {e}"));
+        // Main worker monitoring loop
+        loop {
+            if workers.is_empty() {
+                return;
             }
-            if !keep_running_on_exit {
-                tracing::error!("Task queue {index} exited unexpectedly");
-                return Err(anyhow::anyhow!("Task queue {index} exited unexpectedly"));
+
+            // Wait for any worker to complete
+            let mut_handles: Vec<_> = workers.iter_mut().map(|w| &mut w.handle).collect();
+            let (result, index, _) = futures::future::select_all(mut_handles).await;
+
+            // Get the completed worker's info
+            let worker = workers.swap_remove(index);
+
+            let log_msg_suffix = if restart_workers {
+                "Restarting worker"
+            } else {
+                "Restarting worker disabled"
+            };
+
+            // Log the result
+            match result {
+                Ok(()) => tracing::error!(
+                    "Task queue {} worker {} finished. {log_msg_suffix}",
+                    worker.queue_name,
+                    worker.worker_id
+                ),
+                Err(e) => tracing::error!(
+                    ?e,
+                    "Task queue {} worker {} panicked: {e}. {log_msg_suffix}",
+                    worker.queue_name,
+                    worker.worker_id
+                ),
+            }
+
+            // Restart the worker
+            if restart_workers {
+                if let Some(queue) = registered_queues.get(worker.queue_name) {
+                    let task_fn = Arc::clone(&queue.worker_fn);
+                    tracing::debug!(
+                        "Restarting task queue {} worker {}",
+                        worker.queue_name,
+                        worker.worker_id
+                    );
+                    workers.push(WorkerInfo {
+                        queue_name: worker.queue_name,
+                        worker_id: worker.worker_id,
+                        handle: tokio::task::spawn(task_fn()),
+                    });
+                }
             }
         }
-        Ok(())
     }
 }
 
 #[derive(Clone)]
-struct RegisteredQueue {
-    pub queue_task: TaskQueueProducer,
+/// Contains all required information to dynamically generate API documentation
+/// for the warehouse-specific configuration of a task queue.
+pub struct QueueApiConfig {
+    /// Name of the task queue
+    pub queue_name: &'static str,
+    /// Name of the configuration type used in the API documentation
+    pub utoipa_type_name: Cow<'static, str>,
+    /// Schema for the configuration type used in the API documentation
+    pub utoipa_schema: utoipa::openapi::RefOr<utoipa::openapi::Schema>,
+}
+
+impl Debug for QueueApiConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueueApiConfig")
+            .field("queue_name", &self.queue_name)
+            .field("utoipa_type_name", &self.utoipa_type_name)
+            .field("utoipa_schema", &"<schema>")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct QueueWorkerConfig {
+    worker_fn: TaskQueueWorker,
+    /// Number of workers that run locally for this queue
     num_workers: usize,
 }
 
-impl Debug for RegisteredQueue {
+impl Debug for QueueWorkerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegisteredQueue")
-            .field("queue_task", &"Fn(...)")
+        f.debug_struct("QueueWorkerConfig")
+            .field("worker_fn", &"Fn(...)")
             .field("num_workers", &self.num_workers)
             .finish()
     }
@@ -284,7 +416,6 @@ impl Deref for TaskId {
     }
 }
 
-/// A filter to select tasks
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskFilter {
     WarehouseId(WarehouseId),
@@ -293,7 +424,10 @@ pub enum TaskFilter {
 
 #[derive(Debug, Clone)]
 pub struct TaskInput {
+    /// Metadata for this task instance.
+    /// Metadata type is shared between different task types.
     pub task_metadata: TaskMetadata,
+    /// Specific payload for this task type
     pub payload: serde_json::Value,
 }
 
@@ -462,7 +596,9 @@ mod test {
         service::{
             authz::AllowAllAuthorizer,
             storage::TestProfile,
-            task_queue::{tabular_expiration_queue::TabularExpiration, EntityId, TaskMetadata},
+            task_queue::{
+                tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
+            },
             Catalog, ListFlags, Transaction,
         },
     };
@@ -472,7 +608,7 @@ mod test {
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let mut queues = crate::service::task_queue::TaskQueues::new();
+        let mut queues = crate::service::task_queue::TaskQueueRegistry::new();
 
         let secrets =
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
@@ -485,7 +621,7 @@ mod test {
             auth,
             std::time::Duration::from_millis(100),
         );
-        let _queue_task = tokio::task::spawn(queues.spawn_queues(false));
+        let _queue_task = tokio::task::spawn(queues.task_queues_runner().run_queue_workers(true));
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),
@@ -533,7 +669,7 @@ mod test {
                 parent_task_id: None,
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
             },
-            TabularExpiration {
+            TabularExpirationPayload {
                 tabular_type: TabularType::Table,
                 deletion_kind: DeleteKind::Purge,
             },

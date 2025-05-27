@@ -2847,6 +2847,7 @@ components:
           description: Internal type definition of the error
     ExpirationQueueConfig:
       type: object
+      description: Warehouse-specific configuration for the expiration queue.
     GcsCredential:
       oneOf:
         - type: object
@@ -3518,17 +3519,6 @@ components:
           description: Updated at
     PurgeQueueConfig:
       type: object
-    Queue:
-      type: object
-      required:
-        - name
-        - num_workers
-      properties:
-        name:
-          type: string
-        num_workers:
-          type: integer
-          minimum: 0
     QueueConfig: {}
     QueueConfigResponse:
       allOf:
@@ -3975,7 +3965,7 @@ components:
         queues:
           type: array
           items:
-            $ref: '#/components/schemas/Queue'
+            type: string
           description: List of queues that are registered for the server.
         server-id:
           type: string

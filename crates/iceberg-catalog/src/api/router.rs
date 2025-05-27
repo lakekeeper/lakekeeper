@@ -11,7 +11,6 @@ use tower_http::{
     sensitive_headers::SetSensitiveHeadersLayer, timeout::TimeoutLayer, trace, trace::TraceLayer,
     ServiceBuilderExt,
 };
-use utoipa::openapi::{RefOr, Schema};
 
 use crate::{
     api::{
@@ -26,6 +25,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         health::ServiceHealthProvider,
+        task_queue::{QueueApiConfig, RegisteredTaskQueues},
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -50,7 +50,7 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
     pub hooks: EndpointHookCollection,
-    pub queue_configs: Vec<(&'static str, String, RefOr<Schema>)>,
+    pub registered_task_queues: RegisteredTaskQueues,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -74,7 +74,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
                 &self.endpoint_statistics_tracker_tx,
             )
             .field("endpoint_hooks", &self.hooks)
-            .field("queue_configs", &self.queue_configs.len())
+            .field("registered_task_queues", &self.registered_task_queues)
             .finish()
     }
 }
@@ -100,7 +100,7 @@ pub fn new_full_router<
         metrics_layer,
         endpoint_statistics_tracker_tx,
         hooks,
-        queue_configs,
+        registered_task_queues,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -160,7 +160,7 @@ pub fn new_full_router<
                 Json(health).into_response()
             }),
         );
-    let router = maybe_merge_swagger_router(router, queue_configs)
+    let router = maybe_merge_swagger_router(router, registered_task_queues.api_config())
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
         ))
@@ -188,6 +188,7 @@ pub fn new_full_router<
                 catalog: catalog_state,
                 secrets: secrets_state,
                 contract_verifiers: table_change_checkers,
+                registered_task_queues,
                 hooks,
             },
         });
@@ -201,14 +202,14 @@ pub fn new_full_router<
 
 fn maybe_merge_swagger_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
-    queue_configs: Vec<(&'static str, String, RefOr<Schema>)>,
+    queue_api_configs: Vec<&QueueApiConfig>,
 ) -> Router<ApiContext<State<A, C, S>>> {
     if CONFIG.serve_swagger_ui {
         router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                 .url(
                     "/api-docs/management/v1/openapi.json",
-                    v1_api_doc::<A>(queue_configs),
+                    v1_api_doc::<A>(queue_api_configs),
                 )
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",

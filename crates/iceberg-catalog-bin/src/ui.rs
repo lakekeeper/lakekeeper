@@ -1,5 +1,5 @@
 use core::result::Result::Err;
-use std::{cell::LazyCell, default::Default, str::FromStr, sync::LazyLock};
+use std::{default::Default, str::FromStr, sync::LazyLock};
 
 use axum::{
     http::{header, StatusCode, Uri},
@@ -51,9 +51,8 @@ enum CacheItem {
     },
 }
 
-#[allow(clippy::declare_interior_mutable_const)]
-const FILE_CACHE: LazyCell<moka::sync::Cache<String, CacheItem>> =
-    LazyCell::new(|| moka::sync::Cache::new(1000));
+static FILE_CACHE: LazyLock<moka::sync::Cache<String, CacheItem>> =
+    LazyLock::new(|| moka::sync::Cache::new(1000));
 
 // We use static route matchers ("/" and "/index.html") to serve our home
 // page.

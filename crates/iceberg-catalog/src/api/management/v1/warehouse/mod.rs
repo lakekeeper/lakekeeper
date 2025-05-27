@@ -958,44 +958,32 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         _request_metadata: RequestMetadata,
     ) -> Result<()> {
         // TODO: authz
-        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
-        if let Some(queue) = crate::service::task_queue::RUNNING_QUEUES
-            .get()
-            .and_then(|val| val.get(queue_name.as_str()))
-        {
-            queue
-                .validate_config(request.queue_config.0.clone())
-                .map_err(|e| {
-                    ErrorModel::bad_request(
-                        format!(
+        let task_queues = context.v1_state.registered_task_queues;
+
+        if let Some(validate_config_fn) = task_queues.validate_config_fn(&queue_name) {
+            validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
+                ErrorModel::bad_request(
+                    format!(
                         "Failed to deserialize queue config for queue-name '{queue_name}': '{e}'"
                     ),
-                        "InvalidQueueConfig",
-                        None,
-                    )
-                })?;
+                    "InvalidQueueConfig",
+                    Some(Box::new(e)),
+                )
+            })?;
         } else {
-            tracing::debug!(
-                "Queue '{queue_name}' not found, got queues: {:?}",
-                crate::service::task_queue::RUNNING_QUEUES
-            );
-            let existing_queues = crate::service::task_queue::RUNNING_QUEUES
-                .get()
-                .map(|h| {
-                    h.keys()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
+            let existing_queue_names = task_queues.queue_names();
             return Err(ErrorModel::bad_request(
-                format!("Queue '{queue_name}' not found! Existing queues: [{existing_queues}]"),
+                format!(
+                    "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names:?}]"
+                ),
                 "QueueNotFound",
                 None,
             )
             .into());
         }
+
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
         C::set_task_queue_config(
             warehouse_id,

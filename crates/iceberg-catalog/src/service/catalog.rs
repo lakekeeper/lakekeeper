@@ -42,9 +42,9 @@ use crate::{
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
-            tabular_expiration_queue, tabular_expiration_queue::TabularExpiration,
-            tabular_purge_queue, tabular_purge_queue::TabularPurge, Status, Task, TaskCheckState,
-            TaskFilter, TaskId, TaskInput, TaskMetadata,
+            tabular_expiration_queue, tabular_expiration_queue::TabularExpirationPayload,
+            tabular_purge_queue, tabular_purge_queue::TabularPurgePayload, Status, Task,
+            TaskCheckState, TaskFilter, TaskId, TaskInput, TaskMetadata,
         },
     },
     SecretIdent,
@@ -897,7 +897,7 @@ where
     #[tracing::instrument(skip(transaction))]
     async fn queue_tabular_expiration(
         task_metadata: TaskMetadata,
-        payload: TabularExpiration,
+        payload: TabularExpirationPayload,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TaskId>> {
         Self::enqueue_task(
@@ -934,7 +934,7 @@ where
     #[tracing::instrument(skip(transaction))]
     async fn queue_tabular_purge(
         task_metadata: TaskMetadata,
-        task: TabularPurge,
+        task: TabularPurgePayload,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TaskId>> {
         Self::enqueue_task(

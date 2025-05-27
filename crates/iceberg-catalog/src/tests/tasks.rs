@@ -10,7 +10,7 @@ use crate::{
 };
 
 mod test {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
@@ -22,8 +22,8 @@ mod test {
         implementations::postgres::PostgresCatalog,
         service::{
             task_queue::{
-                EntityId, QueueConfig as QueueConfigTrait, TaskInput, TaskMetadata, TaskQueues,
-                DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+                EntityId, QueueConfig as QueueConfigTrait, TaskInput, TaskMetadata,
+                TaskQueueRegistry, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },
             Catalog, Transaction,
         },
@@ -52,12 +52,16 @@ mod test {
         let ctx_clone = setup.ctx.clone();
         let queue_name = "test_queue";
 
-        let mut queues = TaskQueues::new();
-        queues.register_queue::<Config>(
+        let result = Arc::new(Mutex::new(false));
+        let result_clone = result.clone();
+
+        let mut task_queue_registry = TaskQueueRegistry::new();
+        task_queue_registry.register_queue::<Config>(
             queue_name,
             Arc::new(move || {
                 let ctx = ctx_clone.clone();
                 let rx = rx.clone();
+                let result_clone = result_clone.clone();
                 Box::pin(async move {
                     let task_id = rx.recv().await.unwrap();
 
@@ -76,6 +80,7 @@ mod test {
 
                     let task = task.task_state::<TaskState>().unwrap();
                     assert_eq!(task, task_state);
+                    *result_clone.lock().unwrap() = true;
                 })
             }),
             1,
@@ -125,8 +130,17 @@ mod test {
         transaction.commit().await.unwrap();
         tx.send(task_id).await.unwrap();
 
-        let task_handle = tokio::task::spawn(queues.spawn_queues(true));
-        task_handle.await.unwrap().unwrap();
+        let task_handle = tokio::task::spawn(
+            task_queue_registry
+                .task_queues_runner()
+                .run_queue_workers(false),
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        task_handle.abort();
+        assert!(
+            *result.lock().unwrap(),
+            "Task was not processed as expected"
+        );
     }
 }
 
