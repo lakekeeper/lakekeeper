@@ -153,6 +153,33 @@ We are creating three App-Registrations: The first for Lakekeeper itself, the se
 1. In the "Overview" page of the "App Registration" note down the `Application (client) ID`. Also note the `Directory (tenant) ID`.
 1. Finally we recommend to set a policy for tokens to expire in 12 hours instead of the default ~1 hour. Please follow the [Microsoft Tutorial](https://learn.microsoft.com/en-us/entra/identity-platform/configure-token-lifetimes#create-a-policy-and-assign-it-to-an-app) to assign a corresponding policy to the Application. (If you find a good way to do this via the UI, please let us know so that we can update this documentation page!)
 
+Alternatively, the following snippets will setup the resources mentioned above:
+
+=== "Terraform"
+
+  ```terraform
+  resource "azuread_application_registration" "lakekeeper_ui" {
+    display_name = "Lakekeeper UI"
+  }
+
+  resource "azuread_application_redirect_uris" "lakekeeper_ui" {
+    application_id = azuread_application_registration.lakekeeper_ui.id
+    type           = "SPA"
+
+    redirect_uris = [
+      <insert-redirect-uris>
+    ]
+  }
+
+  resource "azuread_service_principal" "lakekeeper_ui" {
+    client_id = azuread_application_registration.lakekeeper_ui.client_id
+
+    feature_tags {
+      enterprise = true
+    }
+  }
+  ```
+
 ##### App 2: Lakekeeper Application
 
 1. Create a new "App Registration"
@@ -168,20 +195,103 @@ We are creating three App-Registrations: The first for Lakekeeper itself, the se
 1. After the `lakekeeper` scope is created, click "Add a client application" under the "Authorized client applications" headline. Select the previously created scope and paste as `Client ID` the previously noted ID from App 1.
 1. In the "Overview" page of the "App Registration" note down the `Application (client) ID`.
 
+Alternatively, the following snippets will setup the resources mentioned above:
+
+=== "Terraform"
+
+  ```terraform
+  resource "random_uuid" "lakekeeper_scope" {}
+
+  resource "azuread_application" "lakekeeper" {
+    display_name = "Lakekeeper"
+    owners       = [data.azuread_client_config.current.object_id]
+
+    api {
+      mapped_claims_enabled          = true
+      requested_access_token_version = 2
+
+      known_client_applications = [
+        azuread_application_registration.lakekeeper_ui.client_id
+      ]
+
+      oauth2_permission_scope {
+        id      = random_uuid.lakekeeper_scope.id
+        value   = "lakekeeper"
+        enabled = true
+        type    = "User"
+
+        admin_consent_description  = "Lakekeeper API"
+        admin_consent_display_name = "Access Lakekeeper API"
+        user_consent_description   = "Lakekeeper API"
+        user_consent_display_name  = "Access Lakekeeper API"
+      }
+    }
+  }
+
+  resource "azuread_application_identifier_uri" "lakekeeper" {
+    application_id = azuread_application.lakekeeper.id
+    identifier_uri = "api://${azuread_application.lakekeeper.client_id}"
+  }
+
+  resource "azuread_service_principal" "lakekeeper_client" {
+    client_id = azuread_application.lakekeeper.client_id
+
+    feature_tags {
+      enterprise = true
+    }
+  }
+
+  resource "azuread_application_pre_authorized" "lakekeeper" {
+    application_id       = azuread_application.lakekeeper.id
+    authorized_client_id = azuread_application_registration.lakekeeper_ui.client_id
+
+    permission_ids = [
+      random_uuid.lakekeeper_scope.id
+    ]
+  }
+  ```
+
 We are now ready to deploy Lakekeeper and login via the UI. Set the following environment variables / configurations:
-```bash
-LAKEKEEPER__BASE_URI=http://localhost:8181 (URI where lakekeeper is reachable)
-// Note the v2.0 at the End of the provider URI!
-LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID>/v2.0
-LAKEKEEPER__OPENID_AUDIENCE="api://<Client ID from App 2 (lakekeeper)>"
-LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
-LAKEKEEPER__UI__OPENID_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
-LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
-// The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
-// shows https://login.microsoftonline.com as the issuer but actually
-// issues tokens for https://sts.windows.net/. This is a well-known
-// problem in Entra ID.
-```
+
+=== "bash"
+
+  ```bash
+  LAKEKEEPER__BASE_URI=http://localhost:8181 (URI where lakekeeper is reachable)
+  // Note the v2.0 at the End of the provider URI!
+  LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID>/v2.0
+  LAKEKEEPER__OPENID_AUDIENCE="api://<Client ID from App 2 (lakekeeper)>"
+  LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
+  LAKEKEEPER__UI__OPENID_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
+  LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
+  // The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
+  // shows https://login.microsoftonline.com as the issuer but actually
+  // issues tokens for https://sts.windows.net/. This is a well-known
+  // problem in Entra ID.
+  ```
+
+=== "Terraform"
+
+  ```
+  output "LAKEKEEPER__OPENID_PROVIDER_URI" {
+    value = "https://login.microsoftonline.com/${azuread_service_principal.lakekeeper.application_tenant_id}/v2.0"
+  }
+
+  output "LAKEKEEPER__OPENID_AUDIENCE" {
+    value = azuread_application.lakekeeper.client_id
+  }
+
+  output "LAKEKEEPER__UI__OPENID_CLIENT_ID" {
+    value = azuread_application_registration.lakekeeper_ui.client_id
+  }
+
+  output "LAKEKEEPER__UI__OPENID_SCOPE" {
+    value = "openid profile api://${azuread_application.lakekeeper.client_id}/lakekeeper"
+  }
+
+  output "LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS" {
+    value = "https://sts.windows.net/${azuread_service_principal.lakekeeper.application_tenant_id}"
+  }
+  ```
 
 Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
 
@@ -212,6 +322,25 @@ For some Entra installations you might not get any of those claims in the JWT. `
 ```
 curl -X POST http://lakekeeper-url/management/v1/user -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d '{ "id": "oidc~{sub_claim_value}", "user-type": "application", "name": "my-machine-app" }'
 ```
+
+Alternatively, the following snippets will setup the resources mentioned above:
+
+=== "Terraform"
+
+  ```terraform
+  resource "azuread_application_registration" "my_lakekeeper_machine_user" {
+    display_name = "My Lakekeeper Machine User"
+  }
+
+  resource "azuread_service_principal" "my_lakekeeper_machine_user" {
+    client_id = azuread_application_registration.my_lakekeeper_machine_user.client_id
+  }
+
+
+  resource "azuread_application_password" "my_lakekeeper_machine_user" {
+    application_id = azuread_application_registration.my_lakekeeper_machine_user.id
+  }
+  ```
 
 That's it! We can now use the third App Registration to sign into Lakekeeper using Spark or other query engines. A Spark configuration would look like:
 
