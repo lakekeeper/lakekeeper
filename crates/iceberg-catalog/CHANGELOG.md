@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-05-28)
+
+
+### Features
+
+* Add hooks for Catalog Endpoints, Implement EventPublisher as Hook ([#1075](https://github.com/lakekeeper/lakekeeper/issues/1075)) ([9933949](https://github.com/lakekeeper/lakekeeper/commit/9933949e5d0196e983b2881863ea2c5a60dc12f1))
+* Improve S3 signer performance via Table specific signer URIs ([#1092](https://github.com/lakekeeper/lakekeeper/issues/1092)) ([9332461](https://github.com/lakekeeper/lakekeeper/commit/93324614df666636062a1c64d29bd6c9f5cb09ea))
+* make swagger-ui configurable via env ([#1112](https://github.com/lakekeeper/lakekeeper/issues/1112)) ([f6a7bee](https://github.com/lakekeeper/lakekeeper/commit/f6a7beee88924fb3535900d101bf4b2dfa58993c))
+* Respect X-Forwarded-Prefix header ([#1124](https://github.com/lakekeeper/lakekeeper/issues/1124)) ([02d0d8a](https://github.com/lakekeeper/lakekeeper/commit/02d0d8a020c8a330e5a17a3d3868242408a2d96d))
+* Support overwrite option for RegisterTable ([89b0f80](https://github.com/lakekeeper/lakekeeper/commit/89b0f80af1859f965843e93fc141af487752f346))
+* **tasks:** Extendable Task Queue System ([#1085](https://github.com/lakekeeper/lakekeeper/issues/1085)) ([ec4cbd1](https://github.com/lakekeeper/lakekeeper/commit/ec4cbd154fcc6ab62faa1c31a15981da96161e36))
+
+
+### Bug Fixes
+
+* Increase DB timeout from 1 to 5 Seconds ([#1129](https://github.com/lakekeeper/lakekeeper/issues/1129)) ([45bf2f7](https://github.com/lakekeeper/lakekeeper/commit/45bf2f778eecb37cac70cbf329cb36c654f18c7e))
+* missing namespace permissions should return forbidden ([#1117](https://github.com/lakekeeper/lakekeeper/issues/1117)) ([28ae8eb](https://github.com/lakekeeper/lakekeeper/commit/28ae8eb8a0008647626cf0c9c0b10204b76454c1))
+* Role Owners can use permissions of their role ([#1122](https://github.com/lakekeeper/lakekeeper/issues/1122)) ([e137a96](https://github.com/lakekeeper/lakekeeper/commit/e137a96bd98ae2b9c68f8ebf15ca67d68a529c98))
+* trino show tables - requires 404 instead of 403 on list namespaces ([#1113](https://github.com/lakekeeper/lakekeeper/issues/1113)) ([d5a105a](https://github.com/lakekeeper/lakekeeper/commit/d5a105a76d66485dcd948c0c9ff989cdd0fe42c0))
+
 ## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
 
 
