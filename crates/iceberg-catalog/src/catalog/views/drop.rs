@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     api::{
         iceberg::{types::DropParams, v1::ViewParameters},
-        management::v1::{warehouse::TabularDeleteProfile, TabularType},
+        management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
         set_not_found_status_code, ApiContext,
     },
     catalog::{require_warehouse_id, tables::validate_table_or_view_ident},
@@ -12,8 +12,8 @@ use crate::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
         task_queue::{
-            tabular_expiration_queue::TabularExpirationInput,
-            tabular_purge_queue::TabularPurgeInput,
+            tabular_expiration_queue::TabularExpirationPayload,
+            tabular_purge_queue::TabularPurgePayload, EntityId, TaskMetadata,
         },
         Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
@@ -66,43 +66,57 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
             let location = C::drop_view(view_id, force, t.transaction()).await?;
-            // committing here means maybe dangling data if the queue fails
-            // OTOH committing after queuing means we may end up with a view pointing to deleted files
-            // I feel that some undeleted files are less bad than a view that cannot be loaded
-            t.commit().await?;
 
             if purge_requested {
-                state
-                    .v1_state
-                    .queues
-                    .queue_tabular_purge(TabularPurgeInput {
+                C::queue_tabular_purge(
+                    TaskMetadata {
+                        warehouse_id,
+                        entity_id: EntityId::Tabular(*view_id),
+                        parent_task_id: None,
+                        schedule_for: None,
+                    },
+                    TabularPurgePayload {
                         tabular_location: location,
-                        tabular_id: *view_id,
-                        warehouse_ident: warehouse_id,
                         tabular_type: TabularType::View,
-                        parent_id: None,
-                    })
-                    .await?;
+                    },
+                    t.transaction(),
+                )
+                .await?;
                 tracing::debug!("Queued purge task for dropped view '{view_id}'.");
             }
-            authorizer.delete_view(view_id).await?;
-        }
-        TabularDeleteProfile::Soft { expiration_seconds } => {
-            C::mark_tabular_as_deleted(TabularId::View(*view_id), force, t.transaction()).await?;
             t.commit().await?;
 
-            state
-                .v1_state
-                .queues
-                .queue_tabular_expiration(TabularExpirationInput {
-                    tabular_id: *view_id,
-                    warehouse_ident: warehouse_id,
-                    tabular_type: TabularType::View,
-                    purge: purge_requested,
-                    expire_at: chrono::Utc::now() + expiration_seconds,
+            authorizer
+                .delete_view(view_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
                 })
-                .await?;
+                .ok();
+        }
+        TabularDeleteProfile::Soft { expiration_seconds } => {
+            let _ = C::queue_tabular_expiration(
+                TaskMetadata {
+                    entity_id: EntityId::Tabular(*view_id),
+                    warehouse_id,
+                    parent_task_id: None,
+                    schedule_for: Some(chrono::Utc::now() + expiration_seconds),
+                },
+                TabularExpirationPayload {
+                    tabular_type: TabularType::View,
+                    deletion_kind: if purge_requested {
+                        DeleteKind::Purge
+                    } else {
+                        DeleteKind::Default
+                    },
+                },
+                t.transaction(),
+            )
+            .await?;
+            C::mark_tabular_as_deleted(TabularId::View(*view_id), force, t.transaction()).await?;
+
             tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
+            t.commit().await?;
         }
     }
 

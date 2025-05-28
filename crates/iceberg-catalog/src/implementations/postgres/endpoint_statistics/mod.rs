@@ -29,7 +29,6 @@ mod test {
             AllowAllAuthorizer,
             TabularDeleteProfile::Hard {},
             None,
-            None,
             1,
         )
         .await;
@@ -68,7 +67,6 @@ mod test {
             None,
             AllowAllAuthorizer,
             TabularDeleteProfile::Hard {},
-            None,
             None,
             1,
         )

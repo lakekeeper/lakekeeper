@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH log as (\n                        INSERT INTO task_log(task_id,\n                                             warehouse_id,\n                                             queue_name,\n                                             task_data,\n                                             entity_id,\n                                             entity_type,\n                                             status,\n                                             attempt,\n                                             started_at,\n                                             duration)\n                        SELECT task_id,\n                               warehouse_id,\n                               queue_name,\n                               task_data,\n                               entity_id,\n                               entity_type,\n                               $4,\n                               attempt,\n                               picked_up_at,\n                               case when picked_up_at is not null\n                                   then now() - picked_up_at\n                               end\n                        FROM task\n                        WHERE (status = $3 OR $5) AND warehouse_id = $1 AND queue_name = $2\n                    )\n                    DELETE FROM task\n                    WHERE (status = $3 OR $5) AND warehouse_id = $1 AND queue_name = $2\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        },
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a726f6ad3fa755ceacd630a3f650cc548afcc1b510e93c69580efaac27fbb45c"
+}

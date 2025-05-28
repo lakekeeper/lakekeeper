@@ -650,6 +650,8 @@ pub(super) enum WarehouseRelation {
     CanGrantManageGrants,
     CanChangeOwnership,
     CanSetManagedAccess,
+    CanGetTaskQueueConfig,
+    CanModifyTaskQueueConfig,
 }
 
 impl OpenFgaRelation for WarehouseRelation {}
@@ -851,6 +853,12 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::CanRename => WarehouseRelation::CanRename,
             CatalogWarehouseAction::CanListDeletedTabulars => {
                 WarehouseRelation::CanListDeletedTabulars
+            }
+            CatalogWarehouseAction::CanGetTaskQueueConfig => {
+                WarehouseRelation::CanGetTaskQueueConfig
+            }
+            CatalogWarehouseAction::CanModifyTaskQueueConfig => {
+                WarehouseRelation::CanModifyTaskQueueConfig
             }
         }
     }

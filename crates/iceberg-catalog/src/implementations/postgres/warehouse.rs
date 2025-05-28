@@ -14,10 +14,7 @@ use crate::{
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     request_metadata::RequestMetadata,
-    service::{
-        storage::StorageProfile, task_queue::TaskStatus, GetProjectResponse, GetWarehouseResponse,
-        WarehouseStatus,
-    },
+    service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
     ProjectId, SecretIdent, WarehouseId,
 };
 
@@ -446,11 +443,10 @@ pub(crate) async fn delete_warehouse(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
     let unfinished_task_counts_per_queue = sqlx::query!(
-        r#"WITH running_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1 AND status = ANY($2::task_status[])),
-                deletes as (DELETE FROM task where warehouse_id = $1 AND status != ANY($2::task_status[]))
+        r#"WITH running_tasks as (SELECT task_id, queue_name, status from task WHERE warehouse_id = $1),
+                deletes as (DELETE FROM task where warehouse_id = $1)
             SELECT COUNT(task_id) as "task_count!", queue_name FROM running_tasks GROUP BY queue_name"#,
         *warehouse_id,
-        TaskStatus::non_terminal_states() as _,
     ).fetch_all(&mut **transaction).await.map_err(|e| e.into_error_model("Error deleting tasks for warehouse"))?;
     if !unfinished_task_counts_per_queue.is_empty() {
         let task_descriptions = unfinished_task_counts_per_queue

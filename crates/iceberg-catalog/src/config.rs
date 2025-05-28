@@ -20,10 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{
-    service::{event_publisher::kafka::KafkaConfig, task_queue::TaskQueueConfig},
-    ProjectId, WarehouseId,
-};
+use crate::{ProjectId, WarehouseId};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -177,7 +174,7 @@ pub struct DynAppConfig {
     // ------------- KAFKA CLOUDEVENTS -------------
     pub kafka_topic: Option<String>,
     #[cfg(feature = "kafka")]
-    pub kafka_config: Option<KafkaConfig>,
+    pub kafka_config: Option<crate::service::event_publisher::kafka::KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -229,10 +226,11 @@ pub struct DynAppConfig {
     pub kv2: Option<KV2Config>,
     // ------------- Secrets -------------
     pub secret_backend: SecretBackend,
-
-    // ------------- Queues -------------
-    pub queue_config: TaskQueueConfig,
-
+    #[serde(
+        deserialize_with = "crate::config::seconds_to_std_duration",
+        serialize_with = "crate::config::serialize_std_duration_as_ms"
+    )]
+    pub task_poll_interval: std::time::Duration,
     // ------------- Tabular -------------
     /// Delay in seconds after which a tabular will be deleted
     #[serde(
@@ -415,6 +413,7 @@ pub struct OpenFGAConfig {
 pub enum AuthZBackend {
     #[serde(alias = "allowall", alias = "AllowAll", alias = "ALLOWALL")]
     AllowAll,
+    #[cfg(feature = "authz-openfga")]
     #[serde(alias = "openfga", alias = "OpenFGA", alias = "OPENFGA")]
     OpenFGA,
 }
@@ -503,7 +502,7 @@ impl Default for DynAppConfig {
             authz_backend: AuthZBackend::AllowAll,
             openfga: None,
             secret_backend: SecretBackend::Postgres,
-            queue_config: TaskQueueConfig::default(),
+            task_poll_interval: Duration::from_secs(10),
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
@@ -750,6 +749,8 @@ mod test {
 
     #[allow(unused_imports)]
     use super::*;
+    #[cfg(feature = "kafka")]
+    use crate::service::event_publisher::kafka::KafkaConfig;
 
     #[test]
     fn test_pg_ssl_mode_case_insensitive() {
@@ -867,13 +868,9 @@ mod test {
     #[test]
     fn test_queue_config() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5s");
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__NUM_WORKERS", "137");
+            jail.set_env("LAKEKEEPER_TEST__TASK_POLL_INTERVAL", "5s");
             let config = get_config();
-            assert_eq!(config.queue_config.poll_interval, Duration::from_secs(5));
-            assert_eq!(config.queue_config.max_retries, 5);
-            assert_eq!(config.queue_config.num_workers, 137);
+            assert_eq!(config.task_poll_interval, Duration::from_secs(5));
             Ok(())
         });
     }
@@ -887,11 +884,10 @@ mod test {
     #[test]
     fn test_task_queue_config_millis() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5ms");
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            jail.set_env("LAKEKEEPER_TEST__TASK_POLL_INTERVAL", "5ms");
             let config = get_config();
             assert_eq!(
-                config.queue_config.poll_interval,
+                config.task_poll_interval,
                 std::time::Duration::from_millis(5)
             );
             Ok(())
@@ -901,13 +897,9 @@ mod test {
     #[test]
     fn test_task_queue_config_seconds() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "5s");
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            jail.set_env("LAKEKEEPER_TEST__TASK_POLL_INTERVAL", "5s");
             let config = get_config();
-            assert_eq!(
-                config.queue_config.poll_interval,
-                std::time::Duration::from_secs(5)
-            );
+            assert_eq!(config.task_poll_interval, std::time::Duration::from_secs(5));
             Ok(())
         });
     }
@@ -915,17 +907,14 @@ mod test {
     #[test]
     fn test_task_queue_config_legacy_seconds() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__POLL_INTERVAL", "\"5\"");
-            jail.set_env("LAKEKEEPER_TEST__QUEUE_CONFIG__MAX_RETRIES", "5");
+            jail.set_env("LAKEKEEPER_TEST__TASK_POLL_INTERVAL", "\"5\"");
             let config = get_config();
-            assert_eq!(
-                config.queue_config.poll_interval,
-                std::time::Duration::from_secs(5)
-            );
+            assert_eq!(config.task_poll_interval, std::time::Duration::from_secs(5));
             Ok(())
         });
     }
 
+    #[cfg(feature = "authz-openfga")]
     #[test]
     fn test_openfga_config_no_auth() {
         figment::Jail::expect_with(|jail| {
@@ -943,6 +932,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "authz-openfga")]
     #[test]
     fn test_openfga_config_api_key() {
         figment::Jail::expect_with(|jail| {
@@ -975,6 +965,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "authz-openfga")]
     #[test]
     fn test_openfga_client_credentials() {
         figment::Jail::expect_with(|jail| {
@@ -1119,6 +1110,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "kafka")]
     #[test]
     fn test_kafka_config_env_var() {
         figment::Jail::expect_with(|jail| {
@@ -1153,6 +1145,7 @@ mod test {
         });
     }
 
+    #[cfg(feature = "kafka")]
     #[test]
     fn test_kafka_config_file() {
         let named_tmp_file = tempfile::NamedTempFile::new().unwrap();

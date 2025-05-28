@@ -38,6 +38,9 @@ type warehouse
     define can_modify_soft_deletion: modify
     # Only if we can GRANT a privilege, we can LIST them for now
     define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_change_ownership
+    # Task Queue Configurations
+    define can_get_task_queue_config: can_get_metadata
+    define can_modify_task_queue_config: modify
     # GRANT Permissions
     define can_grant_create: manage_grants or (create and pass_grants)
     define can_grant_describe: manage_grants or (describe and pass_grants)

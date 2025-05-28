@@ -117,7 +117,6 @@ pub mod v1 {
         }
 
         pub(crate) fn insert(&mut self, key: T, value: V, next_page_token: String) {
-            // TODO: should this become a result instead of a silent overwrite?
             if self.entities.insert(key.clone(), value).is_some() {
                 let position = self
                     .ordering

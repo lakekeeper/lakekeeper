@@ -3,8 +3,9 @@
 use clap::{Parser, Subcommand};
 use iceberg_catalog::{
     api::management::v1::api_doc as v1_api_doc,
-    service::authz::{
-        implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer,
+    service::{
+        authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
+        task_queue::BUILT_IN_API_CONFIGS,
     },
     AuthZBackend, CONFIG,
 };
@@ -170,9 +171,13 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
         Some(Commands::ManagementOpenapi {}) => {
+            let queue_configs_ref = &BUILT_IN_API_CONFIGS;
+            let queue_configs: Vec<&_> = queue_configs_ref.iter().collect();
             let doc = match CONFIG.authz_backend {
-                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(),
-                AuthZBackend::OpenFGA => v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(),
+                AuthZBackend::AllowAll => v1_api_doc::<AllowAllAuthorizer>(queue_configs.clone()),
+                AuthZBackend::OpenFGA => {
+                    v1_api_doc::<UnauthenticatedOpenFGAAuthorizer>(queue_configs)
+                }
             };
             println!("{}", doc.to_yaml()?);
         }

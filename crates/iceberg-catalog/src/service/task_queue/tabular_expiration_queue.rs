@@ -1,9 +1,13 @@
-use std::{fmt, sync::Arc, time::Duration};
+use std::sync::LazyLock;
 
+use serde::{Deserialize, Serialize};
 use tracing::Instrument;
+use utoipa::{PartialSchema, ToSchema};
 use uuid::Uuid;
 
-use super::random_ms_duration;
+use super::{
+    EntityId, QueueApiConfig, QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+};
 use crate::{
     api::{
         management::v1::{DeleteKind, TabularType},
@@ -11,62 +15,89 @@ use crate::{
     },
     service::{
         authz::Authorizer,
-        task_queue::{
-            tabular_purge_queue::{TabularPurgeInput, TabularPurgeQueue},
-            Task, TaskQueue,
-        },
+        task_queue::{tabular_purge_queue::TabularPurgePayload, Task},
         Catalog, TableId, Transaction, ViewId,
     },
-    WarehouseId,
 };
 
-pub type ExpirationQueue = Arc<
-    dyn TaskQueue<Task = TabularExpirationTask, Input = TabularExpirationInput>
-        + Send
-        + Sync
-        + 'static,
->;
+pub(crate) const QUEUE_NAME: &str = "tabular_expiration";
+pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
+    queue_name: QUEUE_NAME,
+    utoipa_type_name: ExpirationQueueConfig::name(),
+    utoipa_schema: ExpirationQueueConfig::schema(),
+});
 
-// TODO: concurrent workers
-pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
-    fetcher: ExpirationQueue,
-    cleaner: TabularPurgeQueue,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+/// State stored for a tabular expiration in postgres as `payload` along with the task metadata.
+pub(crate) struct TabularExpirationPayload {
+    pub(crate) tabular_type: TabularType,
+    pub(crate) deletion_kind: DeleteKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+/// Warehouse-specific configuration for the expiration queue.
+pub(crate) struct ExpirationQueueConfig {}
+
+impl QueueConfig for ExpirationQueueConfig {}
+
+pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
+    poll_interval: std::time::Duration,
 ) {
     loop {
-        tokio::time::sleep(random_ms_duration()).await;
-
-        let expiration = match fetcher.pick_new_task().await {
+        let expiration = match C::pick_new_task(
+            QUEUE_NAME,
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+            catalog_state.clone(),
+        )
+        .await
+        {
             Ok(expiration) => expiration,
             Err(err) => {
                 // TODO: add retry counter + exponential backoff
-                tracing::error!("Failed to fetch deletion: {:?}", err);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tracing::error!("Failed to fetch expiration: {:?}", err);
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
         };
-
         let Some(expiration) = expiration else {
-            tokio::time::sleep(fetcher.config().poll_interval).await;
+            tokio::time::sleep(poll_interval).await;
             continue;
         };
+        let state = match expiration.task_state::<TabularExpirationPayload>() {
+            Ok(state) => state,
+            Err(err) => {
+                tracing::error!("Failed to deserialize task state: {:?}", err);
+                // TODO: record fatal error
+                continue;
+            }
+        };
+        let _config = match expiration.task_config::<ExpirationQueueConfig>() {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::error!("Failed to deserialize task config: {:?}", err);
+                continue;
+            }
+        }
+        .unwrap_or_default();
+
+        let EntityId::Tabular(tabular_id) = expiration.task_metadata.entity_id;
 
         let span = tracing::debug_span!(
-            "tabular_expiration",
-            queue_name = %expiration.task.queue_name,
-            tabular_id = %expiration.tabular_id,
-            warehouse_id = %expiration.warehouse_ident,
-            tabular_type = %expiration.tabular_type,
-            deletion_kind = ?expiration.deletion_kind,
-            task = ?expiration.task,
+            QUEUE_NAME,
+            tabular_id = %tabular_id,
+            warehouse_id = %expiration.task_metadata.warehouse_id,
+            tabular_type = %state.tabular_type,
+            deletion_kind = ?state.deletion_kind,
+            task = ?expiration,
         );
 
         instrumented_expire::<C, A>(
-            fetcher.clone(),
-            &cleaner,
             catalog_state.clone(),
             authorizer.clone(),
+            tabular_id,
+            &state,
             &expiration,
         )
         .instrument(span.or_current())
@@ -75,22 +106,33 @@ pub async fn tabular_expiration_task<C: Catalog, A: Authorizer>(
 }
 
 async fn instrumented_expire<C: Catalog, A: Authorizer>(
-    fetcher: ExpirationQueue,
-    cleaner: &TabularPurgeQueue,
     catalog_state: C::State,
     authorizer: A,
-    expiration: &TabularExpirationTask,
+    tabular_id: Uuid,
+    expiration: &TabularExpirationPayload,
+    task: &Task,
 ) {
-    match handle_table::<C, A>(catalog_state.clone(), authorizer, cleaner, expiration).await {
+    match handle_table::<C, A>(
+        catalog_state.clone(),
+        authorizer,
+        tabular_id,
+        expiration,
+        task,
+    )
+    .await
+    {
         Ok(()) => {
-            fetcher.retrying_record_success(&expiration.task).await;
-            tracing::debug!("Successful {expiration}");
+            tracing::debug!("Successful {expiration:?}");
         }
-        Err(e) => {
-            tracing::error!("Failed to handle {expiration}: {:?}", e);
-            fetcher
-                .retrying_record_failure(&expiration.task, &format!("{e:?}"))
-                .await;
+        Err(err) => {
+            tracing::error!("Failed to handle {expiration:?}: {err:?}");
+            super::record_error_with_catalog::<C>(
+                catalog_state.clone(),
+                &format!("Failed to expire tabular: '{:?}'", err.error),
+                5,
+                task.task_id,
+            )
+            .await;
         }
     };
 }
@@ -98,8 +140,9 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
 async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
-    delete_queue: &TabularPurgeQueue,
-    expiration: &TabularExpirationTask,
+    tabular_id: Uuid,
+    expiration: &TabularExpirationPayload,
+    task: &Task,
 ) -> Result<()>
 where
     C: Catalog,
@@ -114,80 +157,64 @@ where
 
     let tabular_location = match expiration.tabular_type {
         TabularType::Table => {
-            let table_id = TableId::from(expiration.tabular_id);
+            let table_id = TableId::from(tabular_id);
             let location = C::drop_table(table_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
-                    tracing::error!("Failed to drop table: {:?}", e);
-                    e
+                    tracing::error!(?e, "Failed to drop table: {}", e.error);
+                    e.error
                 })?;
 
-            authorizer.delete_table(table_id).await?;
+            authorizer
+                .delete_table(table_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
+                })
+                .ok();
             location
         }
         TabularType::View => {
-            let view_id = ViewId::from(expiration.tabular_id);
+            let view_id = ViewId::from(tabular_id);
             let location = C::drop_view(view_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
-                    tracing::error!("Failed to drop table: {:?}", e);
+                    tracing::error!(?e, "Failed to drop view: {}", e.error);
                     e
                 })?;
-            authorizer.delete_view(view_id).await?;
+            authorizer
+                .delete_view(view_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
+                })
+                .ok();
             location
         }
     };
 
     if matches!(expiration.deletion_kind, DeleteKind::Purge) {
-        delete_queue
-            .enqueue(TabularPurgeInput {
-                tabular_id: expiration.tabular_id,
-                warehouse_ident: expiration.warehouse_ident,
+        C::queue_tabular_purge(
+            TaskMetadata {
+                entity_id: task.task_metadata.entity_id,
+                warehouse_id: task.task_metadata.warehouse_id,
+                parent_task_id: Some(task.task_id),
+                schedule_for: None,
+            },
+            TabularPurgePayload {
                 tabular_type: expiration.tabular_type,
-                parent_id: Some(expiration.task.task_id),
                 tabular_location,
-            })
-            .await?;
+            },
+            trx.transaction(),
+        )
+        .await?;
     }
+    C::retrying_record_task_success(task.task_id, None, trx.transaction()).await;
 
-    // Here we commit after the queuing of the deletion since we're in a fault-tolerant workflow
-    // which will restart if the commit fails.
     trx.commit().await.map_err(|e| {
         tracing::error!("Failed to commit transaction: {:?}", e);
         e
     })?;
 
     Ok(())
-}
-
-#[derive(Debug)]
-pub struct TabularExpirationTask {
-    pub deletion_kind: DeleteKind,
-    pub tabular_id: Uuid,
-    pub warehouse_ident: WarehouseId,
-    pub tabular_type: TabularType,
-    pub task: Task,
-}
-
-impl fmt::Display for TabularExpirationTask {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "expiration of {} {} in warehouse {} (task: {}, action: {})",
-            self.tabular_type,
-            self.tabular_id,
-            self.warehouse_ident,
-            self.task.task_id,
-            self.deletion_kind
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TabularExpirationInput {
-    pub tabular_id: Uuid,
-    pub warehouse_ident: WarehouseId,
-    pub tabular_type: TabularType,
-    pub purge: bool,
-    pub expire_at: chrono::DateTime<chrono::Utc>,
 }

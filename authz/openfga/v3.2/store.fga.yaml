@@ -823,6 +823,8 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_change_ownership: true
+          can_modify_task_queue_config: true
+          can_get_task_queue_config: true
       - user: user:warehouse_2_owner
         object: namespace:namespace_2_1
         assertions:
@@ -921,6 +923,8 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
+          can_get_task_queue_config: true
+          can_modify_task_queue_config: false
       - user: user:namespace_2_1_owner
         object: namespace:namespace_2_1
         assertions:

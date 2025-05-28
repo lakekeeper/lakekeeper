@@ -25,7 +25,7 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
+        task_queue::{QueueApiConfig, RegisteredTaskQueues},
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -44,13 +44,13 @@ pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Auth
     pub authorizer: A,
     pub catalog_state: C::State,
     pub secrets_state: S,
-    pub queues: TaskQueues,
     pub table_change_checkers: ContractVerifiers,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
     pub hooks: EndpointHookCollection,
+    pub registered_task_queues: RegisteredTaskQueues,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -61,10 +61,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
             .field("authorizer", &"Authorizer")
             .field("catalog_state", &"CatalogState")
             .field("secrets_state", &"SecretsState")
-            .field("queues", &self.queues)
             .field("table_change_checkers", &self.table_change_checkers)
             .field("authenticator", &self.authenticator)
-            .field("svhp", &self.service_health_provider)
+            .field("service_health_provider", &self.service_health_provider)
             .field("cors_origins", &self.cors_origins)
             .field(
                 "metrics_layer",
@@ -75,6 +74,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
                 &self.endpoint_statistics_tracker_tx,
             )
             .field("endpoint_hooks", &self.hooks)
+            .field("registered_task_queues", &self.registered_task_queues)
             .finish()
     }
 }
@@ -94,13 +94,13 @@ pub fn new_full_router<
         authorizer,
         catalog_state,
         secrets_state,
-        queues,
         table_change_checkers,
         service_health_provider,
         cors_origins,
         metrics_layer,
         endpoint_statistics_tracker_tx,
         hooks,
+        registered_task_queues,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
@@ -160,7 +160,7 @@ pub fn new_full_router<
                 Json(health).into_response()
             }),
         );
-    let router = maybe_merge_swagger_router(router)
+    let router = maybe_merge_swagger_router(router, registered_task_queues.api_config())
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
         ))
@@ -188,7 +188,7 @@ pub fn new_full_router<
                 catalog: catalog_state,
                 secrets: secrets_state,
                 contract_verifiers: table_change_checkers,
-                queues,
+                registered_task_queues,
                 hooks,
             },
         });
@@ -202,11 +202,15 @@ pub fn new_full_router<
 
 fn maybe_merge_swagger_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     router: Router<ApiContext<State<A, C, S>>>,
+    queue_api_configs: Vec<&QueueApiConfig>,
 ) -> Router<ApiContext<State<A, C, S>>> {
     if CONFIG.serve_swagger_ui {
         router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-                .url("/api-docs/management/v1/openapi.json", v1_api_doc::<A>())
+                .url(
+                    "/api-docs/management/v1/openapi.json",
+                    v1_api_doc::<A>(queue_api_configs),
+                )
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",
                     ICEBERG_OPENAPI_SPEC_YAML.clone(),

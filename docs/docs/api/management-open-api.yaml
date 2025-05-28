@@ -2193,6 +2193,134 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/{warehouse_id}/task-queue/tabular_expiration/config:
+    get:
+      tags:
+        - warehouse
+      summary: Get task-queue config
+      operationId: get_task_queue_config_tabular_expiration
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: queue_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpirationQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set task-queue config
+      operationId: set_task_queue_config_tabular_expiration
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpirationQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/{warehouse_id}/task-queue/tabular_purge/config:
+    get:
+      tags:
+        - warehouse
+      summary: Get task-queue config
+      operationId: get_task_queue_config_tabular_purge
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: queue_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set task-queue config
+      operationId: set_task_queue_config_tabular_purge
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
 components:
   schemas:
     AdlsProfile:
@@ -2717,6 +2845,9 @@ components:
         type:
           type: string
           description: Internal type definition of the error
+    ExpirationQueueConfig:
+      type: object
+      description: Warehouse-specific configuration for the expiration queue.
     GcsCredential:
       oneOf:
         - type: object
@@ -2968,6 +3099,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTaskQueueConfigResponse:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/QueueConfigResponse'
     GetViewAccessResponse:
       type: object
       required:
@@ -3374,6 +3517,18 @@ components:
             - 'null'
           format: date-time
           description: Updated at
+    PurgeQueueConfig:
+      type: object
+    QueueConfig: {}
+    QueueConfigResponse:
+      allOf:
+        - {}
+        - type: object
+          required:
+            - queue-name
+          properties:
+            queue-name:
+              type: string
     RenameProjectRequest:
       type: object
       required:
@@ -3785,6 +3940,7 @@ components:
         - aws-system-identities-enabled
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
+        - queues
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
@@ -3806,6 +3962,11 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        queues:
+          type: array
+          items:
+            type: string
+          description: List of queues that are registered for the server.
         server-id:
           type: string
           format: uuid
@@ -3833,6 +3994,18 @@ components:
         protected:
           type: boolean
           description: Setting this to `true` will prevent the entity from being deleted unless `force` is used.
+    SetTaskQueueConfigRequest:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/QueueConfig'
     StorageCredential:
       oneOf:
         - allOf:

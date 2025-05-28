@@ -30,15 +30,13 @@ pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
 pub(crate) use tabular_idents::TabularIdentBorrowed;
 pub use tabular_idents::{TabularId, TabularIdentOwned};
+use task_queue::RegisteredTaskQueues;
 
 use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
 use crate::{
     api::{iceberg::v1::Prefix, ThreadSafe as ServiceState},
-    service::{
-        contract_verification::ContractVerifiers, endpoint_hooks::EndpointHookCollection,
-        task_queue::TaskQueues,
-    },
+    service::{contract_verification::ContractVerifiers, endpoint_hooks::EndpointHookCollection},
 };
 
 // ---------------- State ----------------
@@ -48,8 +46,8 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
     pub catalog: C::State,
     pub secrets: S,
     pub contract_verifiers: ContractVerifiers,
-    pub queues: TaskQueues,
     pub hooks: EndpointHookCollection,
+    pub registered_task_queues: RegisteredTaskQueues,
 }
 
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}

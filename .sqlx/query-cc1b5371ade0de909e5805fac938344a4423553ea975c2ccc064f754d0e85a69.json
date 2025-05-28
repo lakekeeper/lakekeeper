@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH task_log as (\n                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, message, attempt, started_at, duration)\n                SELECT task_id, warehouse_id, queue_name, task_data, $4, entity_id, entity_type, $2, attempt, picked_up_at, now() - picked_up_at\n                FROM task WHERE task_id = $1\n            )\n            UPDATE task\n            SET status = $3\n            WHERE task_id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cc1b5371ade0de909e5805fac938344a4423553ea975c2ccc064f754d0e85a69"
+}

@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use iceberg::{
     spec::{TableMetadata, ViewMetadata},
@@ -25,7 +28,10 @@ use crate::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
-            warehouse::{TabularDeleteProfile, WarehouseStatisticsResponse},
+            warehouse::{
+                GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
+                WarehouseStatisticsResponse,
+            },
             DeleteWarehouseQuery, ProtectionResponse,
         },
     },
@@ -35,7 +41,11 @@ use crate::{
         authn::UserId,
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
-        task_queue::TaskId,
+        task_queue::{
+            tabular_expiration_queue, tabular_expiration_queue::TabularExpirationPayload,
+            tabular_purge_queue, tabular_purge_queue::TabularPurgePayload, Status, Task,
+            TaskCheckState, TaskFilter, TaskId, TaskInput, TaskMetadata,
+        },
     },
     SecretIdent,
 };
@@ -785,6 +795,193 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
+
+    // Tasks
+    async fn pick_new_task(
+        queue_name: &str,
+        max_time_since_last_heartbeat: chrono::Duration,
+        state: Self::State,
+    ) -> Result<Option<Task>>;
+    async fn record_task_success(
+        id: TaskId,
+        message: Option<&str>,
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+    async fn record_task_failure(
+        id: TaskId,
+        error_details: &str,
+        max_retries: i32,
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    async fn retrying_record_task_success(
+        task_id: TaskId,
+        details: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) {
+        Self::retrying_record_success_or_failure(task_id, Status::Success(details), transaction)
+            .await;
+    }
+
+    async fn retrying_record_task_failure(
+        task: TaskId,
+        details: &str,
+        max_retries: i32,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) {
+        Self::retrying_record_success_or_failure(
+            task,
+            Status::Failure(details, max_retries),
+            transaction,
+        )
+        .await;
+    }
+
+    async fn retrying_record_success_or_failure(
+        task_id: TaskId,
+        result: Status<'_>,
+        mut transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) {
+        let mut retry = 0;
+        while let Err(e) = match result {
+            Status::Success(details) => {
+                Self::record_task_success(task_id, details, &mut transaction).await
+            }
+            Status::Failure(details, max_retries) => {
+                Self::record_task_failure(task_id, details, max_retries, &mut transaction).await
+            }
+        } {
+            tracing::error!("Failed to record {}: {:?}", result, e);
+            tokio::time::sleep(Duration::from_secs(1 + retry)).await;
+            retry += 1;
+            if retry > 5 {
+                tracing::error!("Giving up trying to record {}.", result);
+                break;
+            }
+        }
+    }
+    /// Enqueue a batch of tasks to a task queue.
+    ///
+    /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
+    /// Any resubmitted pending/running task will be omitted from the returned task ids.
+    ///
+    /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`.
+    async fn enqueue_task_batch(
+        queue_name: &'static str,
+        tasks: Vec<TaskInput>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Vec<TaskId>>;
+
+    /// Enqueue a single task to a task queue.
+    ///
+    /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
+    /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
+    async fn enqueue_task(
+        queue_name: &'static str,
+        task: TaskInput,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<TaskId>> {
+        Ok(
+            Self::enqueue_task_batch(queue_name, vec![task], transaction)
+                .await
+                .map(|v| v.into_iter().next())?,
+        )
+    }
+    async fn cancel_pending_tasks(
+        queue_name: &str,
+        filter: TaskFilter,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    #[tracing::instrument(skip(transaction))]
+    async fn queue_tabular_expiration(
+        task_metadata: TaskMetadata,
+        payload: TabularExpirationPayload,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<TaskId>> {
+        Self::enqueue_task(
+            tabular_expiration_queue::QUEUE_NAME,
+            TaskInput {
+                task_metadata,
+                payload: serde_json::to_value(&payload).map_err(|e| {
+                    ErrorModel::internal(
+                        format!("Failed to serialize task payload: {e}"),
+                        "TaskPayloadSerializationError",
+                        Some(Box::new(e)),
+                    )
+                })?,
+            },
+            transaction,
+        )
+        .await
+    }
+
+    #[tracing::instrument(skip(transaction))]
+    async fn cancel_tabular_expiration(
+        filter: TaskFilter,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        Self::cancel_pending_tasks(
+            tabular_expiration_queue::QUEUE_NAME,
+            filter,
+            false,
+            transaction,
+        )
+        .await
+    }
+
+    #[tracing::instrument(skip(transaction))]
+    async fn queue_tabular_purge(
+        task_metadata: TaskMetadata,
+        task: TabularPurgePayload,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<TaskId>> {
+        Self::enqueue_task(
+            tabular_purge_queue::QUEUE_NAME,
+            TaskInput {
+                task_metadata,
+                payload: serde_json::to_value(&task).map_err(|e| {
+                    ErrorModel::internal(
+                        format!("Failed to serialize task payload: {e}"),
+                        "TaskPayloadSerializationError",
+                        Some(Box::new(e)),
+                    )
+                })?,
+            },
+            transaction,
+        )
+        .await
+    }
+
+    /// Checks task state and sends a hearbeat.
+    ///
+    /// This is used to send a heartbeat and check whether this task should continue to run.
+    async fn check_and_heartbeat_task(
+        task_id: TaskId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<TaskCheckState>>;
+
+    /// Sends a stop signal to the task.
+    ///
+    /// This does by no means guarantee that the task will be actually stop. It is up to the task
+    /// handler to decide if it can stop.
+    async fn stop_task(
+        task_id: TaskId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    async fn set_task_queue_config(
+        warehouse_id: WarehouseId,
+        queue_name: &str,
+        config: SetTaskQueueConfigRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+    async fn get_task_queue_config(
+        warehouse_id: WarehouseId,
+        queue_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<GetTaskQueueConfigResponse>>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

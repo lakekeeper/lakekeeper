@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT config, max_time_since_last_heartbeat\n        FROM task_config\n        WHERE warehouse_id = $1 AND queue_name = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "config",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "max_time_since_last_heartbeat",
+        "type_info": "Interval"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "44036578dcf5472f7c9ecd1351734856662fb002475eaf3f3a57d86e7f85ea0c"
+}

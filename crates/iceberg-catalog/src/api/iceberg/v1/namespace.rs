@@ -388,7 +388,6 @@ mod tests {
 
         impl ThreadSafe for ThisState {}
 
-        // ToDo: Use Mock instead for impl. I couldn't get mockall to work though.
         #[async_trait]
         impl NamespaceService<ThisState> for TestService {
             async fn list_namespaces(

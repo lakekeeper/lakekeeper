@@ -6,11 +6,7 @@ use axum::routing::get;
 use iceberg_catalog::{
     api::router::{new_full_router, serve as service_serve, RouterArgs},
     implementations::{
-        postgres::{
-            endpoint_statistics::PostgresStatisticsSink,
-            task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-            CatalogState, PostgresCatalog, ReadWrite,
-        },
+        postgres::{endpoint_statistics::PostgresStatisticsSink, CatalogState, PostgresCatalog},
         Secrets,
     },
     service::{
@@ -27,7 +23,7 @@ use iceberg_catalog::{
             CloudEventsPublisherBackgroundTask, TracingPublisher,
         },
         health::ServiceHealthProvider,
-        task_queue::TaskQueues,
+        task_queue::TaskQueueRegistry,
         Catalog, EndpointStatisticsTrackerTx, StartupValidationData,
     },
     SecretBackend, CONFIG,
@@ -109,42 +105,15 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     );
     health_provider.spawn_health_checks().await;
 
-    let queues = TaskQueues::new(
-        Arc::new(TabularExpirationQueue::from_config(
-            ReadWrite::from_pools(read_pool.clone(), write_pool.clone()),
-            CONFIG.queue_config.clone(),
-        )?),
-        Arc::new(TabularPurgeQueue::from_config(
-            ReadWrite::from_pools(read_pool.clone(), write_pool.clone()),
-            CONFIG.queue_config.clone(),
-        )?),
-    );
-
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
     match authorizer {
         Authorizers::AllowAll(a) => {
-            serve_with_authn(
-                a,
-                catalog_state,
-                secrets_state,
-                queues,
-                health_provider,
-                listener,
-            )
-            .await?
+            serve_with_authn(a, catalog_state, secrets_state, health_provider, listener).await?
         }
         Authorizers::OpenFGA(a) => {
-            serve_with_authn(
-                a,
-                catalog_state,
-                secrets_state,
-                queues,
-                health_provider,
-                listener,
-            )
-            .await?
+            serve_with_authn(a, catalog_state, secrets_state, health_provider, listener).await?
         }
     }
 
@@ -155,7 +124,6 @@ async fn serve_with_authn<A: Authorizer>(
     authorizer: A,
     catalog_state: CatalogState,
     secrets_state: Secrets,
-    queues: TaskQueues,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -252,7 +220,6 @@ async fn serve_with_authn<A: Authorizer>(
                 Some(authenticator),
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -271,7 +238,6 @@ async fn serve_with_authn<A: Authorizer>(
                 Some(authenticator),
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -283,7 +249,6 @@ async fn serve_with_authn<A: Authorizer>(
                 Some(auth),
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -296,7 +261,6 @@ async fn serve_with_authn<A: Authorizer>(
                 None::<AuthenticatorEnum>,
                 catalog_state,
                 secrets_state,
-                queues,
                 health_provider,
                 listener,
             )
@@ -312,7 +276,6 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     authenticator: Option<N>,
     catalog_state: CatalogState,
     secrets_state: Secrets,
-    queues: TaskQueues,
     health_provider: ServiceHealthProvider,
     listener: tokio::net::TcpListener,
 ) -> Result<(), anyhow::Error> {
@@ -371,19 +334,26 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     let hooks = EndpointHookCollection::new(vec![Arc::new(CloudEventsPublisher::new(
         cloud_events_tx.clone(),
     ))]);
+    let mut task_queue_registry = TaskQueueRegistry::new();
+    task_queue_registry.register_built_in_queues::<PostgresCatalog, Secrets, A>(
+        catalog_state.clone(),
+        secrets_state.clone(),
+        authorizer.clone(),
+        CONFIG.task_poll_interval,
+    );
 
     let router = new_full_router::<PostgresCatalog, _, Secrets, _>(RouterArgs {
         authenticator: authenticator.clone(),
         authorizer: authorizer.clone(),
         catalog_state: catalog_state.clone(),
         secrets_state: secrets_state.clone(),
-        queues: queues.clone(),
         table_change_checkers: ContractVerifiers::new(vec![]),
         service_health_provider: health_provider,
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
         hooks,
+        registered_task_queues: task_queue_registry.registered_task_queues(),
     })?;
 
     #[cfg(feature = "ui")]
@@ -413,8 +383,9 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
     });
     let stats_handle = tokio::task::spawn(tracker.run());
 
+    let task_runner = task_queue_registry.task_queues_runner();
     tokio::select!(
-        _ = queues.spawn_queues::<PostgresCatalog, _, _>(catalog_state, secrets_state, authorizer) => tracing::error!("Tabular queue task failed"),
+        _ = task_runner.run_queue_workers(true) => tracing::error!("Task queues failed."),
         err = service_serve(listener, router) => tracing::error!("Service failed: {err:?}"),
         _ = metrics_future => tracing::error!("Metrics server failed"),
     );

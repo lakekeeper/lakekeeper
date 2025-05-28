@@ -220,6 +220,8 @@ generate_endpoints! {
         GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
         DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
         RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
+        SetTaskQueueConfig(POST, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
+        GetTaskQueueConfig(GET, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config")
     }
 
     enum PermissionV1 {
@@ -358,7 +360,10 @@ mod test {
         use strum::IntoEnumIterator;
 
         use crate::api::endpoints::Endpoint;
-
+        let exempt_config_paths = [
+            "management/v1/{warehouse_id}/task-queue/tabular_expiration/config",
+            "management/v1/{warehouse_id}/task-queue/tabular_purge/config",
+        ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
@@ -436,6 +441,9 @@ mod test {
             // Filter anything that starts with /management/v1/permissions, as these are grouped
             // endpoints that are different for every authorizer
             .filter(|(_method, path)| !path.starts_with("management/v1/permissions"))
+            // We remove the parameterized endpoints with {queue_name} and expand them using actually
+            // registered queues
+            .filter(|(_method, path)| !exempt_config_paths.contains(&path.as_str()))
             .collect::<Vec<_>>();
 
         if !missing_endpoints.is_empty() {
@@ -450,7 +458,14 @@ mod test {
 
         // Find extra endpoints
         let extra_endpoints: Vec<_> = actual_endpoints.difference(&expected_endpoints).collect();
-        let extra_endpoints = extra_endpoints.iter().collect_vec();
+        let extra_endpoints = extra_endpoints
+            .iter()
+            .filter(|(_m, path)| {
+                // We filter out the parameterized endpoint here since we expand them using actually
+                // registered queues
+                !path.starts_with("management/v1/{warehouse_id}/task-queue/{queue_name}/config")
+            })
+            .collect_vec();
         if !extra_endpoints.is_empty() {
             let extra_formatted = extra_endpoints
                 .iter()

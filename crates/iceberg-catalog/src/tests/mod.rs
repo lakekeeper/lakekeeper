@@ -2,8 +2,7 @@ mod drop_recursive;
 mod drop_warehouse;
 mod endpoint_stats;
 mod stats;
-
-use std::sync::Arc;
+mod tasks;
 
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::{
@@ -31,10 +30,7 @@ use crate::{
         ApiContext,
     },
     catalog::CatalogServer,
-    implementations::postgres::{
-        task_queues::{TabularExpirationQueue, TabularPurgeQueue},
-        CatalogState, PostgresCatalog, ReadWrite, SecretsState,
-    },
+    implementations::postgres::{CatalogState, PostgresCatalog, SecretsState},
     request_metadata::RequestMetadata,
     service::{
         authz::Authorizer,
@@ -44,7 +40,7 @@ use crate::{
             s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
             StorageProfile, TestProfile,
         },
-        task_queue::{TaskQueueConfig, TaskQueues},
+        task_queue::TaskQueueRegistry,
         Catalog, SecretStore, State, UserId,
     },
     WarehouseId, CONFIG,
@@ -197,7 +193,6 @@ pub(crate) async fn setup<T: Authorizer>(
     authorizer: T,
     delete_profile: TabularDeleteProfile,
     user_id: Option<UserId>,
-    q_config: Option<TaskQueueConfig>,
     number_of_warehouses: usize,
 ) -> (
     ApiContext<State<T, PostgresCatalog, SecretsState>>,
@@ -208,7 +203,7 @@ pub(crate) async fn setup<T: Authorizer>(
         "Number of warehouses must be greater than 0",
     );
 
-    let api_context = get_api_context(&pool, authorizer, q_config);
+    let api_context = get_api_context(&pool, authorizer);
 
     let metadata = if let Some(user_id) = user_id {
         RequestMetadata::random_human(user_id)
@@ -273,32 +268,26 @@ pub(crate) async fn setup<T: Authorizer>(
 pub(crate) fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
-    queue_config: Option<TaskQueueConfig>,
 ) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
-    let q_config = queue_config.unwrap_or_else(|| CONFIG.queue_config.clone());
+    let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
+    let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
+
+    let mut task_queues = TaskQueueRegistry::new();
+    task_queues.register_built_in_queues::<PostgresCatalog, _, _>(
+        catalog_state,
+        secret_store,
+        auth.clone(),
+        CONFIG.task_poll_interval,
+    );
+    let registered_task_queues = task_queues.registered_task_queues();
     ApiContext {
         v1_state: State {
             authz: auth,
             catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
             secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
             contract_verifiers: ContractVerifiers::new(vec![]),
-            queues: TaskQueues::new(
-                Arc::new(
-                    TabularExpirationQueue::from_config(
-                        ReadWrite::from_pools(pool.clone(), pool.clone()),
-                        q_config.clone(),
-                    )
-                    .unwrap(),
-                ),
-                Arc::new(
-                    TabularPurgeQueue::from_config(
-                        ReadWrite::from_pools(pool.clone(), pool.clone()),
-                        q_config.clone(),
-                    )
-                    .unwrap(),
-                ),
-            ),
             hooks: EndpointHookCollection::new(vec![]),
+            registered_task_queues,
         },
     }
 }
@@ -309,18 +298,18 @@ pub(crate) fn random_request_metadata() -> RequestMetadata {
 
 pub(crate) fn spawn_drop_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
+    poll_interval: Option<std::time::Duration>,
 ) {
     let ctx = ctx.clone();
-    tokio::task::spawn(async move {
-        ctx.clone()
-            .v1_state
-            .queues
-            .spawn_queues::<PostgresCatalog, SecretsState, T>(
-                ctx.v1_state.catalog,
-                ctx.v1_state.secrets,
-                ctx.v1_state.authz,
-            )
-            .await
-            .unwrap();
-    });
+
+    let mut task_queues = TaskQueueRegistry::new();
+    task_queues.register_built_in_queues::<PostgresCatalog, _, _>(
+        ctx.v1_state.catalog.clone(),
+        ctx.v1_state.secrets.clone(),
+        ctx.v1_state.authz.clone(),
+        poll_interval.unwrap_or(CONFIG.task_poll_interval),
+    );
+    let task_runner = task_queues.task_queues_runner();
+
+    tokio::task::spawn(task_runner.run_queue_workers(true));
 }

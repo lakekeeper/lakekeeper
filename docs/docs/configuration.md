@@ -76,10 +76,7 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 
 | Variable                                         | Example    | Description  |
 |--------------------------------------------------|------------|--------------|
-| `LAKEKEEPER__QUEUE_CONFIG__MAX_RETRIES`          | 5          | Number of retries before a task is considered failed  Default: 5 |
-| <nobr>`LAKEKEEPER__QUEUE_CONFIG__MAX_AGE`</nobr> | 3600       | Amount of seconds before a task is considered stale and could be picked up by another worker. Default: 3600 |
-| `LAKEKEEPER__QUEUE_CONFIG__POLL_INTERVAL`        | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
-| `LAKEKEEPER__QUEUE_CONFIG__NUM_WORKERS`          | 2          | Number of workers launched for each queue. Default: 2 |
+| `LAKEKEEPER__TASK_POLL_INTERVAL`        | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
 
 ### NATS
 
