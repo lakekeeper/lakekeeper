@@ -255,43 +255,43 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
 
 === "bash"
 
-  ```bash
-  LAKEKEEPER__BASE_URI=http://localhost:8181 (URI where lakekeeper is reachable)
-  // Note the v2.0 at the End of the provider URI!
-  LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID>/v2.0
-  LAKEKEEPER__OPENID_AUDIENCE="api://<Client ID from App 2 (lakekeeper)>"
-  LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
-  LAKEKEEPER__UI__OPENID_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
-  LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
-  // The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
-  // shows https://login.microsoftonline.com as the issuer but actually
-  // issues tokens for https://sts.windows.net/. This is a well-known
-  // problem in Entra ID.
-  ```
+    ```sh
+    LAKEKEEPER__BASE_URI=http://localhost:8181 (URI where lakekeeper is reachable)
+    // Note the v2.0 at the End of the provider URI!
+    LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID>/v2.0
+    LAKEKEEPER__OPENID_AUDIENCE="api://<Client ID from App 2 (lakekeeper)>"
+    LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
+    LAKEKEEPER__UI__OPENID_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
+    LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
+    // The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
+    // shows https://login.microsoftonline.com as the issuer but actually
+    // issues tokens for https://sts.windows.net/. This is a well-known
+    // problem in Entra ID.
+    ```
 
 === "Terraform"
 
-  ```
-  output "LAKEKEEPER__OPENID_PROVIDER_URI" {
-    value = "https://login.microsoftonline.com/${azuread_service_principal.lakekeeper.application_tenant_id}/v2.0"
-  }
+    ```terraform
+    output "LAKEKEEPER__OPENID_PROVIDER_URI" {
+      value = "https://login.microsoftonline.com/${azuread_service_principal.lakekeeper.application_tenant_id}/v2.0"
+    }
 
-  output "LAKEKEEPER__OPENID_AUDIENCE" {
-    value = azuread_application.lakekeeper.client_id
-  }
+    output "LAKEKEEPER__OPENID_AUDIENCE" {
+      value = azuread_application.lakekeeper.client_id
+    }
 
-  output "LAKEKEEPER__UI__OPENID_CLIENT_ID" {
-    value = azuread_application_registration.lakekeeper_ui.client_id
-  }
+    output "LAKEKEEPER__UI__OPENID_CLIENT_ID" {
+      value = azuread_application_registration.lakekeeper_ui.client_id
+    }
 
-  output "LAKEKEEPER__UI__OPENID_SCOPE" {
-    value = "openid profile api://${azuread_application.lakekeeper.client_id}/lakekeeper"
-  }
+    output "LAKEKEEPER__UI__OPENID_SCOPE" {
+      value = "openid profile api://${azuread_application.lakekeeper.client_id}/lakekeeper"
+    }
 
-  output "LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS" {
-    value = "https://sts.windows.net/${azuread_service_principal.lakekeeper.application_tenant_id}"
-  }
-  ```
+    output "LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS" {
+      value = "https://sts.windows.net/${azuread_service_principal.lakekeeper.application_tenant_id}"
+    }
+    ```
 
 Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
 
