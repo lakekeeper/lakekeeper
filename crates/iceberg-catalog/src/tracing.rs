@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     api::X_REQUEST_ID_HEADER, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
-    X_FORWARDED_PROTO_HEADER,
+    X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
 };
 
 /// A `MakeSpan` implementation that attaches the `request_id` to the span.
@@ -43,6 +43,7 @@ impl<B> MakeSpan<B> for RestMakeSpan {
                         "x-forwarded-host" = %request.headers().get(X_FORWARDED_HOST_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
                         "x-forwarded-proto" = %request.headers().get(X_FORWARDED_PROTO_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
                         "x-forwarded-port" = %request.headers().get(X_FORWARDED_PORT_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
+                        "x-forwarded-prefix" = %request.headers().get(X_FORWARDED_PREFIX_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("not set"),
                         uri = %request.uri(),
                         version = ?request.version(),
                         request_id = %request
