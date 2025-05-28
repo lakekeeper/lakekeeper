@@ -141,7 +141,6 @@ pub(crate) async fn create_view(
         insert_view_version_log(
             view_id,
             history.version_id(),
-            // TODO: it's really really unfortunate to perhaps fail here.
             Some(history.timestamp().map_err(|e| {
                 ErrorModel::internal(
                     "Error converting timestamp_ms into datetime.",

@@ -226,8 +226,6 @@ pub struct DynAppConfig {
     pub kv2: Option<KV2Config>,
     // ------------- Secrets -------------
     pub secret_backend: SecretBackend,
-    // TODO: this breaks compatibility with existing deployments, do we need a transition period or
-    //       are we fine with the breaking change?
     #[serde(
         deserialize_with = "crate::config::seconds_to_std_duration",
         serialize_with = "crate::config::serialize_std_duration_as_ms"

@@ -955,10 +955,19 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         queue_name: String,
         request: SetTaskQueueConfigRequest,
         context: ApiContext<State<A, C, S>>,
-        _request_metadata: RequestMetadata,
+        request_metadata: RequestMetadata,
     ) -> Result<()> {
-        // TODO: authz
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CatalogWarehouseAction::CanModifyTaskQueueConfig,
+            )
+            .await?;
 
+        // ------------------- Business Logic -------------------
         let task_queues = context.v1_state.registered_task_queues;
 
         if let Some(validate_config_fn) = task_queues.validate_config_fn(&queue_name) {
@@ -1000,9 +1009,19 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         warehouse_id: WarehouseId,
         queue_name: &str,
         context: ApiContext<State<A, C, S>>,
-        _request_metadata: RequestMetadata,
+        request_metadata: RequestMetadata,
     ) -> Result<GetTaskQueueConfigResponse> {
-        // TODO: authz
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+        authorizer
+            .require_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CatalogWarehouseAction::CanGetTaskQueueConfig,
+            )
+            .await?;
+
+        // ------------------- Business Logic -------------------
         let mut transaction = C::Transaction::begin_read(context.v1_state.catalog).await?;
         let config = C::get_task_queue_config(warehouse_id, queue_name, transaction.transaction())
             .await?
