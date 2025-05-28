@@ -3044,6 +3044,34 @@ components:
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile used for the warehouse.
+    HdfsCredential:
+      type: object
+    HdfsProfile:
+      type: object
+      description: HDFS Storage Profile
+      required:
+        - url
+        - key-prefix
+      properties:
+        config:
+          type: object
+          description: |-
+            Additional configuration options.
+            Please check the [`rust-native` Documentation](https://github.com/Kimahriman/hdfs-native?tab=readme-ov-file#supported-hdfs-settings)
+            for possible keys.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        key-prefix:
+          type: string
+          description: |-
+            Path in the filesystem which is used for this
+            profile.
+        url:
+          type: string
+          format: uri
+          description: HDFS URL, i.e. `hdfs://ns`
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)
@@ -3785,6 +3813,7 @@ components:
         - aws-system-identities-enabled
         - azure-system-identities-enabled
         - gcp-system-identities-enabled
+        - hdfs-enabled
       properties:
         authz-backend:
           $ref: '#/components/schemas/AuthZBackend'
@@ -3806,6 +3835,9 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        hdfs-enabled:
+          type: boolean
+          description: If HDFS Warehouses are supported in this Lakekeeper deployment
         server-id:
           type: string
           format: uuid
@@ -3976,6 +4008,17 @@ components:
                 }
             }"#).unwrap();
             ```
+        - allOf:
+            - $ref: '#/components/schemas/HdfsCredential'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - hdfs
+          title: StorageCredentialHdfs
       description: Storage secret for a warehouse.
     StorageProfile:
       oneOf:
@@ -4016,6 +4059,17 @@ components:
                   enum:
                     - gcs
           title: StorageProfileGcs
+        - allOf:
+            - $ref: '#/components/schemas/HdfsProfile'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - hdfs
+          title: StorageProfileHdfs
       description: Storage profile for a warehouse.
     TableAction:
       type: string

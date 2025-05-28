@@ -72,6 +72,8 @@ pub struct ServerInfo {
     pub azure_system_identities_enabled: bool,
     /// If using GCP system identities for GCS storage profiles are enabled.
     pub gcp_system_identities_enabled: bool,
+    /// If HDFS Warehouses are supported in this Lakekeeper deployment
+    pub hdfs_enabled: bool,
 }
 
 impl<C: Catalog, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiServer<C, A, S> {}
@@ -200,6 +202,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
             azure_system_identities_enabled: CONFIG.enable_azure_system_credentials,
             gcp_system_identities_enabled: CONFIG.enable_gcp_system_credentials,
+            hdfs_enabled: CONFIG.enable_hdfs_with_system_credentials,
         })
     }
 }

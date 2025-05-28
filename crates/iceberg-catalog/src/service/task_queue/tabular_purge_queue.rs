@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::random_ms_duration;
 use crate::{
     api::{management::v1::TabularType, Result},
-    catalog::{io::remove_all, maybe_get_secret},
+    catalog::maybe_get_secret,
     service::{
         task_queue::{Task, TaskQueue},
         Catalog, SecretStore, Transaction,
@@ -157,7 +157,7 @@ where
             Some(Box::new(e)),
         )
     })?;
-    remove_all(&file_io, &tabular_location).await.map_err(|e| {
+    file_io.remove_all(&tabular_location).await.map_err(|e| {
         tracing::error!(
             ?e,
             "Failed to purge '{tabular_id}' at location: '{tabular_location}'",

@@ -25,7 +25,6 @@ use uuid::Uuid;
 
 use super::{
     commit_tables::apply_commit,
-    io::{delete_file, read_metadata_file, write_metadata_file},
     maybe_get_secret,
     namespace::{authorized_namespace_ident_to_id, validate_namespace_ident},
     require_warehouse_id, CatalogServer,
@@ -264,13 +263,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         if let Some(metadata_location) = &metadata_location {
             let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
-            write_metadata_file(
-                metadata_location,
-                &table_metadata,
-                compression_codec,
-                &file_io,
-            )
-            .await?;
+            file_io
+                .write_metadata_file(metadata_location, &table_metadata, compression_codec)
+                .await?;
         }
 
         // This requires the storage secret
@@ -369,8 +364,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let storage_secret =
             maybe_get_secret(warehouse.storage_secret_id, &state.v1_state.secrets).await?;
+
         let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
-        let table_metadata = read_metadata_file(&file_io, &metadata_location).await?;
+        let table_metadata = file_io.read_metadata_file(&metadata_location).await?;
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
 
         // Check if we need to handle overwrite
@@ -1297,11 +1293,10 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     let write_futures: Vec<_> = commits
         .iter()
         .map(|commit| {
-            write_metadata_file(
+            file_io.write_metadata_file(
                 &commit.new_metadata_location,
                 &commit.new_metadata,
                 commit.new_compression_codec,
-                &file_io,
             )
         })
         .collect();
@@ -1327,7 +1322,7 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     let _ = futures::future::join_all(
         expired_locations
             .iter()
-            .map(|location| delete_file(&file_io, location))
+            .map(|location| file_io.delete_file(location))
             .collect::<Vec<_>>(),
     )
     .await
