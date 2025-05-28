@@ -2,10 +2,10 @@ use core::result::Result::Err;
 use std::{cell::LazyCell, default::Default, str::FromStr, sync::LazyLock};
 
 use axum::{
-    http::{header, StatusCode, Uri},
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
-use iceberg_catalog::{AuthZBackend, CONFIG};
+use iceberg_catalog::{AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
 use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
 
 // Static configuration for UI
@@ -36,6 +36,14 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
         app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
             .ok()
             .or(CONFIG.base_uri.as_ref().map(ToString::to_string)),
+        base_url_prefix: CONFIG.base_uri.as_ref().and_then(|uri| {
+            let path_stripped = uri.path().trim_matches('/');
+            if path_stripped.is_empty() {
+                None
+            } else {
+                Some(format!("/{}", path_stripped))
+            }
+        }),
     }
 });
 
@@ -52,34 +60,42 @@ enum CacheItem {
 }
 
 #[allow(clippy::declare_interior_mutable_const)]
-const FILE_CACHE: LazyCell<moka::sync::Cache<String, CacheItem>> =
+const FILE_CACHE: LazyCell<moka::sync::Cache<(String, Option<String>), CacheItem>> =
     LazyCell::new(|| moka::sync::Cache::new(1000));
 
 // We use static route matchers ("/" and "/index.html") to serve our home
 // page.
-pub async fn index_handler() -> impl IntoResponse {
-    static_handler("/index.html".parse::<Uri>().unwrap()).await
+pub async fn index_handler(headers: HeaderMap) -> impl IntoResponse {
+    static_handler("/index.html".parse::<Uri>().unwrap(), headers).await
 }
 
-pub async fn favicon_handler() -> impl IntoResponse {
-    static_handler("/favicon.ico".parse::<Uri>().unwrap()).await
+pub async fn favicon_handler(headers: HeaderMap) -> impl IntoResponse {
+    static_handler("/favicon.ico".parse::<Uri>().unwrap(), headers).await
 }
 
 // We use a wildcard matcher ("/dist/*file") to match against everything
 // within our defined assets directory. This is the directory on our Asset
 // struct below, where folder = "examples/public/".
-pub async fn static_handler(uri: Uri) -> impl IntoResponse {
+pub async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/').to_string();
 
     if path.starts_with("ui/") {
         path = path.replace("ui/", "");
     }
 
-    get_file_cached(&path).await
+    get_file_cached(&path, forwarded_prefix(&headers)).await
 }
 
-async fn get_file_cached(file_path: &str) -> Response {
-    let cached = FILE_CACHE.get(file_path);
+fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(X_FORWARDED_PREFIX_HEADER)
+        .and_then(|hv| hv.to_str().ok())
+        .map(|s| s.trim_end_matches('/'))
+}
+
+async fn get_file_cached(file_path: &str, forwarded_prefix: Option<&str>) -> Response {
+    let cache_key = (file_path.to_string(), forwarded_prefix.map(String::from));
+    let cached = FILE_CACHE.get(&cache_key);
 
     if let Some(cache_item) = cached {
         cache_item.into_response()
@@ -112,7 +128,7 @@ async fn get_file_cached(file_path: &str) -> Response {
             },
             None => CacheItem::NotFound,
         };
-        FILE_CACHE.insert(file_path.to_string(), cache_item.clone());
+        FILE_CACHE.insert(cache_key, cache_item.clone());
 
         cache_item.into_response()
     }
@@ -135,14 +151,15 @@ mod test {
 
     #[tokio::test]
     async fn test_index_found() {
-        let response = index_handler().await.into_response();
+        let headers = HeaderMap::new();
+        let response = index_handler(headers).await.into_response();
         assert_eq!(response.status(), 200);
     }
 
     #[tokio::test]
     async fn test_favicon() {
         let file_path = "favicon.ico";
-        let file = get_file_cached(file_path).await;
+        let file = get_file_cached(file_path, None).await;
         assert_eq!(file.status(), 200);
         assert_eq!(
             file.headers().get(header::CONTENT_TYPE).unwrap(),
