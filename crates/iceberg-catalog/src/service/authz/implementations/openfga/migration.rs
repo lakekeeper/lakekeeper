@@ -8,7 +8,7 @@ use openfga_client::{
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| AuthorizationModelVersion::new(3, 1)); // <- Change this for every change in the model
+    LazyLock::new(|| AuthorizationModelVersion::new(3, 2)); // <- Change this for every change in the model
 
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
