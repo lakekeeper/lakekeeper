@@ -46,7 +46,7 @@ pub(crate) async fn db_health_check() -> anyhow::Result<()> {
     let reader = get_reader_pool(
         CONFIG
             .to_pool_opts()
-            .acquire_timeout(std::time::Duration::from_secs(1))
+            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout))
             .max_connections(1),
     )
     .await
@@ -54,7 +54,7 @@ pub(crate) async fn db_health_check() -> anyhow::Result<()> {
     let writer = get_writer_pool(
         CONFIG
             .to_pool_opts()
-            .acquire_timeout(std::time::Duration::from_secs(1))
+            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout))
             .max_connections(1),
     )
     .await

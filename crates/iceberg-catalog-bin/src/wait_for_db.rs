@@ -36,7 +36,7 @@ pub(crate) async fn wait_for_db(
         loop {
             let opts = CONFIG
                 .to_pool_opts()
-                .acquire_timeout(std::time::Duration::from_secs(1));
+                .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout));
 
             let read_pool = get_reader_pool(opts).await?;
             let migrations =
