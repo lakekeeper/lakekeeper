@@ -89,7 +89,6 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(X_FORWARDED_PREFIX_HEADER)
         .and_then(|hv| hv.to_str().ok())
-        .map(|s| s.trim_end_matches('/'))
 }
 
 async fn get_file_cached(file_path: &str, forwarded_prefix: Option<&str>) -> Response {
