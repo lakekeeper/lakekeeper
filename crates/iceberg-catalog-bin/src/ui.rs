@@ -10,7 +10,7 @@ use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
 // Static configuration for UI
 static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
     let default_config = LakekeeperConsoleConfig::default();
-    LakekeeperConsoleConfig {
+    let config = LakekeeperConsoleConfig {
         idp_authority: std::env::var("LAKEKEEPER__UI__OPENID_PROVIDER_URI")
             .ok()
             .or(CONFIG
@@ -43,7 +43,9 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
                 Some(format!("/{}", path_stripped))
             }
         }),
-    }
+    };
+    tracing::debug!("UI config: {:?}", config);
+    config
 });
 
 // Create a global file cache initialized with the UI config
@@ -67,8 +69,14 @@ pub async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
     }
 
     let forwarded_prefix = forwarded_prefix(&headers);
-
     let lakekeeper_base_uri = determine_base_uri(&headers);
+
+    tracing::trace!(
+        "Serving static file: path={}, forwarded_prefix={:?}, lakekeeper_base_uri={:?}",
+        path,
+        forwarded_prefix,
+        lakekeeper_base_uri
+    );
     cache_item_to_response(FILE_CACHE.get_file(
         &path,
         forwarded_prefix,
