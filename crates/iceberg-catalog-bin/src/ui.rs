@@ -105,9 +105,17 @@ async fn get_file_cached(file_path: &str, forwarded_prefix: Option<&str>) -> Res
         };
         let file_path_owned = file_path.to_string();
 
+        let config = if let Some(prefix) = forwarded_prefix {
+            LakekeeperConsoleConfig {
+                base_url_prefix: Some(prefix.to_string()),
+                ..UI_CONFIG.clone()
+            }
+        } else {
+            UI_CONFIG.clone()
+        };
+
         let content =
-            match tokio::task::spawn_blocking(move || get_file(&file_path_owned, &UI_CONFIG)).await
-            {
+            match tokio::task::spawn_blocking(move || get_file(&file_path_owned, &config)).await {
                 Err(e) => {
                     tracing::error!("Error while fetching asset: {:?}", e);
                     return (
@@ -152,6 +160,32 @@ mod test {
         let headers = HeaderMap::new();
         let response = index_handler(headers).await.into_response();
         assert_eq!(response.status(), 200);
+        let body = response.into_body();
+        let body_str = String::from_utf8(
+            axum::body::to_bytes(body, 10000)
+                .await
+                .expect("Failed to read response body")
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body_str.contains("\"/ui/assets/"));
+    }
+
+    #[tokio::test]
+    async fn test_index_prefix() {
+        let mut headers = HeaderMap::new();
+        headers.append(X_FORWARDED_PREFIX_HEADER, "/lakekeeper".parse().unwrap());
+        let response = index_handler(headers).await.into_response();
+        assert_eq!(response.status(), 200);
+        let body = response.into_body();
+        let body_str = String::from_utf8(
+            axum::body::to_bytes(body, 10000)
+                .await
+                .expect("Failed to read response body")
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
     }
 
     #[tokio::test]
