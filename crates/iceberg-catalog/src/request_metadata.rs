@@ -271,7 +271,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     next.run(request).await
 }
 
-fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
+pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
     if let Some(uri) = CONFIG.base_uri.as_ref() {
         return Some(uri.to_string());
     }

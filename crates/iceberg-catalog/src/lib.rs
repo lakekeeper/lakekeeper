@@ -23,8 +23,8 @@ pub use limes;
 #[cfg(feature = "kafka")]
 pub use rdkafka;
 pub use request_metadata::{
-    X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER,
-    X_FORWARDED_PROTO_HEADER,
+    determine_base_uri, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER,
+    X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
 };
 pub use tokio;
 pub use utoipa;

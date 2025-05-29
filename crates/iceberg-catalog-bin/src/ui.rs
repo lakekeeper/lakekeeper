@@ -4,7 +4,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
-use iceberg_catalog::{AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
+use iceberg_catalog::{determine_base_uri, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
 use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
 
 // Static configuration for UI
@@ -32,7 +32,7 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
         .unwrap_or(default_config.idp_post_logout_redirect_path),
         enable_authentication: CONFIG.openid_provider_uri.is_some(),
         enable_permissions: CONFIG.authz_backend == AuthZBackend::OpenFGA,
-        app_iceberg_catalog_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
+        app_lakekeeper_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
             .ok()
             .or(CONFIG.base_uri.as_ref().map(ToString::to_string)),
         base_url_prefix: CONFIG.base_uri.as_ref().and_then(|uri| {
@@ -68,9 +68,12 @@ pub async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
 
     let forwarded_prefix = forwarded_prefix(&headers);
 
-    // Use the file cache with just the path and forwarded prefix
-    // The config is stored inside the cache
-    cache_item_to_response(FILE_CACHE.get_file(&path, forwarded_prefix))
+    let lakekeeper_base_uri = determine_base_uri(&headers);
+    cache_item_to_response(FILE_CACHE.get_file(
+        &path,
+        forwarded_prefix,
+        lakekeeper_base_uri.as_deref(),
+    ))
 }
 
 fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
