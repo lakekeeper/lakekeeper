@@ -2,6 +2,19 @@
 
 
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-05-28)
+
+
+### Features
+
+* Add hooks for Catalog Endpoints, Implement EventPublisher as Hook ([#1075](https://github.com/lakekeeper/lakekeeper/issues/1075)) ([9933949](https://github.com/lakekeeper/lakekeeper/commit/9933949e5d0196e983b2881863ea2c5a60dc12f1))
+* **tasks:** Extendable Task Queue System ([#1085](https://github.com/lakekeeper/lakekeeper/issues/1085)) ([ec4cbd1](https://github.com/lakekeeper/lakekeeper/commit/ec4cbd154fcc6ab62faa1c31a15981da96161e36))
+
+
+### Bug Fixes
+
+* Increase DB timeout from 1 to 5 Seconds ([#1129](https://github.com/lakekeeper/lakekeeper/issues/1129)) ([45bf2f7](https://github.com/lakekeeper/lakekeeper/commit/45bf2f778eecb37cac70cbf329cb36c654f18c7e))
+
 ## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
 
 
