@@ -1,12 +1,11 @@
-use core::result::Result::Err;
-use std::{default::Default, str::FromStr, sync::LazyLock};
+use std::{default::Default, sync::LazyLock};
 
 use axum::{
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use iceberg_catalog::{AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
-use lakekeeper_console::{get_file, LakekeeperConsoleConfig};
+use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
 
 // Static configuration for UI
 static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
@@ -47,23 +46,10 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
     }
 });
 
-static MIME_TYPE_ICON: LazyLock<mime_guess::Mime> =
-    LazyLock::new(|| mime_guess::Mime::from_str("image/x-icon").unwrap());
+// Create a global file cache initialized with the UI config
+static FILE_CACHE: LazyLock<FileCache> = LazyLock::new(|| FileCache::new(UI_CONFIG.clone()));
 
-#[derive(Debug, Clone)]
-enum CacheItem {
-    NotFound,
-    Found {
-        mime: mime_guess::Mime,
-        data: std::borrow::Cow<'static, [u8]>,
-    },
-}
-
-static FILE_CACHE: LazyLock<moka::sync::Cache<(String, Option<String>), CacheItem>> =
-    LazyLock::new(|| moka::sync::Cache::new(1000));
-
-// We use static route matchers ("/" and "/index.html") to serve our home
-// page.
+// We use static route matchers ("/" and "/index.html") to serve our home page
 pub async fn index_handler(headers: HeaderMap) -> impl IntoResponse {
     static_handler("/index.html".parse::<Uri>().unwrap(), headers).await
 }
@@ -72,9 +58,7 @@ pub async fn favicon_handler(headers: HeaderMap) -> impl IntoResponse {
     static_handler("/favicon.ico".parse::<Uri>().unwrap(), headers).await
 }
 
-// We use a wildcard matcher ("/dist/*file") to match against everything
-// within our defined assets directory. This is the directory on our Asset
-// struct below, where folder = "examples/public/".
+// Handler for static assets
 pub async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/').to_string();
 
@@ -82,7 +66,11 @@ pub async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
         path = path.replace("ui/", "");
     }
 
-    get_file_cached(&path, forwarded_prefix(&headers)).await
+    let forwarded_prefix = forwarded_prefix(&headers);
+
+    // Use the file cache with just the path and forwarded prefix
+    // The config is stored inside the cache
+    cache_item_to_response(FILE_CACHE.get_file(&path, forwarded_prefix))
 }
 
 fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
@@ -91,62 +79,11 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
         .and_then(|hv| hv.to_str().ok())
 }
 
-async fn get_file_cached(file_path: &str, forwarded_prefix: Option<&str>) -> Response {
-    let cache_key = (file_path.to_string(), forwarded_prefix.map(String::from));
-    let cached = FILE_CACHE.get(&cache_key);
-
-    if let Some(cache_item) = cached {
-        cache_item.into_response()
-    } else {
-        let mime = if file_path.ends_with("favicon.ico") {
-            MIME_TYPE_ICON.clone()
-        } else {
-            mime_guess::from_path(file_path).first_or_octet_stream()
-        };
-        let file_path_owned = file_path.to_string();
-
-        let config = if let Some(prefix) = forwarded_prefix {
-            LakekeeperConsoleConfig {
-                base_url_prefix: Some(prefix.to_string()),
-                ..UI_CONFIG.clone()
-            }
-        } else {
-            UI_CONFIG.clone()
-        };
-
-        let content =
-            match tokio::task::spawn_blocking(move || get_file(&file_path_owned, &config)).await {
-                Err(e) => {
-                    tracing::error!("Error while fetching asset: {:?}", e);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "500 Internal Server Error while fetching asset",
-                    )
-                        .into_response();
-                }
-                Ok(c) => c,
-            };
-
-        let cache_item = match content {
-            Some(content) => CacheItem::Found {
-                mime: mime.clone(),
-                data: content.data,
-            },
-            None => CacheItem::NotFound,
-        };
-        FILE_CACHE.insert(cache_key, cache_item.clone());
-
-        cache_item.into_response()
-    }
-}
-
-impl IntoResponse for CacheItem {
-    fn into_response(self) -> Response {
-        match self {
-            CacheItem::NotFound => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
-            CacheItem::Found { mime, data } => {
-                ([(header::CONTENT_TYPE, mime.as_ref())], data).into_response()
-            }
+fn cache_item_to_response(item: CacheItem) -> Response {
+    match item {
+        CacheItem::NotFound => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
+        CacheItem::Found { mime, data } => {
+            ([(header::CONTENT_TYPE, mime.as_ref())], data).into_response()
         }
     }
 }
@@ -186,16 +123,5 @@ mod test {
         )
         .unwrap();
         assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
-    }
-
-    #[tokio::test]
-    async fn test_favicon() {
-        let file_path = "favicon.ico";
-        let file = get_file_cached(file_path, None).await;
-        assert_eq!(file.status(), 200);
-        assert_eq!(
-            file.headers().get(header::CONTENT_TYPE).unwrap(),
-            MIME_TYPE_ICON.as_ref()
-        );
     }
 }
