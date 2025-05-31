@@ -783,6 +783,7 @@ mod test {
                 config.base_uri.as_ref().unwrap().to_string(),
                 "https://localhost:8181/a/b/"
             );
+            assert_eq!(config.base_uri.as_ref().unwrap().path(), "/a/b/");
             Ok(())
         });
         figment::Jail::expect_with(|jail| {
@@ -792,6 +793,17 @@ mod test {
                 config.base_uri.as_ref().unwrap().to_string(),
                 "https://localhost:8181/a/b/"
             );
+            assert_eq!(config.base_uri.as_ref().unwrap().path(), "/a/b/");
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__BASE_URI", "https://localhost:8181");
+            let config = get_config();
+            assert_eq!(
+                config.base_uri.as_ref().unwrap().to_string(),
+                "https://localhost:8181/"
+            );
+            assert_eq!(config.base_uri.as_ref().unwrap().path(), "/");
             Ok(())
         });
     }

@@ -38,10 +38,10 @@ ENV SQLX_OFFLINE=true
 RUN cargo build --release --all-features --bin iceberg-catalog
 
 # our final base
-FROM gcr.io/distroless/cc-debian12:nonroot as base
+FROM gcr.io/distroless/cc-debian12:nonroot AS base
 
 
-FROM busybox:1.37.0 as cleaner
+FROM busybox:1.37.0 AS cleaner
 # small diversion through busybox to remove some files
 # (no rm in distroless)
 

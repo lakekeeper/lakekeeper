@@ -19,10 +19,10 @@ const PROJECT_ID_HEADER_DEPRECATED: &str = "x-project-ident";
 pub const X_PROJECT_ID_HEADER: &str = "x-project-id";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
 
-pub(crate) const X_FORWARDED_HOST_HEADER: &str = "x-forwarded-host";
-pub(crate) const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
-pub(crate) const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
-pub(crate) const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
+pub const X_FORWARDED_HOST_HEADER: &str = "x-forwarded-host";
+pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
+pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
+pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
@@ -271,7 +271,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     next.run(request).await
 }
 
-fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
+pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
     if let Some(uri) = CONFIG.base_uri.as_ref() {
         return Some(uri.to_string());
     }
