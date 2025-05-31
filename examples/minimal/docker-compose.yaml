@@ -127,7 +127,7 @@ services:
       iceberg_net:
 
   minio:
-    image: bitnami/minio:latest
+    image: bitnami/minio:2025.4.22
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
