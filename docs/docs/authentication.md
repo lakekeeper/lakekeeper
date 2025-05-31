@@ -226,6 +226,11 @@ Alternatively, the following snippets will setup the resources mentioned above:
         user_consent_display_name  = "Access Lakekeeper API"
       }
     }
+    lifecycle {
+      ignore_changes = [
+        identifier_uris,
+      ]
+    }
   }
 
   resource "azuread_application_identifier_uri" "lakekeeper" {
