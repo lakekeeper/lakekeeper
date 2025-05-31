@@ -3650,7 +3650,7 @@ dependencies = [
 [[package]]
 name = "lakekeeper-console"
 version = "0.1.0"
-source = "git+https://github.com/lakekeeper/console?rev=1db1909#1db1909af8a2d5de24e1c81ceb64534a96b6b5e2"
+source = "git+https://github.com/lakekeeper/console?rev=2e6c314#2e6c31404d55d5156b2668872192809333b045a8"
 dependencies = [
  "derivative",
  "fs_extra",
