@@ -52,10 +52,10 @@ services:
       - LAKEKEEPER__OPENFGA__CLIENT_ID=openfga
       - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
       - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
-      - RUST_LOG=info,iceberg-catalog=trace,middle=trace
+      - RUST_LOG=info,lakekeeper=trace,middle=trace
     command: [ "serve" ]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -99,9 +99,9 @@ services:
       - LAKEKEEPER__OPENFGA__CLIENT_ID=openfga
       - LAKEKEEPER__OPENFGA__CLIENT_SECRET=xqE1vUrifVDKAZdLuz6JAnDxMYLdGu5z
       - LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
-      - RUST_LOG=info,iceberg-catalog=info,middle=trace
+      - RUST_LOG=info,lakekeeper=info,middle=trace
     restart: "no"
-    entrypoint: [ "/home/nonroot/iceberg-catalog", "migrate" ]
+    entrypoint: [ "/home/nonroot/lakekeeper", "migrate" ]
     depends_on:
       db:
         condition: service_healthy

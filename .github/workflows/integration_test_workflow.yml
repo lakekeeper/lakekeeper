@@ -23,7 +23,7 @@ jobs:
           - name: Restore binary
             uses: actions/download-artifact@v4
             with:
-              name: iceberg-catalog-image
+              name: lakekeeper-image
               path: artifacts
 
           - name: Display structure of downloaded files
@@ -31,7 +31,7 @@ jobs:
 
           - name: Restore Docker image
             run: |
-              docker load -i artifacts/iceberg-catalog-local-amd64.tar
+              docker load -i artifacts/lakekeeper-local-amd64.tar
 
           - name: Test ${{ inputs.test_name }}
             run: |
@@ -52,7 +52,7 @@ jobs:
 
             env:
               LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
-              LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+              LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
               AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
               AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
               AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}

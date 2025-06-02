@@ -26,7 +26,7 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres
 source .env
 
 # migrate db
-cd crates/iceberg-catalog
+cd crates/lakekeeper
 sqlx database create && sqlx migrate run
 cd ../..
 
@@ -41,11 +41,11 @@ just check-clippy
 
 ### What is where?
 
-We have three crates, `iceberg-catalog`, `iceberg-catalog-bin` and `iceberg-ext`. The bulk of the code is in `iceberg-catalog`. The `iceberg-catalog-bin` crate contains the main entry point for the catalog. The `iceberg-ext` crate contains extensions to `iceberg-rust`. 
+We have three crates, `lakekeeper`, `lakekeeper-bin` and `iceberg-ext`. The bulk of the code is in `lakekeeper`. The `lakekeeper-bin` crate contains the main entry point for the catalog. The `iceberg-ext` crate contains extensions to `iceberg-rust`. 
 
-#### iceberg-catalog
+#### lakekeeper
 
-The `iceberg-catalog` crate contains the core of the catalog. It is structured into several modules:
+The `lakekeeper` crate contains the core of the catalog. It is structured into several modules:
 
 1. `api` - contains the implementation of the REST API handlers as well as the `axum` router instantiation.
 2. `catalog` - contains the core business logic of the REST catalog
@@ -53,13 +53,13 @@ The `iceberg-catalog` crate contains the core of the catalog. It is structured i
 4. `tests` - contains integration tests and some common test helpers, see below for more information.
 5. `implementations` - contains the concrete implementation of the catalog backend, currently there's only a Postgres implementation and an alternative for Postgres as secret-store, `kv2`.
 
-#### iceberg-catalog-bin
+#### lakekeeper-bin
 
 The main function branches out into multiple commands, amongst others, there's a health-check, migrations, but also serve which is likely the most relevant to you. In case you are forking us to implement your own AuthZ backend, you'll want to change the `serve` command to use your own implementation, just follow the call-chain.
 
 ### Where to put tests?
 
-We try to keep unit-tests close to the code they are testing. E.g., all tests for the database module of tables are located in `crates/iceberg-catalog/src/implementations/postgres/tabular/table/mod.rs`. While working on more complex features we noticed a lot of repetition within tests and started to put commonly used functions into `crates/iceberg-catalog/src/tests/mod.rs`. Within the `tests` module, there are also some higher-level tests that cannot be easily mapped to a single module or require a non-trivial setup. Depending on what you are working on, you may want to put your tests there.
+We try to keep unit-tests close to the code they are testing. E.g., all tests for the database module of tables are located in `crates/lakekeeper/src/implementations/postgres/tabular/table/mod.rs`. While working on more complex features we noticed a lot of repetition within tests and started to put commonly used functions into `crates/lakekeeper/src/tests/mod.rs`. Within the `tests` module, there are also some higher-level tests that cannot be easily mapped to a single module or require a non-trivial setup. Depending on what you are working on, you may want to put your tests there.
 
 ### I need to add an endpoint
 
@@ -80,7 +80,7 @@ one.:
 ```sh
 docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
 ```
-The `crates/iceberg-catalog` folder contains a `.env.sample` File.
+The `crates/lakekeeper` folder contains a `.env.sample` File.
 Copy this file to `.env` and add your database credentials if they differ.
 
 Run:

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 #[cfg(feature = "ui")]
 use axum::routing::get;
-use iceberg_catalog::{
+use lakekeeper::{
     api::router::{new_full_router, serve as service_serve, RouterArgs},
     implementations::{
         postgres::{endpoint_statistics::PostgresStatisticsSink, CatalogState, PostgresCatalog},
@@ -37,13 +37,13 @@ const K8S_IDP_ID: &str = "kubernetes";
 use crate::ui;
 
 pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow::Error> {
-    let read_pool = iceberg_catalog::implementations::postgres::get_reader_pool(
+    let read_pool = lakekeeper::implementations::postgres::get_reader_pool(
         CONFIG
             .to_pool_opts()
             .max_connections(CONFIG.pg_read_pool_connections),
     )
     .await?;
-    let write_pool = iceberg_catalog::implementations::postgres::get_writer_pool(
+    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
         CONFIG
             .to_pool_opts()
             .max_connections(CONFIG.pg_write_pool_connections),
@@ -76,7 +76,7 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
     }
 
     let secrets_state: Secrets = match CONFIG.secret_backend {
-        SecretBackend::KV2 => iceberg_catalog::implementations::kv2::SecretsState::from_config(
+        SecretBackend::KV2 => lakekeeper::implementations::kv2::SecretsState::from_config(
             CONFIG
                 .kv2
                 .as_ref()
@@ -84,13 +84,11 @@ pub(crate) async fn serve(bind_addr: std::net::SocketAddr) -> Result<(), anyhow:
         )
         .await?
         .into(),
-        SecretBackend::Postgres => {
-            iceberg_catalog::implementations::postgres::SecretsState::from_pools(
-                read_pool.clone(),
-                write_pool.clone(),
-            )
-            .into()
-        }
+        SecretBackend::Postgres => lakekeeper::implementations::postgres::SecretsState::from_pools(
+            read_pool.clone(),
+            write_pool.clone(),
+        )
+        .into(),
     };
     let authorizer = get_default_authorizer_from_config().await?;
 
@@ -310,14 +308,15 @@ async fn serve_inner<A: Authorizer, N: Authenticator + 'static>(
         sinks: cloud_event_sinks,
     };
 
-    let (layer, metrics_future) =
-        iceberg_catalog::metrics::get_axum_layer_and_install_recorder(CONFIG.metrics_port)
-            .map_err(|e| {
-                anyhow!(e).context(format!(
-                    "Failed to start metrics server on port: {}",
-                    CONFIG.metrics_port
-                ))
-            })?;
+    let (layer, metrics_future) = lakekeeper::metrics::get_axum_layer_and_install_recorder(
+        CONFIG.metrics_port,
+    )
+    .map_err(|e| {
+        anyhow!(e).context(format!(
+            "Failed to start metrics server on port: {}",
+            CONFIG.metrics_port
+        ))
+    })?;
 
     let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
 

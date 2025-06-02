@@ -28,10 +28,10 @@ jobs:
     if: ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'lakekeeper/lakekeeper') || (github.event_name == 'pull_request' && github.repository == 'lakekeeper/lakekeeper' && github.event.pull_request.head.repo.full_name == github.repository)
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
-      tag_name: ${{ steps.release.outputs['crates/iceberg-catalog--tag_name'] }}
-      major: ${{ steps.release.outputs['crates/iceberg-catalog--major'] }}
-      minor: ${{ steps.release.outputs['crates/iceberg-catalog--minor'] }}
-      patch: ${{ steps.release.outputs['crates/iceberg-catalog--patch'] }}
+      tag_name: ${{ steps.release.outputs['crates/lakekeeper--tag_name'] }}
+      major: ${{ steps.release.outputs['crates/lakekeeper--major'] }}
+      minor: ${{ steps.release.outputs['crates/lakekeeper--minor'] }}
+      patch: ${{ steps.release.outputs['crates/lakekeeper--patch'] }}
     steps:
       - name: echo repository and branch
         run: |
@@ -71,34 +71,34 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            name: iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
+            name: lakekeeper-x86_64-unknown-linux-gnu.tar.gz
             docker-build: false
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
-            name: iceberg-catalog-x86_64-unknown-linux-musl.tar.gz
+            name: lakekeeper-x86_64-unknown-linux-musl.tar.gz
             docker-build: true
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            name: iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
+            name: lakekeeper-aarch64-unknown-linux-musl.tar.gz
             docker-build: true
 
           - target: aarch64-apple-darwin
             os: macos-14
-            name: iceberg-catalog-aarch64-apple-darwin.tar.gz
+            name: lakekeeper-aarch64-apple-darwin.tar.gz
             docker-build: false
 
     #          - target: x86_64-pc-windows-msvc
     #            os: windows-latest
-    #            name: iceberg-catalog-x86_64-pc-windows-msvc.zip
+    #            name: lakekeeper-x86_64-pc-windows-msvc.zip
     #            rustflags: -C target-feature=+crt-static
     #            # Windows with cross is extremely slow
     #            cross: false
     #
     #          - target: aarch64-pc-windows-msvc
     #            os: windows-latest
-    #            name: iceberg-catalog-aarch64-pc-windows-msvc.zip
+    #            name: lakekeeper-aarch64-pc-windows-msvc.zip
     #            rustflags: -C target-feature=+crt-static
     #            cross: false
 
@@ -132,7 +132,7 @@ jobs:
       #        if: matrix.os == 'windows-latest'
       #        run: |
       #          cd target/${{ matrix.target }}/release
-      #          7z a ../../../${{ matrix.name }} iceberg-catalog.exe
+      #          7z a ../../../${{ matrix.name }} lakekeeper.exe
       #          cd -
 
       - name: Prepare Docker [Docker build]
@@ -157,7 +157,7 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czvf ../../../${{ matrix.name }} iceberg-catalog
+          tar czvf ../../../${{ matrix.name }} lakekeeper
           cd -
 
       - name: Upload artifacts
@@ -198,11 +198,11 @@ jobs:
 
       - name: Restore Binaries
         run: |
-          cd bin-iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
-          tar xzvf iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz
+          cd bin-lakekeeper-x86_64-unknown-linux-gnu.tar.gz
+          tar xzvf lakekeeper-x86_64-unknown-linux-gnu.tar.gz
           cd -
-          cd bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
-          tar xzvf iceberg-catalog-aarch64-unknown-linux-musl.tar.gz
+          cd bin-lakekeeper-aarch64-unknown-linux-musl.tar.gz
+          tar xzvf lakekeeper-aarch64-unknown-linux-musl.tar.gz
           ls -Rlh
 
       - name: Set up QEMU
@@ -213,28 +213,28 @@ jobs:
 
       - name: Build Docker image (amd64)
         run: |
-          DOCKER_BUILDKIT=1 docker build -t localhost/iceberg-catalog-local:amd64 \
+          DOCKER_BUILDKIT=1 docker build -t localhost/lakekeeper-local:amd64 \
             -f docker/bin.Dockerfile \
             --build-arg "ARCH=amd64" \
             --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
-            --build-arg "BIN=bin-iceberg-catalog-x86_64-unknown-linux-gnu.tar.gz/iceberg-catalog" .
-          docker save -o /tmp/docker-iceberg-catalog-amd64.tar localhost/iceberg-catalog-local:amd64
+            --build-arg "BIN=bin-lakekeeper-x86_64-unknown-linux-gnu.tar.gz/lakekeeper" .
+          docker save -o /tmp/docker-lakekeeper-amd64.tar localhost/lakekeeper-local:amd64
 
       - name: Build Docker image (arm64)
         run: |
           DOCKER_BUILDKIT=1 docker build \
-            --platform linux/arm64 -t localhost/iceberg-catalog-local:arm64 \
+            --platform linux/arm64 -t localhost/lakekeeper-local:arm64 \
             -f docker/bin.Dockerfile \
             --build-arg "ARCH=arm64" \
             --build-arg "EXPIRES=${{ needs.release_please.outputs.releases_created == 'true' && 'Never' || '4w' }}" \
-            --build-arg "BIN=bin-iceberg-catalog-aarch64-unknown-linux-musl.tar.gz/iceberg-catalog" .
-          docker save -o /tmp/docker-iceberg-catalog-arm64.tar localhost/iceberg-catalog-local:arm64
+            --build-arg "BIN=bin-lakekeeper-aarch64-unknown-linux-musl.tar.gz/lakekeeper" .
+          docker save -o /tmp/docker-lakekeeper-arm64.tar localhost/lakekeeper-local:arm64
 
       - name: Save Docker
         uses: actions/upload-artifact@v4
         with:
-          name: docker-iceberg-catalog
-          path: /tmp/docker-iceberg-catalog-*.tar
+          name: docker-lakekeeper
+          path: /tmp/docker-lakekeeper-*.tar
 
   test-docker:
     name: Test Docker
@@ -246,9 +246,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - file: docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
+          - file: docker-lakekeeper/docker-lakekeeper-amd64.tar
             arch: amd64
-          - file: docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+          - file: docker-lakekeeper/docker-lakekeeper-arm64.tar
             arch: arm64
     steps:
       - name: Checkout
@@ -273,7 +273,7 @@ jobs:
           cd tests
           docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
         env:
-          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:${{ matrix.arch }}
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:${{ matrix.arch }}
           LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -303,11 +303,11 @@ jobs:
 
       - name: Inspect Docker
         run: |
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
           docker images
-          docker inspect localhost/iceberg-catalog-local:amd64
-          docker inspect localhost/iceberg-catalog-local:arm64
+          docker inspect localhost/lakekeeper-local:amd64
+          docker inspect localhost/lakekeeper-local:arm64
 
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
@@ -341,15 +341,15 @@ jobs:
 
       - name: Load Docker
         run: |
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
           docker images
 
       - name: Push Full Tag to quay.io
         run: |
           COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
+          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
+          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest create quay.io/lakekeeper/catalog:latest-main quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
@@ -377,7 +377,7 @@ jobs:
       - name: Build | Add Artifacts to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: bin-iceberg-catalog-*/iceberg-catalog-*
+          files: bin-lakekeeper-*/lakekeeper-*
           tag_name: ${{ needs.release_please.outputs.tag_name }}
 
   publish-container-lakekeeper:
@@ -402,14 +402,14 @@ jobs:
 
       - name: Load Docker
         run: |
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-amd64.tar
-          docker load -i docker-iceberg-catalog/docker-iceberg-catalog-arm64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
+          docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
           docker images
 
       - name: Push Images to quay.io
         run: |
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
+          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
+          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
 
@@ -423,14 +423,14 @@ jobs:
       - name: Push Partial Tag to quay.io
         if: steps.check-tag.outputs.match == 'true'
         run: |
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/lakekeeper/catalog:latest-amd64
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-amd64
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
-          docker tag localhost/iceberg-catalog-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/lakekeeper/catalog:latest-arm64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-arm64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
-          docker tag localhost/iceberg-catalog-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
+          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:latest-amd64
+          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-amd64
+          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
+          docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
+          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:latest-arm64
+          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-arm64
+          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
+          docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
           docker push quay.io/lakekeeper/catalog:latest-amd64
           docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}-amd64
           docker push quay.io/lakekeeper/catalog:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64

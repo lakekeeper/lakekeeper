@@ -1,5 +1,5 @@
 [package]
-name = "iceberg-catalog"
+name = "lakekeeper"
 resolver = "2"
 version = "0.8.5"
 edition = { workspace = true }

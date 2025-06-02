@@ -15,7 +15,7 @@ services:
       - LAKEKEEPER__UI__OPENID_SCOPE
     command: [ "serve" ]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3

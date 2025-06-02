@@ -35,7 +35,7 @@ RUN $NO_CHEF || cargo chef cook --release --recipe-path recipe.json
 COPY . .
 
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --all-features --bin iceberg-catalog
+RUN cargo build --release --all-features --bin lakekeeper
 
 # our final base
 FROM gcr.io/distroless/cc-debian12:nonroot AS base
@@ -70,7 +70,7 @@ LABEL maintainer="moderation@vakamo.com" quay.expires-after=${EXPIRES}
 COPY --from=cleaner /clean /
 
 # copy the build artifact from the build stage
-COPY --from=builder /app/target/release/iceberg-catalog /home/nonroot/iceberg-catalog
+COPY --from=builder /app/target/release/lakekeeper /home/nonroot/lakekeeper
 
 # # set the startup command to run your binary
-ENTRYPOINT ["/home/nonroot/iceberg-catalog"]
+ENTRYPOINT ["/home/nonroot/lakekeeper"]

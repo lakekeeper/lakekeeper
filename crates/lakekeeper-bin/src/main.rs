@@ -1,7 +1,7 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 
 use clap::{Parser, Subcommand};
-use iceberg_catalog::{
+use lakekeeper::{
     api::management::v1::api_doc as v1_api_doc,
     service::{
         authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
@@ -129,11 +129,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Migrate {}) => {
             print_info();
             println!("Migrating authorizer...");
-            iceberg_catalog::service::authz::implementations::migrate_default_authorizer().await?;
+            lakekeeper::service::authz::implementations::migrate_default_authorizer().await?;
             println!("Authorizer migration complete.");
 
             println!("Migrating database...");
-            let write_pool = iceberg_catalog::implementations::postgres::get_writer_pool(
+            let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
                 CONFIG
                     .to_pool_opts()
                     .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
 
             // This embeds database migrations in the application binary so we can ensure the database
             // is migrated correctly on startup
-            iceberg_catalog::implementations::postgres::migrations::migrate(&write_pool).await?;
+            lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
             println!("Database migration complete.");
         }
         Some(Commands::Serve { force_start }) => {

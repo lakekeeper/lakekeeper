@@ -1,9 +1,5 @@
 [workspace]
-members = [
-    "crates/iceberg-catalog",
-    "crates/iceberg-catalog-bin",
-    "crates/iceberg-ext",
-]
+members = ["crates/iceberg-ext", "crates/lakekeeper", "crates/lakekeeper-bin"]
 resolver = "2"
 
 [workspace.package]
@@ -134,7 +130,9 @@ utoipa = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005
     "yaml",
 ] }
 serde_yml = "0.0.12"
-utoipa-swagger-ui = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = ["axum"] }
+utoipa-swagger-ui = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
+    "axum",
+] }
 veil = "0.2.0"
 paste = "1.0.15"
 heck = "0.5.0"

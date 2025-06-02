@@ -20,7 +20,7 @@ jobs:
     with:
       platform: 'amd64'
       dockerfile: 'docker/full.Dockerfile'
-      image_name: 'iceberg-catalog-local'
+      image_name: 'lakekeeper-local'
 
   # Depends on all actions that are required for a "successful" CI run.
   tests-pass:
@@ -42,7 +42,7 @@ jobs:
       - name: Restore binary
         uses: actions/download-artifact@v4
         with:
-          name: iceberg-catalog-image
+          name: lakekeeper-image
           path: artifacts
 
       - name: Display structure of downloaded files
@@ -50,7 +50,7 @@ jobs:
 
       - name: Restore Docker image
         run: |
-          docker load -i artifacts/iceberg-catalog-local-amd64.tar
+          docker load -i artifacts/lakekeeper-local-amd64.tar
 
       - name: Test Minimal
         run: |
@@ -58,7 +58,7 @@ jobs:
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\""
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
@@ -72,7 +72,7 @@ jobs:
       - name: Restore binary
         uses: actions/download-artifact@v4
         with:
-          name: iceberg-catalog-image
+          name: lakekeeper-image
           path: artifacts
 
       - name: Display structure of downloaded files
@@ -80,7 +80,7 @@ jobs:
 
       - name: Restore Docker image
         run: |
-          docker load -i artifacts/iceberg-catalog-local-amd64.tar
+          docker load -i artifacts/lakekeeper-local-amd64.tar
 
       - name: Test Aeccess Control Simple
         run: |
@@ -88,7 +88,7 @@ jobs:
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb"
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
@@ -102,7 +102,7 @@ jobs:
       - name: Restore binary
         uses: actions/download-artifact@v4
         with:
-          name: iceberg-catalog-image
+          name: lakekeeper-image
           path: artifacts
 
       - name: Display structure of downloaded files
@@ -110,7 +110,7 @@ jobs:
 
       - name: Restore Docker image
         run: |
-          docker load -i artifacts/iceberg-catalog-local-amd64.tar
+          docker load -i artifacts/lakekeeper-local-amd64.tar
 
       - name: Test Access Control Advanced
         run: |
@@ -118,7 +118,7 @@ jobs:
           sed -i '/pull_policy: always/d' docker-compose.yaml
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
         env:
-            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/iceberg-catalog-local:amd64
+            LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2

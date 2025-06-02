@@ -30,7 +30,7 @@ LABEL maintainer="moderation@vakamo.com" quay.expires-after=${EXPIRES}
 COPY --from=cleaner /clean /
 
 # copy the build artifact from the build stage
-COPY ${BIN} /home/nonroot/iceberg-catalog
+COPY ${BIN} /home/nonroot/lakekeeper
 
 # # set the startup command to run your binary
-ENTRYPOINT ["/home/nonroot/iceberg-catalog"]
+ENTRYPOINT ["/home/nonroot/lakekeeper"]

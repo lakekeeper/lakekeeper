@@ -190,7 +190,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive 
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
-          cd crates/iceberg-catalog
+          cd crates/lakekeeper
           sqlx database create
           sqlx migrate run
         env:

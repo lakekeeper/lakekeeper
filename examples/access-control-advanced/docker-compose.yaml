@@ -72,7 +72,7 @@ services:
       - RUST_LOG=info
     command: [ "serve" ]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -130,7 +130,7 @@ services:
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - RUST_LOG=info
     restart: "no"
-    entrypoint: [ "/home/nonroot/iceberg-catalog", "migrate" ]
+    entrypoint: [ "/home/nonroot/lakekeeper", "migrate" ]
     depends_on:
       db:
         condition: service_healthy
