@@ -65,7 +65,6 @@ We are creating two Client: The first client with a "public" profile for the Lak
 
 We are now ready to deploy Lakekeeper and login via the UI. Set the following environment variables / configurations:
 ```sh
-LAKEKEEPER__BASE_URI=http://localhost:8181 (URI where lakekeeper is reachable)
 LAKEKEEPER__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg (URI of the keycloak realm)
 LAKEKEEPER__OPENID_AUDIENCE=lakekeeper (ID of Client 1)
 LAKEKEEPER__UI__OPENID_CLIENT_ID="lakekeeper" (ID of Client 1)
@@ -261,7 +260,6 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
 === "bash"
 
     ```sh
-    LAKEKEEPER__BASE_URI=http://localhost:8181 (URI where lakekeeper is reachable)
     // Note the v2.0 at the End of the provider URI!
     LAKEKEEPER__OPENID_PROVIDER_URI=https://login.microsoftonline.com/<Tenant ID>/v2.0
     LAKEKEEPER__OPENID_AUDIENCE="api://<Client ID from App 2 (lakekeeper)>"
@@ -404,6 +402,50 @@ That's it! We can now use the third App Registration to sign into Lakekeeper usi
 
 If Authorization is enabled, the client will throw an error as no permissions have been granted yet. During this initial connect to the `/config` endpoint of Lakekeeper, the user is automatically provisioned so that it should show up when searching for users in the "Grant" dialog and user search endpoints. While we try to extract the name of the application from its token, this might not be possible in all setups. As a fallback we use the `Client ID` as the name of the user. Once permissions have been granted, the user is able to perform actions.
 
+### Google Identity Platform
+
+!!! warning
+    At the time of writing (June 2025), Google Identity Platform lacks support for the standard OAuth2 Client Credentials Flow, which was established by the IETF in 2012 (!) specifically for machine-to-machine authentication. While the guide below explains how to secure Lakekeeper using Google Identity Platform, this solution only works for human users due to this limitation. For machine authentication, you would need to obtain access tokens through alternative methods outside of the Iceberg client ecosystem and provide them directly to your clients. However, such approaches fall outside the scope of this documentation. To see if google cloud supports client credentials in the meantime, check [Google's `.well-known/openid-configuration`](https://accounts.google.com/.well-known/openid-configuration), and search for `client_credentials` in the `grant_types_supported` section. When using Lakekeeper with multiple IdPs (i.e. Google & Kubernetes), the second IdP can still be used to authenticate Machines.
+
+Fist, read the warning box above (!). Additionally as of June 2025, the Google Identity Platform also does not support standard OAuth2 login flows for "public clients" such as Lakekeeper's Web-UI as part of the desired "Web Application" client type. Instead, [Google still promotes](https://developers.google.com/identity/protocols/oauth2/javascript-implicit-flow) the *OAuth Implicit Flow* instead of the much more secure *Authorization Code Flow with PKCE* for public clients. Using the implicit flow is [discouraged](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-04) by the IETF.
+
+As we don't want to lower our security or switch to legacy flows, we are using a workaround to register the Lakekeeper UI as a Native Application (Universal Windows Platform in this example), which allows the use of the proper flows, even though it is intended for a different purpose.
+
+If you're using Google Cloud Platform, please advocate for proper OAuth standard support by:
+1. Reporting this concern to your Google sales representative
+2. Upvoting these issues: [912693](https://www.googlecloudcommunity.com/gc/Developer-Tools/Authorization-Code-Flow-without-client-secret/m-p/912693#M3618), [33416](https://www.googlecloudcommunity.com/gc/Apigee/Supporting-OAuth-quot-Public-quot-clients-in-authorization-code/m-p/33416)
+3. Sharing these discussions: [StackOverflow](https://stackoverflow.com/questions/60724690/using-google-oidc-with-code-flow-and-pkce) and [GitHub issue](https://github.com/authts/oidc-client-ts/issues/152)
+
+Due to these OAuth2 limitations in Google Identity Platform, we cannot recommend it for production deployments. Nevertheless, if you wish to proceed, here's how:
+
+##### Google Auth Platform Project: Lakekeeper Application
+Create a new GCP Project - each Project serves a single application as part of the "Google Auth Platform". When the new project is created, create the new internal Lakekeeper Application:
+
+1. Search for "Google Auth Platform", then select "Branding" on the left.
+1. Select "Get started" or modify the pre-filled form:
+    - **App Name**: Select a good Name, for example `Lakekeeper`
+    - **User support email**: This is shown to users later - select a team e-mail address.
+    - **Audience**: Internal (Otherwise people outside of your organization can login too)
+    - **Contact Information / Email address**: Email Addresses of Lakekeeper Admins or Team Email Address
+1. After the Branding is created, select "Data access" in the left menu, and add the following non-sensitive scopes: `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `openid`
+
+##### Client 1: Lakekeeper UI
+
+1. After the app is created, click in the left menu on "Clients" in the "Google Auth Platform" service
+1. Click on "+Create credentials"
+1. Select "Universal Windows Platform (UWP)" due to the lack of support for public clients in the more appropriate "Web Application" type described above. Enter any randomly generated number in the "Store ID" field and give the Application a good name, such as `Lakekeeper UI`. Then click "Create". Note the `Client ID`.
+
+We are now ready to deploy Lakekeeper and login via the UI. Set the following environment variables / configurations:
+
+=== "bash"
+
+    ```sh
+    LAKEKEEPER__OPENID_PROVIDER_URI=https://accounts.google.com
+    LAKEKEEPER__OPENID_AUDIENCE="<Client ID from Client 1>"
+    LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from Client 1>"
+    LAKEKEEPER__UI__OPENID_SCOPE="openid profile"
+    ```
+We are now able to login and bootstrap Lakekeeper.
 
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:
