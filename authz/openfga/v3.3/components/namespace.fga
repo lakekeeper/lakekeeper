@@ -15,6 +15,7 @@ type namespace
     define pass_grants: [user, role#assignee]
     define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
     define describe: [user, role#assignee] or ownership or select or create or describe from parent
+    define list_all: [user, role#assignee] or ownership or select or create or list_all from parent
     define select: [user, role#assignee] or ownership or modify or select from parent
     define create: [user, role#assignee] or ownership or create from parent
     define modify: [user, role#assignee] or ownership or modify from parent
@@ -29,6 +30,7 @@ type namespace
     define can_list_tables: can_get_metadata
     define can_list_views: can_get_metadata
     define can_list_namespaces: can_get_metadata
+    define can_list_everything_in_namespace: list_all
     define can_include_in_list: can_get_metadata
     define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_change_ownership
     # GRANT Permissions
