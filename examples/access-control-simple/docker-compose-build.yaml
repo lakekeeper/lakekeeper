@@ -2,7 +2,7 @@
 # Use by running the following command from the root folder:
 # docker compose -f docker-compose.yaml -f docker-compose-build.yaml up --build -d
 services:
-  server:
+  lakekeeper:
     image: localhost/lakekeeper-local:latest
     build:
       context: ../../

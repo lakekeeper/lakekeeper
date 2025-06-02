@@ -2,7 +2,7 @@ services:
   jupyter:
     image: quay.io/jupyter/pyspark-notebook:2024-10-14
     depends_on:
-      server:
+      lakekeeper:
         condition: service_healthy
       trino:
         condition: service_healthy
@@ -35,7 +35,7 @@ services:
     networks:
       iceberg_net:
 
-  server:
+  lakekeeper:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
