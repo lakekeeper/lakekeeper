@@ -19,8 +19,7 @@ macro_rules! list_entities {
             paste! {
                 use crate::catalog::tabular::[<default_ $entity:snake _flags>] as default_flags;
             }
-            use crate::catalog::UnfilteredPage;
-            use crate::service::NamespaceId;
+            use crate::{catalog::UnfilteredPage, service::NamespaceId};
             let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();

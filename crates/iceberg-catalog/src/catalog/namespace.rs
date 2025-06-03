@@ -43,6 +43,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     crate::api::iceberg::v1::namespace::NamespaceService<State<A, C, S>>
     for CatalogServer<C, A, S>
 {
+    #[allow(clippy::too_many_lines)]
     async fn list_namespaces(
         prefix: Option<Prefix>,
         query: ListNamespacesQuery,
@@ -76,7 +77,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
             let maybe_namespace_id = match namespace_id {
-                Ok(Some(id)) => Some(id.clone()),
+                Ok(Some(id)) => Some(id),
                 _ => None,
             };
 
