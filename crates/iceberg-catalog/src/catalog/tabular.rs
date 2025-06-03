@@ -20,6 +20,7 @@ macro_rules! list_entities {
                 use crate::catalog::tabular::[<default_ $entity:snake _flags>] as default_flags;
             }
             use crate::catalog::UnfilteredPage;
+            use crate::service::NamespaceId;
             let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
@@ -36,29 +37,51 @@ macro_rules! list_entities {
                     query,
                 )
                 .await?;
+                let namespace_id =
+                    C::namespace_to_id($warehouse_id, &namespace, trx.transaction()).await;
+                let mut can_list_everything = false;
+                if let Ok(Some(n)) = namespace_id {
+                    can_list_everything = authorizer
+                        .is_allowed_namespace_action(
+                            &request_metadata,
+                            NamespaceId::from(*n),
+                            CatalogNamespaceAction::CanListEverythingInNamespace,
+                        )
+                        .await
+                        .unwrap_or(false);
+                }
+
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
+
+                let masks = if can_list_everything {
+                    // No need to check individual permissions if everything in namespace can
+                    // be listed.
+                    vec![true; ids.len()]
+                } else {
+                    futures::future::try_join_all(ids.iter().map(|n| {
+                        paste! {
+                            authorizer.[<is_allowed_ $action>](
+                                &request_metadata,
+                                *n,
+                                paste! { [<Catalog $entity Action>]::CanIncludeInList },
+                            )
+                        }
+                    }))
+                    .await?
+                };
 
                 let (next_idents, next_uuids, next_page_tokens, mask): (
                     Vec<_>,
                     Vec<_>,
                     Vec<_>,
                     Vec<bool>,
-                ) = futures::future::try_join_all(ids.iter().map(|n| {
-                    paste! {
-                        authorizer.[<is_allowed_ $action>](
-                            &request_metadata,
-                            *n,
-                            paste! { [<Catalog $entity Action>]::CanIncludeInList },
-                        )
-                    }
-                }))
-                .await?
-                .into_iter()
-                .zip(idents.into_iter().zip(ids.into_iter()))
-                .zip(tokens.into_iter())
-                .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
-                .multiunzip();
+                ) = masks
+                    .into_iter()
+                    .zip(idents.into_iter().zip(ids.into_iter()))
+                    .zip(tokens.into_iter())
+                    .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
+                    .multiunzip();
 
                 Ok(UnfilteredPage::new(
                     next_idents,

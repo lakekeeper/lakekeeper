@@ -94,7 +94,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         namespace_id,
                         CatalogNamespaceAction::CanListEverythingInNamespace,
                     )
-                    .await?;
+                    .await
+                    .unwrap_or(false);
             }
         }
 
