@@ -701,7 +701,7 @@ pub enum StorageCredential {
     /// Example payload in the code-snippet below:
     ///
     /// ```
-    /// use iceberg_catalog::service::storage::StorageCredential;
+    /// use lakekeeper::service::storage::StorageCredential;
     /// let cred: StorageCredential = serde_json::from_str(r#"{
     ///     "type": "s3",
     ///     "credential-type": "access-key",
@@ -717,7 +717,7 @@ pub enum StorageCredential {
     /// Example payload:
     ///
     /// ```
-    /// use iceberg_catalog::service::storage::StorageCredential;
+    /// use lakekeeper::service::storage::StorageCredential;
     /// let cred: StorageCredential = serde_json::from_str(r#"{
     ///     "type": "az",
     ///     "credential-type": "client-credentials",
@@ -734,7 +734,7 @@ pub enum StorageCredential {
     /// Example payload in the code-snippet below:
     ///
     /// ```
-    /// use iceberg_catalog::service::storage::StorageCredential;
+    /// use lakekeeper::service::storage::StorageCredential;
     /// let cred: StorageCredential = serde_json::from_str(r#"{
     ///     "type": "gcs",
     ///     "credential-type": "service-account-key",

@@ -92,7 +92,7 @@ services:
       - RUST_LOG=warn,iceberg_catalog=trace,iceberg_catalog_bin=trace,iceberg_ext=trace
     command: [ "serve" ]
     healthcheck:
-      test: ["CMD", "/home/nonroot/iceberg-catalog", "healthcheck"]
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
       interval: 2s
       timeout: 10s
       retries: 2

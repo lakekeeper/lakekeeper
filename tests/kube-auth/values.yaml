@@ -107,7 +107,6 @@ catalog:
   # ---- EXAMPLE ----
   # config:
 
-
   # -- if we add the annotation: "cluster-autoscaler.kubernetes.io/safe-to-evict" = "true"
   safeToEvict: true
 
@@ -268,7 +267,7 @@ catalog:
 
     # -- the path for the catalog Ingress.
     # To host the catalog at the url
-    # `https://data.example.com/iceberg-catalog`, set `path: "/iceberg-catalog"`.
+    # `https://data.example.com/lakekeeper`, set `path: "/lakekeeper"`.
     # If a path is set, the ingress must strip the path before forwarding to the service!
     # This helm-chart does not take care of this, as it depends on the type of Ingress Controller used.
     # For example, for NGINX Ingress Controller, set the annotation

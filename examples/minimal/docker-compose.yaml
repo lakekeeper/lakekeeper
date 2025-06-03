@@ -2,7 +2,7 @@ services:
   jupyter:
     image: quay.io/jupyter/pyspark-notebook:2024-10-14
     depends_on:
-      server:
+      lakekeeper:
         condition: service_healthy
       initialwarehouse:
         condition: service_completed_successfully
@@ -18,17 +18,17 @@ services:
     ports:
       - "8888:8888"
 
-  server:
+  lakekeeper:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
-      - RUST_LOG=trace,axum=trace,sqlx=trace,iceberg-catalog=trace
+      - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
     command: [ "serve" ]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -64,7 +64,7 @@ services:
   bootstrap:
     image: curlimages/curl
     depends_on:
-      server:
+      lakekeeper:
         condition: service_healthy
     restart: "no"
     command:
@@ -73,7 +73,7 @@ services:
       - "-X"
       - "POST"
       - "-v"
-      - "http://server:8181/management/v1/bootstrap"
+      - "http://lakekeeper:8181/management/v1/bootstrap"
       - "-H"
       - "Content-Type: application/json"
       - "--data"
@@ -87,7 +87,7 @@ services:
   initialwarehouse:
     image: curlimages/curl
     depends_on:
-      server:
+      lakekeeper:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
@@ -98,7 +98,7 @@ services:
       - "-X"
       - "POST"
       - "-v"
-      - "http://server:8181/management/v1/warehouse"
+      - "http://lakekeeper:8181/management/v1/warehouse"
       - "-H"
       - "Content-Type: application/json"
       - "--data"
@@ -169,7 +169,7 @@ services:
       interval: 2s
       timeout: 10s
       retries: 2
-      start_period: 10s
+      start_period: 30s
     ports:
       - "9030:9030"
       - "8030:8030"

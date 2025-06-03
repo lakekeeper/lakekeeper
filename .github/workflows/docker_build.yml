@@ -16,7 +16,7 @@ on:
         description: 'Name of the image to build'
         required: false
         type: string
-        default: 'iceberg-catalog-local'
+        default: 'lakekeeper-local'
 
 jobs:
   docker:
@@ -39,5 +39,5 @@ jobs:
       - name: Save Docker
         uses: actions/upload-artifact@v4
         with:
-          name: iceberg-catalog-image
+          name: lakekeeper-image
           path: /tmp/*.tar

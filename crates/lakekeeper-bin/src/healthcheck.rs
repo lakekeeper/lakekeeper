@@ -1,5 +1,5 @@
 use anyhow::Context;
-use iceberg_catalog::{
+use lakekeeper::{
     implementations::postgres::{get_reader_pool, get_writer_pool, ReadWrite},
     service::health::{HealthExt, HealthState, HealthStatus},
     CONFIG,

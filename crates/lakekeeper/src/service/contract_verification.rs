@@ -22,7 +22,7 @@ use crate::service::TabularId;
 ///     use async_trait::async_trait;
 ///     use iceberg::spec::{TableMetadata, ViewMetadata};
 ///     use iceberg::{TableIdent, TableUpdate};
-///     use iceberg_catalog::service::{TabularId, contract_verification::{ContractVerification, ContractVerificationOutcome}};
+///     use lakekeeper::service::{TabularId, contract_verification::{ContractVerification, ContractVerificationOutcome}};
 ///     use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
 ///
 ///     #[derive(Debug)]
@@ -164,7 +164,7 @@ impl ContractVerificationOutcome {
     /// # Example
     ///
     /// ```rust
-    ///     use iceberg_catalog::service::contract_verification::ContractVerificationOutcome;
+    ///     use lakekeeper::service::contract_verification::ContractVerificationOutcome;
     ///     use iceberg_ext::catalog::rest::ErrorModel;
     ///
     ///     fn my_handler() -> Result<(), ErrorModel> {

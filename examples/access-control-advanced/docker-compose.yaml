@@ -2,7 +2,7 @@ services:
   jupyter:
     image: quay.io/jupyter/pyspark-notebook:2024-10-14
     depends_on:
-      server:
+      lakekeeper:
         condition: service_healthy
     command: start-notebook.sh --NotebookApp.token=''
     volumes:
@@ -20,7 +20,7 @@ services:
     networks:
       iceberg_net:
     environment:
-      - LAKEKEEPER_URL=http://server:8181
+      - LAKEKEEPER_URL=http://lakekeeper:8181
       - LAKEKEEPER_TOKEN_ENDPOINT=http://keycloak:8080/realms/iceberg/protocol/openid-connect/token
       - LAKEKEEPER_CLIENT_ID=trino
       - LAKEKEEPER_CLIENT_SECRET=AK48QgaKsqdEpP9PomRJw7l2T7qWGHdZ
@@ -28,7 +28,7 @@ services:
       - TRINO_LAKEKEEPER_CATALOG_NAME=lakekeeper
       - LAKEKEEPER_LAKEKEEPER_WAREHOUSE=demo
     depends_on:
-      server:
+      lakekeeper:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8181/health"]
@@ -55,7 +55,7 @@ services:
     networks:
       iceberg_net:
 
-  server:
+  lakekeeper:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
@@ -72,7 +72,7 @@ services:
       - RUST_LOG=info
     command: [ "serve" ]
     healthcheck:
-      test: [ "CMD", "/home/nonroot/iceberg-catalog", "healthcheck" ]
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -130,7 +130,7 @@ services:
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - RUST_LOG=info
     restart: "no"
-    entrypoint: [ "/home/nonroot/iceberg-catalog", "migrate" ]
+    entrypoint: [ "/home/nonroot/lakekeeper", "migrate" ]
     depends_on:
       db:
         condition: service_healthy

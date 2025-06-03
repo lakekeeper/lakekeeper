@@ -1,4 +1,4 @@
-use iceberg_catalog::{
+use lakekeeper::{
     implementations::postgres::{get_reader_pool, migrations::MigrationState},
     CONFIG,
 };
@@ -40,7 +40,7 @@ pub(crate) async fn wait_for_db(
 
             let read_pool = get_reader_pool(opts).await?;
             let migrations =
-                iceberg_catalog::implementations::postgres::migrations::check_migration_status(
+                lakekeeper::implementations::postgres::migrations::check_migration_status(
                     &read_pool,
                 )
                 .await;

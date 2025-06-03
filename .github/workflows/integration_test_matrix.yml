@@ -23,7 +23,7 @@ jobs:
     with:
       platform: 'amd64'
       dockerfile: 'docker/full.Dockerfile'
-      image_name: 'iceberg-catalog-local'
+      image_name: 'lakekeeper-local'
   tests:
     needs: docker
     strategy:

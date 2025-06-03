@@ -1,5 +1,5 @@
 [package]
-name = "iceberg-catalog-bin"
+name = "lakekeeper-bin"
 resolver = "2"
 version = "0.8.5"
 edition = { workspace = true }
@@ -12,7 +12,7 @@ This is Lakekeeper, a catalog for Iceberg tables.
 """
 
 [[bin]]
-name = "iceberg-catalog"
+name = "lakekeeper"
 path = "src/main.rs"
 
 [features]
@@ -24,7 +24,7 @@ ui = ["dep:lakekeeper-console"]
 anyhow = { workspace = true }
 axum = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
-iceberg-catalog = { path = "../iceberg-catalog", features = ["all"] }
+lakekeeper = { path = "../lakekeeper", features = ["all"] }
 lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "2e6c314", optional = true }
 limes = { workspace = true }
 reqwest = { workspace = true }

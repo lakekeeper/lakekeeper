@@ -4,7 +4,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
-use iceberg_catalog::{determine_base_uri, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
+use lakekeeper::{determine_base_uri, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
 use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
 
 // Static configuration for UI

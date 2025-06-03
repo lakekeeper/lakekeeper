@@ -2,16 +2,16 @@
 # Use by running the following command from the root folder:
 # docker compose -f docker-compose.yaml -f docker-compose-build.yaml up --build -d
 services:
-  server:
-    image: localhost/iceberg-catalog-local:latest
+  lakekeeper:
+    image: localhost/lakekeeper-local:latest
     build:
       context: ../../
       dockerfile: docker/full.Dockerfile
     environment:
       - LAKEKEEPER__ALLOW_ORIGIN="*"
-      - RUST_LOG=info,axum=trace,iceberg-catalog=trace,iceberg-catalog-bin=trace,iceberg-ext=trace
+      - RUST_LOG=info,axum=trace,lakekeeper=trace,lakekeeper-bin=trace,iceberg-ext=trace
   migrate:
-    image: localhost/iceberg-catalog-local:latest
+    image: localhost/lakekeeper-local:latest
     pull_policy: never
   db:
     ports:

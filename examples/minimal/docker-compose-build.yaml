@@ -2,8 +2,8 @@
 # Use by running the following command from the root folder:
 # docker compose -f examples/minimal/docker-compose.yaml -f examples/minimal/docker-compose-build.yaml up --build -d
 services:
-  server:
-    image: localhost/iceberg-catalog-local:latest
+  lakekeeper:
+    image: localhost/lakekeeper-local:latest
     build:
       context: ../../
       dockerfile: docker/full.Dockerfile
@@ -13,7 +13,7 @@ services:
       # metrics
       - "1234:9000"
   migrate:
-    image: localhost/iceberg-catalog-local:latest
+    image: localhost/lakekeeper-local:latest
     pull_policy: never
   db:
     ports:
