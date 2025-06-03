@@ -116,7 +116,7 @@ services:
       - iceberg_rest_tests
 
   db:
-    image: bitnami/postgresql:16.3.0
+    image: bitnami/postgresql:17.0.0
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
