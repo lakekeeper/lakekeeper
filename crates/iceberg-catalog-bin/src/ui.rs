@@ -1,4 +1,4 @@
-use std::{default::Default, sync::LazyLock};
+use std::{default::Default, env::VarError, sync::LazyLock};
 
 use axum::{
     http::{header, HeaderMap, StatusCode, Uri},
@@ -30,6 +30,23 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
             "LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH",
         )
         .unwrap_or(default_config.idp_post_logout_redirect_path),
+        idp_token_type: match std::env::var("LAKEKEEPER__UI__OPENID_TOKEN_TYPE").as_deref() {
+            Ok("id_token") => lakekeeper_console::IdpTokenType::IdToken,
+            Ok("access_token") => lakekeeper_console::IdpTokenType::AccessToken,
+            Ok(v) => {
+                tracing::warn!(
+                    "Unknown value `{v}` for LAKEKEEPER__UI__OPENID_TOKEN_TYPE, defaulting to AccessToken. Expected values are 'id_token' or 'access_token'.", 
+                );
+                lakekeeper_console::IdpTokenType::AccessToken
+            }
+            Err(VarError::NotPresent) => lakekeeper_console::IdpTokenType::AccessToken,
+            Err(VarError::NotUnicode(_)) => {
+                tracing::warn!(
+                    "Non-Unicode value for LAKEKEEPER__UI__OPENID_TOKEN_TYPE, defaulting to AccessToken."
+                );
+                default_config.idp_token_type
+            }
+        },
         enable_authentication: CONFIG.openid_provider_uri.is_some(),
         enable_permissions: CONFIG.authz_backend == AuthZBackend::OpenFGA,
         app_lakekeeper_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
