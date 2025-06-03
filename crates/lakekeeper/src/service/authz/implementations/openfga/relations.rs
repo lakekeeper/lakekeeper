@@ -1099,7 +1099,9 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanGetMetadata => NamespaceRelation::CanGetMetadata,
             CatalogNamespaceAction::CanListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::CanListViews => NamespaceRelation::CanListViews,
-            CatalogNamespaceAction::CanListEverythingInNamespace => NamespaceRelation::ListAll,
+            CatalogNamespaceAction::CanListEverythingInNamespace => {
+                NamespaceRelation::CanListEverythingInNamespace
+            }
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
         }
     }
