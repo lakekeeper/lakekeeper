@@ -72,8 +72,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
         let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
 
+        let mut can_list_everything = false;
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
+            let maybe_namespace_id = match namespace_id {
+                Ok(Some(id)) => Some(id.clone()),
+                _ => None,
+            };
+
             authorizer
                 .require_namespace_action(
                     &request_metadata,
@@ -81,6 +87,15 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     CatalogNamespaceAction::CanListNamespaces,
                 )
                 .await?;
+            if let Some(namespace_id) = maybe_namespace_id {
+                can_list_everything = authorizer
+                    .is_allowed_namespace_action(
+                        &request_metadata,
+                        namespace_id,
+                        CatalogNamespaceAction::CanListEverythingInNamespace,
+                    )
+                    .await?;
+            }
         }
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -108,24 +123,34 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                         list_namespaces.into_iter_with_page_tokens().multiunzip();
 
+                    let masks = if can_list_everything {
+                        // No need to check individual permissions if everything in namespace can
+                        // be listed.
+                        vec![true; ids.len()]
+                    } else {
+                        futures::future::try_join_all(ids.iter().map(|n| {
+                            authorizer.is_allowed_namespace_action(
+                                &request_metadata,
+                                *n,
+                                CatalogNamespaceAction::CanGetMetadata,
+                            )
+                        }))
+                        .await?
+                    };
+
                     let (next_namespaces, next_uuids, next_page_tokens, mask): (
                         Vec<_>,
                         Vec<_>,
                         Vec<_>,
                         Vec<bool>,
-                    ) = futures::future::try_join_all(ids.iter().map(|n| {
-                        authorizer.is_allowed_namespace_action(
-                            &request_metadata,
-                            *n,
-                            CatalogNamespaceAction::CanGetMetadata,
-                        )
-                    }))
-                    .await?
-                    .into_iter()
-                    .zip(idents.into_iter().zip(ids.into_iter()))
-                    .zip(tokens.into_iter())
-                    .map(|((allowed, namespace), token)| (namespace.0, namespace.1, token, allowed))
-                    .multiunzip();
+                    ) = masks
+                        .into_iter()
+                        .zip(idents.into_iter().zip(ids.into_iter()))
+                        .zip(tokens.into_iter())
+                        .map(|((allowed, namespace), token)| {
+                            (namespace.0, namespace.1, token, allowed)
+                        })
+                        .multiunzip();
 
                     Ok(UnfilteredPage::new(
                         next_namespaces,

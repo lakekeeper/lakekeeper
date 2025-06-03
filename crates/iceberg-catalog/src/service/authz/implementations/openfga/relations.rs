@@ -961,7 +961,7 @@ impl GrantableRelation for APINamespaceRelation {
             APINamespaceRelation::PassGrants => NamespaceRelation::CanGrantPassGrants,
             APINamespaceRelation::ManageGrants => NamespaceRelation::CanGrantManageGrants,
             APINamespaceRelation::Describe => NamespaceRelation::CanGrantDescribe,
-            APINamespaceRelation::ListAll => NamespaceRelation::ListAll,
+            APINamespaceRelation::ListAll => NamespaceRelation::CanListEverythingInNamespace,
             APINamespaceRelation::Select => NamespaceRelation::CanGrantSelect,
             APINamespaceRelation::Create => NamespaceRelation::CanCreateNamespace,
             APINamespaceRelation::Modify => NamespaceRelation::CanUpdateProperties,
