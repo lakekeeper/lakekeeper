@@ -3,8 +3,8 @@ use std::{sync::Arc, vec};
 #[cfg(feature = "ui")]
 use axum::routing::get;
 use lakekeeper::{
-    api::{serve, ServeConfiguration},
     implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
+    serve::{serve, ServeConfiguration},
     service::{
         authn::{get_default_authenticator_from_config, BuiltInAuthenticators},
         authz::{
