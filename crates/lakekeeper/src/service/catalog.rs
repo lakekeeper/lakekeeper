@@ -977,6 +977,7 @@ where
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
+
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
         queue_name: &str,

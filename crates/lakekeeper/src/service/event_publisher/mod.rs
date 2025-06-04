@@ -35,12 +35,44 @@ use crate::{
         endpoint_hooks::{EndpointHooks, ViewCommit},
         tabular_idents::TabularId,
     },
+    CONFIG,
 };
 
 #[cfg(feature = "kafka")]
 pub mod kafka;
 #[cfg(feature = "nats")]
 pub mod nats;
+
+pub async fn get_default_cloud_event_backends_from_config(
+) -> anyhow::Result<Vec<Arc<dyn CloudEventBackend + Sync + Send>>> {
+    let mut cloud_event_sinks = vec![];
+
+    #[cfg(feature = "nats")]
+    if let Some(nats_publisher) = nats::build_nats_publisher_from_config().await? {
+        cloud_event_sinks
+            .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+    };
+    #[cfg(feature = "kafka")]
+    if let Some(kafka_publisher) = kafka::build_kafka_publisher_from_config()? {
+        cloud_event_sinks
+            .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+    }
+
+    if let Some(true) = &CONFIG.log_cloudevents {
+        let tracing_publisher = TracingPublisher;
+        cloud_event_sinks
+            .push(Arc::new(tracing_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+        tracing::info!("Logging Cloudevents to Console.");
+    } else {
+        tracing::info!("Running without logging Cloudevents.");
+    }
+
+    if cloud_event_sinks.is_empty() {
+        tracing::info!("Running without publisher.");
+    }
+
+    Ok(cloud_event_sinks)
+}
 
 #[async_trait::async_trait]
 impl EndpointHooks for CloudEventsPublisher {
