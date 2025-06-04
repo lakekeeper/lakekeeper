@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+pub use postgres::CatalogState;
 
 use crate::{
     implementations::postgres::{get_reader_pool, get_writer_pool},
@@ -11,14 +12,15 @@ use crate::{
     SecretBackend, SecretIdent, CONFIG,
 };
 
-pub use postgres::CatalogState;
-
 #[cfg(feature = "sqlx-postgres")]
 pub mod postgres;
 
 pub mod kv2;
 
 /// Get the default Catalog Backend & Secret Store from the configuration.
+///
+/// # Errors
+/// - If the database connection pools cannot be created.
 // This is handled in one function as the CatalogState and the SecretStore
 // might share the same database connection pool.
 pub async fn get_default_catalog_from_config() -> anyhow::Result<(

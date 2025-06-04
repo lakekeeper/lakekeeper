@@ -55,6 +55,9 @@ pub enum BuiltInAuthenticators {
 }
 
 /// Get the default authenticator configuration from the environment.
+///
+/// # Errors
+/// If the authenticator cannot be created, or if the configuration is invalid.
 pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<BuiltInAuthenticators>>
 {
     let authn_k8s_audience = if CONFIG.enable_kubernetes_authentication {

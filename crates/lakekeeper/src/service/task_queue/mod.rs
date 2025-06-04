@@ -137,6 +137,26 @@ impl Default for TaskQueueRegistry {
     }
 }
 
+#[derive(Clone)]
+pub struct QueueRegistration {
+    /// Name of the queue
+    pub queue_name: &'static str,
+    /// Worker function for the queue
+    pub worker_fn: TaskQueueWorker,
+    /// Number of workers that run locally for this queue
+    pub num_workers: usize,
+}
+
+impl Debug for QueueRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueueRegistration")
+            .field("queue_name", &self.queue_name)
+            .field("worker_fn", &"Fn(...)")
+            .field("num_workers", &self.num_workers)
+            .finish()
+    }
+}
+
 impl TaskQueueRegistry {
     #[must_use]
     pub fn new() -> Self {
@@ -146,12 +166,12 @@ impl TaskQueueRegistry {
         }
     }
 
-    pub fn register_queue<T: QueueConfig>(
-        &mut self,
-        queue_name: &'static str,
-        worker_fn: TaskQueueWorker,
-        num_workers: usize,
-    ) -> &mut Self {
+    pub fn register_queue<T: QueueConfig>(&mut self, task_queue: QueueRegistration) -> &mut Self {
+        let QueueRegistration {
+            queue_name,
+            worker_fn,
+            num_workers,
+        } = task_queue;
         let schema_validator_fn = |v| serde_json::from_value::<T>(v).map(|_| ());
         let schema_validator_fn = Arc::new(schema_validator_fn) as ValidatorFn;
         let api_config = QueueApiConfig {
@@ -188,9 +208,9 @@ impl TaskQueueRegistry {
         poll_interval: Duration,
     ) -> &mut Self {
         let catalog_state_clone = catalog_state.clone();
-        self.register_queue::<ExpirationQueueConfig>(
-            tabular_expiration_queue::QUEUE_NAME,
-            Arc::new(move || {
+        self.register_queue::<ExpirationQueueConfig>(QueueRegistration {
+            queue_name: tabular_expiration_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move || {
                 let authorizer = authorizer.clone();
                 let catalog_state_clone = catalog_state_clone.clone();
                 Box::pin({
@@ -204,12 +224,12 @@ impl TaskQueueRegistry {
                     }
                 })
             }),
-            2,
-        );
+            num_workers: 2,
+        });
 
-        self.register_queue::<PurgeQueueConfig>(
-            tabular_purge_queue::QUEUE_NAME,
-            Arc::new(move || {
+        self.register_queue::<PurgeQueueConfig>(QueueRegistration {
+            queue_name: tabular_purge_queue::QUEUE_NAME,
+            worker_fn: Arc::new(move || {
                 let catalog_state_clone = catalog_state.clone();
                 let secret_store = secret_store.clone();
                 Box::pin(async move {
@@ -221,8 +241,8 @@ impl TaskQueueRegistry {
                     .await;
                 })
             }),
-            2,
-        );
+            num_workers: 2,
+        });
 
         self
     }

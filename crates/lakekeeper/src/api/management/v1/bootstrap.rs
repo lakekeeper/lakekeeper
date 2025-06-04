@@ -8,8 +8,8 @@ use crate::{
     config,
     request_metadata::RequestMetadata,
     service::{
-        authz::Authorizer, Actor, Catalog, Result, SecretStore, StartupValidationData, State,
-        Transaction,
+        authz::Authorizer, Actor, Catalog, Result, SecretStore, ServerInfo as CatalogServerInfo,
+        State, Transaction,
     },
     ProjectId, CONFIG, DEFAULT_PROJECT_ID,
 };
@@ -192,7 +192,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         Ok(ServerInfo {
             version,
-            bootstrapped: server_data != StartupValidationData::NotBootstrapped,
+            bootstrapped: server_data != CatalogServerInfo::NotBootstrapped,
             server_id: CONFIG.server_id,
             default_project_id: DEFAULT_PROJECT_ID.clone(),
             authz_backend: match CONFIG.authz_backend {

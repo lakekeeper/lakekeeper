@@ -1,10 +1,4 @@
-use crate::{
-    service::{
-        authz::ErrorModel,
-        health::{Health, HealthExt},
-    },
-    AuthZBackend, CONFIG,
-};
+use crate::{service::authz::ErrorModel, AuthZBackend, CONFIG};
 
 pub(super) mod allow_all;
 

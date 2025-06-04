@@ -62,7 +62,7 @@ pub(crate) async fn new_client_from_config() -> OpenFGAResult<BasicOpenFgaServic
 /// - Active Authorization model not found
 pub(crate) async fn new_authorizer_from_config() -> OpenFGAResult<OpenFGAAuthorizer> {
     let client = new_client_from_config().await?;
-    Ok(new_authorizer(client, None, ConsistencyPreference::MinimizeLatency).await?)
+    new_authorizer(client, None, ConsistencyPreference::MinimizeLatency).await
 }
 
 /// Create a new `OpenFGA` authorizer with the given client.
