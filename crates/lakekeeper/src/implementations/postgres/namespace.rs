@@ -21,7 +21,8 @@ use crate::{
     service::{
         storage::join_location, task_queue::TaskId, CreateNamespaceRequest,
         CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
-        NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceInfo, Result, TabularId,
+        MoveNamespaceResponse, NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceInfo,
+        Result, TabularId,
     },
     WarehouseId,
 };
@@ -497,6 +498,217 @@ pub(crate) async fn drop_namespace(
             .into_iter()
             .map(TaskId::from)
             .collect(),
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn move_namespace(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    new_parent_namespace_id: Option<NamespaceId>,
+    new_name: Option<String>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<MoveNamespaceResponse> {
+    // moving a namespace into itself (new parent is the namespace that is to moved) is an error
+    if new_parent_namespace_id.unwrap_or(Uuid::nil().into()) == namespace_id {
+        return Err(ErrorModel::bad_request(
+            "Cannot move namespace into itself",
+            "MoveNamespaceCannotMoveIntoSelf",
+            None,
+        )
+        .into());
+    }
+
+    // TODO: is this check enough or are there more potential unsupported characters?
+    if let Some(ref new_name) = new_name {
+        if new_name.is_empty() || new_name.contains('.') {
+            return Err(ErrorModel::bad_request(
+                format!("'new_name' contains illegal character or is empty: '{new_name}'"),
+                "MoveNamespaceIllegalNewName",
+                None,
+            )
+            .into());
+        }
+    }
+
+    // if the namespace is protected, we do not want to move it. because we do not check if the
+    // actor has persmissions to check protected status, we return a 'generic' error
+    if let ProtectionResponse {
+        protected: true,
+        updated_at: _,
+    } = get_namespace_protected(namespace_id, transaction).await?
+    {
+        return Err(ErrorModel::forbidden(
+            format!("Namespace {namespace_id} cannot be moved"),
+            "MoveNamespaceCannotMove",
+            None,
+        )
+        .into());
+    }
+
+    // we need the NamespaceIdent to check if the namespace to be moved is a parent of another
+    // namespace aka if it is nested.
+    let GetNamespaceResponse {
+        namespace,
+        namespace_id: _,
+        warehouse_id: _,
+        properties: _,
+    } = get_namespace(warehouse_id, namespace_id, transaction).await?;
+
+    // check if namespace is parent of a namespace
+    // if it is, we return an error as we do not support moving a nested namespace,
+    // because we would have to move every namespace that has the namespace to be moved
+    // as parent
+    let namespace_len: i32 = namespace
+        // .as_ref()
+        .len()
+        .try_into()
+        .unwrap_or(MAX_NAMESPACE_DEPTH + 1);
+    let is_child = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM namespace n
+                INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+            WHERE n.warehouse_id = $1 
+                AND w.status = 'active' 
+                AND array_length("namespace_name", 1) = $2 + 1
+                AND "namespace_name"[1:$2] = $3
+            LIMIT 1
+        )
+        "#,
+        *warehouse_id,
+        namespace_len,
+        &*namespace,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_error_model(format!(
+            "Error checking if namespace {namespace_id} has child namespaces"
+        ))
+    })?;
+    if is_child.unwrap_or(false) {
+        return Err(ErrorModel::bad_request(
+            format!("Namespace {namespace_id} has child namespaces"),
+            "MoveNamespaceHasChildNamespaces",
+            None,
+        )
+        .into());
+    }
+
+    let namespace_name = namespace
+        .last()
+        .ok_or_else(|| {
+            ErrorModel::internal(
+                format!("Namespace {namespace_id} does not have a name"),
+                "MoveNamespaceNoName",
+                None,
+            )
+        })?
+        .clone();
+    let new_namespace_ident_as_vec = match new_parent_namespace_id {
+        Some(new_parent_namespace_id) => {
+            let GetNamespaceResponse {
+                namespace: new_parent_namespace_ident,
+                namespace_id: _,
+                warehouse_id: _,
+                properties: _,
+            } = get_namespace(warehouse_id, new_parent_namespace_id, transaction).await?;
+            let mut new_namespace_ident_as_vec = new_parent_namespace_ident.inner();
+            new_namespace_ident_as_vec.push(new_name.unwrap_or(namespace_name));
+            new_namespace_ident_as_vec
+        }
+        None => {
+            vec![new_name.unwrap_or(namespace_name)]
+        }
+    };
+
+    // if we didn't do anything, the caller might want to know,
+    // maybe they don't need to do anything, either
+    if new_namespace_ident_as_vec[..] == namespace[..] {
+        return Ok(MoveNamespaceResponse::NoOp);
+    }
+
+    if new_namespace_ident_as_vec.len() > MAX_NAMESPACE_DEPTH as usize {
+        return Err(ErrorModel::bad_request(
+            format!(
+                "Move results in too deep nesting. Max: {MAX_NAMESPACE_DEPTH}, Result: {}",
+                new_namespace_ident_as_vec.len()
+            ),
+            "MoveNamespaceToDeep",
+            None,
+        )
+        .into());
+    }
+
+    let new_namespace_ident = NamespaceIdent::from_vec(new_namespace_ident_as_vec.clone())
+        .map_err(|e| {
+            ErrorModel::bad_request(
+                "Illegal new namespace name",
+                "MoveNamespaceIllegalNewName",
+                Some(Box::new(e)),
+            )
+        })?;
+    if namespace_to_id(warehouse_id, &new_namespace_ident, transaction)
+        .await
+        .is_ok()
+    {
+        return Err(ErrorModel::bad_request(
+            "Namespace already exists at destination",
+            "MoveNamespaceAlreadyExists",
+            None,
+        )
+        .into());
+    }
+
+    // actually 'move' the namespace, i. e., change the namespace_name entry
+    sqlx::query!(
+        r#"
+        UPDATE namespace
+        SET namespace_name = $1
+        WHERE namespace_id = $2 AND warehouse_id IN (
+            SELECT warehouse_id FROM warehouse WHERE status = 'active' AND warehouse_id = $3
+        )
+        "#,
+        &new_namespace_ident_as_vec[..],
+        *namespace_id,
+        *warehouse_id
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        tracing::error!("Error moving namespace: {e:?}");
+        e.into_error_model("Error moving namespace".to_string())
+    })?;
+
+    // if it was just a renaming, maybe the caller wants to know
+    if new_namespace_ident_as_vec[0..new_namespace_ident_as_vec.len() - 1]
+        == namespace[0..namespace.len() - 1]
+    {
+        return Ok(MoveNamespaceResponse::Rename);
+    }
+
+    // check if we moved to a namespace as parent, or to the warehouse as parent
+    if let Some(old_parent_namespace_ident) = namespace.parent() {
+        let old_parent_namespace_id =
+            namespace_to_id(warehouse_id, &old_parent_namespace_ident, transaction)
+                .await?
+                .ok_or_else(|| {
+                    ErrorModel::internal(
+                        format!(
+                            "Old namespace parent {old_parent_namespace_ident} does not have an id"
+                        ),
+                        "MoveNamespaceOldParentHasNoId",
+                        None,
+                    )
+                })?;
+        return Ok(MoveNamespaceResponse::Move {
+            old_parent_namespace_id: Some(old_parent_namespace_id),
+        });
+    }
+    Ok(MoveNamespaceResponse::Move {
+        old_parent_namespace_id: None,
     })
 }
 
