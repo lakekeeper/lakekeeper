@@ -32,9 +32,10 @@ use crate::{
     },
     catalog::tables::{maybe_body_to_json, CommitContext},
     service::{
-        endpoint_hooks::{EndpointHooks, ViewCommit},
+        endpoint_hooks::{EndpointHook, ViewCommit},
         tabular_idents::TabularId,
     },
+    CONFIG,
 };
 
 #[cfg(feature = "kafka")]
@@ -42,8 +43,43 @@ pub mod kafka;
 #[cfg(feature = "nats")]
 pub mod nats;
 
+/// Builds the default cloud event backends from the configuration.
+///
+/// # Errors
+/// If the publisher cannot be built from the configuration.
+pub async fn get_default_cloud_event_backends_from_config(
+) -> anyhow::Result<Vec<Arc<dyn CloudEventBackend + Sync + Send>>> {
+    let mut cloud_event_sinks = vec![];
+
+    #[cfg(feature = "nats")]
+    if let Some(nats_publisher) = nats::build_nats_publisher_from_config().await? {
+        cloud_event_sinks
+            .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+    }
+    #[cfg(feature = "kafka")]
+    if let Some(kafka_publisher) = kafka::build_kafka_publisher_from_config()? {
+        cloud_event_sinks
+            .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+    }
+
+    if let Some(true) = &CONFIG.log_cloudevents {
+        let tracing_publisher = TracingPublisher;
+        cloud_event_sinks
+            .push(Arc::new(tracing_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+        tracing::info!("Logging Cloudevents to Console.");
+    } else {
+        tracing::info!("Running without logging Cloudevents.");
+    }
+
+    if cloud_event_sinks.is_empty() {
+        tracing::info!("Running without publisher.");
+    }
+
+    Ok(cloud_event_sinks)
+}
+
 #[async_trait::async_trait]
-impl EndpointHooks for CloudEventsPublisher {
+impl EndpointHook for CloudEventsPublisher {
     async fn commit_transaction(
         &self,
         warehouse_id: WarehouseId,
@@ -503,16 +539,23 @@ impl CloudEventsPublisherBackgroundTask {
                 .extension("trace-id", trace_id.to_string())
                 .build()?;
 
-            for sink in &self.sinks {
-                if let Err(e) = sink.publish(event.clone()).await {
-                    tracing::warn!(
-                        "Failed to emit event with id: '{}' on sink: '{}' due to: '{}'.",
-                        id,
-                        sink.name(),
-                        e
-                    );
+            let publish_futures = self.sinks.iter().map(|sink| {
+                let event = event.clone();
+                async move {
+                    if let Err(e) = sink.publish(event).await {
+                        tracing::warn!(
+                            "Failed to emit event with id: '{}' on sink: '{}' due to: '{}'.",
+                            id,
+                            sink.name(),
+                            e
+                        );
+                    }
+                    Ok::<_, anyhow::Error>(())
                 }
-            }
+            });
+
+            // Run all publish operations concurrently
+            futures::future::join_all(publish_futures).await;
         }
 
         Ok(())

@@ -22,8 +22,8 @@ mod test {
         implementations::postgres::PostgresCatalog,
         service::{
             task_queue::{
-                EntityId, QueueConfig as QueueConfigTrait, TaskInput, TaskMetadata,
-                TaskQueueRegistry, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, TaskInput,
+                TaskMetadata, TaskQueueRegistry, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },
             Catalog, Transaction,
         },
@@ -56,9 +56,9 @@ mod test {
         let result_clone = result.clone();
 
         let mut task_queue_registry = TaskQueueRegistry::new();
-        task_queue_registry.register_queue::<Config>(
+        task_queue_registry.register_queue::<Config>(QueueRegistration {
             queue_name,
-            Arc::new(move || {
+            worker_fn: Arc::new(move || {
                 let ctx = ctx_clone.clone();
                 let rx = rx.clone();
                 let result_clone = result_clone.clone();
@@ -83,8 +83,8 @@ mod test {
                     *result_clone.lock().unwrap() = true;
                 })
             }),
-            1,
-        );
+            num_workers: 1,
+        });
         let mut transaction =
             <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
                 .await

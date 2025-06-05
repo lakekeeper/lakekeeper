@@ -186,7 +186,7 @@ impl ContractVerificationOutcome {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ContractVerifiers {
     checkers: Vec<Arc<dyn ContractVerification + Sync + Send>>,
 }

@@ -220,7 +220,6 @@ pub struct DynAppConfig {
 
     // ------------- Health -------------
     pub health_check_frequency_seconds: u64,
-    pub health_check_jitter_millis: u64,
 
     // ------------- KV2 -------------
     pub kv2: Option<KV2Config>,
@@ -497,7 +496,6 @@ impl Default for DynAppConfig {
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             health_check_frequency_seconds: 10,
-            health_check_jitter_millis: 500,
             kv2: None,
             authz_backend: AuthZBackend::AllowAll,
             openfga: None,

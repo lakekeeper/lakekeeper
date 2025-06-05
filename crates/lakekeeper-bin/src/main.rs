@@ -156,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
             if !force_start {
                 wait_for_db::wait_for_db(true, 0, 0, true).await?;
             }
-            serve::serve(bind_addr).await?;
+            serve::serve_default(bind_addr).await?;
         }
         Some(Commands::Healthcheck {
             check_all,

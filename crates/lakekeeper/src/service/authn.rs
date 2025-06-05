@@ -11,13 +11,14 @@ use axum_extra::{
 };
 use http::{HeaderMap, StatusCode};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use limes::{format_subject, parse_subject, Authenticator, Subject};
+use limes::{format_subject, parse_subject, Authenticator, AuthenticatorEnum, Subject};
 use serde::{Deserialize, Serialize};
 
 use super::{authz::Authorizer, RoleId};
 use crate::{
     api::{self},
     request_metadata::RequestMetadata,
+    CONFIG,
 };
 
 pub const IDP_SEPARATOR: char = '~';
@@ -43,6 +44,130 @@ pub(crate) struct AuthMiddlewareState<T: Authenticator, A: Authorizer> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserId(Subject);
+
+const OIDC_IDP_ID: &str = "oidc";
+const K8S_IDP_ID: &str = "kubernetes";
+
+#[derive(Debug, Clone)]
+pub enum BuiltInAuthenticators {
+    Single(AuthenticatorEnum),
+    Chain(limes::AuthenticatorChain<AuthenticatorEnum>),
+}
+
+/// Get the default authenticator configuration from the environment.
+///
+/// # Errors
+/// If the authenticator cannot be created, or if the configuration is invalid.
+pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<BuiltInAuthenticators>>
+{
+    let authn_k8s_audience = if CONFIG.enable_kubernetes_authentication {
+        Some(
+            limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
+                Some(K8S_IDP_ID),
+                CONFIG
+                    .kubernetes_authentication_audience
+                    .clone()
+                    .unwrap_or_default(),
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))
+            .inspect(|v| tracing::info!("K8s authorizer created {:?}", v))?,
+        )
+    } else {
+        tracing::info!("Running without Kubernetes authentication.");
+        None
+    };
+
+    let authn_k8s_legacy = if CONFIG.enable_kubernetes_authentication
+        && CONFIG.kubernetes_authentication_accept_legacy_serviceaccount
+    {
+        let mut authenticator =
+            limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
+                Some(K8S_IDP_ID),
+                vec![],
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))?;
+        authenticator.set_issuers(vec!["kubernetes/serviceaccount".to_string()]);
+        tracing::info!(
+            "K8s authorizer for legacy service account tokens created {:?}",
+            authenticator
+        );
+
+        Some(authenticator)
+    } else {
+        tracing::info!("Running without Kubernetes authentication for legacy service accounts.");
+        None
+    };
+
+    let authn_oidc = if let Some(uri) = CONFIG.openid_provider_uri.clone() {
+        let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
+            uri.as_ref(),
+            Some(std::time::Duration::from_secs(3600)),
+        )
+        .await?
+        .set_idp_id(OIDC_IDP_ID);
+        if let Some(aud) = &CONFIG.openid_audience {
+            tracing::debug!("Setting accepted audiences: {aud:?}");
+            authenticator = authenticator.set_accepted_audiences(aud.clone());
+        }
+        if let Some(iss) = &CONFIG.openid_additional_issuers {
+            tracing::debug!("Setting openid_additional_issuers: {iss:?}");
+            authenticator = authenticator.add_additional_issuers(iss.clone());
+        }
+        if let Some(scope) = &CONFIG.openid_scope {
+            tracing::debug!("Setting openid_scope: {}", scope);
+            authenticator = authenticator.set_scope(scope.clone());
+        }
+        if let Some(subject_claim) = &CONFIG.openid_subject_claim {
+            tracing::debug!("Setting openid_subject_claim: {}", subject_claim);
+            authenticator = authenticator.with_subject_claim(subject_claim.clone());
+        } else {
+            // "oid" should be used for entra-id, as the `sub` is different between applications.
+            // We prefer oid here by default as no other IdP sets this field (that we know of) and
+            // we can provide an out-of-the-box experience for users.
+            // Nevertheless, we document this behavior in the docs and recommend as part of the
+            // `production` checklist to set the claim explicitly.
+            tracing::debug!("Defaulting openid_subject_claim to: oid, sub");
+            authenticator =
+                authenticator.with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
+        }
+        tracing::info!("Running with OIDC authentication.");
+        Some(authenticator)
+    } else {
+        tracing::info!("Running without OIDC authentication.");
+        None
+    };
+
+    let authn_k8s = authn_k8s_audience.map(AuthenticatorEnum::from);
+    let authn_k8s_legacy = authn_k8s_legacy.map(AuthenticatorEnum::from);
+    let authn_oidc = authn_oidc.map(AuthenticatorEnum::from);
+    match (authn_k8s, authn_oidc, authn_k8s_legacy) {
+        (Some(k8s), Some(oidc), Some(authn_k8s_legacy)) => {
+            Ok(Some(limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
+                .add_authenticator(oidc)
+                .add_authenticator(k8s)
+                .add_authenticator(authn_k8s_legacy)
+                .build().into()))
+        }
+        (None, Some(auth1), Some(auth2))
+        | (Some(auth1), None, Some(auth2))
+        // OIDC has priority over k8s if specified
+        | (Some(auth2), Some(auth1), None) => {
+            Ok(Some(limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
+                .add_authenticator(auth1)
+                .add_authenticator(auth2)
+                .build().into()))
+        }
+        (Some(auth), None, None) | (None, Some(auth), None) | (None, None, Some(auth)) => {
+            Ok(Some(auth.into()))
+        }
+        (None, None, None) => {
+            tracing::warn!("Authentication is disabled. This is not suitable for production!");
+            Ok(None)
+        }
+    }
+}
 
 /// Use a limes [`Authenticator`] to Authenticate a request.
 ///
@@ -247,6 +372,18 @@ impl Serialize for UserId {
         S: serde::Serializer,
     {
         serializer.serialize_str(self.to_string().as_str())
+    }
+}
+
+impl From<AuthenticatorEnum> for BuiltInAuthenticators {
+    fn from(authenticator: AuthenticatorEnum) -> Self {
+        Self::Single(authenticator)
+    }
+}
+
+impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticators {
+    fn from(authenticator: limes::AuthenticatorChain<AuthenticatorEnum>) -> Self {
+        Self::Chain(authenticator)
     }
 }
 

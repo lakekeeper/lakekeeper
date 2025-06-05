@@ -10,16 +10,26 @@ use tokio::task::JoinHandle;
 pub trait HealthExt: Send + Sync + 'static {
     async fn health(&self) -> Vec<Health>;
     async fn update_health(&self);
-    async fn update_health_task(
+    async fn spawn_update_health_task(
         self: Arc<Self>,
         refresh_interval: Duration,
-        jitter_millis: u64,
+        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> JoinHandle<()> {
         tokio::task::spawn(async move {
             loop {
                 self.update_health().await;
-                let jitter = { rand::rng().next_u64().min(jitter_millis) };
-                tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)).await;
+                // Calculate jitter to avoid thundering herd problem
+                // Jitter is a random value between 0 and 500 milliseconds
+                let jitter = { rand::rng().next_u64() % 500 };
+                tokio::select! {
+                    () = cancellation_token.cancelled() => {
+                        // Gracefully exit when cancellation is requested
+                        break;
+                    }
+                    () = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {
+                        // Continue the loop after sleep
+                    }
+                }
             }
         })
     }
@@ -62,7 +72,6 @@ impl Health {
 #[derive(Clone)]
 pub struct ServiceHealthProvider {
     providers: Vec<(&'static str, Arc<dyn HealthExt + Sync + Send>)>,
-    check_jitter_millis: u64,
     check_frequency_seconds: u64,
 }
 
@@ -77,7 +86,6 @@ impl std::fmt::Debug for ServiceHealthProvider {
                     .map(|(name, _)| *name)
                     .collect::<Vec<_>>(),
             )
-            .field("check_jitter_millis", &self.check_jitter_millis)
             .field("check_frequency_seconds", &self.check_frequency_seconds)
             .finish()
     }
@@ -88,26 +96,31 @@ impl ServiceHealthProvider {
     pub fn new(
         providers: Vec<(&'static str, Arc<dyn HealthExt + Sync + Send>)>,
         check_frequency_seconds: u64,
-        check_jitter_millis: u64,
     ) -> Self {
         Self {
             providers,
-            check_jitter_millis,
             check_frequency_seconds,
         }
     }
 
-    pub async fn spawn_health_checks(&self) {
+    pub async fn spawn_update_heath_checks(
+        &self,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) -> Vec<JoinHandle<()>> {
+        let mut join_handles = Vec::with_capacity(self.providers.len());
         for (service_name, provider) in &self.providers {
             let provider = provider.clone();
-            provider
-                .update_health_task(
-                    Duration::from_secs(self.check_frequency_seconds),
-                    self.check_jitter_millis,
-                )
-                .await;
+            join_handles.push(
+                provider
+                    .spawn_update_health_task(
+                        Duration::from_secs(self.check_frequency_seconds),
+                        cancellation_token.clone(),
+                    )
+                    .await,
+            );
             tracing::info!("Spawned health provider: {service_name}");
         }
+        join_handles
     }
 
     pub async fn collect_health(&self) -> HealthState {

@@ -2,7 +2,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     implementations::postgres::dbutils::DBErrorHandler,
-    service::{Result, StartupValidationData},
+    service::{Result, ServerInfo},
     CONFIG,
 };
 
@@ -12,7 +12,7 @@ pub(super) async fn get_validation_data<
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
     connection: E,
-) -> std::result::Result<StartupValidationData, ErrorModel> {
+) -> std::result::Result<ServerInfo, ErrorModel> {
     let server = sqlx::query!(
         r#"
         SELECT
@@ -35,12 +35,12 @@ pub(super) async fn get_validation_data<
 
     let server = server.into_iter().next();
     if let Some(server) = server {
-        Ok(StartupValidationData::Bootstrapped {
+        Ok(ServerInfo::Bootstrapped {
             server_id: server.server_id,
             terms_accepted: server.terms_accepted,
         })
     } else {
-        Ok(StartupValidationData::NotBootstrapped)
+        Ok(ServerInfo::NotBootstrapped)
     }
 }
 
@@ -85,21 +85,21 @@ mod test {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::{implementations::postgres::CatalogState, service::StartupValidationData};
+    use crate::{implementations::postgres::CatalogState, service::ServerInfo};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let data = get_validation_data(&state.read_pool()).await.unwrap();
-        assert_eq!(data, StartupValidationData::NotBootstrapped);
+        assert_eq!(data, ServerInfo::NotBootstrapped);
 
         let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
         assert!(success);
         let data = get_validation_data(&state.read_pool()).await.unwrap();
         assert_eq!(
             data,
-            StartupValidationData::Bootstrapped {
+            ServerInfo::Bootstrapped {
                 server_id: CONFIG.server_id,
                 terms_accepted: true,
             }

@@ -1,5 +1,6 @@
-use std::sync::LazyLock;
+use std::{sync::LazyLock, time::Duration};
 
+use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
@@ -55,28 +56,27 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
         {
             Ok(expiration) => expiration,
             Err(err) => {
-                // TODO: add retry counter + exponential backoff
                 tracing::error!("Failed to fetch expiration: {:?}", err);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
         };
         let Some(expiration) = expiration else {
-            tokio::time::sleep(poll_interval).await;
+            let jitter = { rand::rng().next_u64() % 500 };
+            tokio::time::sleep(poll_interval + Duration::from_millis(jitter)).await;
             continue;
         };
         let state = match expiration.task_state::<TabularExpirationPayload>() {
             Ok(state) => state,
             Err(err) => {
-                tracing::error!("Failed to deserialize task state: {:?}", err);
-                // TODO: record fatal error
+                tracing::error!("Failed to deserialize tabular expiration task state: {err:?}",);
                 continue;
             }
         };
         let _config = match expiration.task_config::<ExpirationQueueConfig>() {
             Ok(config) => config,
             Err(err) => {
-                tracing::error!("Failed to deserialize task config: {:?}", err);
+                tracing::error!("Failed to deserialize task config: {err:?}");
                 continue;
             }
         }

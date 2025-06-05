@@ -109,6 +109,7 @@ tokio = { version = "1.41", default-features = false, features = [
     "signal",
     "rt-multi-thread",
 ] }
+tokio-util = { version = "^0.7" }
 tower = { version = "^0.5" }
 tower-http = { version = "^0.6", features = [
     "catch-panic",

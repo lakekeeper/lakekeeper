@@ -3612,6 +3612,7 @@ dependencies = [
  "time",
  "token-source",
  "tokio",
+ "tokio-util",
  "tower 0.5.2",
  "tower-http",
  "tracing",
@@ -3641,10 +3642,8 @@ dependencies = [
  "limes",
  "reqwest",
  "tokio",
- "tower-http",
  "tracing",
  "tracing-subscriber",
- "utoipa",
 ]
 
 [[package]]

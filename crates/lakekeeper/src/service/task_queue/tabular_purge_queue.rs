@@ -1,9 +1,10 @@
-use std::sync::LazyLock;
+use std::{sync::LazyLock, time::Duration};
 
 use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{Location, ParseFromStr},
 };
+use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
@@ -48,7 +49,6 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
         {
             Ok(expiration) => expiration,
             Err(err) => {
-                // TODO: add retry counter + exponential backoff
                 tracing::error!("Failed to fetch purge: {:?}", err);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
@@ -56,14 +56,14 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
         };
 
         let Some(task) = task else {
-            tokio::time::sleep(poll_interval).await;
+            let jitter = { rand::rng().next_u64() % 500 };
+            tokio::time::sleep(poll_interval + Duration::from_millis(jitter)).await;
             continue;
         };
         let state = match task.task_state::<TabularPurgePayload>() {
             Ok(state) => state,
             Err(err) => {
                 tracing::error!("Failed to deserialize task state: {:?}", err);
-                // TODO: record fatal error
                 continue;
             }
         };

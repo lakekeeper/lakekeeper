@@ -20,7 +20,7 @@ pub use catalog::{
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
     ListNamespacesResponse, LoadTableResponse, NamespaceDropInfo, NamespaceIdent, NamespaceInfo,
-    Result, StartupValidationData, TableCommit, TableCreation, TableIdent, TableInfo, TabularInfo,
+    Result, ServerInfo, TableCommit, TableCreation, TableIdent, TableInfo, TabularInfo,
     Transaction, UndropTabularResponse, UpdateNamespacePropertiesRequest,
     UpdateNamespacePropertiesResponse, ViewCommit, ViewMetadataWithLocation,
 };
