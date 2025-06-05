@@ -9,8 +9,8 @@ use lakekeeper_io::Location;
 use super::{
     bootstrap::{bootstrap, get_validation_data},
     namespace::{
-        create_namespace, drop_namespace, get_namespace, list_namespaces, namespace_to_id,
-        update_namespace_properties,
+        create_namespace, drop_namespace, get_namespace, list_namespaces, move_namespace,
+        namespace_to_id, update_namespace_properties,
     },
     role::{create_role, delete_role, list_roles, update_role},
     tabular::table::{
@@ -63,10 +63,11 @@ use crate::{
         task_queue::{Task, TaskCheckState, TaskFilter, TaskId, TaskInput},
         Catalog, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
         CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
-        GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
-        NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, ServerInfo,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
-        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
+        GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse,
+        MoveNamespaceParent, MoveNamespaceResponse, NamespaceDropInfo, NamespaceId, NamespaceIdent,
+        NamespaceInfo, ProjectId, Result, RoleId, ServerInfo, TableCommit, TableCreation, TableId,
+        TableIdent, TableInfo, TabularId, TabularInfo, Transaction, UndropTabularResponse,
+        ViewCommit, ViewId, WarehouseId, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -489,6 +490,23 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<()> {
         rename_warehouse(warehouse_id, new_name, transaction).await
+    }
+
+    async fn move_namespace<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        new_parent: Option<MoveNamespaceParent>,
+        new_name: Option<String>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<MoveNamespaceResponse> {
+        move_namespace(
+            warehouse_id,
+            namespace_id,
+            new_parent,
+            new_name,
+            transaction,
+        )
+        .await
     }
 
     async fn set_warehouse_deletion_profile<'a>(

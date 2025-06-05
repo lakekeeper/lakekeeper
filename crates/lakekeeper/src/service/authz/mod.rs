@@ -417,6 +417,17 @@ where
         namespace_id: NamespaceId,
     ) -> Result<()>;
 
+    // Hook that is called when a namespace is moved.
+    // This is used to change parent<->child relations for the namespace
+    // to be  moved.
+    async fn move_namespace(
+        &self,
+        metadata: &RequestMetadata,
+        namespace_id: NamespaceId,
+        new_parent: NamespaceParent,
+        old_parent: NamespaceParent,
+    ) -> Result<()>;
+
     /// Hook that is called when a new table is created.
     /// This is used to set up the initial permissions for the table.
     async fn create_table(
@@ -1011,6 +1022,16 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             _namespace_id: NamespaceId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn move_namespace(
+            &self,
+            _metadata: &RequestMetadata,
+            _namespace_id: NamespaceId,
+            _destination: NamespaceParent,
+            _old_parent: NamespaceParent,
         ) -> Result<()> {
             Ok(())
         }

@@ -97,7 +97,8 @@
                 "management-v1-rename-project-by-id",
                 "sign-s3-request-tabular",
                 "management-v1-set-task-queue-config",
-                "management-v1-get-task-queue-config"
+                "management-v1-get-task-queue-config",
+                "management-v1-move-namespace"
               ]
             }
           }

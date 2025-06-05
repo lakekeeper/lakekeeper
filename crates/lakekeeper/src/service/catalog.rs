@@ -219,6 +219,21 @@ pub struct NamespaceDropInfo {
     pub open_tasks: Vec<TaskId>,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum MoveNamespaceParent {
+    Namespace(NamespaceId),
+    Warehouse(WarehouseId),
+}
+
+#[derive(Debug)]
+pub enum MoveNamespaceResponse {
+    NoOp,
+    Rename,
+    Move {
+        old_parent_namespace_id: Option<NamespaceId>,
+    },
+}
+
 #[derive(Debug, PartialEq)]
 pub struct TableInfo {
     pub table_ident: TableIdent,
@@ -372,6 +387,14 @@ where
         flags: NamespaceDropFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<NamespaceDropInfo>;
+
+    async fn move_namespace<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        new_parent: Option<MoveNamespaceParent>,
+        new_name: Option<String>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<MoveNamespaceResponse>;
 
     /// Update the properties of a namespace.
     ///
