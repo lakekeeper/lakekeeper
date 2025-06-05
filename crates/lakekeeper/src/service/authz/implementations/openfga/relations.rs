@@ -878,7 +878,6 @@ pub(super) enum NamespaceRelation {
     PassGrants,
     ManageGrants,
     Describe,
-    ListAll,
     Select,
     Create,
     Modify,
@@ -892,7 +891,7 @@ pub(super) enum NamespaceRelation {
     CanListTables,
     CanListViews,
     CanListNamespaces,
-    CanListEverythingInNamespace,
+    CanListEverything,
     _CanIncludeInList,
     CanReadAssignments,
     CanGrantCreate,
@@ -927,7 +926,6 @@ pub(super) enum APINamespaceRelation {
     PassGrants,
     ManageGrants,
     Describe,
-    ListAll,
     Select,
     Create,
     Modify,
@@ -944,8 +942,6 @@ pub(super) enum NamespaceAssignment {
     ManageGrants(UserOrRole),
     #[schema(title = "NamespaceAssignmentDescribe")]
     Describe(UserOrRole),
-    #[schema(title = "NamespaceAssignmentListAll")]
-    ListAll(UserOrRole),
     #[schema(title = "NamespaceAssignmentSelect")]
     Select(UserOrRole),
     #[schema(title = "NamespaceAssignmentCreate")]
@@ -961,7 +957,6 @@ impl GrantableRelation for APINamespaceRelation {
             APINamespaceRelation::PassGrants => NamespaceRelation::CanGrantPassGrants,
             APINamespaceRelation::ManageGrants => NamespaceRelation::CanGrantManageGrants,
             APINamespaceRelation::Describe => NamespaceRelation::CanGrantDescribe,
-            APINamespaceRelation::ListAll => NamespaceRelation::CanListEverythingInNamespace,
             APINamespaceRelation::Select => NamespaceRelation::CanGrantSelect,
             APINamespaceRelation::Create => NamespaceRelation::CanCreateNamespace,
             APINamespaceRelation::Modify => NamespaceRelation::CanUpdateProperties,
@@ -986,9 +981,6 @@ impl Assignment for NamespaceAssignment {
             APINamespaceRelation::Describe => {
                 UserOrRole::parse_from_openfga(user).map(NamespaceAssignment::Describe)
             }
-            APINamespaceRelation::ListAll => {
-                UserOrRole::parse_from_openfga(user).map(NamespaceAssignment::ListAll)
-            }
             APINamespaceRelation::Select => {
                 UserOrRole::parse_from_openfga(user).map(NamespaceAssignment::Select)
             }
@@ -1007,7 +999,6 @@ impl Assignment for NamespaceAssignment {
             | NamespaceAssignment::PassGrants(user)
             | NamespaceAssignment::ManageGrants(user)
             | NamespaceAssignment::Describe(user)
-            | NamespaceAssignment::ListAll(user)
             | NamespaceAssignment::Select(user)
             | NamespaceAssignment::Create(user)
             | NamespaceAssignment::Modify(user) => user.to_openfga(),
@@ -1020,7 +1011,6 @@ impl Assignment for NamespaceAssignment {
             NamespaceAssignment::PassGrants { .. } => APINamespaceRelation::PassGrants,
             NamespaceAssignment::ManageGrants { .. } => APINamespaceRelation::ManageGrants,
             NamespaceAssignment::Describe { .. } => APINamespaceRelation::Describe,
-            NamespaceAssignment::ListAll { .. } => APINamespaceRelation::ListAll,
             NamespaceAssignment::Select { .. } => APINamespaceRelation::Select,
             NamespaceAssignment::Create { .. } => APINamespaceRelation::Create,
             NamespaceAssignment::Modify { .. } => APINamespaceRelation::Modify,
@@ -1056,7 +1046,6 @@ impl ReducedRelation for APINamespaceRelation {
             APINamespaceRelation::PassGrants => NamespaceRelation::PassGrants,
             APINamespaceRelation::ManageGrants => NamespaceRelation::ManageGrants,
             APINamespaceRelation::Describe => NamespaceRelation::Describe,
-            APINamespaceRelation::ListAll => NamespaceRelation::ListAll,
             APINamespaceRelation::Select => NamespaceRelation::Select,
             APINamespaceRelation::Create => NamespaceRelation::Create,
             APINamespaceRelation::Modify => NamespaceRelation::Modify,
@@ -1100,7 +1089,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::CanListViews => NamespaceRelation::CanListViews,
             CatalogNamespaceAction::CanListEverythingInNamespace => {
-                NamespaceRelation::CanListEverythingInNamespace
+                NamespaceRelation::CanListEverything
             }
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
         }
