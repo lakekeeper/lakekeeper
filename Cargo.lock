@@ -3642,10 +3642,8 @@ dependencies = [
  "limes",
  "reqwest",
  "tokio",
- "tower-http",
  "tracing",
  "tracing-subscriber",
- "utoipa",
 ]
 
 [[package]]
