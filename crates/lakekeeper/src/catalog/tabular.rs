@@ -40,7 +40,7 @@ macro_rules! list_entities {
                     .is_allowed_namespace_action(
                         &request_metadata,
                         $namespace_id,
-                        CatalogNamespaceAction::CanListEverythingInNamespace,
+                        CatalogNamespaceAction::CanListEverything,
                     )
                     .await?;
 

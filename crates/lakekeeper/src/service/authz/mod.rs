@@ -98,7 +98,7 @@ pub enum CatalogNamespaceAction {
     CanListTables,
     CanListViews,
     CanListNamespaces,
-    CanListEverythingInNamespace,
+    CanListEverything,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, strum_macros::Display, EnumIter, EnumString)]

@@ -88,7 +88,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .is_allowed_namespace_action(
                     &request_metadata,
                     namespace_id,
-                    CatalogNamespaceAction::CanListEverythingInNamespace,
+                    CatalogNamespaceAction::CanListEverything,
                 )
                 .await?;
         }
