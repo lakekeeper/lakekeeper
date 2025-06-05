@@ -46,8 +46,7 @@ macro_rules! list_entities {
                             NamespaceId::from(*n),
                             CatalogNamespaceAction::CanListEverythingInNamespace,
                         )
-                        .await
-                        .unwrap_or(false);
+                        .await?;
                 }
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =

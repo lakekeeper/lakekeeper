@@ -76,28 +76,21 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let mut can_list_everything = false;
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
-            let maybe_namespace_id = match namespace_id {
-                Ok(Some(id)) => Some(id),
-                _ => None,
-            };
 
-            authorizer
+            let namespace_id = authorizer
                 .require_namespace_action(
                     &request_metadata,
                     namespace_id,
                     CatalogNamespaceAction::CanListNamespaces,
                 )
                 .await?;
-            if let Some(namespace_id) = maybe_namespace_id {
-                can_list_everything = authorizer
-                    .is_allowed_namespace_action(
-                        &request_metadata,
-                        namespace_id,
-                        CatalogNamespaceAction::CanListEverythingInNamespace,
-                    )
-                    .await
-                    .unwrap_or(false);
-            }
+            can_list_everything = authorizer
+                .is_allowed_namespace_action(
+                    &request_metadata,
+                    namespace_id,
+                    CatalogNamespaceAction::CanListEverythingInNamespace,
+                )
+                .await?;
         }
 
         // ------------------- BUSINESS LOGIC -------------------
