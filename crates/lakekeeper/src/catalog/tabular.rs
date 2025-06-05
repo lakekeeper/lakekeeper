@@ -13,13 +13,13 @@ pub(crate) fn default_table_flags() -> ListFlags {
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $action:ident, $namespace:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident) => {
+    ($entity:ident, $list_fn:ident, $action:ident, $namespace:ident, $namespace_id:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident) => {
         |ps, page_token, trx| {
             use ::paste::paste;
             paste! {
                 use crate::catalog::tabular::[<default_ $entity:snake _flags>] as default_flags;
             }
-            use crate::{catalog::UnfilteredPage, service::NamespaceId};
+            use crate::catalog::UnfilteredPage;
             let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
@@ -36,18 +36,13 @@ macro_rules! list_entities {
                     query,
                 )
                 .await?;
-                let namespace_id =
-                    C::namespace_to_id($warehouse_id, &namespace, trx.transaction()).await;
-                let mut can_list_everything = false;
-                if let Ok(Some(n)) = namespace_id {
-                    can_list_everything = authorizer
-                        .is_allowed_namespace_action(
-                            &request_metadata,
-                            NamespaceId::from(*n),
-                            CatalogNamespaceAction::CanListEverythingInNamespace,
-                        )
-                        .await?;
-                }
+                let can_list_everything = authorizer
+                    .is_allowed_namespace_action(
+                        &request_metadata,
+                        $namespace_id,
+                        CatalogNamespaceAction::CanListEverythingInNamespace,
+                    )
+                    .await?;
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
