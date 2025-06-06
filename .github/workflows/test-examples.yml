@@ -30,6 +30,7 @@ jobs:
       - test-example-access-control-simple
       - test-example-minimal
       - test-example-access-control-advanced
+      - test-docker-compose-with-keycloak
     steps:
       - run: exit 0
 
@@ -119,6 +120,80 @@ jobs:
           docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
         env:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
+
+  test-docker-compose-with-keycloak:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: lakekeeper-image
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -Rlh artifacts
+
+      - name: Restore Docker image
+        run: |
+          docker load -i artifacts/lakekeeper-local-amd64.tar
+
+      - name: Launch Docker Compose with Keycloak
+        run: |
+          cd docker-compose
+          sed -i '/pull_policy: /d' docker-compose.yaml
+          docker compose -f docker-compose.yaml -f keycloak-overlay.yaml up -d --wait
+        env:
+            LAKEKEEPER__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+
+      - name: Test Docker Compose with Keycloak
+        run: |
+          set -euo pipefail
+
+          CATALOG_URL="http://localhost:8181/catalog"
+          MANAGEMENT_URL="http://localhost:8181/management"
+          KEYCLOAK_TOKEN_URL="http://localhost:30080/realms/iceberg/protocol/openid-connect/token"
+          WAREHOUSE="demo"
+
+          CLIENT_ID="spark"
+          CLIENT_SECRET="2OR3eRvYfSZzzZ16MlPd95jhLnOaLM52"
+
+          # Get an access token from keycloak (the idP server)
+          echo "Getting access token from Keycloak..."
+          ACCESS_TOKEN=$(curl -s -X POST \
+            "$KEYCLOAK_TOKEN_URL" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=$CLIENT_ID" \
+            -d "client_secret=$CLIENT_SECRET" \
+            -d "scope=lakekeeper" \
+            | jq -r '.access_token')
+
+          echo "Access token received"
+
+          # Check the 'info' endpoint of the Lakekeeper management API
+          echo "Checking Lakekeeper management API info endpoint..."
+          curl -s -X GET \
+            "$MANAGEMENT_URL/v1/info" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            | jq
+
+          # Bootstrap
+          echo "Bootstrapping Lakekeeper..."
+          curl -s -X POST \
+            "$MANAGEMENT_URL/v1/bootstrap" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "accept-terms-of-use": true
+            }' \
+            || echo "Bootstrap may have already been completed"
+
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@v2
