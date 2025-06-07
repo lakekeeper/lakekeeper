@@ -19,10 +19,11 @@ pub use catalog::{
     CreateOrUpdateUserResponse, CreateTableRequest, CreateTableResponse, DeletionDetails,
     DropFlags, GetNamespaceResponse, GetProjectResponse, GetStorageConfigResponse,
     GetTableMetadataResponse, GetWarehouseResponse, ListFlags, ListNamespacesQuery,
-    ListNamespacesResponse, LoadTableResponse, NamespaceDropInfo, NamespaceIdent, NamespaceInfo,
-    Result, StartupValidationData, TableCommit, TableCreation, TableIdent, TableInfo, TabularInfo,
-    Transaction, UndropTabularResponse, UpdateNamespacePropertiesRequest,
-    UpdateNamespacePropertiesResponse, ViewCommit, ViewMetadataWithLocation,
+    ListNamespacesResponse, LoadTableResponse, MoveNamespaceResponse, NamespaceDropInfo,
+    NamespaceIdent, NamespaceInfo, Result, StartupValidationData, TableCommit, TableCreation,
+    TableIdent, TableInfo, TabularInfo, Transaction, UndropTabularResponse,
+    UpdateNamespacePropertiesRequest, UpdateNamespacePropertiesResponse, ViewCommit,
+    ViewMetadataWithLocation,
 };
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 use http::StatusCode;
