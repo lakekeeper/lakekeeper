@@ -103,6 +103,13 @@ impl WarehouseId {
     }
 }
 
+impl ViewId {
+    #[must_use]
+    pub fn new_random() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
 /// Status of a warehouse
 #[derive(
     Debug,
