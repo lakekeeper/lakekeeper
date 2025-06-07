@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "axum 0.8.4",
  "chrono",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3631,7 +3631,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-bin"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum 0.8.4",
