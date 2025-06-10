@@ -694,8 +694,7 @@ pub(crate) mod tests {
             self.blocked_actions.read().unwrap().contains(action)
         }
 
-        // `namespace:can_list_everything`
-        fn block_action(&mut self, object: &str) {
+        pub(crate) fn block_action(&self, object: &str) {
             self.blocked_actions
                 .write()
                 .unwrap()
@@ -939,7 +938,7 @@ pub(crate) mod tests {
             paste! {
                 #[tokio::test]
                 async fn [<test_block_ $entity _action>]() {
-                    let mut authz = HidingAuthorizer::new();
+                    let authz = HidingAuthorizer::new();
 
                     // Nothing is hidden, so the action is allowed.
                     assert!(authz
