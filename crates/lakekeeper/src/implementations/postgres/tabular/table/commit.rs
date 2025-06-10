@@ -210,7 +210,7 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
             .collect_vec();
         return Err(ErrorModel::bad_request(
             format!("Tables with the following IDs no longer exist: {missing_ids:?}"),
-            CONCURRENT_UPDATE_ERROR_TYPE,
+            "TableNotFound".to_string(),
             None,
         )
         .into());
@@ -223,7 +223,7 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
             .collect_vec();
         return Err(ErrorModel::bad_request(
             format!("Concurrent updates to tables with IDs: {missing_ids:?}"),
-            "FailedToUpdateTables".to_string(),
+            CONCURRENT_UPDATE_ERROR_TYPE,
             None,
         )
         .into());
