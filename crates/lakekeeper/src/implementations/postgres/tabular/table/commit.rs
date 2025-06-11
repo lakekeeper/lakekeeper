@@ -26,6 +26,7 @@ pub(crate) async fn commit_table_transaction(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let commits: Vec<TableCommit> = commits.into_iter().collect();
+    // Validate commit count so that we do not exceed the maximum number of parameters in a single query
     validate_commit_count(&commits)?;
     let tabular_ids_in_commit = commits
         .iter()
@@ -53,6 +54,7 @@ pub(crate) async fn commit_table_transaction(
         })
         .unzip();
 
+    // Perform changes in the DB to all sub-tables (schemas, snapshots, partitions etc.)
     for ((updates, diffs), TableMetadataTransition { new_metadata, .. }) in table_change_operations
         .into_iter()
         .zip(location_metadata_pairs.iter())
@@ -61,10 +63,11 @@ pub(crate) async fn commit_table_transaction(
         apply_metadata_changes(transaction, updates, new_metadata, diffs).await?;
     }
 
+    // Update tabular (metadata location, fs_location, fs_protocol) and top level table metadata
+    // (format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id)
     let (mut query_meta_update, mut query_meta_location_update) =
-        build_queries(location_metadata_pairs)?;
+        build_table_and_tabular_update_queries(location_metadata_pairs)?;
 
-    // futures::try_join didn't work due to concurrent mutable borrow of transaction
     let updated_tables = query_meta_update
         .build()
         .fetch_all(&mut **transaction)
@@ -104,7 +107,7 @@ struct CommitVerificationData {
     updated_tabulars_ids: HashSet<uuid::Uuid>,
 }
 
-fn build_queries(
+fn build_table_and_tabular_update_queries(
     location_metadata_pairs: Vec<TableMetadataTransition>,
 ) -> Result<
     (
@@ -200,9 +203,23 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
         updated_tabulars_ids,
     } = verification_data;
 
+    // Update for "table" table filters on `tabular_id`
     if tabular_ids_in_commit != updated_tables_ids {
         let missing_ids = tabular_ids_in_commit
             .difference(&updated_tables_ids)
+            .collect_vec();
+        return Err(ErrorModel::bad_request(
+            format!("Tables with the following IDs no longer exist: {missing_ids:?}"),
+            "TableNotFound".to_string(),
+            None,
+        )
+        .into());
+    }
+
+    // Update for `tabular` table filters on `table_id` and `metadata_location`.
+    if tabular_ids_in_commit != updated_tabulars_ids {
+        let missing_ids = tabular_ids_in_commit
+            .difference(&updated_tabulars_ids)
             .collect_vec();
         return Err(ErrorModel::bad_request(
             format!("Concurrent updates to tables with IDs: {missing_ids:?}"),
@@ -212,17 +229,6 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
         .into());
     }
 
-    if tabular_ids_in_commit != updated_tabulars_ids {
-        let missing_ids = tabular_ids_in_commit
-            .difference(&updated_tabulars_ids)
-            .collect_vec();
-        return Err(ErrorModel::internal(
-            format!("Failed to update tables with IDs: {missing_ids:?}"),
-            "FailedToUpdateTables".to_string(),
-            None,
-        )
-        .into());
-    }
     Ok(())
 }
 
