@@ -72,22 +72,3 @@ impl From<openfga::OpenFGAAuthorizer> for BuiltInAuthorizers {
         Self::OpenFGA(authorizer)
     }
 }
-
-// #[async_trait::async_trait]
-// impl HealthExt for Authorizers {
-//     async fn health(&self) -> Vec<Health> {
-//         match self {
-//             Self::AllowAll(authorizer) => authorizer.health().await,
-//             #[cfg(feature = "authz-openfga")]
-//             Self::OpenFGA(authorizer) => authorizer.health().await,
-//         }
-//     }
-
-//     async fn update_health(&self) {
-//         match self {
-//             Self::AllowAll(authorizer) => authorizer.update_health().await,
-//             #[cfg(feature = "authz-openfga")]
-//             Self::OpenFGA(authorizer) => authorizer.update_health().await,
-//         }
-//     }
-// }
