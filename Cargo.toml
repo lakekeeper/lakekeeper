@@ -20,7 +20,7 @@ rdkafka = { git = "https://github.com/lakekeeper/rust-rdkafka.git", rev = "1ccd3
     "cmake-build",
 ] }
 async-channel = { version = "2.3.1" }
-async-nats = "0.41.0"
+async-nats = "0.42.0"
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
