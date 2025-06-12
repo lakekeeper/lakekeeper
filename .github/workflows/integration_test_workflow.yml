@@ -70,7 +70,7 @@ jobs:
             uses: tj-actions/pg-dump@v3
             with:
               database_url: "postgresql://postgres:postgres@localhost:31102/postgres"
-              postgresql_version: "16"
+              postgresql_version: "17"
               path: dump.sql
           - name: compress
             if: always()
