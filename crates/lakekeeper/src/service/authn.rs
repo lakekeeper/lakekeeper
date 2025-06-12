@@ -554,7 +554,7 @@ mod tests {
         let actor_json = serde_json::json!({
         "role": {
             "principal": "oidc~123",
-            "assumed_role": "00000000-0000-0000-0000-000000000000"
+            "assumed-role": "00000000-0000-0000-0000-000000000000"
         }});
         let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
         assert_eq!(
