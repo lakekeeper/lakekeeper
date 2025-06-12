@@ -7,7 +7,7 @@ Lakekeeper's default permission model uses the CNCF project [OpenFGA](http://ope
 Please check the [Authorization Configuration](./configuration.md#authorization) for details on enabling Authorization with Lakekeeper.
 
 ## Grants
-The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on Github](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/v1/schema.fga). The following grants are available:
+The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on Github](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/). The following grants are available:
 
 | Entity    | Grant                                                            |
 |-----------|------------------------------------------------------------------|

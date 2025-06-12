@@ -586,6 +586,8 @@ pub(crate) mod tests {
         sync::{Arc, RwLock},
     };
 
+    use paste::paste;
+
     use super::*;
     use crate::service::health::Health;
 
@@ -660,16 +662,24 @@ pub(crate) mod tests {
     /// A mock of the [`Authorizer`] that allows to hide objects.
     /// This is useful to test the behavior of the authorizer when objects are hidden.
     ///
-    /// Objects that have been hidden will return `allowed: false`
-    /// for any check request.
+    /// Objects that have been hidden will return `allowed: false` for any check request. This
+    /// means all checks for an object that was *not* hidden return `allowed: true`.
+    ///
+    /// Some tests require blocking certain actions without hiding the object, for instance
+    /// forbid an action on a namespace without hiding the namespace. This can be achieved by
+    /// blocking the action.
     pub(crate) struct HidingAuthorizer {
+        /// Strings encode `object_type:object_id` e.g. `namespace:id_of_namespace_to_hide`.
         pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
+        /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
+        blocked_actions: Arc<RwLock<HashSet<String>>>,
     }
 
     impl HidingAuthorizer {
         pub(crate) fn new() -> Self {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
+                blocked_actions: Arc::new(RwLock::new(HashSet::new())),
             }
         }
 
@@ -679,6 +689,17 @@ pub(crate) mod tests {
 
         pub(crate) fn hide(&self, object: &str) {
             self.hidden.write().unwrap().insert(object.to_string());
+        }
+
+        fn action_is_blocked(&self, action: &str) -> bool {
+            self.blocked_actions.read().unwrap().contains(action)
+        }
+
+        pub(crate) fn block_action(&self, object: &str) {
+            self.blocked_actions
+                .write()
+                .unwrap()
+                .insert(object.to_string());
         }
     }
 
@@ -734,8 +755,11 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             role_id: RoleId,
-            _action: CatalogRoleAction,
+            action: CatalogRoleAction,
         ) -> Result<bool> {
+            if self.action_is_blocked(format!("role:{action}").as_str()) {
+                return Ok(false);
+            }
             Ok(self.check_available(format!("role:{role_id}").as_str()))
         }
 
@@ -751,8 +775,11 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             project_id: &ProjectId,
-            _action: CatalogProjectAction,
+            action: CatalogProjectAction,
         ) -> Result<bool> {
+            if self.action_is_blocked(format!("project:{action}").as_str()) {
+                return Ok(false);
+            }
             Ok(self.check_available(format!("project:{project_id}").as_str()))
         }
 
@@ -760,8 +787,11 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             warehouse_id: WarehouseId,
-            _action: CatalogWarehouseAction,
+            action: CatalogWarehouseAction,
         ) -> Result<bool> {
+            if self.action_is_blocked(format!("warehouse:{action}").as_str()) {
+                return Ok(false);
+            }
             Ok(self.check_available(format!("warehouse:{warehouse_id}").as_str()))
         }
 
@@ -769,11 +799,14 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             namespace_id: NamespaceId,
-            _action: A,
+            action: A,
         ) -> Result<bool>
         where
             A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
         {
+            if self.action_is_blocked(format!("namespace:{action}").as_str()) {
+                return Ok(false);
+            }
             Ok(self.check_available(format!("namespace:{namespace_id}").as_str()))
         }
 
@@ -781,11 +814,14 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             table_id: TableId,
-            _action: A,
+            action: A,
         ) -> Result<bool>
         where
             A: From<CatalogTableAction> + std::fmt::Display + Send,
         {
+            if self.action_is_blocked(format!("table:{action}").as_str()) {
+                return Ok(false);
+            }
             Ok(self.check_available(format!("table:{table_id}").as_str()))
         }
 
@@ -793,11 +829,14 @@ pub(crate) mod tests {
             &self,
             _metadata: &RequestMetadata,
             view_id: ViewId,
-            _action: A,
+            action: A,
         ) -> Result<bool>
         where
             A: From<CatalogViewAction> + std::fmt::Display + Send,
         {
+            if self.action_is_blocked(format!("view:{action}").as_str()) {
+                return Ok(false);
+            }
             Ok(self.check_available(format!("view:{view_id}").as_str()))
         }
 
@@ -894,4 +933,58 @@ pub(crate) mod tests {
             Ok(())
         }
     }
+
+    macro_rules! test_block_action {
+        ($entity:ident, $action:path, $object_id:expr) => {
+            paste! {
+                #[tokio::test]
+                async fn [<test_block_ $entity _action>]() {
+                    let authz = HidingAuthorizer::new();
+
+                    // Nothing is hidden, so the action is allowed.
+                    assert!(authz
+                        .[<is_allowed_ $entity _action>](
+                            &RequestMetadata::new_unauthenticated(),
+                            $object_id,
+                            $action
+                        )
+                        .await
+                        .unwrap());
+
+                    // Generates "namespace:can_list_everything" for macro invoked with
+                    // (namespace, CatalogNamespaceAction::CanListEverything)
+                    authz.block_action(format!("{}:{}", stringify!($entity), $action).as_str());
+
+                    // After blocking the action it must not be allowed anymore.
+                    assert!(!authz
+                        .[<is_allowed_ $entity _action>](
+                            &RequestMetadata::new_unauthenticated(),
+                            $object_id,
+                            $action
+                        )
+                        .await
+                        .unwrap());
+                }
+            }
+        };
+    }
+
+    test_block_action!(role, CatalogRoleAction::CanDelete, RoleId::new_random());
+    test_block_action!(
+        project,
+        CatalogProjectAction::CanRename,
+        &ProjectId::new_random()
+    );
+    test_block_action!(
+        warehouse,
+        CatalogWarehouseAction::CanCreateNamespace,
+        WarehouseId::new_random()
+    );
+    test_block_action!(
+        namespace,
+        CatalogNamespaceAction::CanListViews,
+        NamespaceId::new_random()
+    );
+    test_block_action!(table, CatalogTableAction::CanDrop, TableId::new_random());
+    test_block_action!(view, CatalogViewAction::CanDrop, ViewId::new_random());
 }
