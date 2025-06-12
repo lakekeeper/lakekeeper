@@ -24,12 +24,16 @@ use crate::{
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
 
-#[derive(Debug, Clone, PartialEq, Eq, strum_macros::Display)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum_macros::Display,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum Actor {
     Anonymous,
     #[strum(to_string = "Principal({0})")]
     Principal(UserId),
     #[strum(to_string = "AssumedRole({assumed_role}) by Principal({principal})")]
+    #[serde(rename_all = "kebab-case")]
     Role {
         principal: UserId,
         assumed_role: RoleId,
@@ -529,5 +533,49 @@ mod tests {
         );
         let role_id = extract_role_id(&headers).unwrap().unwrap();
         assert_eq!(role_id, RoleId::new(this_role_id));
+    }
+
+    #[test]
+    fn test_actor_serde_principal() {
+        let actor_json = serde_json::json!({
+            "principal": "oidc~123",
+        });
+        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(
+            actor,
+            Actor::Principal(UserId::try_from("oidc~123").unwrap())
+        );
+        let actor_json_2 = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, actor_json_2);
+    }
+
+    #[test]
+    fn test_actor_serde_role() {
+        let actor_json = serde_json::json!({
+        "role": {
+            "principal": "oidc~123",
+            "assumed_role": "00000000-0000-0000-0000-000000000000"
+        }});
+        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(
+            actor,
+            Actor::Role {
+                principal: UserId::try_from("oidc~123").unwrap(),
+                assumed_role: RoleId::new(Uuid::nil())
+            }
+        );
+        let actor_json_2 = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, actor_json_2);
+    }
+
+    #[test]
+    fn test_actor_serde_anonymous() {
+        let actor_json = serde_json::json!({
+            "anonymous": {}
+        });
+        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(actor, Actor::Anonymous);
+        let actor_json_2 = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, actor_json_2);
     }
 }
