@@ -6,6 +6,7 @@ use axum::{
     Extension, Json, Router,
 };
 use http::StatusCode;
+use itertools::Itertools;
 use openfga_client::client::{
     CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
 };
@@ -15,6 +16,7 @@ use utoipa::OpenApi;
 
 use super::{
     check::{__path_check, check},
+    entities::ParseOpenFgaEntity,
     relations::{
         APINamespaceAction as NamespaceAction, APINamespaceRelation as NamespaceRelation,
         APIProjectAction as ProjectAction, APIProjectRelation as ProjectRelation,
@@ -34,13 +36,17 @@ use super::{
     OPENFGA_SERVER,
 };
 use crate::{
-    api::ApiContext,
+    api::{
+        iceberg::v1::{PageToken, PaginationQuery},
+        management::v1::user::{ListUsersResponse, User},
+        ApiContext,
+    },
     request_metadata::RequestMetadata,
     service::{
         authz::implementations::openfga::{
             entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
         },
-        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
+        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -1002,8 +1008,11 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateServerAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1030,11 +1039,14 @@ async fn update_project_assignments<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateProjectAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1065,8 +1077,11 @@ async fn update_project_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateProjectAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1097,8 +1112,11 @@ async fn update_warehouse_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateWarehouseAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1129,8 +1147,11 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateNamespaceAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1161,8 +1182,11 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateTableAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1193,8 +1217,11 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateViewAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1234,8 +1261,13 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
             return Err(OpenFGAError::SelfAssignment(role_id.to_string()).into());
         }
     }
+
+    let check_users_exist: CheckedWriteExtWithCatalog<C> =
+        CheckedWriteExtWithCatalog::new(&api_context.v1_state.catalog);
+
     checked_write(
         authorizer,
+        &check_users_exist,
         metadata.actor(),
         request.writes,
         request.deletes,
@@ -1295,12 +1327,12 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     ),
     // auto-discovery seems to be broken for these
     components(schemas(NamespaceRelation,
-                       ProjectRelation,
-                       RoleRelation,
-                       ServerRelation,
-                       TableRelation,
-                       ViewRelation,
-                       WarehouseRelation))
+        ProjectRelation,
+        RoleRelation,
+        ServerRelation,
+        TableRelation,
+        ViewRelation,
+        WarehouseRelation))
 )]
 pub(crate) struct ApiDoc;
 
@@ -1468,8 +1500,75 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     Ok(actions)
 }
 
+#[async_trait::async_trait]
+trait CheckedWriteExtension {
+    async fn check_all_users_exits(&self, user_ids: Vec<UserId>) -> OpenFGAResult<()>;
+}
+
+struct CheckedWriteExtWithCatalog<C: Catalog> {
+    state: C::State,
+}
+
+impl<C: Catalog> CheckedWriteExtWithCatalog<C> {
+    fn new(state: &<C as Catalog>::State) -> Self {
+        Self {
+            state: state.clone(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: Catalog> CheckedWriteExtension for CheckedWriteExtWithCatalog<C> {
+    async fn check_all_users_exits(&self, user_ids: Vec<UserId>) -> OpenFGAResult<()> {
+        let mut found_users: Vec<User> = Vec::new();
+        let mut page_token = PageToken::Empty;
+        loop {
+            let ListUsersResponse {
+                ref mut users,
+                next_page_token,
+            } = C::list_user(
+                Some(user_ids.clone()),
+                None,
+                PaginationQuery {
+                    page_token,
+                    page_size: None,
+                },
+                self.state.clone(),
+            )
+            .await
+            .map_err(|_| OpenFGAError::CannotValidateRequest)?;
+
+            found_users.append(users);
+
+            if next_page_token.is_none() {
+                break;
+            }
+            page_token = PageToken::Present(next_page_token.unwrap());
+        }
+
+        let found_users_ids = found_users
+            .iter()
+            .map(|user| user.id.to_string())
+            .collect::<HashSet<_>>();
+        let user_ids = user_ids
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<HashSet<_>>();
+
+        let non_existing_user_ids = user_ids.difference(&found_users_ids).collect::<Vec<_>>();
+
+        if non_existing_user_ids.is_empty() {
+            return Ok(());
+        }
+        return Err(OpenFGAError::AssignementToNonExistingUsers(
+            non_existing_user_ids.iter().format(",").to_string(),
+        ));
+    }
+}
+
 async fn checked_write<RA: Assignment>(
     authorizer: OpenFGAAuthorizer,
+    check_users: &impl CheckedWriteExtension,
     actor: &Actor,
     writes: Vec<RA>,
     deletes: Vec<RA>,
@@ -1479,9 +1578,19 @@ async fn checked_write<RA: Assignment>(
     if actor == &Actor::Anonymous {
         return Err(OpenFGAError::AuthenticationRequired);
     }
-    let all_modifications = writes.iter().chain(deletes.iter()).collect::<Vec<_>>();
-    // ---------------------------- AUTHZ CHECKS ----------------------------
+
     let openfga_actor = actor.to_openfga();
+
+    let all_modifications = writes.iter().chain(deletes.iter()).collect::<Vec<_>>();
+    let unique_users = all_modifications
+        .iter()
+        .map(|&a| a.openfga_user())
+        .unique()
+        .filter_map(|u| UserId::parse_from_openfga(u.as_str()).ok())
+        .collect::<Vec<_>>();
+
+    // check if all assignments are for existing users
+    check_users.check_all_users_exits(unique_users).await?;
 
     let grant_relations = all_modifications
         .iter()
@@ -1598,6 +1707,15 @@ mod tests {
 
     use super::*;
 
+    struct MockCheckUserAlwaysTrue {}
+
+    #[async_trait::async_trait]
+    impl CheckedWriteExtension for MockCheckUserAlwaysTrue {
+        async fn check_all_users_exits(&self, _: Vec<UserId>) -> OpenFGAResult<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_namespace_manage_access_is_equal_to_warehouse_manage_access() {
         // Required for set_managed_access / get_managed_access
@@ -1612,7 +1730,7 @@ mod tests {
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
-        use super::super::*;
+        use super::{super::*, *};
         use crate::service::{
             authn::UserId,
             authz::implementations::openfga::migration::tests::authorizer_for_empty_store,
@@ -1638,8 +1756,10 @@ mod tests {
                 .await
                 .unwrap();
 
+            let mock_check_user = MockCheckUserAlwaysTrue {};
             let result = checked_write(
                 authorizer.clone(),
+                &mock_check_user,
                 &Actor::Principal(user_id.clone()),
                 vec![RoleAssignment::Assignee(role_id.into())],
                 vec![],
@@ -1861,8 +1981,10 @@ mod tests {
                 .await
                 .unwrap();
 
+            let mock_user_exist = MockCheckUserAlwaysTrue {};
             checked_write(
                 authorizer.clone(),
+                &mock_user_exist,
                 &Actor::Principal(user1_id.clone()),
                 vec![ServerAssignment::Admin(user2_id.into())],
                 vec![],
@@ -1899,8 +2021,11 @@ mod tests {
                 .await
                 .unwrap();
 
+            let mock_user_exist = MockCheckUserAlwaysTrue {};
+
             checked_write(
                 authorizer.clone(),
+                &mock_user_exist,
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     RoleAssignment::Assignee(user_id_owner.into()),
@@ -1941,8 +2066,11 @@ mod tests {
                 .await
                 .unwrap();
 
+            let mock_user_exist = MockCheckUserAlwaysTrue {};
+
             checked_write(
                 authorizer.clone(),
+                &mock_user_exist,
                 &Actor::Principal(user_id_owner.clone()),
                 vec![
                     ProjectAssignment::Describe(UserOrRole::Role(role_id.into_assignees())),
