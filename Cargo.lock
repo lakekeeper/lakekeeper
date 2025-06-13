@@ -2513,16 +2513,22 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "gcloud-metadata",
+ "hex",
+ "hmac",
  "home",
  "jsonwebtoken",
+ "path-clean",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "time",
  "token-source",
  "tokio",
  "tracing",
+ "url",
  "urlencoding",
 ]
 
@@ -4610,6 +4616,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "path-clean"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
 
 [[package]]
 name = "pbkdf2"
