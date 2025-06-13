@@ -110,6 +110,8 @@ mod test {
     ) {
         let prof = crate::catalog::test::test_io_profile();
         let authz = HidingAuthorizer::new();
+        // Prevent hidden views from becoming visible through `can_list_everything`.
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
@@ -170,6 +172,8 @@ mod test {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
+        // Prevent hidden views from becoming visible through `can_list_everything`.
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),

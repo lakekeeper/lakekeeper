@@ -3009,6 +3009,8 @@ pub(crate) mod test {
         let prof = crate::catalog::test::test_io_profile();
         let base_location = prof.base_location().unwrap();
         let authz = HidingAuthorizer::new();
+        // Prevent hidden tables from becoming visible through `can_list_everything`.
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
@@ -3065,6 +3067,8 @@ pub(crate) mod test {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz = HidingAuthorizer::new();
+        // Prevent hidden tables from becoming visible through `can_list_everything`.
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
