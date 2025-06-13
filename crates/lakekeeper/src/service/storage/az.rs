@@ -753,7 +753,7 @@ fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("azdls")
+    Ok(iceberg::io::FileIOBuilder::new("abfss")
         .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .build()?)
