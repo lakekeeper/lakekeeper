@@ -27,10 +27,11 @@ pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
 #[derive(
     Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum_macros::Display,
 )]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", tag = "type")]
 pub enum Actor {
     Anonymous,
     #[strum(to_string = "Principal({0})")]
+    #[serde(with = "principal_serde")]
     Principal(UserId),
     #[strum(to_string = "AssumedRole({assumed_role}) by Principal({principal})")]
     #[serde(rename_all = "kebab-case")]
@@ -391,6 +392,33 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
     }
 }
 
+mod principal_serde {
+    use super::UserId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct PrincipalWrapper {
+        principal: UserId,
+    }
+
+    pub(super) fn serialize<S>(user_id: &UserId, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wrapper = PrincipalWrapper {
+            principal: user_id.clone(),
+        };
+        wrapper.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<UserId, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wrapper = PrincipalWrapper::deserialize(deserializer)?;
+        Ok(wrapper.principal)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
@@ -539,6 +567,7 @@ mod tests {
     fn test_actor_serde_principal() {
         let actor = Actor::Principal(UserId::try_from("oidc~123").unwrap());
         let expected_json = serde_json::json!({
+            "type": "principal",
             "principal": "oidc~123"
         });
 
@@ -551,10 +580,10 @@ mod tests {
     #[test]
     fn test_actor_serde_role() {
         let actor_json = serde_json::json!({
-        "role": {
+            "type": "role",
             "principal": "oidc~123",
             "assumed-role": "00000000-0000-0000-0000-000000000000"
-        }});
+        });
         let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
         assert_eq!(
             actor,
@@ -569,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_actor_serde_anonymous() {
-        let actor_json = serde_json::json!("anonymous");
+        let actor_json = serde_json::json!({"type": "anonymous"});
         let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
         assert_eq!(actor, Actor::Anonymous);
         let actor_json_2 = serde_json::to_value(&actor).unwrap();
