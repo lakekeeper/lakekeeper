@@ -234,6 +234,7 @@ tests:
           can_list_tables: false
           can_list_views: false
           can_list_namespaces: false
+          can_list_everything: false
           can_grant_create: false
           can_grant_describe: false
           can_grant_modify: false
@@ -323,6 +324,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_grant_create: true
           can_grant_describe: true
           can_grant_modify: true
@@ -413,6 +415,7 @@ tests:
           can_list_views: true
           can_include_in_list: true
           can_list_namespaces: true
+          can_list_everything: true
           can_grant_create: true
           can_grant_describe: true
           can_grant_modify: true
@@ -502,6 +505,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -577,6 +581,7 @@ tests:
           can_list_views: true
           can_include_in_list: true
           can_list_namespaces: true
+          can_list_everything: true
           can_grant_create: true
           can_grant_describe: true
           can_grant_modify: true
@@ -644,6 +649,7 @@ tests:
           can_list_views: true
           can_include_in_list: true
           can_list_namespaces: true
+          can_list_everything: true
           can_grant_create: true
           can_grant_describe: true
           can_grant_modify: true
@@ -663,6 +669,7 @@ tests:
           can_list_tables: false
           can_list_views: false
           can_list_namespaces: false
+          can_list_everything: false
           can_grant_create: false
           can_grant_describe: false
           can_include_in_list: false
@@ -754,6 +761,7 @@ tests:
           can_list_tables: false
           can_list_views: false
           can_list_namespaces: false
+          can_list_everything: false
           can_include_in_list: false
           can_grant_create: false
           can_grant_describe: false
@@ -774,6 +782,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: false
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -837,6 +846,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: true
           can_grant_describe: true
@@ -857,6 +867,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: true
           can_grant_describe: true
@@ -937,6 +948,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -957,6 +969,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -1035,6 +1048,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: false
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -1055,6 +1069,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -1188,6 +1203,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false
@@ -1230,6 +1246,7 @@ tests:
           can_list_tables: true
           can_list_views: true
           can_list_namespaces: true
+          can_list_everything: true
           can_include_in_list: true
           can_grant_create: false
           can_grant_describe: false

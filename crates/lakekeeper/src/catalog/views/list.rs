@@ -34,7 +34,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     let mut t: <C as Catalog>::Transaction =
         C::Transaction::begin_read(state.v1_state.catalog).await?;
 
-    let _namespace_id = authorized_namespace_ident_to_id::<C, _>(
+    let namespace_id = authorized_namespace_ident_to_id::<C, _>(
         authorizer.clone(),
         &request_metadata,
         &warehouse_id,
@@ -55,6 +55,7 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
                 list_views,
                 view_action,
                 namespace,
+                namespace_id,
                 authorizer,
                 request_metadata,
                 warehouse_id

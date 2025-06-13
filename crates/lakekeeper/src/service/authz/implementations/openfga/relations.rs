@@ -891,6 +891,7 @@ pub(super) enum NamespaceRelation {
     CanListTables,
     CanListViews,
     CanListNamespaces,
+    CanListEverything,
     _CanIncludeInList,
     CanReadAssignments,
     CanGrantCreate,
@@ -1087,6 +1088,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CanGetMetadata => NamespaceRelation::CanGetMetadata,
             CatalogNamespaceAction::CanListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::CanListViews => NamespaceRelation::CanListViews,
+            CatalogNamespaceAction::CanListEverything => NamespaceRelation::CanListEverything,
             CatalogNamespaceAction::CanListNamespaces => NamespaceRelation::CanListNamespaces,
         }
     }

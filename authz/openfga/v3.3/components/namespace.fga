@@ -29,6 +29,7 @@ type namespace
     define can_list_tables: can_get_metadata
     define can_list_views: can_get_metadata
     define can_list_namespaces: can_get_metadata
+    define can_list_everything: describe
     define can_include_in_list: can_get_metadata
     define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_change_ownership
     # GRANT Permissions
