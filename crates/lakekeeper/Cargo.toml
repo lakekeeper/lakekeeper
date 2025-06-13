@@ -27,7 +27,7 @@ s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http"]
 nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
-kafka = ["dep:rdkafka", "dep:openssl-src"]
+kafka = ["dep:rdkafka"]
 vendored-protoc = []
 authz-openfga = ["dep:openfga-client"]
 test-utils = []
@@ -135,8 +135,3 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = "0.2.5"
-
-[build-dependencies]
-openssl-src = { version = "300.4.2", features = [
-    "force-engine",
-], default-features = false, optional = true }

@@ -1,0 +1,180 @@
+name: Build Release Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  build-binary:
+    name: Build Binary
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            name: lakekeeper-x86_64-unknown-linux-gnu.tar.gz
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            name: lakekeeper-aarch64-unknown-linux-gnu.tar.gz
+
+          - target: aarch64-apple-darwin
+            os: macos-14
+            name: lakekeeper-aarch64-apple-darwin.tar.gz
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags || '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+          cache: false
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 23
+
+      - name: Build
+        run: cargo build --all-features --release --locked --target ${{ matrix.target }}
+
+      - name: Prepare artifacts [-nix]
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../${{ matrix.name }} lakekeeper
+          cd -
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+  build-docker:
+    name: Build Docker
+    runs-on: ubuntu-24.04
+    needs:
+      - build-binary
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: List Artifacts
+        run: ls -lh
+
+      - name: Restore Binaries
+        run: |
+          cd bin-lakekeeper-x86_64-unknown-linux-gnu.tar.gz
+          tar xzvf lakekeeper-x86_64-unknown-linux-gnu.tar.gz
+          cd -
+          cd bin-lakekeeper-aarch64-unknown-linux-gnu.tar.gz
+          tar xzvf lakekeeper-aarch64-unknown-linux-gnu.tar.gz
+          ls -Rlh
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Build Docker image (amd64)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/lakekeeper-local:amd64 \
+            -f docker/bin.Dockerfile \
+            --build-arg "ARCH=amd64" \
+            --build-arg "EXPIRES='1w'" \
+            --build-arg "BIN=bin-lakekeeper-x86_64-unknown-linux-gnu.tar.gz/lakekeeper" .
+          docker save -o /tmp/docker-lakekeeper-amd64.tar localhost/lakekeeper-local:amd64
+
+      - name: Build Docker image (arm64)
+        run: |
+          DOCKER_BUILDKIT=1 docker build -t localhost/lakekeeper-local:arm64 \
+            -f docker/bin.Dockerfile \
+            --build-arg "ARCH=arm64" \
+            --build-arg "EXPIRES='1w'" \
+            --build-arg "BIN=bin-lakekeeper-aarch64-unknown-linux-gnu.tar.gz/lakekeeper" .
+          docker save -o /tmp/docker-lakekeeper-arm64.tar localhost/lakekeeper-local:arm64
+
+      - name: Save Docker
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-lakekeeper
+          path: /tmp/docker-lakekeeper-*.tar
+
+  test-docker:
+    name: Test Docker
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    needs:
+      - build-docker
+    strategy:
+      matrix:
+        include:
+          - file: docker-lakekeeper/docker-lakekeeper-amd64.tar
+            arch: amd64
+          - file: docker-lakekeeper/docker-lakekeeper-arm64.tar
+            arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Docker info
+        run: docker info
+
+      - name: Load Docker
+        run: |
+          docker load -i ${{ matrix.file }}
+          docker images
+
+      - name: Test Docker
+        run: |
+          cd tests
+          docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run_all.sh"
+        env:
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:${{ matrix.arch }}
+          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.1-java17-python3
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
+          AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
+          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@v2
