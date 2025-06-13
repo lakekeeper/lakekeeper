@@ -4,7 +4,6 @@ pub mod management;
 pub(crate) mod endpoints;
 #[cfg(feature = "router")]
 pub mod router;
-
 pub use iceberg_ext::catalog::rest::*;
 
 pub use crate::request_metadata::{RequestMetadata, X_PROJECT_ID_HEADER, X_REQUEST_ID_HEADER};

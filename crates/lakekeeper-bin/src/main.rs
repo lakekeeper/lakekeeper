@@ -1,4 +1,11 @@
-#![allow(clippy::borrow_interior_mutable_const)]
+#![warn(
+    missing_debug_implementations,
+    rust_2018_idioms,
+    unreachable_pub,
+    clippy::pedantic
+)]
+#![forbid(unsafe_code)]
+#![allow(clippy::module_name_repetitions, clippy::similar_names)]
 
 use clap::{Parser, Subcommand};
 use lakekeeper::{
@@ -94,7 +101,7 @@ enum Commands {
     },
     /// Print the version of the server
     Version {},
-    /// Get the OpenAPI specification of the Management API as yaml
+    /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
 }
 
@@ -156,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
             if !force_start {
                 wait_for_db::wait_for_db(true, 0, 0, true).await?;
             }
-            serve::serve(bind_addr).await?;
+            serve::serve_default(bind_addr).await?;
         }
         Some(Commands::Healthcheck {
             check_all,
@@ -209,7 +216,7 @@ Created with ❤️ by Vakamo
 Docs: https://docs.lakekeeper.io
 Enterprise Support: https://vakamo.com
 ";
-    let console_span = format!("{}\nLakekeeper Version: {}\n", console_span, VERSION);
-    println!("{}", console_span);
-    tracing::info!("Lakekeeper Version: {}", VERSION);
+    let console_span = format!("{console_span}\nLakekeeper Version: {VERSION}\n");
+    println!("{console_span}");
+    tracing::info!("Lakekeeper Version: {VERSION}");
 }

@@ -32,14 +32,15 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
         .unwrap_or(default_config.idp_post_logout_redirect_path),
         idp_token_type: match std::env::var("LAKEKEEPER__UI__OPENID_TOKEN_TYPE").as_deref() {
             Ok("id_token") => lakekeeper_console::IdpTokenType::IdToken,
-            Ok("access_token") => lakekeeper_console::IdpTokenType::AccessToken,
+            Ok("access_token") | Err(VarError::NotPresent) => {
+                lakekeeper_console::IdpTokenType::AccessToken
+            }
             Ok(v) => {
                 tracing::warn!(
                     "Unknown value `{v}` for LAKEKEEPER__UI__OPENID_TOKEN_TYPE, defaulting to AccessToken. Expected values are 'id_token' or 'access_token'.", 
                 );
                 lakekeeper_console::IdpTokenType::AccessToken
             }
-            Err(VarError::NotPresent) => lakekeeper_console::IdpTokenType::AccessToken,
             Err(VarError::NotUnicode(_)) => {
                 tracing::warn!(
                     "Non-Unicode value for LAKEKEEPER__UI__OPENID_TOKEN_TYPE, defaulting to AccessToken."
@@ -57,7 +58,7 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
             if path_stripped.is_empty() {
                 None
             } else {
-                Some(format!("/{}", path_stripped))
+                Some(format!("/{path_stripped}"))
             }
         }),
     };
@@ -69,16 +70,16 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
 static FILE_CACHE: LazyLock<FileCache> = LazyLock::new(|| FileCache::new(UI_CONFIG.clone()));
 
 // We use static route matchers ("/" and "/index.html") to serve our home page
-pub async fn index_handler(headers: HeaderMap) -> impl IntoResponse {
+pub(crate) async fn index_handler(headers: HeaderMap) -> impl IntoResponse {
     static_handler("/index.html".parse::<Uri>().unwrap(), headers).await
 }
 
-pub async fn favicon_handler(headers: HeaderMap) -> impl IntoResponse {
+pub(crate) async fn favicon_handler(headers: HeaderMap) -> impl IntoResponse {
     static_handler("/favicon.ico".parse::<Uri>().unwrap(), headers).await
 }
 
 // Handler for static assets
-pub async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
+pub(crate) async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/').to_string();
 
     if path.starts_with("ui/") {

@@ -12,6 +12,9 @@ pub mod service;
 pub use config::{AuthZBackend, OpenFGAAuth, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
 pub use service::{ProjectId, SecretIdent, WarehouseId};
 
+#[cfg(feature = "router")]
+pub mod serve;
+
 pub mod implementations;
 pub(crate) mod utils;
 
