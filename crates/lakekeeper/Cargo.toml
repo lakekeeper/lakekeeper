@@ -30,6 +30,7 @@ default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
 vendored-protoc = []
 authz-openfga = ["dep:openfga-client"]
+test-utils = []
 
 [dependencies]
 anyhow = { workspace = true }
@@ -91,6 +92,7 @@ strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, optional = true, features = [
     "default",

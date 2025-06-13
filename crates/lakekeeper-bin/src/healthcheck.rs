@@ -5,19 +5,19 @@ use lakekeeper::{
     CONFIG,
 };
 
-pub async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {
+pub(crate) async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {
     tracing::info!("Checking health...");
     if check_db {
         match db_health_check().await {
-            Ok(_) => {
+            Ok(()) => {
                 tracing::info!("Database is healthy.");
             }
             Err(details) => {
                 tracing::info!(?details, "Database is not healthy.");
                 std::process::exit(1);
             }
-        };
-    };
+        }
+    }
 
     if check_server {
         let client = reqwest::Client::new();
@@ -32,11 +32,11 @@ pub async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {
         }
         let body = response.json::<HealthState>().await?;
         // Fail with an error if the server is not healthy
-        if !matches!(body.health, HealthStatus::Healthy) {
+        if matches!(body.health, HealthStatus::Healthy) {
+            tracing::info!("Server is healthy.");
+        } else {
             tracing::info!(?body, "Server is not healthy: StatusCode: '{}'", status,);
             std::process::exit(1);
-        } else {
-            tracing::info!("Server is healthy.");
         }
     }
     Ok(())

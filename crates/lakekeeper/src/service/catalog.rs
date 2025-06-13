@@ -196,7 +196,7 @@ pub struct UndropTabularResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StartupValidationData {
+pub enum ServerInfo {
     /// Catalog is not bootstrapped
     NotBootstrapped,
     /// Catalog is bootstrapped
@@ -272,7 +272,7 @@ where
     /// Get data required for startup validations and server info endpoint
     async fn get_server_info(
         catalog_state: Self::State,
-    ) -> std::result::Result<StartupValidationData, ErrorModel>;
+    ) -> std::result::Result<ServerInfo, ErrorModel>;
 
     /// Bootstrap the catalog.
     /// Use this hook to store the current `CONFIG.server_id`.
@@ -977,6 +977,7 @@ where
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
+
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
         queue_name: &str,

@@ -66,10 +66,9 @@ use crate::{
         Catalog, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
         CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
         GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
-        NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId,
-        StartupValidationData, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularInfo, Transaction, UndropTabularResponse, ViewCommit, ViewId,
-        WarehouseId, WarehouseStatus,
+        NamespaceId, NamespaceIdent, NamespaceInfo, ProjectId, Result, RoleId, ServerInfo,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId, TabularInfo,
+        Transaction, UndropTabularResponse, ViewCommit, ViewId, WarehouseId, WarehouseStatus,
     },
     SecretIdent,
 };
@@ -81,7 +80,7 @@ impl Catalog for super::PostgresCatalog {
 
     async fn get_server_info(
         catalog_state: Self::State,
-    ) -> std::result::Result<StartupValidationData, ErrorModel> {
+    ) -> std::result::Result<ServerInfo, ErrorModel> {
         get_validation_data(&catalog_state.read_pool()).await
     }
 

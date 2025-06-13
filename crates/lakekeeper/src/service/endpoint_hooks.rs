@@ -32,7 +32,7 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct EndpointHookCollection(Vec<Arc<dyn EndpointHooks>>);
+pub struct EndpointHookCollection(pub(crate) Vec<Arc<dyn EndpointHook>>);
 
 impl core::fmt::Debug for EndpointHookCollection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,8 +42,13 @@ impl core::fmt::Debug for EndpointHookCollection {
 
 impl EndpointHookCollection {
     #[must_use]
-    pub fn new(hooks: Vec<Arc<dyn EndpointHooks>>) -> Self {
+    pub fn new(hooks: Vec<Arc<dyn EndpointHook>>) -> Self {
         Self(hooks)
+    }
+
+    pub fn append(&mut self, hook: Arc<dyn EndpointHook>) -> &mut Self {
+        self.0.push(hook);
+        self
     }
 }
 
@@ -339,7 +344,7 @@ impl EndpointHookCollection {
     }
 }
 
-/// `EndpointHooks` is a trait that allows for custom hooks to be executed within the context of
+/// `EndpointHook` is a trait that allows for custom hooks to be executed within the context of
 /// various endpoints.
 ///
 /// The default implementation of every hook does nothing. Override any function if you want to
@@ -348,14 +353,14 @@ impl EndpointHookCollection {
 /// An implementation should be light-weight, ideally every longer running task is deferred to a
 /// background task via a channel or is spawned as a tokio task.
 ///
-/// The `EndpointHooks` are passed into the services via the [`EndpointHookCollection`]. If you want
+/// The `EndpointHook` are passed into the services via the [`EndpointHookCollection`]. If you want
 /// to provide your own implementation, you'll have to fork and modify the main function to include
 /// your hooks.
 ///
 /// If the hook fails, it will be logged, but the request will continue to process. This is to ensure
 /// that the request is not blocked by a hook failure.
 #[async_trait::async_trait]
-pub trait EndpointHooks: Send + Sync + Debug + Display {
+pub trait EndpointHook: Send + Sync + Debug + Display {
     async fn commit_transaction(
         &self,
         _warehouse_id: WarehouseId,

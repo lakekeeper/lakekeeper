@@ -69,7 +69,7 @@ impl RequestMetadata {
         &self.request_method
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn new_unauthenticated() -> Self {
         Self {
@@ -88,7 +88,7 @@ impl RequestMetadata {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn random_human(user_id: crate::service::UserId) -> Self {
         Self {
@@ -111,9 +111,9 @@ impl RequestMetadata {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
-    pub(crate) fn new_test(
+    pub fn new_test(
         authentication: Option<Authentication>,
         base_url: Option<String>,
         actor: Actor,
