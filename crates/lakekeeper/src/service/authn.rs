@@ -393,8 +393,9 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
 }
 
 mod principal_serde {
-    use super::UserId;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::UserId;
     #[derive(serde::Serialize, serde::Deserialize)]
     struct PrincipalWrapper {
         principal: UserId,
