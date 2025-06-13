@@ -537,16 +537,15 @@ mod tests {
 
     #[test]
     fn test_actor_serde_principal() {
-        let actor_json = serde_json::json!({
-            "principal": "oidc~123",
+        let actor = Actor::Principal(UserId::try_from("oidc~123").unwrap());
+        let expected_json = serde_json::json!({
+            "principal": "oidc~123"
         });
-        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
-        assert_eq!(
-            actor,
-            Actor::Principal(UserId::try_from("oidc~123").unwrap())
-        );
-        let actor_json_2 = serde_json::to_value(&actor).unwrap();
-        assert_eq!(actor_json, actor_json_2);
+
+        let actor_json = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, expected_json);
+        let actor_from_json: Actor = serde_json::from_value(actor_json).unwrap();
+        assert_eq!(actor_from_json, actor);
     }
 
     #[test]
@@ -570,9 +569,7 @@ mod tests {
 
     #[test]
     fn test_actor_serde_anonymous() {
-        let actor_json = serde_json::json!({
-            "anonymous": {}
-        });
+        let actor_json = serde_json::json!("anonymous");
         let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
         assert_eq!(actor, Actor::Anonymous);
         let actor_json_2 = serde_json::to_value(&actor).unwrap();
