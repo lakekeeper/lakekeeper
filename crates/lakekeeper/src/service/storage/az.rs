@@ -17,7 +17,10 @@ use azure_storage::{
     StorageCredentials,
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use iceberg::io::AzdlsConfigKeys;
+use iceberg::io::{
+    ADLS_ACCOUNT_KEY, ADLS_ACCOUNT_NAME, ADLS_AUTHORITY_HOST, ADLS_CLIENT_ID, ADLS_CLIENT_SECRET,
+    ADLS_TENANT_ID,
+};
 use iceberg_ext::configs::{
     table::{custom, TableProperties},
     Location,
@@ -306,24 +309,17 @@ impl AdlsProfile {
         &self,
         credential: &AzCredential,
     ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("azdls").with_client(HTTP_CLIENT.clone());
+        let mut builder = iceberg::io::FileIOBuilder::new("abfss").with_client(HTTP_CLIENT.clone());
 
         builder = builder
+            .with_prop(ADLS_ACCOUNT_NAME, self.account_name.clone())
             .with_prop(
-                AzdlsConfigKeys::Endpoint,
-                format!(
-                    "https://{}.{}",
-                    self.account_name,
-                    self.host.as_deref().unwrap_or(DEFAULT_HOST)
-                ),
+                ADLS_AUTHORITY_HOST,
+                self.authority_host
+                    .as_ref()
+                    .map_or_else(|| DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string),
             )
-            .with_prop(AzdlsConfigKeys::AccountName, self.account_name.clone())
-            .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.clone())
             .with_client(HTTP_CLIENT.clone());
-
-        if let Some(authority_host) = &self.authority_host {
-            builder = builder.with_prop(AzdlsConfigKeys::AuthorityHost, authority_host.to_string());
-        }
 
         match credential {
             AzCredential::ClientCredentials {
@@ -332,15 +328,12 @@ impl AdlsProfile {
                 client_secret,
             } => {
                 builder = builder
-                    .with_prop(
-                        AzdlsConfigKeys::ClientSecret.to_string(),
-                        client_secret.to_string(),
-                    )
-                    .with_prop(AzdlsConfigKeys::ClientId, client_id.to_string())
-                    .with_prop(AzdlsConfigKeys::TenantId, tenant_id.to_string());
+                    .with_prop(ADLS_CLIENT_SECRET, client_secret.to_string())
+                    .with_prop(ADLS_CLIENT_ID, client_id.to_string())
+                    .with_prop(ADLS_TENANT_ID, tenant_id.to_string());
             }
             AzCredential::SharedAccessKey { key } => {
-                builder = builder.with_prop(AzdlsConfigKeys::AccountKey, key.to_string());
+                builder = builder.with_prop(ADLS_ACCOUNT_KEY, key.to_string());
             }
             AzCredential::AzureSystemIdentity {} => {
                 // ToDo: Use azure_identity to get token, then pass it to FileIO.
@@ -372,9 +365,7 @@ impl AdlsProfile {
                         source: Some(Box::new(e)),
                     })?;
 
-                builder = builder
-                    .with_props(table_config.config.inner())
-                    .with_prop(AzdlsConfigKeys::Filesystem, self.filesystem.to_string());
+                builder = builder.with_props(table_config.config.inner());
             }
         }
 
@@ -438,8 +429,6 @@ impl AdlsProfile {
             self.filesystem.as_str(),
             rootless_path
         );
-
-        println!("canonical_resource: {canonical_resource:?}");
 
         let sas = BlobSharedAccessSignature::new(
             key,
@@ -765,12 +754,34 @@ fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String
 
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
-    file_system: String,
 ) -> Result<iceberg::io::FileIO, FileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("azdls")
+    // Add Authority host if not present
+    let mut config = config.inner().clone();
+
+    let sas_token_prefix = "adls.sas-token.";
+    // Iceberg Rust cannot parse tokens of form "<sas_token_prefix><storage_account_name>.<endpoint_suffix>=<sas_token>"
+    // https://github.com/apache/iceberg-rust/issues/1442
+    let mut sas_token = None;
+    for (key, value) in &config {
+        if key.starts_with(sas_token_prefix) {
+            sas_token = Some(value.to_string());
+            break;
+        }
+    }
+    if let Some(sas_token) = sas_token {
+        config.remove(sas_token_prefix);
+        config.insert("adls.sas-token".to_string(), sas_token);
+    }
+
+    if !config.contains_key(ADLS_AUTHORITY_HOST) {
+        config.insert(
+            ADLS_AUTHORITY_HOST.to_string(),
+            DEFAULT_AUTHORITY_HOST.to_string(),
+        );
+    }
+    Ok(iceberg::io::FileIOBuilder::new("abfss")
         .with_client(HTTP_CLIENT.clone())
-        .with_props(config.inner())
-        .with_prop(AzdlsConfigKeys::Filesystem, file_system)
+        .with_props(config)
         .build()?)
 }
 
