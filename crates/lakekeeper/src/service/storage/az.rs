@@ -313,11 +313,14 @@ impl AdlsProfile {
 
         builder = builder
             .with_prop(ADLS_ACCOUNT_NAME, self.account_name.clone())
+            .with_prop(
+                ADLS_AUTHORITY_HOST,
+                self.authority_host
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| DEFAULT_AUTHORITY_HOST.to_string()),
+            )
             .with_client(HTTP_CLIENT.clone());
-
-        if let Some(authority_host) = &self.authority_host {
-            builder = builder.with_prop(ADLS_AUTHORITY_HOST, authority_host.to_string());
-        }
 
         match credential {
             AzCredential::ClientCredentials {

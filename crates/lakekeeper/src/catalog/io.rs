@@ -240,7 +240,8 @@ mod tests {
                 .next()
         }
 
-        let location = profile.base_location().unwrap();
+        let mut location = profile.base_location().unwrap();
+        location.without_trailing_slash();
 
         let folder_1 = location.clone().push("folder").clone();
         let file_1 = folder_1.clone().push("file1").clone();
