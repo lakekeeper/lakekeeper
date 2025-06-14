@@ -43,7 +43,7 @@ base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
 google-cloud-auth = { package = "gcloud-auth", version = "1.1.0", features = [
-    "rustls-tls",
+    "rustls-tls", "external-account"
 ], default-features = false }
 google-cloud-token = { package = "token-source", version = "1.0" }
 gcloud-token = "1.0.0"
