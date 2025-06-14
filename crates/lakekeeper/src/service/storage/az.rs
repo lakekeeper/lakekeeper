@@ -317,8 +317,7 @@ impl AdlsProfile {
                 ADLS_AUTHORITY_HOST,
                 self.authority_host
                     .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| DEFAULT_AUTHORITY_HOST.to_string()),
+                    .map_or_else(|| DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string),
             )
             .with_client(HTTP_CLIENT.clone());
 
