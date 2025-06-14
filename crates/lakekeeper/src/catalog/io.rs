@@ -16,7 +16,13 @@ fn normalize_location(location: &Location) -> String {
             .iter()
             .any(|p| location.as_str().starts_with(p))
     {
-        location.to_string()
+        if location.scheme() == "abfss" {
+            location.to_string()
+        } else {
+            let mut location = location.clone();
+            location.set_scheme_mut("abfss");
+            location.to_string()
+        }
     } else if location.scheme().starts_with("s3") {
         if location.scheme() == "s3" {
             location.to_string()
