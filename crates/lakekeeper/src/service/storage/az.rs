@@ -762,7 +762,7 @@ pub(super) fn get_file_io_from_table_config(
     // Iceberg Rust cannot parse tokens of form "<sas_token_prefix><storage_account_name>.<endpoint_suffix>=<sas_token>"
     // https://github.com/apache/iceberg-rust/issues/1442
     let mut sas_token = None;
-    for (key, value) in config.iter() {
+    for (key, value) in &config {
         if key.starts_with(sas_token_prefix) {
             sas_token = Some(value.to_string());
             break;
