@@ -242,6 +242,8 @@ The following docker compose examples are available for starrocks:
 - [`Minimal`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/minimal): No authentication
 - [`Access-Control`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control): Lakekeeper secured with OAuth2, single technical user for starrocks
 
+**Note:** If you are using an IdP like Keycloak, in order for Starrocks to be able to authenticate with Lakekeeper you must ensure the client you are connecting to has "Standard Token Exchange" (or equivalent) enabled. Otherwise Starrocks will be unable to refresh access tokens and you will get authentication errors when the initial access token created by the `CREATE EXTERNAL CATALOG` command expires.
+
 
 === "S3-Compatible"
 
@@ -254,6 +256,7 @@ The following docker compose examples are available for starrocks:
         "iceberg.catalog.uri" = "<Lakekeeper Catalog URI, i.e. http://localhost:8181/catalog>",
         "iceberg.catalog.warehouse" = "<Name of the Warehouse in Lakekeeper>",
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        "iceberg.catalog.security" = "OAUTH2",
         "iceberg.catalog.oauth2-server-uri" = "<Token Endpoint of your IdP, i.e. http://keycloak:8080/realms/iceberg/protocol/openid-connect/token>",
         "iceberg.catalog.credential" = "<Client-ID>:<Client-Secret>",
         -- Optional Parameters if OAuth2 authentication is enabled for Lakekeeper:
@@ -266,6 +269,23 @@ The following docker compose examples are available for starrocks:
         "aws.s3.endpoint" = "<Custom S3 endpoint>",
         "aws.s3.enable_path_style_access" = "true"
     )
+
+    -- You must set your catalog in the current session before you can query Iceberg data
+    SET CATALOG rest_catalog;
+
+    -- Starrocks uses MySQL compatible terminology. This is equivalent to Namespaces
+    SHOW DATABASES;
+
+    -- Starrocks will let you create resources in Lakekeeper
+    CREATE DATABASE testing;
+
+    -- You must use your namespace like a SQL database
+    USE `testing`;
+
+    -- In this case Tables is the same between MySQL and Iceberg.
+    SHOW TABLES;
+
+    -- You can also create tables, INSERT INTO them, and query them just like you would any other SQL database.
     ```
 
 ## <img src="/assets/olake.svg" width="30"> OLake
