@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-06-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename crate and binary to `lakekeeper` ([#1146](https://github.com/lakekeeper/lakekeeper/issues/1146))
+
+### Features
+
+* Add actor to CloudEvent Metadata ([#1171](https://github.com/lakekeeper/lakekeeper/issues/1171)) ([7414342](https://github.com/lakekeeper/lakekeeper/commit/74143427e87c44c366167a1db829313dd787bc09))
+* **testing:** add 'test-utils' feature to expose test helpers ([#1169](https://github.com/lakekeeper/lakekeeper/issues/1169)) ([8c37156](https://github.com/lakekeeper/lakekeeper/commit/8c3715684c5c23219bfd78d149206efe223d2b96))
+
+
+### Bug Fixes
+
+* Error code for concurrent updates ([#1161](https://github.com/lakekeeper/lakekeeper/issues/1161)) ([45e8cf5](https://github.com/lakekeeper/lakekeeper/commit/45e8cf5d669e0160abce8c566dfd27aefddbb7e2))
+
+
+### Miscellaneous Chores
+
+* rename crate and binary to `lakekeeper` ([#1146](https://github.com/lakekeeper/lakekeeper/issues/1146)) ([d3cab68](https://github.com/lakekeeper/lakekeeper/commit/d3cab68cb5d3e6c6b7fd029831897335cf53dfe6))
+
 ## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
 
 
