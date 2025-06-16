@@ -25,7 +25,7 @@ anyhow = { workspace = true }
 axum = { workspace = true }
 clap = { version = "^4.5", features = ["derive"] }
 lakekeeper = { path = "../lakekeeper", features = ["all"] }
-lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "2e6c314", optional = true }
+lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.8.0", optional = true }
 limes = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
