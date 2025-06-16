@@ -24,12 +24,17 @@ use crate::{
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
 
-#[derive(Debug, Clone, PartialEq, Eq, strum_macros::Display)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum_macros::Display,
+)]
+#[serde(rename_all = "kebab-case", tag = "type")]
 pub enum Actor {
     Anonymous,
     #[strum(to_string = "Principal({0})")]
+    #[serde(with = "principal_serde")]
     Principal(UserId),
     #[strum(to_string = "AssumedRole({assumed_role}) by Principal({principal})")]
+    #[serde(rename_all = "kebab-case")]
     Role {
         principal: UserId,
         assumed_role: RoleId,
@@ -387,6 +392,34 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
     }
 }
 
+mod principal_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::UserId;
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct PrincipalWrapper {
+        principal: UserId,
+    }
+
+    pub(super) fn serialize<S>(user_id: &UserId, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wrapper = PrincipalWrapper {
+            principal: user_id.clone(),
+        };
+        wrapper.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<UserId, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wrapper = PrincipalWrapper::deserialize(deserializer)?;
+        Ok(wrapper.principal)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
@@ -529,5 +562,47 @@ mod tests {
         );
         let role_id = extract_role_id(&headers).unwrap().unwrap();
         assert_eq!(role_id, RoleId::new(this_role_id));
+    }
+
+    #[test]
+    fn test_actor_serde_principal() {
+        let actor = Actor::Principal(UserId::try_from("oidc~123").unwrap());
+        let expected_json = serde_json::json!({
+            "type": "principal",
+            "principal": "oidc~123"
+        });
+
+        let actor_json = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, expected_json);
+        let actor_from_json: Actor = serde_json::from_value(actor_json).unwrap();
+        assert_eq!(actor_from_json, actor);
+    }
+
+    #[test]
+    fn test_actor_serde_role() {
+        let actor_json = serde_json::json!({
+            "type": "role",
+            "principal": "oidc~123",
+            "assumed-role": "00000000-0000-0000-0000-000000000000"
+        });
+        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(
+            actor,
+            Actor::Role {
+                principal: UserId::try_from("oidc~123").unwrap(),
+                assumed_role: RoleId::new(Uuid::nil())
+            }
+        );
+        let actor_json_2 = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, actor_json_2);
+    }
+
+    #[test]
+    fn test_actor_serde_anonymous() {
+        let actor_json = serde_json::json!({"type": "anonymous"});
+        let actor: Actor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(actor, Actor::Anonymous);
+        let actor_json_2 = serde_json::to_value(&actor).unwrap();
+        assert_eq!(actor_json, actor_json_2);
     }
 }

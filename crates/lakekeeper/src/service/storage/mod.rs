@@ -439,12 +439,9 @@ impl StorageProfile {
                 self.validate_read_write(&sts_file_io, test_location, true)
                     .await?;
             }
-            StorageProfile::Adls(p) => {
+            StorageProfile::Adls(_) => {
                 tracing::debug!("Validating adls vended credentials access to: {test_location}");
-                let sts_file_io = az::get_file_io_from_table_config(
-                    &tbl_config.config,
-                    p.filesystem.to_string(),
-                )?;
+                let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config)?;
                 self.validate_read_write(&sts_file_io, test_location, true)
                     .await?;
             }
@@ -1235,13 +1232,9 @@ mod tests {
             StorageProfile::Test(_) => {
                 unimplemented!("Not supported")
             }
-            StorageProfile::Adls(p) => {
-                let downscoped1 =
-                    az::get_file_io_from_table_config(&config1.config, p.filesystem.to_string())
-                        .unwrap();
-                let downscoped2 =
-                    az::get_file_io_from_table_config(&config2.config, p.filesystem.to_string())
-                        .unwrap();
+            StorageProfile::Adls(_) => {
+                let downscoped1 = az::get_file_io_from_table_config(&config1.config).unwrap();
+                let downscoped2 = az::get_file_io_from_table_config(&config2.config).unwrap();
                 (downscoped1, downscoped2)
             }
             StorageProfile::S3(_) => {
@@ -1310,7 +1303,7 @@ mod tests {
             .file_io(Some(cred))
             .await
             .unwrap()
-            .remove_all(base_location.as_str())
+            .remove_dir_all(base_location.as_str())
             .await
             .unwrap();
     }

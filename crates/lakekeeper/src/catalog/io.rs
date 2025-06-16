@@ -7,10 +7,7 @@ use super::compression_codec::CompressionCodec;
 use crate::{
     api::{ErrorModel, Result},
     retry::retry_fn,
-    service::storage::az::{
-        reduce_scheme_string as reduce_azure_scheme,
-        ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
-    },
+    service::storage::az::ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
 };
 
 fn normalize_location(location: &Location) -> String {
@@ -19,7 +16,13 @@ fn normalize_location(location: &Location) -> String {
             .iter()
             .any(|p| location.as_str().starts_with(p))
     {
-        reduce_azure_scheme(location.as_str(), false)
+        if location.scheme() == "abfss" {
+            location.to_string()
+        } else {
+            let mut location = location.clone();
+            location.set_scheme_mut("abfss");
+            location.to_string()
+        }
     } else if location.scheme().starts_with("s3") {
         if location.scheme() == "s3" {
             location.to_string()
@@ -118,7 +121,7 @@ pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<
     retry_fn(|| async {
         file_io
             .clone()
-            .remove_all(location.clone())
+            .remove_dir_all(location.clone())
             .await
             .map_err(IoError::FileRemoveAll)
     })
@@ -243,7 +246,8 @@ mod tests {
                 .next()
         }
 
-        let location = profile.base_location().unwrap();
+        let mut location = profile.base_location().unwrap();
+        location.without_trailing_slash();
 
         let folder_1 = location.clone().push("folder").clone();
         let file_1 = folder_1.clone().push("file1").clone();

@@ -105,21 +105,25 @@ impl EndpointHook for CloudEventsPublisher {
         for (event_sequence_number, (body, (table_ident, table_id))) in
             events.into_iter().zip(event_table_ids).enumerate()
         {
-            futs.push(self.publish(
-                Uuid::now_v7(),
-                "updateTable",
-                body,
-                EventMetadata {
-                    tabular_id: TabularId::Table(*table_id),
-                    warehouse_id,
-                    name: table_ident.name,
-                    namespace: table_ident.namespace.to_url_string(),
-                    prefix: String::new(),
-                    num_events: number_of_events,
-                    sequence_number: event_sequence_number,
-                    trace_id: request_metadata.request_id(),
-                },
-            ));
+            futs.push(
+                self.publish(
+                    Uuid::now_v7(),
+                    "updateTable",
+                    body,
+                    EventMetadata {
+                        tabular_id: TabularId::Table(*table_id),
+                        warehouse_id,
+                        name: table_ident.name,
+                        namespace: table_ident.namespace.to_url_string(),
+                        prefix: String::new(),
+                        num_events: number_of_events,
+                        sequence_number: event_sequence_number,
+                        trace_id: request_metadata.request_id(),
+                        actor: serde_json::to_string(request_metadata.actor())
+                            .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                    },
+                ),
+            );
         }
         futures::future::try_join_all(futs)
             .await
@@ -148,6 +152,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -176,6 +182,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -206,6 +214,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -233,6 +243,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -266,6 +278,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -298,6 +312,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -329,6 +345,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -356,6 +374,8 @@ impl EndpointHook for CloudEventsPublisher {
                 num_events: 1,
                 sequence_number: 0,
                 trace_id: request_metadata.request_id(),
+                actor: serde_json::to_string(request_metadata.actor())
+                    .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
             },
         )
         .await
@@ -373,21 +393,25 @@ impl EndpointHook for CloudEventsPublisher {
         let num_tabulars = responses.len();
         let mut futs = Vec::with_capacity(responses.len());
         for (idx, utr) in responses.iter().enumerate() {
-            futs.push(self.publish(
-                Uuid::now_v7(),
-                "undropTabulars",
-                serde_json::Value::Null,
-                EventMetadata {
-                    tabular_id: TabularId::from(utr.table_ident),
-                    warehouse_id,
-                    name: utr.name.clone(),
-                    namespace: utr.namespace.to_url_string(),
-                    prefix: String::new(),
-                    num_events: num_tabulars,
-                    sequence_number: idx,
-                    trace_id: request_metadata.request_id(),
-                },
-            ));
+            futs.push(
+                self.publish(
+                    Uuid::now_v7(),
+                    "undropTabulars",
+                    serde_json::Value::Null,
+                    EventMetadata {
+                        tabular_id: TabularId::from(utr.table_ident),
+                        warehouse_id,
+                        name: utr.name.clone(),
+                        namespace: utr.namespace.to_url_string(),
+                        prefix: String::new(),
+                        num_events: num_tabulars,
+                        sequence_number: idx,
+                        trace_id: request_metadata.request_id(),
+                        actor: serde_json::to_string(request_metadata.actor())
+                            .map_err(|e| anyhow::anyhow!(e).context("Failed to serialize actor"))?,
+                    },
+                ),
+            );
         }
         futures::future::try_join_all(futs)
             .await
@@ -465,6 +489,7 @@ pub struct EventMetadata {
     pub num_events: usize,
     pub sequence_number: usize,
     pub trace_id: Uuid,
+    pub actor: String,
 }
 
 #[derive(Debug)]
@@ -521,6 +546,7 @@ impl CloudEventsPublisherBackgroundTask {
                 num_events,
                 sequence_number,
                 trace_id,
+                actor,
             } = metadata;
             // TODO: this could be more elegant with a proc macro to give us IntoIter for EventMetadata
             let event = event_builder
@@ -537,6 +563,7 @@ impl CloudEventsPublisherBackgroundTask {
                 )
                 // Implement distributed tracing: https://github.com/lakekeeper/lakekeeper/issues/63
                 .extension("trace-id", trace_id.to_string())
+                .extension("actor", actor)
                 .build()?;
 
             let publish_futures = self.sinks.iter().map(|sink| {
