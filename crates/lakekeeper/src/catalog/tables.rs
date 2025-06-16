@@ -3272,12 +3272,12 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
-        test_list_tables_with_quick_check(pool, false).await
+        test_list_tables_with_quick_check(pool, false).await;
     }
 
     #[sqlx::test]
     async fn test_list_tables_quick_check(pool: sqlx::PgPool) {
-        test_list_tables_with_quick_check(pool, true).await
+        test_list_tables_with_quick_check(pool, true).await;
     }
 
     // The flag `quick_check` allows enabling/disabling the authz quick check path when testing
