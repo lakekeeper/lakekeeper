@@ -80,7 +80,7 @@ Repeat this process for each query engine / machine user that is required:
     - **Client ID**: choose any, for this example we choose  `spark`.
     - **Name**: choose any, for this example we choose  `Spark Client accessing Lakekeeper`
     - **Client authentication**: Turn "On". Leave "Authorization" turned "Off".
-    - **Authentication Flows**: Enable "Service accounts roles".
+    - **Authentication Flows**: Enable "Service accounts roles" and "Standard Token Exchange".
 1. When the client is created, click on "Credentials", choose "Client Authenticator" as "Client Id and Secret". Copy the `Client Secret` for later use.
 1. Finally, we need to grant the `spark` client permission to use the `lakekeeper` scope which adds the correct audience to the issued token. Select the "Client scopes" tab of the `spark` client and select "Add client scope". Select the previously created scope, in our example this is `lakekeeper`. We recommend adding the scope as "Optional". By adding an optional scope the client can be re-used for other services, i.e. if Spark needs to access another catalog in the future.
 
