@@ -73,7 +73,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
         let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
 
-        // TODO(#1175): initialize by querying `can_list_everything` on wharehouse
+        // TODO(#1175): initialize by querying `can_list_everything` on warehouse
         let mut can_list_everything = false;
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
