@@ -3063,6 +3063,78 @@ pub(crate) mod test {
     );
 
     #[sqlx::test]
+    async fn test_list_tables(pool: sqlx::PgPool) {
+        test_list_tables_with_quick_check(pool, false).await
+    }
+
+    #[sqlx::test]
+    async fn test_list_tables_quick_check(pool: sqlx::PgPool) {
+        test_list_tables_with_quick_check(pool, true).await
+    }
+
+    // The flag `quick_check` allows enabling/disabling the authz quick check path when testing
+    // `list_tables`.
+    async fn test_list_tables_with_quick_check(pool: sqlx::PgPool, quick_check: bool) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let authz = HidingAuthorizer::new();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+        // create 10 staged tables
+        for i in 0..10 {
+            let _ = CatalogServer::create_table(
+                ns_params.clone(),
+                create_request(Some(format!("tab-{i}")), Some(false)),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Control whether `list_tables` hits the quick check path.
+        if !quick_check {
+            authz.block_can_list_everything();
+        }
+        let all = CatalogServer::list_tables(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                return_uuids: true,
+                return_protection_status: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 10);
+    }
+
+    #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
