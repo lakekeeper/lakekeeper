@@ -909,6 +909,85 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_list_namespaces(pool: sqlx::PgPool) {
+        list_namespaces_with_quick_check(pool, false).await;
+    }
+
+    #[sqlx::test]
+    async fn test_list_namespaces_quick_check(pool: sqlx::PgPool) {
+        list_namespaces_with_quick_check(pool, true).await;
+    }
+
+    // The flag `quick_check` allows enabling/disabling the authz quick check path when testing
+    // `list_namespaces`.
+    async fn list_namespaces_with_quick_check(pool: PgPool, quick_check: bool) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let authz = HidingAuthorizer::new();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+
+        // Create parent namespace.
+        let parent_ns_name = "parent-ns".to_string();
+        let _ = CatalogServer::create_namespace(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::new(parent_ns_name.clone()),
+                properties: None,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Create child namespaces.
+        for n in 0..10 {
+            let namespace =
+                NamespaceIdent::from_vec(vec![parent_ns_name.clone(), format!("ns-{n}")]).unwrap();
+            let _ = CatalogServer::create_namespace(
+                Some(Prefix(warehouse.warehouse_id.to_string())),
+                CreateNamespaceRequest {
+                    namespace,
+                    properties: None,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Control whether `list_namespaces` hits the quick check path.
+        if !quick_check {
+            authz.block_can_list_everything();
+        }
+        let all = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                parent: Some(NamespaceIdent::new(parent_ns_name)),
+                return_uuids: true,
+                return_protection_status: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.namespaces.len(), 10);
+    }
+
+    #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
