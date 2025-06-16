@@ -381,17 +381,6 @@ mod test {
 
     #[sqlx::test]
     async fn test_list_views(pool: sqlx::PgPool) {
-        test_list_views_with_quick_check(pool, false).await;
-    }
-
-    #[sqlx::test]
-    async fn test_list_views_quick_check(pool: sqlx::PgPool) {
-        test_list_views_with_quick_check(pool, true).await;
-    }
-
-    // The flag `quick_check` allows enabling/disabling the authz quick check path when testing
-    // `list_views`.
-    async fn test_list_views_with_quick_check(pool: sqlx::PgPool, quick_check: bool) {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
@@ -435,10 +424,25 @@ mod test {
             .unwrap();
         }
 
-        // Control whether `list_views` hits the quick check path.
-        if !quick_check {
-            authz.block_can_list_everything();
-        }
+        // By default `HidingAuthorizer` allows everything, meaning the quick check path in
+        // `list_views` will be hit since `can_list_everything: true`.
+        let all = CatalogServer::list_views(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                return_uuids: true,
+                return_protection_status: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 10);
+
+        // Block `can_list_everything` to hit alternative code path.
+        ctx.v1_state.authz.block_can_list_everything();
         let all = CatalogServer::list_views(
             ns_params.clone(),
             ListTablesQuery {

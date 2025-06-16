@@ -909,18 +909,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_list_namespaces(pool: sqlx::PgPool) {
-        list_namespaces_with_quick_check(pool, false).await;
-    }
-
-    #[sqlx::test]
-    async fn test_list_namespaces_quick_check(pool: sqlx::PgPool) {
-        list_namespaces_with_quick_check(pool, true).await;
-    }
-
-    // The flag `quick_check` allows enabling/disabling the authz quick check path when testing
-    // `list_namespaces`.
-    async fn list_namespaces_with_quick_check(pool: PgPool, quick_check: bool) {
+    async fn test_list_namespaces(pool: PgPool) {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz = HidingAuthorizer::new();
@@ -966,10 +955,26 @@ mod tests {
             .unwrap();
         }
 
-        // Control whether `list_namespaces` hits the quick check path.
-        if !quick_check {
-            authz.block_can_list_everything();
-        }
+        // By default `HidingAuthorizer` allows everything, meaning the quick check path in
+        // `list_namespaces` will be hit since `can_list_everything: true`.
+        let all = CatalogServer::list_namespaces(
+            Some(Prefix(warehouse.warehouse_id.to_string())),
+            ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                parent: Some(NamespaceIdent::new(parent_ns_name.clone())),
+                return_uuids: true,
+                return_protection_status: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.namespaces.len(), 10);
+
+        // Block `can_list_everything` to hit alternative code path.
+        ctx.v1_state.authz.block_can_list_everything();
         let all = CatalogServer::list_namespaces(
             Some(Prefix(warehouse.warehouse_id.to_string())),
             ListNamespacesQuery {
