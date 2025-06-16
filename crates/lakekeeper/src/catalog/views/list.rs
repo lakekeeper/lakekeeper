@@ -378,4 +378,80 @@ mod test {
             assert_eq!(next_page_items[idx], format!("view-{i}"));
         }
     }
+
+    #[sqlx::test]
+    async fn test_list_views(pool: sqlx::PgPool) {
+        test_list_views_with_quick_check(pool, false).await;
+    }
+
+    #[sqlx::test]
+    async fn test_list_views_quick_check(pool: sqlx::PgPool) {
+        test_list_views_with_quick_check(pool, true).await;
+    }
+
+    // The flag `quick_check` allows enabling/disabling the authz quick check path when testing
+    // `list_views`.
+    async fn test_list_views_with_quick_check(pool: sqlx::PgPool, quick_check: bool) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let authz: HidingAuthorizer = HidingAuthorizer::new();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+        let ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+
+        // create 10 staged views
+        for i in 0..10 {
+            let _ = CatalogServer::create_view(
+                ns_params.clone(),
+                crate::catalog::views::create::test::create_view_request(
+                    Some(&format!("view-{i}")),
+                    None,
+                ),
+                ctx.clone(),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Control whether `list_views` hits the quick check path.
+        if !quick_check {
+            authz.block_can_list_everything();
+        }
+        let all = CatalogServer::list_views(
+            ns_params.clone(),
+            ListTablesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(11),
+                return_uuids: true,
+                return_protection_status: true,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.identifiers.len(), 10);
+    }
 }
