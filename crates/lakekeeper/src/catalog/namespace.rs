@@ -766,6 +766,8 @@ mod tests {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz = HidingAuthorizer::new();
+        // Prevent hidden namespaces from becoming visible through `can_list_everything`.
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
@@ -1005,6 +1007,8 @@ mod tests {
         let prof = crate::catalog::test::test_io_profile();
 
         let authz = HidingAuthorizer::new();
+        // Prevent hidden namespaces from becoming visible through `can_list_everything`.
+        authz.block_can_list_everything();
 
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
