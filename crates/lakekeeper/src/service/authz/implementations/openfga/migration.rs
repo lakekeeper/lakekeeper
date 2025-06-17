@@ -23,11 +23,11 @@ fn get_model_manager(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-            "../../../../../../../authz/openfga/v3.3/schema.json"
+            "../../../../../../../authz/openfga/v3.4/schema.json"
         ))
         // Change also the model version in this string:
-        .expect("Model v3.3 is a valid AuthorizationModel in JSON format."),
-        AuthorizationModelVersion::new(3, 3),
+        .expect("Model v3.4 is a valid AuthorizationModel in JSON format."),
+        AuthorizationModelVersion::new(3, 4),
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_>>,
         None::<MigrationFn<_>>,

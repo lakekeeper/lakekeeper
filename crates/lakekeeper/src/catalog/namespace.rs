@@ -73,8 +73,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?;
         let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
 
-        // TODO(#1175): initialize by querying `can_list_everything` on warehouse
-        let mut can_list_everything = false;
+        let mut can_list_everything = authorizer
+            .is_allowed_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CatalogWarehouseAction::CanListEverything,
+            )
+            .await?;
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
 
@@ -85,13 +90,16 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     CatalogNamespaceAction::CanListNamespaces,
                 )
                 .await?;
-            can_list_everything = authorizer
-                .is_allowed_namespace_action(
-                    &request_metadata,
-                    namespace_id,
-                    CatalogNamespaceAction::CanListEverything,
-                )
-                .await?;
+            // Rely on short-circuit of `||` to query `namespace:can_list_everything` only if not
+            // `warehouse:can_list_everything`.
+            can_list_everything = can_list_everything
+                || authorizer
+                    .is_allowed_namespace_action(
+                        &request_metadata,
+                        namespace_id,
+                        CatalogNamespaceAction::CanListEverything,
+                    )
+                    .await?;
         }
 
         // ------------------- BUSINESS LOGIC -------------------

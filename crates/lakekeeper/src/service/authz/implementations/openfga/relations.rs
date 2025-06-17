@@ -634,6 +634,7 @@ pub(super) enum WarehouseRelation {
     CanGetMetadata,
     CanGetConfig,
     CanListNamespaces,
+    CanListEverything,
     CanModifySoftDeletion,
     CanUse,
     CanIncludeInList,
@@ -843,6 +844,7 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::CanGetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::CanGetConfig => WarehouseRelation::CanGetConfig,
             CatalogWarehouseAction::CanListNamespaces => WarehouseRelation::CanListNamespaces,
+            CatalogWarehouseAction::CanListEverything => WarehouseRelation::CanListEverything,
             CatalogWarehouseAction::CanModifySoftDeletion => {
                 WarehouseRelation::CanModifySoftDeletion
             }
