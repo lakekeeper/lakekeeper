@@ -1,4 +1,8 @@
 name: Docker Build
+
+permissions:
+  contents: read
+
 on:
   workflow_call:
     inputs:

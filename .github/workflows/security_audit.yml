@@ -1,5 +1,9 @@
 name: Security audit
 
+permissions:
+  contents: read  # Needed to checkout code
+  security-events: write  # Needed for security reporting
+
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true

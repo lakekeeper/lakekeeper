@@ -10,7 +10,7 @@ on:
   #      - site/**
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: write  # Needed to deploy site to GitHub Pages
 jobs:
   deploy:
     runs-on: ubuntu-24.04
