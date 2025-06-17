@@ -29,6 +29,7 @@ type warehouse
     define can_get_config: can_get_metadata
     # Can list elements in this warehouse - will be filtered subsequently
     define can_list_namespaces: can_get_metadata
+    define can_list_everything: describe
     define can_use: can_get_metadata
     define can_include_in_list: can_get_metadata
     define can_deactivate: modify
