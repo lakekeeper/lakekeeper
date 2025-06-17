@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-06-17)
+
+
+### Features
+
+* Improve S3 signer performance via Table specific signer URIs ([#1092](https://github.com/lakekeeper/lakekeeper/issues/1092)) ([9332461](https://github.com/lakekeeper/lakekeeper/commit/93324614df666636062a1c64d29bd6c9f5cb09ea))
+* Support overwrite option for RegisterTable ([89b0f80](https://github.com/lakekeeper/lakekeeper/commit/89b0f80af1859f965843e93fc141af487752f346))
+* **tasks:** Extendable Task Queue System ([#1085](https://github.com/lakekeeper/lakekeeper/issues/1085)) ([ec4cbd1](https://github.com/lakekeeper/lakekeeper/commit/ec4cbd154fcc6ab62faa1c31a15981da96161e36))
+
 ## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
 
 

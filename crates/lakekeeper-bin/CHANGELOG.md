@@ -2,6 +2,22 @@
 
 
 
+## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-06-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename crate and binary to `lakekeeper` ([#1146](https://github.com/lakekeeper/lakekeeper/issues/1146))
+
+### Features
+
+* Update UI to 0.8 ([#1181](https://github.com/lakekeeper/lakekeeper/issues/1181)) ([f9566b0](https://github.com/lakekeeper/lakekeeper/commit/f9566b01ff804cba1f060a75938fce330c23628c))
+
+
+### Miscellaneous Chores
+
+* rename crate and binary to `lakekeeper` ([#1146](https://github.com/lakekeeper/lakekeeper/issues/1146)) ([d3cab68](https://github.com/lakekeeper/lakekeeper/commit/d3cab68cb5d3e6c6b7fd029831897335cf53dfe6))
+
 ## [0.8.5](https://github.com/lakekeeper/lakekeeper/compare/v0.8.4...v0.8.5) (2025-05-09)
 
 
