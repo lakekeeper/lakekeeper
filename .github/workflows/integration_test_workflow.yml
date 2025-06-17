@@ -10,7 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-
+permissions:
+  contents: read  # Needed to checkout code
+  
 jobs:
       test:
         name: ${{ inputs.test_name }}
@@ -67,7 +69,7 @@ jobs:
               AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
           - name: Dump DB
             if: always()
-            uses: tj-actions/pg-dump@v3
+            uses: tj-actions/pg-dump@f68d6b3b0a96a30fda60109a19a5d9fb3c536c9c
             with:
               database_url: "postgresql://postgres:postgres@localhost:31102/postgres"
               postgresql_version: "16"
@@ -83,4 +85,4 @@ jobs:
               path: dump.sql.gz
           - name: Dump docker logs on failure
             if: always()
-            uses: jwalton/gh-docker-logs@v2
+            uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e

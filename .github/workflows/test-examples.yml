@@ -10,6 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read  # Needed to checkout code
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
@@ -62,7 +65,7 @@ jobs:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@v2
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
 
   test-example-access-control-simple:
     needs: docker
@@ -92,7 +95,7 @@ jobs:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@v2
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
 
   test-example-access-control-advanced:
     needs: docker
@@ -122,7 +125,7 @@ jobs:
             LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@v2
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
 
   test-docker-compose-with-keycloak:
     needs: docker
@@ -196,5 +199,5 @@ jobs:
 
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@v2
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
   

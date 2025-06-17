@@ -12,6 +12,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.85
 
+permissions:
+  contents: read  # Needed to checkout code
+  checks: write   # Needed for test reporting
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true

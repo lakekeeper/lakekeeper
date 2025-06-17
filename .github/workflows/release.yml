@@ -16,9 +16,10 @@ env:
   # Publish the build output as CI artifact to inspect
   preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'lakekeeper/lakekeeper' }}
 
+# Define permissions for the entire workflow
 permissions:
-  contents: write
-  pull-requests: write
+  contents: write      # Needed for creating releases and uploading assets
+  pull-requests: write # Needed for release-please to create/update PRs
 
 jobs:
   # Update release PR
@@ -285,7 +286,7 @@ jobs:
 
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@v2
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
 
   debug:
     name: Debug Artifacts
