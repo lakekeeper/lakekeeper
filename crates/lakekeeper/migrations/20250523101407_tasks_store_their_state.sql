@@ -4,6 +4,8 @@ create type task_final_status as enum ('failed', 'cancelled', 'success');
 alter table task
     rename column suspend_until to scheduled_for;
 
+UPDATE task SET scheduled_for = now() WHERE scheduled_for IS NULL;
+
 alter table task
     add column task_data         jsonb,
     add column entity_type       entity_type,
