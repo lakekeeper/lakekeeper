@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.1](https://github.com/lakekeeper/lakekeeper/compare/v0.9.0...v0.9.1) (2025-06-19)
+
+
+### Bug Fixes
+
+* Migration error column "scheduled_for" of relation "task" contains null values ([#1189](https://github.com/lakekeeper/lakekeeper/issues/1189)) ([72a16c2](https://github.com/lakekeeper/lakekeeper/commit/72a16c2cf22f3e848c83ded4c67aeb2976307d90))
+
+
+### Miscellaneous Chores
+
+* release 0.9.1 ([0f9fb6c](https://github.com/lakekeeper/lakekeeper/commit/0f9fb6c3c6f9b2d3f50cc23074df910dc4d42ea6))
+
 ## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-06-17)
 
 
