@@ -93,7 +93,10 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
             )
             .await
             .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))?;
-        authenticator.set_issuers(vec!["kubernetes/serviceaccount".to_string()]);
+        authenticator.set_issuers(vec![
+            "kubernetes/serviceaccount".to_string(),
+            "https://kubernetes.default.svc.cluster.local".to_string(),
+        ]);
         tracing::info!(
             "K8s authorizer for legacy service account tokens created {:?}",
             authenticator
