@@ -9,25 +9,25 @@ use std::{
 
 use chrono::Utc;
 use http::StatusCode;
-use iceberg_ext::{configs::Location, NamespaceIdent};
-use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
+use iceberg_ext::{NamespaceIdent, configs::Location};
+use sqlx::{Arguments, Execute, FromRow, Postgres, QueryBuilder, postgres::PgArguments};
 use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
+    WarehouseId,
     api::{
-        iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+        iceberg::v1::{MAX_PAGE_SIZE, PaginatedMapping, PaginationQuery},
         management::v1::ProtectionResponse,
     },
     catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
-        storage::{join_location, split_location},
-        task_queue::TaskId,
         DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
         TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
+        storage::{join_location, split_location},
+        task_queue::TaskId,
     },
-    WarehouseId,
 };
 
 const MAX_PARAMETERS: usize = 30000;
@@ -711,8 +711,22 @@ pub(crate) async fn clear_tabular_deleted_at(
     .fetch_all(&mut **transaction)
     .await
     .map_err(|e| {
-        tracing::warn!("Error marking tabular as undeleted: {}", e);
-        e.into_error_model("Error marking tabular as undeleted")
+        // tracing::warn!("Error marking tabular as undeleted: {e}");
+        match &e {
+            sqlx::Error::Database(db_err) => {
+                match db_err.constraint() {
+                    Some("unique_name_per_namespace_id") => {
+                        ErrorModel::bad_request(
+                            "Tabular with the same name already exist in the namespace.",
+                            "TabularNameAlreadyExists",
+                            Some(Box::new(e)),
+                        )
+                    }
+                    _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
+                }
+            }
+            _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
+        }
     })?;
 
     if undrop_tabular_informations
