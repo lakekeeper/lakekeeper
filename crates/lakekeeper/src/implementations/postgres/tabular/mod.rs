@@ -9,25 +9,25 @@ use std::{
 
 use chrono::Utc;
 use http::StatusCode;
-use iceberg_ext::{NamespaceIdent, configs::Location};
-use sqlx::{Arguments, Execute, FromRow, Postgres, QueryBuilder, postgres::PgArguments};
+use iceberg_ext::{configs::Location, NamespaceIdent};
+use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler as _;
 use crate::{
-    WarehouseId,
     api::{
-        iceberg::v1::{MAX_PAGE_SIZE, PaginatedMapping, PaginationQuery},
+        iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
         management::v1::ProtectionResponse,
     },
     catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{
-        DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
-        TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
         storage::{join_location, split_location},
         task_queue::TaskId,
+        DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
+        TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
     },
+    WarehouseId,
 };
 
 const MAX_PARAMETERS: usize = 30000;
