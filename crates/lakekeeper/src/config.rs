@@ -204,7 +204,7 @@ pub struct DynAppConfig {
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
     /// Accept legacy k8s token without audience and issuer
-    /// set to kubernetes/serviceaccount
+    /// set to kubernetes/serviceaccount or `https://kubernetes.default.svc.cluster.local`
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
     /// Claim to use in provided JWT tokens as the subject.
     pub openid_subject_claim: Option<String>,

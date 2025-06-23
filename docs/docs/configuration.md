@@ -170,7 +170,7 @@ The following Authenticators are available. Enabled Authenticators are checked i
    **Enabled if:** `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true and `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` is true<br>
    **Validates Token with:** Kubernetes `TokenReview` API<br>
    **Accepts JWT if:**<br>
-    - Tokens issuer is `kubernetes/serviceaccount`
+    - Tokens issuer is `kubernetes/serviceaccount` or `https://kubernetes.default.svc.cluster.local`
 
 If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. 
 
