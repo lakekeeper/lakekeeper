@@ -121,7 +121,10 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
     let mut conn = pool.acquire().await?;
     let m = sqlx::migrate!();
     let changed_migrations = get_changed_migration_ids();
-    tracing::info!("SHA patches: {:?}", changed_migrations.iter().collect::<Vec<_>>());
+    tracing::info!(
+        "SHA patches: {:?}",
+        changed_migrations.iter().collect::<Vec<_>>()
+    );
 
     let applied_migrations = match conn.list_applied_migrations().await {
         Ok(migrations) => migrations,
