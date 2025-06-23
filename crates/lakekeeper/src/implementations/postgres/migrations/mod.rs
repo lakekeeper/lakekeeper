@@ -26,7 +26,7 @@ mod split_table_metadata;
 pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     let migrator = sqlx::migrate!();
     let mut data_migration_hooks = get_data_migrations();
-    let mut sha_patches = get_sha_patches();
+    let mut sha_patches = get_changed_migration_ids();
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
     tracing::info!(
         "Data migration hooks: {:?}",
@@ -120,8 +120,11 @@ async fn run_checks(
 pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
     let mut conn = pool.acquire().await?;
     let m = sqlx::migrate!();
-    let sha_patches = get_sha_patches();
-    tracing::info!("SHA patches: {:?}", sha_patches.iter().collect::<Vec<_>>());
+    let changed_migrations = get_changed_migration_ids();
+    tracing::info!(
+        "SHA patches: {:?}",
+        changed_migrations.iter().collect::<Vec<_>>()
+    );
 
     let applied_migrations = match conn.list_applied_migrations().await {
         Ok(migrations) => migrations,
@@ -143,12 +146,12 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
         .migrations
         .iter()
         .map(|mig| (mig.version, &*mig.checksum))
-        .filter(|(v, _)| !sha_patches.contains(v))
+        .filter(|(v, _)| !changed_migrations.contains(v))
         .collect::<HashSet<_>>();
     let applied = applied_migrations
         .iter()
         .map(|mig| (mig.version, &*mig.checksum))
-        .filter(|(v, _)| !sha_patches.contains(v))
+        .filter(|(v, _)| !changed_migrations.contains(v))
         .collect::<HashSet<_>>();
     let missing = to_be_applied.difference(&applied).collect::<HashSet<_>>();
 
@@ -187,8 +190,8 @@ pub struct Migration {
     description: Cow<'static, str>,
 }
 
-fn get_sha_patches() -> HashSet<i64> {
-    HashSet::from([20_250_328_131_139, 20_250_505_101_407])
+fn get_changed_migration_ids() -> HashSet<i64> {
+    HashSet::from([20_250_328_131_139, 20_250_505_101_407, 20_250_523_101_407])
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {

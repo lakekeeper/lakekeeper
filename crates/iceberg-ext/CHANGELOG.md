@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/lakekeeper/lakekeeper/compare/v0.9.0...v0.9.1) (2025-06-19)
+
+
+### Miscellaneous Chores
+
+* release 0.9.1 ([0f9fb6c](https://github.com/lakekeeper/lakekeeper/commit/0f9fb6c3c6f9b2d3f50cc23074df910dc4d42ea6))
+
 ## [0.9.0](https://github.com/lakekeeper/lakekeeper/compare/v0.8.5...v0.9.0) (2025-06-17)
 
 
