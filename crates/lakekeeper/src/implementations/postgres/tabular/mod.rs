@@ -711,13 +711,13 @@ pub(crate) async fn clear_tabular_deleted_at(
     .fetch_all(&mut **transaction)
     .await
     .map_err(|e| {
-        // tracing::warn!("Error marking tabular as undeleted: {e}");
+        tracing::warn!("Error marking tabular as undeleted: {e}");
         match &e {
             sqlx::Error::Database(db_err) => {
                 match db_err.constraint() {
                     Some("unique_name_per_namespace_id") => {
                         ErrorModel::bad_request(
-                            "Tabular with the same name already exist in the namespace.",
+                            "Tabular with the same name already exists in the namespace.",
                             "TabularNameAlreadyExists",
                             Some(Box::new(e)),
                         )
