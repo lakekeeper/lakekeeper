@@ -245,6 +245,7 @@ where
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send;
 
+    /// TODO(mooori) doc comment
     async fn are_allowed_namespace_actions<A>(
         &self,
         metadata: &RequestMetadata,
@@ -274,6 +275,25 @@ where
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send;
 
+    /// TODO(mooori) doc comment
+    async fn are_allowed_table_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        table_ids: Vec<TableId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send,
+    {
+        try_join_all(
+            table_ids
+                .into_iter()
+                .zip(actions.into_iter())
+                .map(|(id, a)| self.is_allowed_table_action(metadata, id, a)),
+        )
+        .await
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
     async fn is_allowed_view_action<A>(
@@ -285,6 +305,24 @@ where
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send;
 
+    /// TODO(mooori) doc comment
+    async fn are_allowed_view_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        view_ids: Vec<ViewId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send,
+    {
+        try_join_all(
+            view_ids
+                .into_iter()
+                .zip(actions.into_iter())
+                .map(|(id, a)| self.is_allowed_view_action(metadata, id, a)),
+        )
+        .await
+    }
     /// Hook that is called when a user is deleted.
     async fn delete_user(&self, metadata: &RequestMetadata, user_id: UserId) -> Result<()>;
 

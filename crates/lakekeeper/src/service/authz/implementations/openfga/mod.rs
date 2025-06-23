@@ -370,6 +370,27 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
+    async fn are_allowed_table_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        table_ids: Vec<TableId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send,
+    {
+        let items: Vec<_> = table_ids
+            .into_iter()
+            .zip(actions.into_iter())
+            .map(|(id, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: id.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
+    }
+
     async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
@@ -386,6 +407,27 @@ impl Authorizer for OpenFGAAuthorizer {
         })
         .await
         .map_err(Into::into)
+    }
+
+    async fn are_allowed_view_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        view_ids: Vec<ViewId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send,
+    {
+        let items: Vec<_> = view_ids
+            .into_iter()
+            .zip(actions.into_iter())
+            .map(|(id, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: id.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, user_id: UserId) -> Result<()> {
@@ -779,7 +821,7 @@ impl OpenFGAAuthorizer {
                         .expect("Should parse key constructed from usize");
                     results[idx] = allowed;
                 }
-                CheckResult::Error(e) => panic!("one of the checks failed: {:?}", e),
+                CheckResult::Error(e) => panic!("one of the checks failed: {e:?}"),
             }
         }
         Ok(results)
