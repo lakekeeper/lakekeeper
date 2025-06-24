@@ -48,7 +48,7 @@ pub(super) trait GrantableRelation: ReducedRelation {
 #[serde(rename_all = "kebab-case")]
 /// Identifies a user or a role
 pub(super) enum UserOrRole {
-    #[schema(value_type = uuid::Uuid)]
+    #[schema(value_type = String)]
     #[schema(title = "UserOrRoleUser")]
     /// Id of the user
     User(UserId),
