@@ -4619,7 +4619,6 @@ components:
           properties:
             user:
               type: string
-              format: uuid
               description: Id of the user
         - type: object
           title: UserOrRoleRole
