@@ -271,6 +271,22 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     next.run(request).await
 }
 
+#[must_use]
+/// Determines the forwarded prefix from the request headers, if configured to use x-forwarded headers.
+/// Returns `None` if the prefix is not set or if the configuration does not use x-forwarded headers.
+/// Skips leading and trailing slashes from the prefix.
+pub fn determine_forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
+    if CONFIG.use_x_forwarded_headers {
+        headers
+            .get(X_FORWARDED_PREFIX_HEADER)
+            .and_then(|hv| hv.to_str().ok())
+            .map(|s| s.trim_matches('/'))
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    }
+}
+
 pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
     if let Some(uri) = CONFIG.base_uri.as_ref() {
         return Some(uri.to_string());
@@ -298,7 +314,7 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
         let x_forwarded_port = headers
             .get(X_FORWARDED_PORT_HEADER)
             .and_then(|hv| hv.to_str().ok());
-        let x_fowarded_prefix = headers
+        let x_forwarded_prefix = headers
             .get(X_FORWARDED_PREFIX_HEADER)
             .and_then(|hv| hv.to_str().ok())
             .map(|s| s.trim_matches('/'));
@@ -326,7 +342,7 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
         }
 
         // Append the x-forwarded prefix if present
-        if let Some(prefix) = x_fowarded_prefix {
+        if let Some(prefix) = x_forwarded_prefix {
             base_uri.push('/');
             base_uri.push_str(prefix);
         }
@@ -611,5 +627,57 @@ mod test {
             result,
             Some("https://example.com/api/lakekeeper".to_string())
         );
+    }
+
+    #[test]
+    fn test_determine_forwarded_prefix() {
+        // Case 1: No prefix header
+        let headers = HeaderMap::new();
+        assert_eq!(determine_forwarded_prefix(&headers), None);
+
+        // Case 2: Normal prefix
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("lakekeeper"),
+        );
+        assert_eq!(determine_forwarded_prefix(&headers), Some("lakekeeper"));
+
+        // Case 3: Prefix with leading slash
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("/lakekeeper"),
+        );
+        assert_eq!(determine_forwarded_prefix(&headers), Some("lakekeeper"));
+
+        // Case 4: Prefix with trailing slash
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("lakekeeper/"),
+        );
+        assert_eq!(determine_forwarded_prefix(&headers), Some("lakekeeper"));
+
+        // Case 5: Prefix with both leading and trailing slashes
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("/lakekeeper/"),
+        );
+        assert_eq!(determine_forwarded_prefix(&headers), Some("lakekeeper"));
+
+        // Case 6: Multi-segment prefix
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_PREFIX_HEADER,
+            HeaderValue::from_static("/api/lakekeeper"),
+        );
+        assert_eq!(determine_forwarded_prefix(&headers), Some("api/lakekeeper"));
+
+        // Case 7: Empty prefix should return None
+        let mut headers = HeaderMap::new();
+        headers.insert(X_FORWARDED_PREFIX_HEADER, HeaderValue::from_static(""));
+        assert_eq!(determine_forwarded_prefix(&headers), None);
     }
 }
