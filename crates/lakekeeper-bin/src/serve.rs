@@ -4,7 +4,6 @@ use axum::http::HeaderMap;
 #[cfg(feature = "ui")]
 use axum::routing::get;
 use lakekeeper::{
-    determine_forwarded_prefix,
     implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
     serve::{serve, ServeConfiguration},
     service::{
@@ -103,8 +102,9 @@ fn add_ui_routes(router: axum::Router) -> axum::Router {
     router
 }
 
+#[cfg(feature = "ui")]
 async fn redirect_to_ui(headers: HeaderMap) -> axum::response::Redirect {
-    if let Some(prefix) = determine_forwarded_prefix(&headers) {
+    if let Some(prefix) = lakekeeper::determine_forwarded_prefix(&headers) {
         axum::response::Redirect::permanent(format!("/{prefix}/ui/").as_str())
     } else {
         axum::response::Redirect::permanent("/ui/")
