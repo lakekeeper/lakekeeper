@@ -1,6 +1,5 @@
 use std::{sync::Arc, vec};
 
-use axum::http::HeaderMap;
 #[cfg(feature = "ui")]
 use axum::routing::get;
 use lakekeeper::{
@@ -103,7 +102,7 @@ fn add_ui_routes(router: axum::Router) -> axum::Router {
 }
 
 #[cfg(feature = "ui")]
-async fn redirect_to_ui(headers: HeaderMap) -> axum::response::Redirect {
+async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redirect {
     if let Some(prefix) = lakekeeper::determine_forwarded_prefix(&headers) {
         axum::response::Redirect::permanent(format!("/{prefix}/ui/").as_str())
     } else {
