@@ -173,7 +173,7 @@ jobs:
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
           allow-no-subscriptions: true
-      
+
       - name: Write gcp credential to file
         if: ${{ env.GCS_CREDENTIAL != '' }}
         run: echo "${{ secrets.GCS_CREDENTIAL }}" > /tmp/gcs.json
