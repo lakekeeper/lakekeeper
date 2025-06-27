@@ -8,8 +8,8 @@ use std::{
 use axum::Router;
 use openfga_client::{
     client::{
-        CheckRequestTupleKey, ReadRequestTupleKey, ReadResponse, Tuple, TupleKey,
-        TupleKeyWithoutCondition,
+        batch_check_single_result::CheckResult, BatchCheckItem, CheckRequestTupleKey,
+        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
     },
     migration::AuthorizationModelVersion,
     tonic,
@@ -331,6 +331,27 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
+    async fn are_allowed_namespace_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        namespace_ids: Vec<NamespaceId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
+    {
+        let items: Vec<_> = namespace_ids
+            .into_iter()
+            .zip(actions.into_iter())
+            .map(|(id, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: id.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
+    }
+
     async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
@@ -349,6 +370,27 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
+    async fn are_allowed_table_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        table_ids: Vec<TableId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send,
+    {
+        let items: Vec<_> = table_ids
+            .into_iter()
+            .zip(actions.into_iter())
+            .map(|(id, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: id.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
+    }
+
     async fn is_allowed_view_action<A>(
         &self,
         metadata: &RequestMetadata,
@@ -365,6 +407,27 @@ impl Authorizer for OpenFGAAuthorizer {
         })
         .await
         .map_err(Into::into)
+    }
+
+    async fn are_allowed_view_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        view_ids: Vec<ViewId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send,
+    {
+        let items: Vec<_> = view_ids
+            .into_iter()
+            .zip(actions.into_iter())
+            .map(|(id, a)| CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: a.to_string(),
+                object: id.to_openfga(),
+            })
+            .collect();
+        self.batch_check(items).await.map_err(Into::into)
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, user_id: UserId) -> Result<()> {
@@ -723,6 +786,45 @@ impl OpenFGAAuthorizer {
                 tracing::error!("Failed to check with OpenFGA: {e}");
             })
             .map_err(Into::into)
+    }
+
+    /// A convenience wrapper around `batch_check`.
+    // TODO(mooori): split it up into multiple batch checks each of size max_per_batch
+    // TODO(mooori): get rid of unwrap/expect/panic
+    async fn batch_check(
+        &self,
+        tuple_keys: Vec<impl Into<CheckRequestTupleKey>>,
+    ) -> OpenFGAResult<Vec<bool>> {
+        // Using index into tuple_keys as correlation_id.
+        let num_tuples = tuple_keys.len();
+        let items: Vec<BatchCheckItem> = tuple_keys
+            .into_iter()
+            .enumerate()
+            .map(|(i, tuple_key)| BatchCheckItem {
+                tuple_key: Some(tuple_key.into()),
+                contextual_tuples: None,
+                context: None,
+                correlation_id: i.to_string(),
+            })
+            .collect();
+
+        let raw_results = self.client.batch_check(items).await.inspect_err(|e| {
+            tracing::error!("Failed to check batch with OpenFGA: {e}");
+        })?;
+        let mut results = vec![false; num_tuples];
+        for (idx, result) in raw_results {
+            let check_result = result.unwrap();
+            match check_result {
+                CheckResult::Allowed(allowed) => {
+                    let idx: usize = idx
+                        .parse()
+                        .expect("Should parse key constructed from usize");
+                    results[idx] = allowed;
+                }
+                CheckResult::Error(e) => panic!("one of the checks failed: {e:?}"),
+            }
+        }
+        Ok(results)
     }
 
     async fn require_action(

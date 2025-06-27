@@ -53,6 +53,7 @@ macro_rules! list_entities {
                     vec![true; ids.len()]
                 } else {
                     futures::future::try_join_all(ids.iter().map(|n| {
+                        // TODO(mooori) use are_allowed_x_actions batch check
                         paste! {
                             authorizer.[<is_allowed_ $action>](
                                 &request_metadata,

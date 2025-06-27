@@ -132,14 +132,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         // be listed.
                         vec![true; ids.len()]
                     } else {
-                        futures::future::try_join_all(ids.iter().map(|n| {
-                            authorizer.is_allowed_namespace_action(
+                        authorizer
+                            .are_allowed_namespace_actions(
                                 &request_metadata,
-                                *n,
-                                CatalogNamespaceAction::CanGetMetadata,
+                                ids.clone(),
+                                vec![CatalogNamespaceAction::CanGetMetadata; ids.len()],
                             )
-                        }))
-                        .await?
+                            .await?
                     };
 
                     let (next_namespaces, next_uuids, next_page_tokens, mask): (
