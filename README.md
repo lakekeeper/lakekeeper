@@ -119,7 +119,11 @@ Details on how to configure the storage profiles can be found in the [Docs](http
 | OpenFGA (AuthZ) | ![open] | Internal Authorization management                |
 
 
-## License
+# Contributing
+
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for some tips.
+
+# License
 
 Licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0)
 
