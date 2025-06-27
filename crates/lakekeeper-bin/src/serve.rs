@@ -88,18 +88,9 @@ async fn serve_inner<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator
 fn add_ui_routes(router: axum::Router) -> axum::Router {
     #[cfg(feature = "ui")]
     let router = router
-        .route(
-            "/ui",
-            get(|| async { axum::response::Redirect::permanent("/ui/") }),
-        )
-        .route(
-            "/",
-            get(|| async { axum::response::Redirect::permanent("/ui/") }),
-        )
-        .route(
-            "/ui/index.html",
-            get(|| async { axum::response::Redirect::permanent("/ui/") }),
-        )
+        .route("/ui", get(redirect_to_ui))
+        .route("/", get(redirect_to_ui))
+        .route("/ui/index.html", get(redirect_to_ui))
         .route("/ui/", get(ui::index_handler))
         .route("/ui/favicon.ico", get(ui::favicon_handler))
         .route("/ui/assets/{*file}", get(ui::static_handler))
@@ -108,4 +99,13 @@ fn add_ui_routes(router: axum::Router) -> axum::Router {
     let router = router;
 
     router
+}
+
+#[cfg(feature = "ui")]
+async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redirect {
+    if let Some(prefix) = lakekeeper::determine_forwarded_prefix(&headers) {
+        axum::response::Redirect::permanent(format!("/{prefix}/ui/").as_str())
+    } else {
+        axum::response::Redirect::permanent("/ui/")
+    }
 }

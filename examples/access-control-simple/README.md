@@ -3,7 +3,7 @@ This example demonstrates how Authentication and Authorization works. The exampl
 
 Run the example with the following command:
 ```bash
-cd examples/access-control
+cd examples/access-control-simple
 docker compose up
 ```
 
