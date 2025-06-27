@@ -43,8 +43,7 @@ base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
 google-cloud-auth = { package = "gcloud-auth", version = "1.1.0", features = [
-    "rustls-tls",
-    "external-account",
+    "rustls-tls", "external-account"
 ], default-features = false }
 google-cloud-token = { package = "token-source", version = "1.0" }
 gcloud-token = "1.0.0"
@@ -63,10 +62,8 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "fbc7adca9e72ddee6ccf5d10614dfddc11b1cbd8", features = [
-    "storage-gcs",
-    "storage-azdls",
-    "storage-s3",
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "ddfa5f7dd206609f35fd6bea92d1336503996bb1", features = [
+    "storage-all",
 ] }
 iso8601 = "0.6.2"
 openfga-client = { version = "0.2", features = ["auth-middle"] }
@@ -120,7 +117,6 @@ tower-http = { version = "^0.6", features = [
     "sensitive-headers",
     "timeout",
     "trace",
-    "normalize-path",
 ] }
 tracing = { version = "^0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
