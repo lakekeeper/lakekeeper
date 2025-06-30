@@ -22,6 +22,7 @@ pub mod api;
 mod request_metadata;
 
 pub use axum;
+pub use iceberg;
 pub use limes;
 #[cfg(feature = "kafka")]
 pub use rdkafka;
