@@ -808,28 +808,37 @@ impl OpenFGAAuthorizer {
             })
             .collect();
 
-        // TODO(mooori): improve var names
         let chunks: Vec<_> = items.chunks(AUTH_CONFIG.max_batch_check_size).collect();
-        let raw_results = try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec())))
-            .await
-            .inspect_err(|e| {
-                tracing::error!("Failed to check batch with OpenFGA: {e}");
-            })?;
+        let chunked_raw_results =
+            try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec())))
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Failed to check batch with OpenFGA: {e}");
+                })?;
+
         let mut results = vec![false; num_tuples];
-        for raw_results_chunk in raw_results {
+        let mut idxs_seen = vec![false; num_tuples];
+        for raw_results_chunk in chunked_raw_results {
             for (idx, result) in raw_results_chunk {
+                let idx: usize = idx
+                    .parse()
+                    .expect("Should parse key constructed from usize");
                 let check_result = result.unwrap();
                 match check_result {
                     CheckResult::Allowed(allowed) => {
-                        let idx: usize = idx
-                            .parse()
-                            .expect("Should parse key constructed from usize");
                         results[idx] = allowed;
                     }
                     CheckResult::Error(e) => panic!("one of the checks failed: {e:?}"),
                 }
+                idxs_seen[idx] = true;
             }
         }
+
+        // Ensure there is a response for every BatchCheckItem.
+        if let Some(_) = idxs_seen.iter().find(|&&x| x == false) {
+            panic!("response for an item to check is missing");
+        }
+
         Ok(results)
     }
 
