@@ -6,6 +6,7 @@ use std::{
 };
 
 use axum::Router;
+use futures::future::try_join_all;
 use openfga_client::{
     client::{
         batch_check_single_result::CheckResult, BatchCheckItem, CheckRequestTupleKey,
@@ -789,7 +790,6 @@ impl OpenFGAAuthorizer {
     }
 
     /// A convenience wrapper around `batch_check`.
-    // TODO(mooori): split it up into multiple batch checks each of size max_per_batch
     // TODO(mooori): get rid of unwrap/expect/panic
     async fn batch_check(
         &self,
@@ -808,20 +808,28 @@ impl OpenFGAAuthorizer {
             })
             .collect();
 
-        let raw_results = self.client.batch_check(items).await.inspect_err(|e| {
-            tracing::error!("Failed to check batch with OpenFGA: {e}");
-        })?;
+        // TODO(mooori): get batch size from config
+        // TODO(mooori): improve var names
+        let batch_size = 50;
+        let chunks: Vec<_> = items.chunks(batch_size).collect();
+        let raw_results = try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec())))
+            .await
+            .inspect_err(|e| {
+                tracing::error!("Failed to check batch with OpenFGA: {e}");
+            })?;
         let mut results = vec![false; num_tuples];
-        for (idx, result) in raw_results {
-            let check_result = result.unwrap();
-            match check_result {
-                CheckResult::Allowed(allowed) => {
-                    let idx: usize = idx
-                        .parse()
-                        .expect("Should parse key constructed from usize");
-                    results[idx] = allowed;
+        for raw_results_chunk in raw_results {
+            for (idx, result) in raw_results_chunk {
+                let check_result = result.unwrap();
+                match check_result {
+                    CheckResult::Allowed(allowed) => {
+                        let idx: usize = idx
+                            .parse()
+                            .expect("Should parse key constructed from usize");
+                        results[idx] = allowed;
+                    }
+                    CheckResult::Error(e) => panic!("one of the checks failed: {e:?}"),
                 }
-                CheckResult::Error(e) => panic!("one of the checks failed: {e:?}"),
             }
         }
         Ok(results)
