@@ -820,11 +820,10 @@ impl OpenFGAAuthorizer {
         let mut results = vec![false; num_tuples];
         let mut idxs_seen = vec![false; num_tuples];
         for raw_results_chunk in chunked_raw_results {
-            for (idx, result) in raw_results_chunk {
+            for (idx, check_result) in raw_results_chunk {
                 let idx: usize = idx
                     .parse()
                     .expect("Should parse key constructed from usize");
-                let check_result = result.unwrap();
                 match check_result {
                     CheckResult::Allowed(allowed) => {
                         results[idx] = allowed;
