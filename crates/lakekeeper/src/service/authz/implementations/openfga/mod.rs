@@ -808,10 +808,8 @@ impl OpenFGAAuthorizer {
             })
             .collect();
 
-        // TODO(mooori): get batch size from config
         // TODO(mooori): improve var names
-        let batch_size = 50;
-        let chunks: Vec<_> = items.chunks(batch_size).collect();
+        let chunks: Vec<_> = items.chunks(AUTH_CONFIG.max_batch_check_size).collect();
         let raw_results = try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec())))
             .await
             .inspect_err(|e| {

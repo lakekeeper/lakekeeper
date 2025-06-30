@@ -406,6 +406,13 @@ pub struct OpenFGAConfig {
     /// Migration is disabled if the model version is set.
     /// Version should have the format <major>.<minor>.
     pub authorization_model_version: Option<String>,
+    /// The maximum number of checks than can be handled by a batch check
+    /// request. This is a [configuration option] of the OpenFGA server
+    /// with default value 50.
+    ///
+    /// [configuration option]: https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK
+    #[serde(default = "default_openfga_max_batch_check_size")]
+    pub max_batch_check_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -639,6 +646,8 @@ struct OpenFGAConfigSerde {
     scope: Option<String>,
     /// Token Endpoint to use when exchanging client credentials for an access token.
     token_endpoint: Option<Url>,
+    #[serde(default = "default_openfga_max_batch_check_size")]
+    pub max_batch_check_size: usize,
 }
 
 fn default_openfga_store_name() -> String {
@@ -647,6 +656,10 @@ fn default_openfga_store_name() -> String {
 
 fn default_openfga_model_prefix() -> String {
     "collaboration".to_string()
+}
+
+fn default_openfga_max_batch_check_size() -> usize {
+    50
 }
 
 fn deserialize_openfga_config<'de, D>(deserializer: D) -> Result<Option<OpenFGAConfig>, D::Error>
@@ -663,6 +676,7 @@ where
         store_name,
         authorization_model_prefix,
         authorization_model_version,
+        max_batch_check_size,
     }) = Option::<OpenFGAConfigSerde>::deserialize(deserializer)?
     else {
         return Ok(None);
@@ -695,6 +709,7 @@ where
         auth,
         authorization_model_prefix,
         authorization_model_version,
+        max_batch_check_size,
     }))
 }
 
@@ -737,6 +752,7 @@ where
         store_name: value.store_name.clone(),
         authorization_model_prefix: value.authorization_model_prefix.clone(),
         authorization_model_version: value.authorization_model_version.clone(),
+        max_batch_check_size: value.max_batch_check_size,
     }
     .serialize(serializer)
 }
