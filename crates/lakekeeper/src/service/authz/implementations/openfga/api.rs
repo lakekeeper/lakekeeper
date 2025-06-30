@@ -1607,7 +1607,6 @@ mod tests {
         );
     }
 
-    #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_client::client::TupleKey;
         use rand::Rng;
@@ -1689,53 +1688,24 @@ mod tests {
             assert_eq!(relations, vec![ServerAssignment::Admin(user_id.into())]);
         }
 
+        // TODO(mooori) doc comment
         #[tokio::test]
         #[tracing_test::traced_test]
         async fn test_batch_check() {
             let (_, authorizer) = authorizer_for_empty_store().await;
 
-            let owner = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
-            let project_id = ProjectId::from(Uuid::nil());
-            let warehouse_id = WarehouseId::new_random();
-            let namespace_id = NamespaceId::new_random();
-
-            // Grant ownership to owner.
-            authorizer
-                .write(
-                    Some(vec![
-                        TupleKey {
-                            user: owner.to_openfga(),
-                            relation: ProjectRelation::ProjectAdmin.to_openfga().to_string(),
-                            object: project_id.to_openfga(),
-                            condition: None,
-                        },
-                        TupleKey {
-                            user: owner.to_openfga(),
-                            relation: WarehouseRelation::Ownership.to_openfga().to_string(),
-                            object: warehouse_id.to_openfga(),
-                            condition: None,
-                        },
-                        TupleKey {
-                            user: owner.to_openfga(),
-                            relation: NamespaceRelation::Ownership.to_openfga().to_string(),
-                            object: namespace_id.to_openfga(),
-                            condition: None,
-                        },
-                    ]),
-                    None,
-                )
-                .await
-                .unwrap();
 
             // Generate namespaces. For each randomly decide if assignee is granted modify.
+            // TODO(mooori) more namespaces
+            let write_chunk_size = 100; // see [`Authorizer::write`]
             let namespaces: Vec<_> = (0..1000)
                 .into_iter()
                 .map(|_| NamespaceId::new_random())
                 .collect();
             let mut permissions = Vec::with_capacity(namespaces.len());
             let mut to_grant = vec![];
-            let mut to_check = vec![];
+            let mut to_check = Vec::with_capacity(namespaces.len());
             let mut rng = rand::rng();
             for ns in namespaces.iter() {
                 let may_modify: bool = rng.random();
@@ -1755,49 +1725,34 @@ mod tests {
                 })
             }
 
+            // Initially assignee can not delete any of the namespaces.
             let res = authorizer
-                .is_allowed_namespace_action(
+                .are_allowed_namespace_actions(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespace_id,
-                    CatalogNamespaceAction::CanDelete,
+                    namespaces.clone(),
+                    vec![CatalogNamespaceAction::CanDelete; namespaces.len()],
                 )
                 .await
                 .unwrap();
-            assert!(!res);
-            let res = authorizer
-                .check(CheckRequestTupleKey {
-                    user: Actor::Principal(user_id_assignee.clone()).to_openfga(),
-                    relation: NamespaceAction::Delete.to_openfga().to_string(),
-                    object: namespace_id.to_openfga(),
-                })
-                .await
-                .unwrap();
-            assert!(!res);
+            assert_eq!(res, vec![false; namespaces.len()]);
 
-            // TODO(mooori) write chunks
-            authorizer
-                .write(
-                    Some(vec![TupleKey {
-                        user: user_id_assignee.to_openfga(),
-                        relation: NamespaceRelation::Modify.to_openfga().to_string(),
-                        object: namespace_id.to_openfga(),
-                        condition: None,
-                    }]),
-                    None,
-                )
-                .await
-                .unwrap();
+            for grant_chunk in to_grant.chunks(write_chunk_size) {
+                authorizer
+                    .write(Some(grant_chunk.to_vec()), None)
+                    .await
+                    .unwrap();
+            }
 
-            // call `are_allowed_namespace_actions`
+            // The response matches the randomly granted permissions.
             let res = authorizer
-                .is_allowed_namespace_action(
+                .are_allowed_namespace_actions(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespace_id,
-                    CatalogNamespaceAction::CanDelete,
+                    namespaces.clone(),
+                    vec![CatalogNamespaceAction::CanDelete; namespaces.len()],
                 )
                 .await
                 .unwrap();
-            assert!(res);
+            assert_eq!(res, permissions);
         }
 
         #[test]
