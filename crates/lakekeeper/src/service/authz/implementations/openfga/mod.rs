@@ -834,11 +834,10 @@ impl OpenFGAAuthorizer {
             }
         }
 
-        // Ensure there is a response for every BatchCheckItem.
-        if let Some(_) = idxs_seen.iter().find(|&&x| x == false) {
-            panic!("response for an item to check is missing");
-        }
-
+        assert!(
+            idxs_seen.into_iter().all(|idx_was_seen| idx_was_seen),
+            "response for an item to check is missing"
+        );
         Ok(results)
     }
 

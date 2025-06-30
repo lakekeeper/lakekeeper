@@ -407,7 +407,7 @@ pub struct OpenFGAConfig {
     /// Version should have the format <major>.<minor>.
     pub authorization_model_version: Option<String>,
     /// The maximum number of checks than can be handled by a batch check
-    /// request. This is a [configuration option] of the OpenFGA server
+    /// request. This is a [configuration option] of the `OpenFGA` server
     /// with default value 50.
     ///
     /// [configuration option]: https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK
