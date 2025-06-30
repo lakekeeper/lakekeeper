@@ -53,7 +53,6 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
             list_entities!(
                 View,
                 list_views,
-                view_action,
                 namespace,
                 namespace_id,
                 authorizer,

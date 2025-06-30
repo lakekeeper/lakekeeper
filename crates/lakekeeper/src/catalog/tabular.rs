@@ -13,7 +13,7 @@ pub(crate) fn default_table_flags() -> ListFlags {
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $action:ident, $namespace:ident, $namespace_id:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident) => {
+    ($entity:ident, $list_fn:ident, $namespace:ident, $namespace_id:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident) => {
         |ps, page_token, trx| {
             use ::paste::paste;
             paste! {
@@ -52,17 +52,13 @@ macro_rules! list_entities {
                     // be listed.
                     vec![true; ids.len()]
                 } else {
-                    futures::future::try_join_all(ids.iter().map(|n| {
-                        // TODO(mooori) use are_allowed_x_actions batch check
-                        paste! {
-                            authorizer.[<is_allowed_ $action>](
-                                &request_metadata,
-                                *n,
-                                paste! { [<Catalog $entity Action>]::CanIncludeInList },
-                            )
-                        }
-                    }))
-                    .await?
+                    paste! {
+                        authorizer.[<are_allowed_ $entity:lower _actions>](
+                            &request_metadata,
+                            ids.clone(),
+                            vec![[<Catalog $entity Action>]::CanIncludeInList; ids.len()],
+                        ).await?
+                    }
                 };
 
                 let (next_idents, next_uuids, next_page_tokens, mask): (

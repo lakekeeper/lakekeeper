@@ -112,7 +112,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 list_entities!(
                     Table,
                     list_tables,
-                    table_action,
                     namespace,
                     namespace_id,
                     authorizer,
