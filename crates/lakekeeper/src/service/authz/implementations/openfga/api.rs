@@ -1610,12 +1610,16 @@ mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_client::client::TupleKey;
+        use rand::Rng;
         use uuid::Uuid;
 
         use super::super::*;
         use crate::service::{
             authn::UserId,
-            authz::implementations::openfga::migration::tests::authorizer_for_empty_store,
+            authz::{
+                implementations::openfga::migration::tests::authorizer_for_empty_store, Authorizer,
+                CatalogNamespaceAction,
+            },
         };
 
         #[tokio::test]
@@ -1683,6 +1687,117 @@ mod tests {
                     .unwrap();
             assert_eq!(relations.len(), 1);
             assert_eq!(relations, vec![ServerAssignment::Admin(user_id.into())]);
+        }
+
+        #[tokio::test]
+        #[tracing_test::traced_test]
+        async fn test_batch_check() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let owner = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
+            let project_id = ProjectId::from(Uuid::nil());
+            let warehouse_id = WarehouseId::new_random();
+            let namespace_id = NamespaceId::new_random();
+
+            // Grant ownership to owner.
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: owner.to_openfga(),
+                            relation: ProjectRelation::ProjectAdmin.to_openfga().to_string(),
+                            object: project_id.to_openfga(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: owner.to_openfga(),
+                            relation: WarehouseRelation::Ownership.to_openfga().to_string(),
+                            object: warehouse_id.to_openfga(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: owner.to_openfga(),
+                            relation: NamespaceRelation::Ownership.to_openfga().to_string(),
+                            object: namespace_id.to_openfga(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Generate namespaces. For each randomly decide if assignee is granted modify.
+            let namespaces: Vec<_> = (0..1000)
+                .into_iter()
+                .map(|_| NamespaceId::new_random())
+                .collect();
+            let mut permissions = Vec::with_capacity(namespaces.len());
+            let mut to_grant = vec![];
+            let mut to_check = vec![];
+            let mut rng = rand::rng();
+            for ns in namespaces.iter() {
+                let may_modify: bool = rng.random();
+                permissions.push(may_modify);
+                if may_modify {
+                    to_grant.push(TupleKey {
+                        user: user_id_assignee.to_openfga(),
+                        relation: NamespaceRelation::Modify.to_openfga().to_string(),
+                        object: ns.to_openfga(),
+                        condition: None,
+                    })
+                }
+                to_check.push(CheckRequestTupleKey {
+                    user: Actor::Principal(user_id_assignee.clone()).to_openfga(),
+                    relation: NamespaceAction::Delete.to_openfga().to_string(),
+                    object: ns.to_openfga(),
+                })
+            }
+
+            let res = authorizer
+                .is_allowed_namespace_action(
+                    &RequestMetadata::random_human(user_id_assignee.clone()),
+                    namespace_id,
+                    CatalogNamespaceAction::CanDelete,
+                )
+                .await
+                .unwrap();
+            assert!(!res);
+            let res = authorizer
+                .check(CheckRequestTupleKey {
+                    user: Actor::Principal(user_id_assignee.clone()).to_openfga(),
+                    relation: NamespaceAction::Delete.to_openfga().to_string(),
+                    object: namespace_id.to_openfga(),
+                })
+                .await
+                .unwrap();
+            assert!(!res);
+
+            // TODO(mooori) write chunks
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_assignee.to_openfga(),
+                        relation: NamespaceRelation::Modify.to_openfga().to_string(),
+                        object: namespace_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // call `are_allowed_namespace_actions`
+            let res = authorizer
+                .is_allowed_namespace_action(
+                    &RequestMetadata::random_human(user_id_assignee.clone()),
+                    namespace_id,
+                    CatalogNamespaceAction::CanDelete,
+                )
+                .await
+                .unwrap();
+            assert!(res);
         }
 
         #[test]
