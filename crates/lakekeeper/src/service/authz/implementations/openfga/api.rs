@@ -1607,6 +1607,7 @@ mod tests {
         );
     }
 
+    #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_client::client::TupleKey;
         use rand::Rng;
