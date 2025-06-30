@@ -1700,15 +1700,12 @@ mod tests {
             // Generate namespaces. For each randomly decide if assignee is granted modify.
             // TODO(mooori) more namespaces
             let write_chunk_size = 100; // see [`Authorizer::write`]
-            let namespaces: Vec<_> = (0..1000)
-                .into_iter()
-                .map(|_| NamespaceId::new_random())
-                .collect();
+            let namespaces: Vec<_> = (0..1000).map(|_| NamespaceId::new_random()).collect();
             let mut permissions = Vec::with_capacity(namespaces.len());
             let mut to_grant = vec![];
             let mut to_check = Vec::with_capacity(namespaces.len());
             let mut rng = rand::rng();
-            for ns in namespaces.iter() {
+            for ns in &namespaces {
                 let may_modify: bool = rng.random();
                 permissions.push(may_modify);
                 if may_modify {
@@ -1717,13 +1714,13 @@ mod tests {
                         relation: NamespaceRelation::Modify.to_openfga().to_string(),
                         object: ns.to_openfga(),
                         condition: None,
-                    })
+                    });
                 }
                 to_check.push(CheckRequestTupleKey {
                     user: Actor::Principal(user_id_assignee.clone()).to_openfga(),
                     relation: NamespaceAction::Delete.to_openfga().to_string(),
                     object: ns.to_openfga(),
-                })
+                });
             }
 
             // Initially assignee can not delete any of the namespaces.
