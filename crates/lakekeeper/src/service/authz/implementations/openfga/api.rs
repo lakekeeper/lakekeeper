@@ -1689,7 +1689,13 @@ mod tests {
             assert_eq!(relations, vec![ServerAssignment::Admin(user_id.into())]);
         }
 
-        // TODO(mooori) doc comment
+        /// Verifies that [`Authorizer::batch_check`] correctly dis- and reassembles the input.
+        ///
+        /// Generates a user and a large number of namespaces. For each namespace, it is chosen
+        /// randomly whether the user is granted `modify` permissions. Permissions for all of these
+        /// namespaces are then queried via `batch_check`. As there are many namespaces with random
+        /// `modify` assignments, getting the correct response provides sufficiently high
+        /// probability that `batch_check` is implemented correctly.
         #[tokio::test]
         #[tracing_test::traced_test]
         async fn test_batch_check() {
@@ -1698,14 +1704,13 @@ mod tests {
             let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
 
             // Generate namespaces. For each randomly decide if assignee is granted modify.
-            // TODO(mooori) more namespaces
             let write_chunk_size = 100; // see [`Authorizer::write`]
-            let namespaces: Vec<_> = (0..1000).map(|_| NamespaceId::new_random()).collect();
-            let mut permissions = Vec::with_capacity(namespaces.len());
+            let namespace_ids: Vec<_> = (0..1000).map(|_| NamespaceId::new_random()).collect();
+            let mut permissions = Vec::with_capacity(namespace_ids.len());
             let mut to_grant = vec![];
-            let mut to_check = Vec::with_capacity(namespaces.len());
+            let mut to_check = Vec::with_capacity(namespace_ids.len());
             let mut rng = rand::rng();
-            for ns in &namespaces {
+            for ns in &namespace_ids {
                 let may_modify: bool = rng.random();
                 permissions.push(may_modify);
                 if may_modify {
@@ -1727,12 +1732,12 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespaces.clone(),
-                    vec![CatalogNamespaceAction::CanDelete; namespaces.len()],
+                    namespace_ids.clone(),
+                    vec![CatalogNamespaceAction::CanDelete; namespace_ids.len()],
                 )
                 .await
                 .unwrap();
-            assert_eq!(res, vec![false; namespaces.len()]);
+            assert_eq!(res, vec![false; namespace_ids.len()]);
 
             for grant_chunk in to_grant.chunks(write_chunk_size) {
                 authorizer
@@ -1742,11 +1747,12 @@ mod tests {
             }
 
             // The response matches the randomly granted permissions.
+            // Note: `are_allowed_namespace_actions` calls `batch_check` internally.
             let res = authorizer
                 .are_allowed_namespace_actions(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespaces.clone(),
-                    vec![CatalogNamespaceAction::CanDelete; namespaces.len()],
+                    namespace_ids.clone(),
+                    vec![CatalogNamespaceAction::CanDelete; namespace_ids.len()],
                 )
                 .await
                 .unwrap();

@@ -100,6 +100,7 @@ pub struct OpenFGAAuthorizer {
     health: Arc<RwLock<Vec<Health>>>,
 }
 
+/// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
     fn api_doc() -> utoipa::openapi::OpenApi {
