@@ -351,7 +351,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 object: id.to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
+        self.batch_check(items).await
     }
 
     async fn is_allowed_table_action<A>(
@@ -390,7 +390,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 object: id.to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
+        self.batch_check(items).await
     }
 
     async fn is_allowed_view_action<A>(
@@ -429,7 +429,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 object: id.to_openfga(),
             })
             .collect();
-        self.batch_check(items).await.map_err(Into::into)
+        self.batch_check(items).await
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, user_id: UserId) -> Result<()> {
@@ -795,7 +795,7 @@ impl OpenFGAAuthorizer {
     async fn batch_check(
         &self,
         tuple_keys: Vec<impl Into<CheckRequestTupleKey>>,
-    ) -> OpenFGAResult<Vec<bool>> {
+    ) -> Result<Vec<bool>> {
         // Using index into tuple_keys as correlation_id.
         let num_tuples = tuple_keys.len();
         let items: Vec<BatchCheckItem> = tuple_keys
@@ -815,7 +815,9 @@ impl OpenFGAAuthorizer {
                 .await
                 .inspect_err(|e| {
                     tracing::error!("Failed to check batch with OpenFGA: {e}");
-                })?;
+                })
+                .map_err(Into::<OpenFGAError>::into)
+                .map_err(Into::<IcebergErrorResponse>::into)?;
 
         let mut results = vec![false; num_tuples];
         let mut idxs_seen = vec![false; num_tuples];
