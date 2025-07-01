@@ -791,7 +791,6 @@ impl OpenFGAAuthorizer {
     }
 
     /// A convenience wrapper around `batch_check`.
-    // TODO(mooori): get rid of unwrap/expect/panic
     async fn batch_check(
         &self,
         tuple_keys: Vec<impl Into<CheckRequestTupleKey>>,
@@ -821,25 +820,36 @@ impl OpenFGAAuthorizer {
 
         let mut results = vec![false; num_tuples];
         let mut idxs_seen = vec![false; num_tuples];
+        let batch_check_err_type = "OpenFGABatchCheckError";
         for raw_results_chunk in chunked_raw_results {
             for (idx, check_result) in raw_results_chunk {
-                let idx: usize = idx
-                    .parse()
-                    .expect("Should parse key constructed from usize");
+                let idx: usize = idx.parse().map_err(|e| {
+                    let msg =
+                        format!("OpenFGA batch check correlation id should be usize, got {idx}");
+                    tracing::error!(msg);
+                    ErrorModel::internal(msg, batch_check_err_type, Some(Box::new(e)))
+                })?;
                 match check_result {
                     CheckResult::Allowed(allowed) => {
                         results[idx] = allowed;
                     }
-                    CheckResult::Error(e) => panic!("one of the checks failed: {e:?}"),
+                    CheckResult::Error(e) => {
+                        let msg = format!("One of the checks in a batch returned an error: {e:?}");
+                        tracing::error!(msg);
+                        let err = ErrorModel::internal(msg, batch_check_err_type, None);
+                        return Err(err.into());
+                    }
                 }
                 idxs_seen[idx] = true;
             }
         }
 
-        assert!(
-            idxs_seen.into_iter().all(|idx_was_seen| idx_was_seen),
-            "response for an item to check is missing"
-        );
+        if !idxs_seen.into_iter().all(|idx_was_seen| idx_was_seen) {
+            let msg = "Missing response for one of the items in an OpenFGA batch check";
+            tracing::error!(msg);
+            let err = ErrorModel::internal(msg, batch_check_err_type, None);
+            return Err(err.into());
+        }
         Ok(results)
     }
 
