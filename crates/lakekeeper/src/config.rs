@@ -647,7 +647,7 @@ struct OpenFGAConfigSerde {
     /// Token Endpoint to use when exchanging client credentials for an access token.
     token_endpoint: Option<Url>,
     #[serde(default = "default_openfga_max_batch_check_size")]
-    pub max_batch_check_size: usize,
+    max_batch_check_size: usize,
 }
 
 fn default_openfga_store_name() -> String {
