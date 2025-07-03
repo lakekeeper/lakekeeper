@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.2](https://github.com/lakekeeper/lakekeeper/compare/v0.9.1...v0.9.2) (2025-07-03)
+
+
+### Features
+
+* Add "https://kubernetes.default.svc.cluster.local" to the accepted issuers ([#1194](https://github.com/lakekeeper/lakekeeper/issues/1194)) ([cb53dc0](https://github.com/lakekeeper/lakekeeper/commit/cb53dc02716fc077f78c223c6caf8f9e72a4dc94))
+* add params for DEFAULT and MAX page size of paginated queries ([#1218](https://github.com/lakekeeper/lakekeeper/issues/1218)) ([a114271](https://github.com/lakekeeper/lakekeeper/commit/a1142716e92845f5b76ce07d67c471f682870e12))
+* **authz:** enable batch requests for authz checks ([#1200](https://github.com/lakekeeper/lakekeeper/issues/1200)) ([bb43cd2](https://github.com/lakekeeper/lakekeeper/commit/bb43cd29b61cd3cee3a98745edbfec47f20edd31))
+* re-export iceberg ([#1207](https://github.com/lakekeeper/lakekeeper/issues/1207)) ([89aaba1](https://github.com/lakekeeper/lakekeeper/commit/89aaba194cd788728b780248f426704c6b2d35d3))
+
+
+### Bug Fixes
+
+* Add 0.9 task migration to changed migration due to 0.9.1 fix ([#1198](https://github.com/lakekeeper/lakekeeper/issues/1198)) ([c630895](https://github.com/lakekeeper/lakekeeper/commit/c630895f97a5894a6a2162807ee86a11fedb7fbd))
+* return MAX_PAGE_SIZE entries if pageToken is not specified ([#1221](https://github.com/lakekeeper/lakekeeper/issues/1221)) ([a48a156](https://github.com/lakekeeper/lakekeeper/commit/a48a1566b52eaac31142995061983607951c9e1a))
+* UI redirect without trailing slash did not respect x-forwarded-prefix header ([#1205](https://github.com/lakekeeper/lakekeeper/issues/1205)) ([dd1d0c4](https://github.com/lakekeeper/lakekeeper/commit/dd1d0c4d38a8f4f27300224ee469cb5854cccb4d))
+* Undropped tabulars without expiration tasks ([#1202](https://github.com/lakekeeper/lakekeeper/issues/1202)) ([bd00a76](https://github.com/lakekeeper/lakekeeper/commit/bd00a76340e7931ac94d4f71f647159ebc0d0701))
+* UserOrRole should have String type for User variant ([#1204](https://github.com/lakekeeper/lakekeeper/issues/1204)) ([c266f96](https://github.com/lakekeeper/lakekeeper/commit/c266f96d037542a454a50f7c3d36685b5fa5848a))
+
+
+### Miscellaneous Chores
+
+* release 0.9.2 ([4725c4a](https://github.com/lakekeeper/lakekeeper/commit/4725c4a81b69a0d36a6322d4482b1d1519ee5300))
+
 ## [0.9.1](https://github.com/lakekeeper/lakekeeper/compare/v0.9.0...v0.9.1) (2025-06-19)
 
 

@@ -2,6 +2,18 @@
 
 
 
+## [0.9.2](https://github.com/lakekeeper/lakekeeper/compare/v0.9.1...v0.9.2) (2025-07-03)
+
+
+### Bug Fixes
+
+* UI redirect without trailing slash did not respect x-forwarded-prefix header ([#1205](https://github.com/lakekeeper/lakekeeper/issues/1205)) ([dd1d0c4](https://github.com/lakekeeper/lakekeeper/commit/dd1d0c4d38a8f4f27300224ee469cb5854cccb4d))
+
+
+### Miscellaneous Chores
+
+* release 0.9.2 ([4725c4a](https://github.com/lakekeeper/lakekeeper/commit/4725c4a81b69a0d36a6322d4482b1d1519ee5300))
+
 ## [0.9.1](https://github.com/lakekeeper/lakekeeper/compare/v0.9.0...v0.9.1) (2025-06-19)
 
 
