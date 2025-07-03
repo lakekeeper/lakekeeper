@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::dbutils::DBErrorHandler;
 use crate::{
     api::{
-        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, MAX_PAGE_SIZE},
+        iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping},
         management::v1::ProtectionResponse,
     },
     catalog::namespace::MAX_NAMESPACE_DEPTH,
@@ -23,7 +23,7 @@ use crate::{
         CreateNamespaceResponse, ErrorModel, GetNamespaceResponse, ListNamespacesQuery,
         NamespaceDropInfo, NamespaceId, NamespaceIdent, NamespaceInfo, Result, TabularId,
     },
-    WarehouseId,
+    WarehouseId, CONFIG,
 };
 
 pub(crate) async fn get_namespace(
@@ -85,7 +85,9 @@ pub(crate) async fn list_namespaces(
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>> {
-    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
+    let page_size = page_size.map_or(CONFIG.list_page_size_max, |i| {
+        i.clamp(1, CONFIG.list_page_size_max)
+    });
 
     // Treat empty parent as None
     let parent = parent

@@ -1,13 +1,14 @@
 use super::dbutils::DBErrorHandler;
 use crate::{
     api::{
-        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        iceberg::v1::PaginationQuery,
         management::v1::user::{
             ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
         },
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     service::{CreateOrUpdateUserResponse, Result, UserId},
+    CONFIG,
 };
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
@@ -95,7 +96,9 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     }: PaginationQuery,
     connection: E,
 ) -> Result<ListUsersResponse> {
-    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
+    let page_size = page_size.map_or(CONFIG.list_page_size_max, |i| {
+        i.clamp(1, CONFIG.list_page_size_max)
+    });
     let filter_name = filter_name.unwrap_or_default();
 
     let token = page_token

@@ -10,7 +10,7 @@ pub(crate) mod tables;
 pub(crate) mod tabular;
 pub(crate) mod views;
 
-use std::{collections::HashMap, fmt::Debug, marker::PhantomData, sync::LazyLock};
+use std::{collections::HashMap, fmt::Debug, marker::PhantomData};
 
 use futures::future::BoxFuture;
 use iceberg::spec::{TableMetadata, ViewMetadata};
@@ -20,11 +20,11 @@ pub use namespace::{MAX_NAMESPACE_DEPTH, NAMESPACE_ID_PROPERTY, UNSUPPORTED_NAME
 
 use crate::{
     api::{
-        iceberg::v1::{PageToken, Prefix, MAX_PAGE_SIZE},
+        iceberg::v1::{PageToken, Prefix},
         ErrorModel, Result,
     },
     service::{authz::Authorizer, secrets::SecretStore, storage::StorageCredential, Catalog},
-    WarehouseId,
+    WarehouseId, CONFIG,
 };
 
 pub trait CommonMetadata {
@@ -75,14 +75,6 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
         Ok(None)
     }
 }
-
-pub const DEFAULT_PAGE_SIZE: i64 = 100;
-
-pub static DEFAULT_PAGE_SIZE_USIZE: LazyLock<usize> = LazyLock::new(|| {
-    DEFAULT_PAGE_SIZE
-        .try_into()
-        .expect("1, 1000 is a valid usize")
-});
 
 pub struct UnfilteredPage<Entity, EntityId> {
     pub entities: Vec<Entity>,
@@ -197,8 +189,8 @@ where
     // we're filling a auth-filtered page. Without a vec, that won't fly.
 {
     let page_size = page_size
-        .unwrap_or(DEFAULT_PAGE_SIZE)
-        .clamp(1, MAX_PAGE_SIZE);
+        .unwrap_or(CONFIG.list_page_size_default)
+        .clamp(1, CONFIG.list_page_size_max);
     let page_as_usize: usize = page_size.try_into().expect("1, 1000 is a valid usize");
 
     let page_token = page_token.as_option().map(ToString::to_string);
@@ -212,8 +204,12 @@ where
         unfiltered_page.take_n_authz_approved(page_as_usize);
 
     while entities.len() < page_as_usize {
-        let new_unfiltered_page =
-            fetch_fn(DEFAULT_PAGE_SIZE, next_page_token.clone(), transaction).await?;
+        let new_unfiltered_page = fetch_fn(
+            CONFIG.list_page_size_default,
+            next_page_token.clone(),
+            transaction,
+        )
+        .await?;
 
         let number_of_requested_items = page_as_usize - entities.len();
         let page_was_authz_reduced = new_unfiltered_page.has_authz_denied_items();

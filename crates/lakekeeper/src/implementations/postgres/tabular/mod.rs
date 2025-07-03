@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::dbutils::DBErrorHandler as _;
 use crate::{
     api::{
-        iceberg::v1::{PaginatedMapping, PaginationQuery, MAX_PAGE_SIZE},
+        iceberg::v1::{PaginatedMapping, PaginationQuery},
         management::v1::ProtectionResponse,
     },
     catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
@@ -27,7 +27,7 @@ use crate::{
         DeletionDetails, ErrorModel, NamespaceId, Result, TableId, TableIdent, TabularId,
         TabularIdentBorrowed, TabularIdentOwned, TabularInfo, UndropTabularResponse,
     },
-    WarehouseId,
+    WarehouseId, CONFIG,
 };
 
 const MAX_PARAMETERS: usize = 30000;
@@ -438,7 +438,9 @@ where
 {
     let page_size = pagination_query
         .page_size
-        .map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
+        .map_or(CONFIG.list_page_size_max, |i| {
+            i.clamp(1, CONFIG.list_page_size_max)
+        });
 
     let token = pagination_query
         .page_token

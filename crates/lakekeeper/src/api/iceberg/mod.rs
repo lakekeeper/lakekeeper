@@ -40,10 +40,6 @@ pub mod v1 {
         request_metadata::RequestMetadata,
     };
 
-    // according to crates/iceberg-ext/src/catalog/rest/namespace.rs:115 we should
-    // return everything - in order to block malicious requests, we still cap to 1000
-    pub const MAX_PAGE_SIZE: i64 = 1000;
-
     pub fn new_v1_full_router<
         #[cfg(feature = "s3-signer")] T: config::Service<S>
             + namespace::NamespaceService<S>

@@ -5,7 +5,7 @@ use sqlx::{types::Json, PgPool};
 use super::{dbutils::DBErrorHandler as _, CatalogState};
 use crate::{
     api::{
-        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        iceberg::v1::PaginationQuery,
         management::v1::{
             warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
             DeleteWarehouseQuery, ProtectionResponse,
@@ -15,7 +15,7 @@ use crate::{
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     request_metadata::RequestMetadata,
     service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
-    ProjectId, SecretIdent, WarehouseId,
+    ProjectId, SecretIdent, WarehouseId, CONFIG,
 };
 
 pub(super) async fn get_warehouse_by_name(
@@ -675,7 +675,9 @@ pub(crate) async fn get_warehouse_stats(
         page_token,
     }: PaginationQuery,
 ) -> crate::api::Result<WarehouseStatisticsResponse> {
-    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
+    let page_size = page_size.map_or(CONFIG.list_page_size_max, |i| {
+        i.clamp(1, CONFIG.list_page_size_max)
+    });
 
     let token = page_token
         .as_option()

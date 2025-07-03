@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        iceberg::v1::{PaginationQuery, MAX_PAGE_SIZE},
+        iceberg::v1::PaginationQuery,
         management::v1::role::{ListRolesResponse, Role, SearchRoleResponse},
     },
     implementations::postgres::{
@@ -11,7 +11,7 @@ use crate::{
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{Result, RoleId},
-    ProjectId,
+    ProjectId, CONFIG,
 };
 
 #[derive(sqlx::FromRow, Debug)]
@@ -158,7 +158,9 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     }: PaginationQuery,
     connection: E,
 ) -> Result<ListRolesResponse> {
-    let page_size = page_size.map_or(MAX_PAGE_SIZE, |i| i.clamp(1, MAX_PAGE_SIZE));
+    let page_size = page_size.map_or(CONFIG.list_page_size_max, |i| {
+        i.clamp(1, CONFIG.list_page_size_max)
+    });
     let filter_name = filter_name.unwrap_or_default();
 
     let token = page_token
