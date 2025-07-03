@@ -189,8 +189,8 @@ where
     // we're filling a auth-filtered page. Without a vec, that won't fly.
 {
     let page_size = page_size
-        .unwrap_or(CONFIG.list_page_size_default)
-        .clamp(1, CONFIG.list_page_size_max);
+        .unwrap_or(CONFIG.pagination_size_default)
+        .clamp(1, CONFIG.pagination_size_max);
     let page_as_usize: usize = page_size.try_into().expect("1, 1000 is a valid usize");
 
     let page_token = page_token.as_option().map(ToString::to_string);
@@ -205,7 +205,7 @@ where
 
     while entities.len() < page_as_usize {
         let new_unfiltered_page = fetch_fn(
-            CONFIG.list_page_size_default,
+            CONFIG.pagination_size_default,
             next_page_token.clone(),
             transaction,
         )

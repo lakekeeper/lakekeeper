@@ -238,10 +238,10 @@ pub struct DynAppConfig {
     )]
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
-    // ------------- List query page sizes -------------
+    // ------------- Page size for paginated queries -------------
     /// TODO(mooori) doc comment here or in md?
-    pub list_page_size_default: i64,
-    pub list_page_size_max: i64,
+    pub pagination_size_default: i64,
+    pub pagination_size_max: i64,
 
     // ------------- Stats -------------
     /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
@@ -514,8 +514,8 @@ impl Default for DynAppConfig {
             secret_backend: SecretBackend::Postgres,
             task_poll_interval: Duration::from_secs(10),
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
-            list_page_size_default: 100,
-            list_page_size_max: 1000,
+            pagination_size_default: 100,
+            pagination_size_max: 1000,
             endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
             serve_swagger_ui: true,

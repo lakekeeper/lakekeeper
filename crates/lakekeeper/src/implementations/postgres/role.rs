@@ -158,8 +158,8 @@ pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     }: PaginationQuery,
     connection: E,
 ) -> Result<ListRolesResponse> {
-    let page_size = page_size.map_or(CONFIG.list_page_size_max, |i| {
-        i.clamp(1, CONFIG.list_page_size_max)
+    let page_size = page_size.map_or(CONFIG.pagination_size_max, |i| {
+        i.clamp(1, CONFIG.pagination_size_max)
     });
     let filter_name = filter_name.unwrap_or_default();
 

@@ -438,8 +438,8 @@ where
 {
     let page_size = pagination_query
         .page_size
-        .map_or(CONFIG.list_page_size_max, |i| {
-            i.clamp(1, CONFIG.list_page_size_max)
+        .map_or(CONFIG.pagination_size_max, |i| {
+            i.clamp(1, CONFIG.pagination_size_max)
         });
 
     let token = pagination_query
