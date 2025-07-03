@@ -85,9 +85,7 @@ pub(crate) async fn list_namespaces(
     }: &ListNamespacesQuery,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<PaginatedMapping<NamespaceId, NamespaceInfo>> {
-    let page_size = page_size.map_or(CONFIG.pagination_size_max.into(), |i| {
-        i.clamp(1, CONFIG.pagination_size_max.into())
-    });
+    let page_size = CONFIG.page_size_or_pagination_max(*page_size);
 
     // Treat empty parent as None
     let parent = parent

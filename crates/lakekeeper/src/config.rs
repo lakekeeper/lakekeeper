@@ -535,6 +535,12 @@ impl DynAppConfig {
     pub fn authn_enabled(&self) -> bool {
         self.openid_provider_uri.is_some()
     }
+
+    /// Helper for common conversion of optional page size to `i64`.
+    pub fn page_size_or_pagination_max(&self, x: Option<i64>) -> i64 {
+        let size = x.unwrap_or(self.pagination_size_max.into());
+        std::cmp::min(size, self.pagination_size_max.into())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]

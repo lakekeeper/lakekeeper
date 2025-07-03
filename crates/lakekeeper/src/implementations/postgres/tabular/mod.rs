@@ -436,11 +436,7 @@ pub(crate) async fn list_tabulars<'e, 'c, E>(
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
-    let page_size = pagination_query
-        .page_size
-        .map_or(CONFIG.pagination_size_max.into(), |i| {
-            i.clamp(1, CONFIG.pagination_size_max.into())
-        });
+    let page_size = CONFIG.page_size_or_pagination_max(pagination_query.page_size);
 
     let token = pagination_query
         .page_token
