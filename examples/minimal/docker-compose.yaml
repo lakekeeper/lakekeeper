@@ -148,7 +148,7 @@ services:
       - "9001:9001"
   
   trino:
-    image: trinodb/trino:467
+    image: trinodb/trino:476
     environment:
       - CATALOG_MANAGEMENT=dynamic
     healthcheck:
