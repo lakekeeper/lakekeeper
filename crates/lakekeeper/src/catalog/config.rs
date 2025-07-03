@@ -70,6 +70,10 @@ impl<A: Authorizer + Clone, C: Catalog, S: SecretStore>
         config
             .defaults
             .insert("prefix".to_string(), CONFIG.warehouse_prefix(warehouse_id));
+        config.defaults.insert(
+            "rest-page-size".to_string(),
+            CONFIG.pagination_size_default.to_string(),
+        );
 
         config
             .overrides
