@@ -537,9 +537,10 @@ impl DynAppConfig {
     }
 
     /// Helper for common conversion of optional page size to `i64`.
-    pub fn page_size_or_pagination_max(&self, x: Option<i64>) -> i64 {
-        let size = x.unwrap_or(self.pagination_size_max.into());
-        std::cmp::min(size, self.pagination_size_max.into())
+    pub fn page_size_or_pagination_max(&self, page_size: Option<i64>) -> i64 {
+        page_size.map_or(self.pagination_size_max.into(), |i| {
+            i.clamp(1, self.pagination_size_max.into())
+        })
     }
 }
 
