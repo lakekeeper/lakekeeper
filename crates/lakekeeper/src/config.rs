@@ -239,7 +239,6 @@ pub struct DynAppConfig {
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
     // ------------- Page size for paginated queries -------------
-    /// TODO(mooori) doc comment here or in md?
     pub pagination_size_default: i64,
     pub pagination_size_max: i64,
 
