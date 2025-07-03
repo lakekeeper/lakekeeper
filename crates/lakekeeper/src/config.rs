@@ -239,8 +239,8 @@ pub struct DynAppConfig {
     pub default_tabular_expiration_delay_seconds: chrono::Duration,
 
     // ------------- Page size for paginated queries -------------
-    pub pagination_size_default: i64,
-    pub pagination_size_max: i64,
+    pub pagination_size_default: u32,
+    pub pagination_size_max: u32,
 
     // ------------- Stats -------------
     /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
