@@ -189,7 +189,11 @@ where
     // we're filling a auth-filtered page. Without a vec, that won't fly.
 {
     let page_size = page_size
-        .unwrap_or(CONFIG.pagination_size_default.into())
+        .unwrap_or(if matches!(page_token, PageToken::NotSpecified) {
+            CONFIG.pagination_size_max.into()
+        } else {
+            CONFIG.pagination_size_default.into()
+        })
         .clamp(1, CONFIG.pagination_size_max.into());
     let page_as_usize: usize = page_size
         .try_into()
