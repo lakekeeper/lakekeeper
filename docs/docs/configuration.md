@@ -25,9 +25,9 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 
 ### Pagination
 
-Lakekeeper has default values for `default` and `max` page sizes of paginated queries. These are safeguards against malicious requests and the problems related to large page sizes (see below).
+Lakekeeper has default values for `default` and `max` page sizes of paginated queries. These are safeguards against malicious requests and the problems related to large page sizes described below.
 
-The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe204f2c7cc61114c128fbf759/open-api/rest-catalog-open-api.yaml#L2030-L2032)) requires servers to return *all* results if `pageToken` is not set in the request. To obtain that behavior, set `LAKEKEEPER__PAGINATION_SIZE_MAX` to 4294967295 (`u32::MAX`, more would lead to practical problems). Things to keep in mind:
+The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe204f2c7cc61114c128fbf759/open-api/rest-catalog-open-api.yaml#L2030-L2032) requires servers to return *all* results if `pageToken` is not set in the request. To obtain that behavior, set `LAKEKEEPER__PAGINATION_SIZE_MAX` to 4294967295, which corresponds to `u32::MAX`. Larger page sizes would lead to practical problems. Things to keep in mind:
 
 - Retrieving huge numbers of rows is expensive, which might be exploited by malicious requests.
 - Requests may time out or responses may exceed size limits for huge numbers of results. 
