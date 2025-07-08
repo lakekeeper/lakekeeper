@@ -84,8 +84,8 @@ pub mod gcs {
             Bucket, String, "gcs.bucket", "gcs_bucket";
             Token, String, "gcs.oauth2.token", "gcs_oauth2_token";
             TokenExpiresAt, String, "gcs.oauth2.token-expires-at", "gcs_oauth2_token_expires_at";
-            RefreshCredentialsEnabled, bool, "gcs.oauth2.refresh-credentials-enabled", "gcs_refresh_credentials_enabled";
-            RefreshCredentialsEndpoint, String, "gcs.oauth2.refresh-credentials-endpoint", "gcs_refresh_credentials_endpoint";
+            RefreshCredentialsEnabled, bool, "gcs.oauth2.refresh-credentials-enabled", "gcs_oauth2_refresh_credentials_enabled";
+            RefreshCredentialsEndpoint, String, "gcs.oauth2.refresh-credentials-endpoint", "gcs_oauth2_refresh_credentials_endpoint";
         }
     );
 }
