@@ -4,6 +4,7 @@ use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
 use aws_config::{identity::IdentityCache, BehaviorVersion, SdkConfig};
 use aws_sdk_sts::config::{ProvideCredentials as _, SharedIdentityCache};
+use aws_sdk_sts::types::Tag;
 use iceberg_ext::configs::{
     table::{client, custom, s3, TableProperties},
     ConfigProperty, Location,
@@ -88,6 +89,10 @@ pub struct S3Profile {
     #[builder(default = 3600)]
     #[serde(default = "fn_3600")]
     pub sts_token_validity_seconds: u64,
+    /// Optional session tags for STS assume role operations.
+    #[serde(default)]
+    #[builder(default, setter(strip_option))]
+    pub sts_session_tags: Option<HashMap<String, String>>,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -743,6 +748,26 @@ impl S3Profile {
 
         let assume_role_builder = if let Some(external_id) = external_id {
             assume_role_builder.external_id(external_id)
+        } else {
+            assume_role_builder
+        };
+
+        let assume_role_builder = if let Some(session_tags) = &self.sts_session_tags {
+            if !session_tags.is_empty() {
+                let tags: Vec<Tag> = session_tags
+                    .iter()
+                    .map(|(key, value)| {
+                        Tag::builder()
+                            .key(key)
+                            .value(value)
+                            .build()
+                            .expect("Failed to build STS tag")
+                    })
+                    .collect();
+                assume_role_builder.set_tags(Some(tags))
+            } else {
+                assume_role_builder
+            }
         } else {
             assume_role_builder
         };
@@ -1569,6 +1594,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
+            sts_session_tags: None,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
@@ -1613,6 +1639,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
+            sts_session_tags: None,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
@@ -2003,6 +2030,7 @@ mod is_overlapping_location_tests {
             path_style_access: None,
             sts_role_arn: None,
             sts_enabled: false,
+            sts_session_tags: None,
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
