@@ -1,21 +1,16 @@
 [working-directory: "../.."]
-build-local-lk:
+build-local-image:
     docker build -t localhost/lakekeeper-local:amd64 -f docker/full.Dockerfile .
 
+# When running on your machine, make sure to build the image of local lakekeeper with
+# `build-local-image`.
 test_migration:
+    # Initialize lakekeeper (previous release), create + drop tables.
     docker compose run --rm spark /opt/entrypoint.sh \
         bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py"
+    # Stop old lakekeeper before bringing up new one.
     docker compose down -v lakekeeper_initial
     # Start lakekeeper with locally built binary. Triggers migration with that binary.
     # Flag --wait ensures the service is up and healthy before the next command executes.
     docker compose up --detach --wait lakekeeper_2
     docker compose down -v
-
-# test_migration:
-#     # Initialize lakekeeper, create + drop tables
-#     env LAKEKEEPER_IMAGE="quay.io/lakekeeper/catalog:latest-main" docker compose run --rm spark /opt/entrypoint.sh \
-#         bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py"
-#     # Make sure lakekeeper is stopped
-#     env LAKEKEEPER_IMAGE="quay.io/lakekeeper/catalog:latest-main" docker compose down
-#     # Start new lakekeeper build and run its migration
-#     env LAKEKEEPER_IMAGE="localhost/lakekeeper-local:latest" docker compose up lakekeeper
