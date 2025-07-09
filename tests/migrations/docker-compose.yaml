@@ -2,13 +2,13 @@ services:
   lakekeeper_initial:
     image: quay.io/lakekeeper/catalog:latest-main
     pull_policy: always
-    environment:
+    environment: &lakekeeper_environment
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
     command: [ "serve" ]
-    healthcheck:
+    healthcheck: &lakekeeper_healthcheck
       test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
@@ -29,11 +29,7 @@ services:
   migrate:
     image: quay.io/lakekeeper/catalog:latest-main
     pull_policy: always
-    environment:
-      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
-      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
-      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
-      - RUST_LOG=info
+    environment: *lakekeeper_environment
     restart: "no"
     command: [ "migrate" ]
     depends_on:
@@ -44,20 +40,10 @@ services:
 
   lakekeeper_2:
     image: localhost/lakekeeper-local:amd64
-    # image: quay.io/lakekeeper/catalog:latest-main
     pull_policy: never
-    environment:
-      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
-      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
-      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
-      - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
+    environment: *lakekeeper_environment
     command: [ "serve" ]
-    healthcheck:
-      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
-      interval: 1s
-      timeout: 10s
-      retries: 3
-      start_period: 3s
+    healthcheck: *lakekeeper_healthcheck
     depends_on:
       migrate_2:
         condition: service_completed_successfully
@@ -72,13 +58,8 @@ services:
 
   migrate_2:
     image: localhost/lakekeeper-local:amd64
-    # image: quay.io/lakekeeper/catalog:latest-main
     pull_policy: never
-    environment:
-      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
-      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
-      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
-      - RUST_LOG=info
+    environment: *lakekeeper_environment
     restart: "no"
     command: [ "migrate" ]
     depends_on:
@@ -87,7 +68,6 @@ services:
     networks:
       iceberg_net:
 
-  
   db:
     image: bitnami/postgresql:16.3.0
     environment:
