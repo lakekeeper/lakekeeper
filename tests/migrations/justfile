@@ -1,6 +1,6 @@
 [working-directory: "../.."]
 build-local-lk:
-    docker build -t localhost/lakekeeper-local:latest -f docker/full.Dockerfile .
+    docker build -t localhost/lakekeeper-local:amd64 -f docker/full.Dockerfile .
 
 test_migration:
     docker compose run --rm spark /opt/entrypoint.sh \

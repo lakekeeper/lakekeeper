@@ -43,7 +43,7 @@ services:
       iceberg_net:
 
   lakekeeper_2:
-    image: localhost/lakekeeper-local:latest
+    image: localhost/lakekeeper-local:amd64
     # image: quay.io/lakekeeper/catalog:latest-main
     pull_policy: never
     environment:
@@ -71,7 +71,7 @@ services:
       - "8181:8181"
 
   migrate_2:
-    image: localhost/lakekeeper-local:latest
+    image: localhost/lakekeeper-local:amd64
     # image: quay.io/lakekeeper/catalog:latest-main
     pull_policy: never
     environment:
