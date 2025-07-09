@@ -1,3 +1,5 @@
+import time
+
 import pyspark
 from pyspark.conf import SparkConf
 from pyspark.sql import SparkSession
@@ -59,3 +61,6 @@ for table in tables:
 spark.sql(f"DROP TABLE my_namespace.{tables[0]}")
 # TODO(mooori) permissions not sufficient for PURGE. Do we need it?
 # spark.sql(f"DROP TABLE my_namespace.{tables[1]} PURGE")
+
+# Sleep to let (short) soft-delete timeout expire.
+time.sleep(3)
