@@ -7,14 +7,14 @@ build-local-image:
 test_migration:
     # Initialize lakekeeper (previous release), create + drop tables.
     docker compose run --rm spark /opt/entrypoint.sh \
-        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_data 'http://lakekeeper_initial:8181/catalog'"
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_pre_migration 'http://lakekeeper_initial:8181/catalog'"
     # Start lakekeeper with locally built binary. Triggers migration with that binary.
     # Flag --wait ensures the service is up and healthy before the next command executes.
     docker compose up --detach --wait lakekeeper_2
     # Verify data can be read from the port started before the migration.
     docker compose run --rm spark /opt/entrypoint.sh \
-        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read_data 'http://lakekeeper_initial:8181/catalog'"
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read 'http://lakekeeper_initial:8181/catalog'"
     # Verify data can be read from the new pod.
     docker compose run --rm spark /opt/entrypoint.sh \
-        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read_data 'http://lakekeeper_2:8181/catalog'"
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read 'http://lakekeeper_2:8181/catalog'"
     docker compose down -v

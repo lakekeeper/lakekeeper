@@ -42,7 +42,15 @@ def spark_session(catalog_url):
 
     return spark
 
-def write_data(spark):
+def read(spark):
+    """
+    Reads data from tables that are expected to exist.
+    """
+    print("Reading data")
+    for table in TABLES_TO_MAINTAIN:
+        spark.sql(f"SELECT * FROM my_namespace.{table}").show()
+
+def write_pre_migration(spark):
     """
     Creates tables and drops some of them for the provided spark session.
     """
@@ -77,28 +85,20 @@ def write_data(spark):
     # Sleep to let (short) soft-delete timeout expire.
     time.sleep(3)
 
-def read_data(spark):
-    """
-    Reads data from tables that are expected to exist.
-    """
-    print("Reading data")
-    for table in TABLES_TO_MAINTAIN:
-        spark.sql(f"SELECT * FROM my_namespace.{table}").show()
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "task",
-        choices = ["write_data", "read_data"]
+        choices = ["read", "write_pre_migration", "write_post_migration"]
     )
     parser.add_argument("catalog_url")
     args = parser.parse_args()
 
     spark = spark_session(args.catalog_url)
-    if args.task == "write_data":
-        write_data(spark)
-    elif args.task == "read_data":
-        read_data(spark)
+    if args.task == "read":
+        read(spark)
+    elif args.task == "write_pre_migration":
+        write_pre_migration(spark)
     return 0
 
 if __name__ == "__main__":
