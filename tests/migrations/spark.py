@@ -10,6 +10,13 @@ from pyspark.sql.types import FloatType, LongType, StructType, StructField, Stri
 # Leave at least one table undropped.
 TABLES_TO_MAINTAIN = ["my_table_0", "my_table_1"]
 TABLES_TO_DROP = ["my_table_2"]
+TABLE_POST_MIGRATION = "my_table_3"
+
+TABLE_SCHEMA = StructType([
+        StructField("id", LongType(), True),
+        StructField("strings", StringType(), True),
+        StructField("floats", FloatType(), True),
+])
 
 def spark_session(catalog_url):
     """
@@ -57,20 +64,15 @@ def write_pre_migration(spark):
     # Lakekeeper migration issues can be related to (soft) deleted tables.
     # So create and drop some tables to simulate that situation.
     print("Creating tables")
-    schema = StructType([
-      StructField("id", LongType(), True),
-      StructField("strings", StringType(), True),
-      StructField("floats", FloatType(), True),
-    ])
     for table in TABLES_TO_MAINTAIN + TABLES_TO_DROP:
-        df = spark.createDataFrame([], schema)
+        df = spark.createDataFrame([], TABLE_SCHEMA)
         df.writeTo(f"my_namespace.{table}").createOrReplace()
 
         # Insert some rows.
         schema = spark.table(f"my_namespace.{table}").schema
         data = [
-            [1, 'a-string', 2.2],
-            [2, 'b-string', 3.3]
+            [1, 'a-string', 1.1],
+            [2, 'b-string', 2.2]
         ]
         df = spark.createDataFrame(data, schema)
         df.writeTo(f"my_namespace.{table}").append()
@@ -84,6 +86,28 @@ def write_pre_migration(spark):
 
     # Sleep to let (short) soft-delete timeout expire.
     time.sleep(3)
+
+def write_post_migration(spark):
+    """
+    Writes to existing tables and creates a new one.
+    """
+    # existing tables
+    for table in TABLES_TO_MAINTAIN:
+        schema = spark.table(f"my_namespace.{table}").schema
+        data = [[3, 'c-string', 3.3]]
+        df = spark.createDataFrame(data, schema)
+        df.writeTo(f"my_namespace.{table}").append()
+
+        spark.sql(f"SELECT * FROM my_namespace.{table}").show()
+
+    # new table
+    df = spark.createDataFrame([], TABLE_SCHEMA)
+    df.writeTo(f"my_namespace.{TABLE_POST_MIGRATION}").createOrReplace()
+    schema = spark.table(f"my_namespace.{TABLE_POST_MIGRATION}").schema
+    data = [[4, 'd-string', 4.4]]
+    df = spark.createDataFrame(data, schema)
+    df.writeTo(f"my_namespace.{TABLE_POST_MIGRATION}").append()
+    spark.sql(f"SELECT * FROM my_namespace.{TABLE_POST_MIGRATION}").show()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -99,6 +123,8 @@ def main():
         read(spark)
     elif args.task == "write_pre_migration":
         write_pre_migration(spark)
+    elif args.task == "write_post_migration":
+        write_post_migration(spark)
     return 0
 
 if __name__ == "__main__":

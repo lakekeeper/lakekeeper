@@ -17,4 +17,7 @@ test_migration:
     # Verify data can be read from the new pod.
     docker compose run --rm spark /opt/entrypoint.sh \
         bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read 'http://lakekeeper_2:8181/catalog'"
+    # Verify data can be written to the new pod.
+    docker compose run --rm spark /opt/entrypoint.sh \
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_post_migration 'http://lakekeeper_2:8181/catalog'"
     docker compose down -v
