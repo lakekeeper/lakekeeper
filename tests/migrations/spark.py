@@ -11,13 +11,10 @@ from pyspark.sql.types import FloatType, LongType, StructType, StructField, Stri
 TABLES_TO_MAINTAIN = ["my_table_0", "my_table_1"]
 TABLES_TO_DROP = ["my_table_2"]
 
-def spark_session():
+def spark_session(catalog_url):
     """
     Creates and returns a spark session.
     """
-    # This CATALOG_URL works for the "docker compose" testing and development environment.
-    # Change it if you are not running on `docker compose`.
-    CATALOG_URL = "http://lakekeeper_initial:8181/catalog"
     WAREHOUSE = "demo"
 
     SPARK_VERSION = pyspark.__version__
@@ -27,7 +24,7 @@ def spark_session():
     config = {
         f"spark.sql.catalog.lakekeeper": "org.apache.iceberg.spark.SparkCatalog",
         f"spark.sql.catalog.lakekeeper.type": "rest",
-        f"spark.sql.catalog.lakekeeper.uri": CATALOG_URL,
+        f"spark.sql.catalog.lakekeeper.uri": catalog_url,
         f"spark.sql.catalog.lakekeeper.warehouse": WAREHOUSE,
         f"spark.sql.catalog.lakekeeper.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
@@ -94,9 +91,10 @@ def main():
         "task",
         choices = ["write_data", "read_data"]
     )
+    parser.add_argument("catalog_url")
     args = parser.parse_args()
 
-    spark = spark_session()
+    spark = spark_session(args.catalog_url)
     if args.task == "write_data":
         write_data(spark)
     elif args.task == "read_data":
