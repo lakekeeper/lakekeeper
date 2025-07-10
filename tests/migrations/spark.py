@@ -7,6 +7,10 @@ from pyspark.conf import SparkConf
 from pyspark.sql import SparkSession
 from pyspark.sql.types import FloatType, LongType, StructType, StructField, StringType
 
+# Leave at least one table undropped.
+TABLES_TO_MAINTAIN = ["my_table_0", "my_table_1"]
+TABLES_TO_DROP = ["my_table_2"]
+
 def spark_session():
     """
     Creates and returns a spark session.
@@ -47,13 +51,13 @@ def write_data(spark):
     """
     # Lakekeeper migration issues can be related to (soft) deleted tables.
     # So create and drop some tables to simulate that situation.
-    tables = ["my_table_0", "my_table_1", "my_table_2"]
+    print("Creating tables")
     schema = StructType([
       StructField("id", LongType(), True),
       StructField("strings", StringType(), True),
       StructField("floats", FloatType(), True),
     ])
-    for table in tables:
+    for table in TABLES_TO_MAINTAIN + TABLES_TO_DROP:
         df = spark.createDataFrame([], schema)
         df.writeTo(f"my_namespace.{table}").createOrReplace()
 
@@ -68,12 +72,21 @@ def write_data(spark):
 
         spark.sql(f"SELECT * FROM my_namespace.{table}").show()
 
-    # Use all `DROP` variants to delete some of tables.
-    # Leave at least one table undropped.
-    spark.sql(f"DROP TABLE my_namespace.{tables[0]}")
+    # Use all `DROP` variants to delete some of the tables.
+    print("Deleting some of the tables")
+    for table in TABLES_TO_DROP:
+        spark.sql(f"DROP TABLE my_namespace.{table}")
 
     # Sleep to let (short) soft-delete timeout expire.
     time.sleep(3)
+
+def read_data(spark):
+    """
+    Reads data from tables that are expected to exist.
+    """
+    print("Reading data")
+    for table in TABLES_TO_MAINTAIN:
+        spark.sql(f"SELECT * FROM my_namespace.{table}").show()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -83,10 +96,11 @@ def main():
     )
     args = parser.parse_args()
 
+    spark = spark_session()
     if args.task == "write_data":
-        spark = spark_session()
         write_data(spark)
-
+    elif args.task == "read_data":
+        read_data(spark)
     return 0
 
 if __name__ == "__main__":

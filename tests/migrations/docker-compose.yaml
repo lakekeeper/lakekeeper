@@ -54,7 +54,7 @@ services:
     networks:
       iceberg_net:
     ports:
-      - "8181:8181"
+      - "8182:8181"
 
   migrate_2:
     image: localhost/lakekeeper-local:amd64
