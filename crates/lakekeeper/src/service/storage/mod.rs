@@ -10,7 +10,7 @@ pub(crate) use error::ValidationError;
 use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
-use iceberg::io::FileIO;
+use iceberg::{io::FileIO, NamespaceIdent, TableIdent};
 use iceberg_ext::{
     catalog::rest::ErrorModel,
     configs::{table::TableProperties, Location},
@@ -231,6 +231,7 @@ impl StorageProfile {
         request_metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
+        table: &TableIdent,
     ) -> Result<TableConfig, TableConfigError> {
         match self {
             StorageProfile::S3(profile) => {
@@ -277,6 +278,9 @@ impl StorageProfile {
                             })?,
                         table_location,
                         storage_permissions,
+                        request_metadata,
+                        warehouse_id,
+                        table,
                     )
                     .await
             }
@@ -426,6 +430,10 @@ impl StorageProfile {
                 request_metadata,
                 WarehouseId::new_random(),
                 TableId::new_random().into(),
+                &TableIdent::new(
+                    NamespaceIdent::new("my_ns".to_string()),
+                    "my_table".to_string(),
+                ),
             )
             .await?;
 
@@ -1209,6 +1217,10 @@ mod tests {
                 &RequestMetadata::new_unauthenticated(),
                 WarehouseId::new_random(),
                 TableId::new_random().into(),
+                &TableIdent::new(
+                    NamespaceIdent::new("my_ns".to_string()),
+                    "my_table".to_string(),
+                ),
             )
             .await
             .unwrap();
@@ -1225,6 +1237,10 @@ mod tests {
                 &RequestMetadata::new_unauthenticated(),
                 WarehouseId::new_random(),
                 TableId::new_random().into(),
+                &TableIdent::new(
+                    NamespaceIdent::new("my_ns".to_string()),
+                    "my_table".to_string(),
+                ),
             )
             .await
             .unwrap();
