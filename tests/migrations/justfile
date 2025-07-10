@@ -7,7 +7,7 @@ build-local-image:
 test_migration:
     # Initialize lakekeeper (previous release), create + drop tables.
     docker compose run --rm spark /opt/entrypoint.sh \
-        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py"
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_data"
     # Stop old lakekeeper before bringing up new one.
     docker compose down -v lakekeeper_initial
     # Start lakekeeper with locally built binary. Triggers migration with that binary.
