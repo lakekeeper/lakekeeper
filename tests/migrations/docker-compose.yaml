@@ -145,12 +145,12 @@ services:
       - "-H"
       - "Content-Type: application/json"
       - "--data"
-      - "@create-default-warehouse.json"
+      - "@${CREATE_WAREHOUSE_REQ}"
       - "-o"
       - "/dev/null"
       # - "--fail-with-body"
     volumes:
-      - ./create-default-warehouse.json:/home/curl_user/create-default-warehouse.json
+      - ./create-warehouse:/home/curl_user/create-warehouse
     networks:
       iceberg_net:
   

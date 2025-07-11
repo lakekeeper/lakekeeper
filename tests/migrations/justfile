@@ -9,8 +9,10 @@ build-local-image:
 #
 # The $-prefix causes them to be exported as env vars to commands in the recipe.
 #
-# * $LAKEKEEPER_INITIAL_IMAGE: should point to a tagged version on quay.io
-test_migration $LAKEKEEPER_INITIAL_IMAGE:
+# * $LAKEKEEPER_INITIAL_IMAGE: Should point to a tagged version on quay.io
+# * $CREATE_WAREHOUSE_REQ: Path of json that contains the body for the create warehouse request.
+#       See the files in ./create-warehouse for reference.
+test_migration $LAKEKEEPER_INITIAL_IMAGE $CREATE_WAREHOUSE_REQ:
     # Initialize lakekeeper (previous release), create + drop tables.
     docker compose run --rm spark /opt/entrypoint.sh \
         bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_pre_migration 'http://lakekeeper_initial:8181/catalog'"
