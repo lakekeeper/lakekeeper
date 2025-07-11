@@ -85,6 +85,7 @@ def write_pre_migration(spark):
         spark.sql(f"DROP TABLE my_namespace.{table}")
 
     # Sleep to let (short) soft-delete timeout expire.
+    # TODO(mooori): get this value from config
     time.sleep(3)
 
 def write_post_migration(spark):
