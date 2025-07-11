@@ -36,6 +36,7 @@ jobs:
 
   test-migration:
     strategy:
+      fail-fast: false
       matrix:
         initial_image:
           - quay.io/lakekeeper/catalog:latest
