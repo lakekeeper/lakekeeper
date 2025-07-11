@@ -9,7 +9,7 @@ services:
       - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
     command: [ "serve" ]
     healthcheck: &lakekeeper_healthcheck
-      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
+      test: [ "CMD", "${LAKEKEEPER_INITIAL_HEALTHCHECK_BIN}", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -43,7 +43,9 @@ services:
     pull_policy: never
     environment: *lakekeeper_environment
     command: [ "serve" ]
-    healthcheck: *lakekeeper_healthcheck
+    healthcheck:
+      <<: *lakekeeper_healthcheck
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
     depends_on:
       migrate_2:
         condition: service_completed_successfully
