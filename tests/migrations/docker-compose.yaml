@@ -1,6 +1,6 @@
 services:
   lakekeeper_initial:
-    image: quay.io/lakekeeper/catalog:latest-main
+    image: ${LAKEKEEPER_INITIAL_IMAGE}
     pull_policy: always
     environment: &lakekeeper_environment
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
@@ -27,7 +27,7 @@ services:
       - "8181:8181"
 
   migrate:
-    image: quay.io/lakekeeper/catalog:latest-main
+    image: ${LAKEKEEPER_INITIAL_IMAGE}
     pull_policy: always
     environment: *lakekeeper_environment
     restart: "no"

@@ -4,7 +4,13 @@ build-local-image:
 
 # When running on your machine, make sure to build the image of local lakekeeper with
 # `build-local-image`.
-test_migration:
+#
+# Parameters:
+#
+# The $-prefix causes them to be exported as env vars to commands in the recipe.
+#
+# * $LAKEKEEPER_INITIAL_IMAGE: should point to a tagged version on quay.io
+test_migration $LAKEKEEPER_INITIAL_IMAGE:
     # Initialize lakekeeper (previous release), create + drop tables.
     docker compose run --rm spark /opt/entrypoint.sh \
         bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_pre_migration 'http://lakekeeper_initial:8181/catalog'"
