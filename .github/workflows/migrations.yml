@@ -41,7 +41,7 @@ jobs:
         initial_image:
           - quay.io/lakekeeper/catalog:latest
           # TODO(mooori): calculate previous version with python based on Cargo.toml
-          - quay.io/lakekeeper/catalog:v0.8.5
+          - quay.io/lakekeeper/catalog:v0.8
     needs: docker
     runs-on: ubuntu-latest
     steps:
