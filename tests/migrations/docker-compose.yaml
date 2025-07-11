@@ -156,16 +156,17 @@ services:
     networks:
       iceberg_net:
   
+  # Used to execute spark.py, which communicates with lakekeeper.
+  # Make sure the corresponding lakekeeper service is up.
+  #
+  # `docker compose run spark ...` is executed multiple times and lakekeeper `depends_on` some
+  # service that must be executed only once. To avoid executing them multiple times, don't add
+  # `depends_on: lakekeeper` below.
   spark:
     image: apache/spark:3.5.1-java17-python3
     profiles:
       - spark
     user: root
-    depends_on:
-      lakekeeper_initial:
-        condition: service_healthy
-      initialwarehouse:
-        condition: service_completed_successfully
     volumes:
       - .:/opt/tests/migrations
     networks:

@@ -22,7 +22,8 @@ test_migration $LAKEKEEPER_INITIAL_IMAGE $CREATE_WAREHOUSE_REQ:
     #
     # Notes:
     # * Once v0.8 is no longer tested in CI, `lakekeeper` can simply be hardcoded in docker-compose
-    # * Adjust below code if you run this with a tag other than v0.8 which needs binary renaming    if [ "$LAKEKEEPER_INITIAL_IMAGE" = "quay.io/lakekeeper/catalog:v0.8" ]; then
+    # * Adjust below code if you run this with a tag other than v0.8 which needs binary renaming
+    if [ "$LAKEKEEPER_INITIAL_IMAGE" = "quay.io/lakekeeper/catalog:v0.8" ]; then
         export LAKEKEEPER_INITIAL_HEALTHCHECK_BIN="/home/nonroot/iceberg-catalog"
     else
         export LAKEKEEPER_INITIAL_HEALTHCHECK_BIN="/home/nonroot/lakekeeper"
@@ -30,6 +31,8 @@ test_migration $LAKEKEEPER_INITIAL_IMAGE $CREATE_WAREHOUSE_REQ:
 
 
     # Initialize lakekeeper (previous release), create + drop tables.
+    docker compose up --detach --wait lakekeeper_initial
+    docker compose run --rm initialwarehouse
     docker compose run --rm spark /opt/entrypoint.sh \
         bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_pre_migration 'http://lakekeeper_initial:8181/catalog'"
     # Start lakekeeper with locally built binary. Triggers migration with that binary.
