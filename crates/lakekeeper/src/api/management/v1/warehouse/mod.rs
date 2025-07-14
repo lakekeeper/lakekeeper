@@ -34,7 +34,7 @@ use crate::{
         task_queue::TaskFilter,
         Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
     },
-    ProjectId, WarehouseId, DEFAULT_PROJECT_ID,
+    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
