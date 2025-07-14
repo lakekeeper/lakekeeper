@@ -322,7 +322,7 @@ impl StorageProfile {
         location: Option<&Location>,
         request_metadata: &RequestMetadata,
     ) -> Result<(), ValidationError> {
-        if CONFIG.disable_storage_validation {
+        if CONFIG.skip_storage_validation {
             tracing::debug!("Storage validation is disabled, skipping validation of credentials.");
             return Ok(());
         }

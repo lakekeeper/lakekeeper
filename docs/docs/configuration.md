@@ -253,6 +253,6 @@ You may be running Lakekeeper in your own environment which uses self-signed cer
 
 
 ### Test Configurations
-| Variable                                             | Example | Description |
-|------------------------------------------------------|---------|-------------|
-| <nobr>`LAKEKEEPER__DISABLE_STORAGE_VALIDATION`<nobr> | true    | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. Default: false |
+| Variable                                          | Example | Description    |
+|---------------------------------------------------|---------|----------------|
+| <nobr>`LAKEKEEPER__SKIP_STORAGE_VALIDATION`<nobr> | true    | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. Default: false |
