@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 import time
 
@@ -57,6 +58,11 @@ def read(spark):
     for table in TABLES_TO_MAINTAIN:
         spark.sql(f"SELECT * FROM my_namespace.{table}").show()
 
+def get_short_soft_delete_expiration():
+    with open("./create-warehouse/soft-delete-1sec.json") as f:
+        data = json.load(f)
+        return data["delete-profile"]["expiration-seconds"]
+
 def write_pre_migration(spark):
     """
     Creates tables and drops some of them for the provided spark session.
@@ -85,8 +91,9 @@ def write_pre_migration(spark):
         spark.sql(f"DROP TABLE my_namespace.{table}")
 
     # Sleep to let (short) soft-delete timeout expire.
-    # TODO(mooori): get this value from config
-    time.sleep(3)
+    # Actually only necessary only if the warehouse is configured with short soft delete expiration.
+    # However waiting a few seconds here doesn't hurt.
+    time.sleep(get_short_soft_delete_expiration)
 
 def write_post_migration(spark):
     """
