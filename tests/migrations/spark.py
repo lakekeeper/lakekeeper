@@ -93,7 +93,7 @@ def write_pre_migration(spark):
     # Sleep to let (short) soft-delete timeout expire.
     # Actually only necessary only if the warehouse is configured with short soft delete expiration.
     # However waiting a few seconds here doesn't hurt.
-    time.sleep(get_short_soft_delete_expiration)
+    time.sleep(get_short_soft_delete_expiration())
 
 def write_post_migration(spark):
     """
