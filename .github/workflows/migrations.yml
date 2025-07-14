@@ -34,19 +34,29 @@ jobs:
     steps:
       - run: exit 0
 
+  define-initial-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      initial-versions: ${{ steps.initial-versions.outputs.initial-versions }}
+    steps:
+      - name: Get initial versions
+        id: initial-versions
+        run: |
+          cd tests/migrations
+          python3 initial_versions.py >> "$GITHUB_OUTPUT"
+
   test-migration:
     strategy:
       fail-fast: false
       matrix:
-        initial_image:
-          - quay.io/lakekeeper/catalog:latest
-          # TODO(mooori): calculate previous version with python based on Cargo.toml
-          - quay.io/lakekeeper/catalog:v0.8
+        initial_image: ${{ fromJSON(needs.define-initial-versions.outputs.initial-versions)}}
         delete_profile:
           - default
           - soft-delete-1sec
           - soft-delete-1week
-    needs: docker
+    needs:
+      - docker
+      - define-initial-versions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

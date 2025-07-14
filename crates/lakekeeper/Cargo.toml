@@ -11,6 +11,9 @@ description = """
 Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
+[package.metadata.migration-tests]
+versions = ["0.9.2", "0.8"]
+
 [features]
 all = [
     "authz-openfga",
