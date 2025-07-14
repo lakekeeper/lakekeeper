@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        initial_image: ${{ fromJSON(needs.define-initial-versions.outputs.initial-versions)}}
+        initial_version: ${{ fromJSON(needs.define-initial-versions.outputs.initial-versions) }}
         delete_profile:
           - default
           - soft-delete-1sec
@@ -80,7 +80,7 @@ jobs:
         run: |
           cd tests/migrations
           just test_migration \
-            ${{ matrix.initial_image }} \
+            quay.io/lakekeeper/catalog:${{ matrix.initial_version }} \
             './create-warehouse/${{ matrix.delete_profile }}.json'
       - name: Dump docker logs on failure
         if: failure()
