@@ -1,4 +1,3 @@
-import json
 import tomllib
 
 def get_versions_to_test():
@@ -8,6 +7,5 @@ def get_versions_to_test():
 
 if __name__ == "__main__":
     versions = get_versions_to_test()
-    matrix_dimension = {"versions": versions}
-    print(json.dumps(matrix_dimension))
+    print(f"initial-versions={versions}")
 
