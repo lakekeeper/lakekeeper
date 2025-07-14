@@ -289,9 +289,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id = request_metadata
-            .preferred_project_id()
-            .or(project_id)
+        let project_id = project_id
+            .or(request_metadata.preferred_project_id())
             .ok_or(ErrorModel::bad_request(
                 "project_id must be specified",
                 "CreateWarehouseProjectIdMissing",
