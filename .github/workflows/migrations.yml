@@ -42,6 +42,10 @@ jobs:
           - quay.io/lakekeeper/catalog:latest
           # TODO(mooori): calculate previous version with python based on Cargo.toml
           - quay.io/lakekeeper/catalog:v0.8
+        delete_profile:
+          - default
+          - soft-delete-1sec
+          - soft-delete-1week
     needs: docker
     runs-on: ubuntu-latest
     steps:
@@ -62,10 +66,11 @@ jobs:
           docker load -i artifacts/lakekeeper-local-amd64.tar
 
       - name: Test migration
-        # TODO(mooori) add matrix dimension for create-warehouse file
         run: |
           cd tests/migrations
-          just test_migration ${{ matrix.initial_image }} './create-warehouse/default.json'
+          just test_migration \
+            ${{ matrix.initial_image }} \
+            './create-warehouse/${{ matrix.delete_profile }}.json'
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
