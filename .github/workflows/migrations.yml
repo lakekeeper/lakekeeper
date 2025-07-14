@@ -39,6 +39,7 @@ jobs:
     outputs:
       initial-versions: ${{ steps.initial-versions.outputs.initial-versions }}
     steps:
+      - uses: actions/checkout@v4
       - name: Get initial versions
         id: initial-versions
         run: |
