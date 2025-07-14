@@ -289,14 +289,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id =
-            project_id
-                .or(DEFAULT_PROJECT_ID.clone())
-                .ok_or(ErrorModel::bad_request(
-                    "project_id must be specified",
-                    "CreateWarehouseProjectIdMissing",
-                    None,
-                ))?;
+        let project_id = request_metadata
+            .preferred_project_id()
+            .or(project_id)
+            .ok_or(ErrorModel::bad_request(
+                "project_id must be specified",
+                "CreateWarehouseProjectIdMissing",
+                None,
+            ))?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
