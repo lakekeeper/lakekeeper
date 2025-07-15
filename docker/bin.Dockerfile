@@ -27,7 +27,7 @@ ARG BIN
 ARG EXPIRES=Never
 LABEL maintainer="moderation@vakamo.com" quay.expires-after=${EXPIRES}
 
-COPY --from=cleaner /clean /
+COPY --chmod=555 --from=cleaner /clean /
 
 # copy the build artifact from the build stage
 COPY --chmod=555 ${BIN} /home/nonroot/lakekeeper
