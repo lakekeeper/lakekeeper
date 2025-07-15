@@ -255,14 +255,20 @@ paths:
       summary: Get my access to a namespace
       operationId: get_namespace_access_by_id
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: namespace_id
           in: path
           description: Namespace ID
@@ -358,14 +364,20 @@ paths:
       summary: Get my access to the default project
       operationId: get_project_access
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
       responses:
         '200':
           description: Server Relations
@@ -416,14 +428,20 @@ paths:
       summary: Get my access to the default project
       operationId: get_project_access_by_id
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: project_id
           in: path
           description: Project ID
@@ -568,14 +586,20 @@ paths:
       summary: Get my access to the server
       operationId: get_server_access
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
       responses:
         '200':
           description: Server Access
@@ -626,14 +650,20 @@ paths:
       summary: Get my access to a table
       operationId: get_table_access_by_id
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: table_id
           in: path
           description: Table ID
@@ -706,14 +736,20 @@ paths:
       summary: Get my access to a view
       operationId: get_view_access_by_id
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: view_id
           in: path
           description: View ID
@@ -807,14 +843,20 @@ paths:
       summary: Get my access to a warehouse
       operationId: get_warehouse_access_by_id
       parameters:
-        - name: principal
+        - name: principal-user
           in: query
           description: |-
             The user or role to show access for.
             If not specified, shows access for the current user.
           required: false
           schema:
-            $ref: '#/components/schemas/UserOrRole'
+            type: string
+        - name: principal-role
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
         - name: warehouse_id
           in: path
           description: Warehouse ID

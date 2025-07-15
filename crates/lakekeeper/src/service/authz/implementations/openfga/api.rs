@@ -40,7 +40,7 @@ use crate::{
         authz::implementations::openfga::{
             entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
         },
-        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, ViewId,
+        Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -48,13 +48,38 @@ use crate::{
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 struct GetAccessQuery {
     /// The user or role to show access for.
     /// If not specified, shows access for the current user.
     #[serde(default)]
-    #[param(nullable = false, required = false)]
+    #[param(required = false, value_type=String)]
+    principal_user: Option<UserId>,
+    #[serde(default)]
+    #[param(required = false, value_type=uuid::Uuid)]
+    principal_role: Option<RoleId>,
+}
+
+struct ParsedAccessQuery {
     principal: Option<UserOrRole>,
+}
+
+impl TryFrom<GetAccessQuery> for ParsedAccessQuery {
+    type Error = OpenFGAError;
+
+    fn try_from(query: GetAccessQuery) -> Result<Self, Self::Error> {
+        let principal = match (query.principal_user, query.principal_role) {
+            (Some(user), None) => Some(UserOrRole::User(user)),
+            (None, Some(role)) => Some(UserOrRole::Role(role.into_assignees())),
+            (Some(_), Some(_)) => {
+                return Err(OpenFGAError::InvalidQuery(
+                    "Cannot specify both user and role in GetAccessQuery".to_string(),
+                ))
+            }
+            (None, None) => None,
+        };
+        Ok(Self { principal })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, utoipa::ToSchema)]
@@ -307,6 +332,7 @@ async fn get_role_access_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetRoleAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -339,6 +365,7 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -371,6 +398,7 @@ async fn get_project_access<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let project_id = metadata
         .preferred_project_id()
         .ok_or(OpenFGAError::NoProjectId)?;
@@ -410,6 +438,7 @@ async fn get_project_access_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetProjectAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -446,6 +475,7 @@ async fn get_warehouse_access_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetWarehouseAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -625,6 +655,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetNamespaceAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -661,6 +692,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
@@ -697,6 +729,7 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetAccessQuery>,
 ) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let query = ParsedAccessQuery::try_from(query)?;
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),

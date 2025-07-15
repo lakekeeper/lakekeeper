@@ -1509,4 +1509,16 @@ mod test {
             serde_json::from_str::<serde_json::Value>(&serialized).unwrap()
         );
     }
+
+    #[test]
+    fn user_or_role_serde() {
+        let user_id = UserId::new_unchecked("oidc", "my_user");
+        let user_or_role = UserOrRole::User(user_id);
+        let serialized = serde_json::to_string(&user_or_role).unwrap();
+        let expected = serde_json::json!({"user": "oidc~my_user"});
+        assert_eq!(
+            expected,
+            serde_json::from_str::<serde_json::Value>(&serialized).unwrap()
+        );
+    }
 }
