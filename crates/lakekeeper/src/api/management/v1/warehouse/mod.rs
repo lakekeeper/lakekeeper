@@ -34,7 +34,7 @@ use crate::{
         task_queue::TaskFilter,
         Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
     },
-    ProjectId, WarehouseId, DEFAULT_PROJECT_ID,
+    ProjectId, WarehouseId,
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -289,14 +289,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             storage_credential,
             delete_profile,
         } = request;
-        let project_id =
-            project_id
-                .or(DEFAULT_PROJECT_ID.clone())
-                .ok_or(ErrorModel::bad_request(
-                    "project_id must be specified",
-                    "CreateWarehouseProjectIdMissing",
-                    None,
-                ))?;
+        let project_id = project_id
+            .or(request_metadata.preferred_project_id())
+            .ok_or(ErrorModel::bad_request(
+                "project_id must be specified",
+                "CreateWarehouseProjectIdMissing",
+                None,
+            ))?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
