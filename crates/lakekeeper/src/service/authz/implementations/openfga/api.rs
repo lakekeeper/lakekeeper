@@ -48,7 +48,7 @@ use crate::{
 const _MAX_ASSIGNMENTS_PER_RELATION: i32 = 200;
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct GetAccessQuery {
     /// The user or role to show access for.
     /// If not specified, shows access for the current user.

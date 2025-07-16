@@ -255,7 +255,7 @@ paths:
       summary: Get my access to a namespace
       operationId: get_namespace_access_by_id
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -263,7 +263,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
@@ -364,7 +364,7 @@ paths:
       summary: Get my access to the default project
       operationId: get_project_access
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -372,7 +372,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
@@ -428,7 +428,7 @@ paths:
       summary: Get my access to the default project
       operationId: get_project_access_by_id
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -436,7 +436,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
@@ -586,7 +586,7 @@ paths:
       summary: Get my access to the server
       operationId: get_server_access
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -594,7 +594,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
@@ -650,7 +650,7 @@ paths:
       summary: Get my access to a table
       operationId: get_table_access_by_id
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -658,7 +658,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
@@ -736,7 +736,7 @@ paths:
       summary: Get my access to a view
       operationId: get_view_access_by_id
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -744,7 +744,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
@@ -843,7 +843,7 @@ paths:
       summary: Get my access to a warehouse
       operationId: get_warehouse_access_by_id
       parameters:
-        - name: principal-user
+        - name: principalUser
           in: query
           description: |-
             The user or role to show access for.
@@ -851,7 +851,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: principal-role
+        - name: principalRole
           in: query
           required: false
           schema:
