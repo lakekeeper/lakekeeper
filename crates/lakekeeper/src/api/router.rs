@@ -1,7 +1,7 @@
 use std::{fmt::Debug, sync::LazyLock};
 
 use axum::{response::IntoResponse, routing::get, Json, Router};
-use axum_extra::middleware::option_layer;
+use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderValue, Method};
 use limes::Authenticator;
@@ -106,32 +106,7 @@ pub fn new_full_router<
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
-    let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
-        let allowed_origin = if origins
-            .iter()
-            .any(|origin| origin == HeaderValue::from_static("*"))
-        {
-            AllowOrigin::any()
-        } else {
-            AllowOrigin::list(origins.iter().cloned())
-        };
-        tower_http::cors::CorsLayer::new()
-            .allow_origin(allowed_origin)
-            .allow_headers(vec![
-                header::AUTHORIZATION,
-                header::CONTENT_TYPE,
-                header::ACCEPT,
-                header::USER_AGENT,
-            ])
-            .allow_methods(vec![
-                Method::GET,
-                Method::HEAD,
-                Method::POST,
-                Method::PUT,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-    }));
+    let maybe_cors_layer = get_cors_layer(cors_origins);
 
     let maybe_auth_layer = if let Some(authenticator) = authenticator {
         option_layer(Some(axum::middleware::from_fn_with_state(
@@ -198,6 +173,46 @@ pub fn new_full_router<
     } else {
         router
     })
+}
+
+fn get_cors_layer(
+    cors_origins: Option<&'static [HeaderValue]>,
+) -> axum_extra::either::Either<tower_http::cors::CorsLayer, tower::layer::util::Identity> {
+    let maybe_cors_layer = option_layer(cors_origins.map(|origins| {
+        let allowed_origin = if origins
+            .iter()
+            .any(|origin| origin == HeaderValue::from_static("*"))
+        {
+            AllowOrigin::any()
+        } else {
+            AllowOrigin::list(origins.iter().cloned())
+        };
+        tower_http::cors::CorsLayer::new()
+            .allow_origin(allowed_origin)
+            .allow_headers(vec![
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
+                header::USER_AGENT,
+            ])
+            .allow_methods(vec![
+                Method::GET,
+                Method::HEAD,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+    }));
+    match &maybe_cors_layer {
+        Either::E1(cors_layer) => {
+            tracing::debug!("CORS layer enabled: {cors_layer:?}");
+        }
+        Either::E2(_) => {
+            tracing::info!("CORS layer not enabled for REST API");
+        }
+    }
+    maybe_cors_layer
 }
 
 fn maybe_merge_swagger_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>(

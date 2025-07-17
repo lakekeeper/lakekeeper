@@ -37,7 +37,7 @@ pub use utoipa;
 pub mod metrics;
 mod retry;
 #[cfg(feature = "router")]
-pub(crate) mod tracing;
+pub mod tracing;
 
 #[cfg(test)]
 pub mod tests;
