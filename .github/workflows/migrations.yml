@@ -34,8 +34,30 @@ jobs:
     steps:
       - run: exit 0
 
+  define-initial-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      initial-versions: ${{ steps.initial-versions.outputs.initial-versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get initial versions
+        id: initial-versions
+        run: |
+          cd tests/migrations
+          python3 initial_versions.py >> "$GITHUB_OUTPUT"
+
   test-migration:
-    needs: docker
+    strategy:
+      fail-fast: false
+      matrix:
+        initial_version: ${{ fromJSON(needs.define-initial-versions.outputs.initial-versions) }}
+        delete_profile:
+          - default
+          - soft-delete-1sec
+          - soft-delete-1week
+    needs:
+      - docker
+      - define-initial-versions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +79,9 @@ jobs:
       - name: Test migration
         run: |
           cd tests/migrations
-          just test_migration
+          just test_migration \
+            quay.io/lakekeeper/catalog:${{ matrix.initial_version }} \
+            './create-warehouse/${{ matrix.delete_profile }}.json'
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
