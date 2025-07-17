@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 default = []
 all = ["ui"]
-ui = ["dep:lakekeeper-console"]
+ui = ["dep:lakekeeper-console", "dep:tower", "dep:tower-http", "dep:axum-extra"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -31,3 +31,6 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+axum-extra = { workspace = true, optional = true }
