@@ -13,7 +13,7 @@ use crate::{
 
 /// A `MakeSpan` implementation that attaches the `request_id` to the span.
 #[derive(Debug, Clone)]
-pub(crate) struct RestMakeSpan {
+pub struct RestMakeSpan {
     level: Level,
 }
 
@@ -21,7 +21,8 @@ impl RestMakeSpan {
     /// Create a [tracing span] with a certain [`Level`].
     ///
     /// [tracing span]: https://docs.rs/tracing/latest/tracing/#spans
-    pub(crate) fn new(level: Level) -> Self {
+    #[must_use]
+    pub fn new(level: Level) -> Self {
         Self { level }
     }
 }
@@ -65,8 +66,8 @@ impl<B> MakeSpan<B> for RestMakeSpan {
 }
 
 /// A [`MakeRequestId`] that generates `UUIDv7`s.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct MakeRequestUuid7;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MakeRequestUuid7;
 
 impl MakeRequestId for MakeRequestUuid7 {
     fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {

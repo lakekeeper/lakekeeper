@@ -3629,12 +3629,15 @@ version = "0.9.2"
 dependencies = [
  "anyhow",
  "axum 0.8.4",
+ "axum-extra",
  "clap",
  "lakekeeper",
  "lakekeeper-console",
  "limes",
  "reqwest",
  "tokio",
+ "tower 0.5.2",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
 ]
