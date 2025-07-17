@@ -3,7 +3,7 @@ use std::{fmt::Debug, sync::LazyLock};
 use axum::{response::IntoResponse, routing::get, Json, Router};
 use axum_extra::middleware::option_layer;
 use axum_prometheus::PrometheusMetricLayer;
-use http::{header, HeaderValue, Method};
+use http::{header, HeaderValue, HeaderName, Method};
 use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -18,7 +18,7 @@ use crate::{
         management::v1::{api_doc as v1_api_doc, ApiServer},
         shutdown_signal, ApiContext,
     },
-    request_metadata::create_request_metadata_with_trace_and_project_fn,
+    request_metadata::{create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER},
     service::{
         authn::{auth_middleware_fn, AuthMiddlewareState},
         authz::Authorizer,
@@ -122,6 +122,7 @@ pub fn new_full_router<
                 header::CONTENT_TYPE,
                 header::ACCEPT,
                 header::USER_AGENT,
+                HeaderName::from_static(X_PROJECT_ID_HEADER),
             ])
             .allow_methods(vec![
                 Method::GET,
