@@ -36,6 +36,8 @@ pub(crate) enum OpenFGAError {
     },
     #[error("Cannot assign {0} to itself")]
     SelfAssignment(String),
+    #[error("Invalid OpenFGA query: {0}")]
+    InvalidQuery(String),
 }
 
 impl OpenFGAError {

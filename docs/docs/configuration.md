@@ -32,10 +32,10 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 - Retrieving huge numbers of rows is expensive, which might be exploited by malicious requests.
 - Requests may time out or responses may exceed size limits for huge numbers of results. 
 
-| Variable                                                    | Example            | Description |
-|-------------------------------------------------------------|--------------------|-----|
-| <nobr>`LAKEKEEPER__PAGINATION_SIZE_DEFAULT`<nobr>           | <nobr>`1024`<nobr> | The default page size used for paginated queries. This value is used if the request's `pageToken` is set but empty. Default: `100` |
-| <nobr>`LAKEKEEPER__PAGINATION_SIZE_MAX`<nobr>               | <nobr>`2048`<nobr> | The max page size used for paginated queries. This value is used if the request's `pageToken` is not set. Default: `1000` |
+| Variable                                          | Example            | Description |
+|---------------------------------------------------|--------------------|-----|
+| <nobr>`LAKEKEEPER__PAGINATION_SIZE_DEFAULT`<nobr> | <nobr>`1024`<nobr> | The default page size used for paginated queries. This value is used if the request's `pageToken` is set but empty. Default: `100` |
+| <nobr>`LAKEKEEPER__PAGINATION_SIZE_MAX`<nobr>     | <nobr>`2048`<nobr> | The max page size used for paginated queries. This value is used if the request's `pageToken` is not set. Default: `1000` |
  
 ### Storage
 
@@ -210,19 +210,19 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
-| Variable                                           | Example                                                                    | Description |
-|----------------------------------------------------|----------------------------------------------------------------------------|-----|
-| `LAKEKEEPER__AUTHZ_BACKEND`                        | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
-| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>       | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
-| `LAKEKEEPER__OPENFGA__STORE_NAME`                  | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
-| `LAKEKEEPER__OPENFGA__API_KEY`                     | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
-| <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr>      | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
-| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`               | `abcd`                                                                     | Client Secret for the Client ID. |
-| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`              | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
-| `LAKEKEEPER__OPENFGA__SCOPE`                       | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`  | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
-| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION` | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
-| <nobr>`LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE`</nobr> | `50`                                                                      | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
+| Variable                                                 | Example                                                                    | Description |
+|----------------------------------------------------------|----------------------------------------------------------------------------|-----|
+| `LAKEKEEPER__AUTHZ_BACKEND`                              | `allowall`                                                                 | The authorization backend to use. If `openfga` is chosen, you need to provide [additional parameters](#authorization). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`] |
+| <nobr>`LAKEKEEPER__OPENFGA__ENDPOINT`</nobr>             | `http://localhost:35081`                                                   | OpenFGA Endpoint (gRPC). |
+| `LAKEKEEPER__OPENFGA__STORE_NAME`                        | `lakekeeper`                                                               | The OpenFGA Store to use. Default: `lakekeeper` |
+| `LAKEKEEPER__OPENFGA__API_KEY`                           | `my-api-key`                                                               | The API Key used for [Pre-shared key authentication](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#pre-shared-key-authentication) to OpenFGA. If `LAKEKEEPER__OPENFGA__CLIENT_ID` is set, the API Key is ignored. If neither API Key nor Client ID is specified, no authentication is used. |
+| <nobr>`LAKEKEEPER__OPENFGA__CLIENT_ID`</nobr>            | `12345`                                                                    | The Client ID to use for Authenticating if OpenFGA is secured via [OIDC](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga#oidc). |
+| `LAKEKEEPER__OPENFGA__CLIENT_SECRET`                     | `abcd`                                                                     | Client Secret for the Client ID. |
+| `LAKEKEEPER__OPENFGA__TOKEN_ENDPOINT`                    | `https://keycloak.example.com/realms/master/protocol/openid-connect/token` | Token Endpoint to use when exchanging client credentials for an access token for OpenFGA. Required if Client ID is set |
+| `LAKEKEEPER__OPENFGA__SCOPE`                             | `openfga`                                                                  | Additional scopes to request in the Client Credential flow. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`        | `collaboration`                                                            | Explicitly set the Authorization model prefix. Defaults to `collaboration` if not set. We recommend to use this setting only in combination with `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_PREFIX`. |
+| `LAKEKEEPER__OPENFGA__AUTHORIZATION_MODEL_VERSION`       | `3.1`                                                                      | Version of the model to use. If specified, the specified model version must already exist. This can be used to roll-back to previously applied model versions or to connect to externally managed models. Migration is disabled if the model version is set. Version should have the format <major>.<minor>. |
+| <nobr>`LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE`</nobr> | `50`                                                                       | p The maximum number of checks than can be handled by a batch check request. This is a [configuration option](https://openfga.dev/docs/getting-started/setup-openfga/configuration#OPENFGA_MAX_CHECKS_PER_BATCH_CHECK) of the `OpenFGA` server with default value 50. |
 
 ### UI
 
@@ -243,10 +243,16 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 
 Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
 
-| Variable                                   | Example | Description           |
-|--------------------------------------------|---------|-----------------------|
-| `LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL` | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
+| Variable                                               | Example | Description |
+|--------------------------------------------------------|---------|-----------|
+| <nobr>`LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL`<nobr> | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
 
 ### SSL Dependencies
 
 You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. Minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
+
+
+### Test Configurations
+| Variable                                          | Example | Description    |
+|---------------------------------------------------|---------|----------------|
+| <nobr>`LAKEKEEPER__SKIP_STORAGE_VALIDATION`<nobr> | true    | If set to true, Lakekeeper does not validate the provided storage configuration & credentials when creating or updating Warehouses. This is not suitable for production. Default: false |

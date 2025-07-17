@@ -260,6 +260,9 @@ pub struct DynAppConfig {
     /// This ID must not be changed after start!
     #[serde(default = "uuid::Uuid::nil")]
     pub server_id: uuid::Uuid,
+
+    // ------------- Testing -------------
+    pub skip_storage_validation: bool,
 }
 
 pub(crate) fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
@@ -518,6 +521,7 @@ impl Default for DynAppConfig {
             endpoint_stat_flush_interval: Duration::from_secs(30),
             server_id: uuid::Uuid::nil(),
             serve_swagger_ui: true,
+            skip_storage_validation: false,
         }
     }
 }
@@ -1206,6 +1210,23 @@ mod test {
                     ]),
                 })
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_disable_storage_validation() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SKIP_STORAGE_VALIDATION", "true");
+            let config = get_config();
+            assert!(config.skip_storage_validation);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__SKIP_STORAGE_VALIDATION", "false");
+            let config = get_config();
+            assert!(!config.skip_storage_validation);
             Ok(())
         });
     }

@@ -25,6 +25,17 @@ use crate::{
     WarehouseId,
 };
 
+const UNSIGNED_HEADERS: &[&str] = &[
+    "range",
+    "x-amz-date",
+    "amz-sdk-invocation-id",
+    "amz-sdk-retry",
+];
+const CACHEABLE_METHODS: &[http::Method] = &[http::Method::GET, http::Method::HEAD];
+const CACHE_CONTROL_HEADER: &str = "Cache-Control";
+const CACHE_CONTROL_NO_CACHE: &str = "no-cache";
+const CACHE_CONTROL_PRIVATE: &str = "private";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Read,
@@ -295,6 +306,10 @@ async fn sign(
     let mut headers_vec: Vec<(String, String)> = Vec::new();
 
     for (key, values) in request_headers.clone() {
+        if UNSIGNED_HEADERS.contains(&key.as_str()) {
+            // Skip unsigned headers
+            continue;
+        }
         for value in values {
             headers_vec.push((key.clone(), value));
         }
@@ -336,6 +351,15 @@ async fn sign(
     for (key, value) in signing_instructions.headers() {
         output_headers.insert(key.to_string(), vec![value.to_string()]);
     }
+
+    output_headers.insert(
+        CACHE_CONTROL_HEADER.to_string(),
+        vec![if CACHEABLE_METHODS.contains(request_method) {
+            CACHE_CONTROL_PRIVATE.to_string()
+        } else {
+            CACHE_CONTROL_NO_CACHE.to_string()
+        }],
+    );
 
     let sign_response = S3SignResponse {
         uri: output_uri,

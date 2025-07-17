@@ -67,10 +67,10 @@ FROM scratch
 ARG EXPIRES=Never
 LABEL maintainer="moderation@vakamo.com" quay.expires-after=${EXPIRES}
 
-COPY --from=cleaner /clean /
+COPY --chmod=555 --from=cleaner /clean /
 
 # copy the build artifact from the build stage
-COPY --from=builder /app/target/release/lakekeeper /home/nonroot/lakekeeper
+COPY --chmod=555 --from=builder /app/target/release/lakekeeper /home/nonroot/lakekeeper
 
 # # set the startup command to run your binary
 ENTRYPOINT ["/home/nonroot/lakekeeper"]

@@ -27,7 +27,7 @@ use crate::{
     request_metadata::RequestMetadata,
     retry::retry_fn,
     service::tabular_idents::TabularId,
-    WarehouseId,
+    WarehouseId, CONFIG,
 };
 
 /// Storage profile for a warehouse.
@@ -322,6 +322,11 @@ impl StorageProfile {
         location: Option<&Location>,
         request_metadata: &RequestMetadata,
     ) -> Result<(), ValidationError> {
+        if CONFIG.skip_storage_validation {
+            tracing::debug!("Storage validation is disabled, skipping validation of credentials.");
+            return Ok(());
+        }
+
         let file_io = self.file_io(credential).await?;
 
         let ns_id = NamespaceId::new_random();
