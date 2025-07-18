@@ -755,6 +755,8 @@ impl S3Profile {
         };
 
         let assume_role_builder = if self.sts_session_tags.is_empty() {
+            assume_role_builder
+        } else {
             let tags: Vec<Tag> = self
                 .sts_session_tags
                 .iter()
@@ -768,8 +770,6 @@ impl S3Profile {
                 })
                 .collect::<Result<_, _>>()?;
             assume_role_builder.set_tags(Some(tags))
-        } else {
-            assume_role_builder
         };
 
         let v = assume_role_builder.send().await.map_err(|e| {
