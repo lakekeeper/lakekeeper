@@ -3,8 +3,10 @@
 use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
 use aws_config::{identity::IdentityCache, BehaviorVersion, SdkConfig};
-use aws_sdk_sts::config::{ProvideCredentials as _, SharedIdentityCache};
-use aws_sdk_sts::types::Tag;
+use aws_sdk_sts::{
+    config::{ProvideCredentials as _, SharedIdentityCache},
+    types::Tag,
+};
 use iceberg_ext::configs::{
     table::{client, custom, s3, TableProperties},
     ConfigProperty, Location,
@@ -91,8 +93,8 @@ pub struct S3Profile {
     pub sts_token_validity_seconds: u64,
     /// Optional session tags for STS assume role operations.
     #[serde(default)]
-    #[builder(default, setter(strip_option))]
-    pub sts_session_tags: Option<HashMap<String, String>>,
+    #[builder(default)]
+    pub sts_session_tags: HashMap<String, String>,
     /// S3 flavor to use.
     /// Defaults to AWS
     #[serde(default)]
@@ -752,22 +754,20 @@ impl S3Profile {
             assume_role_builder
         };
 
-        let assume_role_builder = if let Some(session_tags) = &self.sts_session_tags {
-            if !session_tags.is_empty() {
-                let tags: Vec<Tag> = session_tags
-                    .iter()
-                    .map(|(key, value)| {
-                        Tag::builder()
-                            .key(key)
-                            .value(value)
-                            .build()
-                            .expect("Failed to build STS tag")
+        let assume_role_builder = if self.sts_session_tags.is_empty() {
+            let tags: Vec<Tag> = self
+                .sts_session_tags
+                .iter()
+                .map(|(key, value)| {
+                    Tag::builder().key(key).value(value).build().map_err(|e| {
+                        CredentialsError::ShortTermCredential {
+                            reason: format!("Failed to build STS tag: {e}"),
+                            source: Some(Box::new(e)),
+                        }
                     })
-                    .collect();
-                assume_role_builder.set_tags(Some(tags))
-            } else {
-                assume_role_builder
-            }
+                })
+                .collect::<Result<_, _>>()?;
+            assume_role_builder.set_tags(Some(tags))
         } else {
             assume_role_builder
         };
@@ -1594,7 +1594,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
-            sts_session_tags: None,
+            sts_session_tags: HashMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
@@ -1639,7 +1639,7 @@ pub(crate) mod test {
             path_style_access: Some(true),
             sts_role_arn: None,
             sts_enabled: false,
-            sts_session_tags: None,
+            sts_session_tags: HashMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: Some(false),
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
@@ -1665,7 +1665,7 @@ pub(crate) mod test {
 
     #[needs_env_var(TEST_MINIO = 1)]
     pub(crate) mod s3_compat {
-        use std::sync::LazyLock;
+        use std::{collections::HashMap, sync::LazyLock};
 
         use crate::{
             api::RequestMetadata,
@@ -1695,6 +1695,7 @@ pub(crate) mod test {
                 region: TEST_REGION.clone(),
                 path_style_access: Some(true),
                 sts_role_arn: None,
+                sts_session_tags: HashMap::new(),
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
@@ -1751,6 +1752,7 @@ pub(crate) mod test {
                 region: std::env::var("AWS_S3_REGION").unwrap(),
                 path_style_access: Some(true),
                 sts_role_arn: Some(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap()),
+                sts_session_tags: HashMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
@@ -1806,6 +1808,7 @@ pub(crate) mod test {
                 region: std::env::var("AWS_S3_REGION").unwrap(),
                 path_style_access: Some(true),
                 sts_role_arn: None,
+                sts_session_tags: HashMap::new(),
                 flavor: S3Flavor::Aws,
                 sts_enabled: true,
                 allow_alternative_protocols: Some(false),
@@ -1868,6 +1871,7 @@ pub(crate) mod test {
                 sts_role_arn: None,
                 flavor: S3Flavor::S3Compat,
                 sts_enabled: true,
+                sts_session_tags: HashMap::new(),
                 allow_alternative_protocols: Some(false),
                 remote_signing_url_style:
                     crate::service::storage::s3::S3UrlStyleDetectionMode::Auto,
@@ -2030,7 +2034,7 @@ mod is_overlapping_location_tests {
             path_style_access: None,
             sts_role_arn: None,
             sts_enabled: false,
-            sts_session_tags: None,
+            sts_session_tags: HashMap::new(),
             flavor: S3Flavor::Aws,
             allow_alternative_protocols: None,
             remote_signing_url_style: S3UrlStyleDetectionMode::Auto,
