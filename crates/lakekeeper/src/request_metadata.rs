@@ -333,9 +333,12 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
         base_uri.push_str("://");
         base_uri.push_str(host);
 
-        // Skip port if it's the default port for the protocol
+        // Skip port if it's in the forwarded host header or it's the default port for the protocol
         if let Some(port) = x_forwarded_port {
-            if !((proto == "https" && port == "443") || (proto == "http" && port == "80")) {
+            if !(host.contains(':')
+                || proto == "https" && port == "443"
+                || proto == "http" && port == "80")
+            {
                 base_uri.push(':');
                 base_uri.push_str(port);
             }
@@ -490,6 +493,20 @@ mod test {
 
         let result = determine_base_uri(&headers);
         assert_eq!(result, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn test_determine_host_with_x_forwarded_host_and_port_with_port_in_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            X_FORWARDED_HOST_HEADER,
+            HeaderValue::from_static("example.com:8443"),
+        );
+        headers.insert(X_FORWARDED_PROTO_HEADER, HeaderValue::from_static("https"));
+        headers.insert(X_FORWARDED_PORT_HEADER, HeaderValue::from_static("8443"));
+
+        let result = determine_base_uri(&headers);
+        assert_eq!(result, Some("https://example.com:8443".to_string()));
     }
 
     #[test]

@@ -1,0 +1,87 @@
+name: Test Lakekeeper migrations
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read  # Needed to checkout code
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    uses: ./.github/workflows/docker_build.yml
+    with:
+      platform: 'amd64'
+      dockerfile: 'docker/full.Dockerfile'
+      image_name: 'lakekeeper-local'
+
+  # Depends on all actions that are required for a "successful" CI run.
+  tests-pass:
+    name: all examples pass
+    runs-on: ubuntu-latest
+    needs:
+      - docker
+      - test-migration
+    steps:
+      - run: exit 0
+
+  define-initial-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      initial-versions: ${{ steps.initial-versions.outputs.initial-versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get initial versions
+        id: initial-versions
+        run: |
+          cd tests/migrations
+          python3 initial_versions.py >> "$GITHUB_OUTPUT"
+
+  test-migration:
+    strategy:
+      fail-fast: false
+      matrix:
+        initial_version: ${{ fromJSON(needs.define-initial-versions.outputs.initial-versions) }}
+        delete_profile:
+          - default
+          - soft-delete-1sec
+          - soft-delete-1week
+    needs:
+      - docker
+      - define-initial-versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+
+      - name: Restore binary
+        uses: actions/download-artifact@v4
+        with:
+          name: lakekeeper-image
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -Rlh artifacts
+
+      - name: Restore Docker image
+        run: |
+          docker load -i artifacts/lakekeeper-local-amd64.tar
+
+      - name: Test migration
+        run: |
+          cd tests/migrations
+          just test_migration \
+            quay.io/lakekeeper/catalog:${{ matrix.initial_version }} \
+            './create-warehouse/${{ matrix.delete_profile }}.json'
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e

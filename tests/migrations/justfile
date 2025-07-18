@@ -1,0 +1,50 @@
+[working-directory: "../.."]
+build-local-image:
+    docker build -t localhost/lakekeeper-local:amd64 -f docker/full.Dockerfile .
+
+# When running on your machine, make sure to build the image of local lakekeeper with
+# `build-local-image`.
+#
+# Parameters:
+#
+# The $-prefix causes them to be exported as env vars, which are then used in docker-compose.yaml.
+#
+# * $LAKEKEEPER_INITIAL_IMAGE: Should point to a tagged version on quay.io
+# * $CREATE_WAREHOUSE_REQ: Path of json that contains the body for the create warehouse request.
+#       See the files in ./create-warehouse for reference.
+test_migration $LAKEKEEPER_INITIAL_IMAGE $CREATE_WAREHOUSE_REQ:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+
+    # In v0.9.0 the crate and binary were renamed from `iceberg-catalog` to `lakekeeper`.
+    # While at v0.9, CI still checks migrating from v0.8 to latest main. Hence we need to select the
+    # correct binary and make it available to docker-compose via an env var.
+    #
+    # Notes:
+    # * Once v0.8 is no longer tested in CI, `lakekeeper` can simply be hardcoded in docker-compose
+    # * Adjust below code if you run this with a tag other than v0.8 which needs binary renaming
+    if [ "$LAKEKEEPER_INITIAL_IMAGE" = "quay.io/lakekeeper/catalog:v0.8" ]; then
+        export LAKEKEEPER_INITIAL_HEALTHCHECK_BIN="/home/nonroot/iceberg-catalog"
+    else
+        export LAKEKEEPER_INITIAL_HEALTHCHECK_BIN="/home/nonroot/lakekeeper"
+    fi
+
+
+    # Initialize lakekeeper (previous release), create + drop tables.
+    docker compose up --detach --wait lakekeeper_initial
+    docker compose run --rm initialwarehouse
+    docker compose run --rm spark /opt/entrypoint.sh \
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_pre_migration 'http://lakekeeper_initial:8181/catalog'"
+    # Start lakekeeper with locally built binary. Triggers migration with that binary.
+    # Flag --wait ensures the service is up and healthy before the next command executes.
+    docker compose up --detach --wait lakekeeper_2
+    # Verify data can be read from the port started before the migration.
+    docker compose run --rm spark /opt/entrypoint.sh \
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read 'http://lakekeeper_initial:8181/catalog'"
+    # Verify data can be read from the new pod.
+    docker compose run --rm spark /opt/entrypoint.sh \
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py read 'http://lakekeeper_2:8181/catalog'"
+    # Verify data can be written to the new pod.
+    docker compose run --rm spark /opt/entrypoint.sh \
+        bash -c "cd /opt/tests/migrations && source setup.sh && python3 spark.py write_post_migration 'http://lakekeeper_2:8181/catalog'"
+    docker compose down -v

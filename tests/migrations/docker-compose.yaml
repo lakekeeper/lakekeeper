@@ -1,0 +1,176 @@
+services:
+  lakekeeper_initial:
+    image: ${LAKEKEEPER_INITIAL_IMAGE}
+    pull_policy: always
+    environment: &lakekeeper_environment
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+      - RUST_LOG=trace,axum=trace,sqlx=trace,lakekeeper=trace
+    command: [ "serve" ]
+    healthcheck: &lakekeeper_healthcheck
+      test: [ "CMD", "${LAKEKEEPER_INITIAL_HEALTHCHECK_BIN}", "healthcheck" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 3s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+    ports:
+      - "8181:8181"
+
+  migrate:
+    image: ${LAKEKEEPER_INITIAL_IMAGE}
+    pull_policy: always
+    environment: *lakekeeper_environment
+    restart: "no"
+    command: [ "migrate" ]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  lakekeeper_2:
+    image: localhost/lakekeeper-local:amd64
+    pull_policy: never
+    environment: *lakekeeper_environment
+    command: [ "serve" ]
+    healthcheck:
+      <<: *lakekeeper_healthcheck
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
+    depends_on:
+      migrate_2:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+    ports:
+      - "8182:8181"
+
+  migrate_2:
+    image: localhost/lakekeeper-local:amd64
+    pull_policy: never
+    environment: *lakekeeper_environment
+    restart: "no"
+    command: [ "migrate" ]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  db:
+    image: bitnami/postgresql:16.3.0
+    environment:
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_PASSWORD=postgres
+      - POSTGRESQL_DATABASE=postgres
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      iceberg_net:
+
+  minio:
+    image: bitnami/minio:2025.4.22
+    environment:
+      - MINIO_ROOT_USER=minio-root-user
+      - MINIO_ROOT_PASSWORD=minio-root-password
+      - MINIO_API_PORT_NUMBER=9000
+      - MINIO_CONSOLE_PORT_NUMBER=9001
+      - MINIO_SCHEME=http
+      - MINIO_DEFAULT_BUCKETS=examples
+    healthcheck:
+      test: [ "CMD", "mc", "ls", "local", "|", "grep", "examples" ]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 15s
+    networks:
+      iceberg_net:
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  bootstrap:
+    image: curlimages/curl
+    depends_on:
+      lakekeeper_initial:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - -w
+      - "%{http_code}"
+      - "-X"
+      - "POST"
+      - "-v"
+      - "http://lakekeeper_initial:8181/management/v1/bootstrap"
+      - "-H"
+      - "Content-Type: application/json"
+      - "--data"
+      - '{"accept-terms-of-use": true}'
+      - "-o"
+      - "/dev/null"
+      # - "--fail-with-body"
+    networks:
+      iceberg_net:
+
+  initialwarehouse:
+    image: curlimages/curl
+    depends_on:
+      lakekeeper_initial:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+    command:
+      - -w
+      - "%{http_code}"
+      - "-X"
+      - "POST"
+      - "-v"
+      - "http://lakekeeper_initial:8181/management/v1/warehouse"
+      - "-H"
+      - "Content-Type: application/json"
+      - "--data"
+      - "@${CREATE_WAREHOUSE_REQ}"
+      - "-o"
+      - "/dev/null"
+      # - "--fail-with-body"
+    volumes:
+      - ./create-warehouse:/home/curl_user/create-warehouse
+    networks:
+      iceberg_net:
+  
+  # Used to execute spark.py, which communicates with lakekeeper.
+  # Make sure the corresponding lakekeeper service is up.
+  #
+  # `docker compose run spark ...` is executed multiple times and lakekeeper `depends_on` some
+  # service that must be executed only once. To avoid executing them multiple times, don't add
+  # `depends_on: lakekeeper` below.
+  spark:
+    image: apache/spark:3.5.1-java17-python3
+    profiles:
+      - spark
+    user: root
+    volumes:
+      - .:/opt/tests/migrations
+    networks:
+      iceberg_net:
+
+networks:
+  iceberg_net:
