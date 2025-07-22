@@ -385,3 +385,137 @@ mod iso8601_duration_serde_tests {
         assert_eq!(iso_string, serde_string);
     }
 }
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_overflow_scenarios() {
+        let very_large_duration = chrono::Duration::days(i64::from(u32::MAX) + 1);
+        let result = chrono_to_iso_8601_duration(&very_large_duration);
+        assert!(
+            result.is_err(),
+            "Should fail gracefully for durations with too many days"
+        );
+
+        let huge_ms_duration = chrono::Duration::milliseconds((i64::MAX / 2));
+        let result = chrono_to_iso_8601_duration(&huge_ms_duration);
+
+        match result {
+            Ok(_) => println!("Large millisecond duration converted successfully"),
+            Err(e) => {
+                assert!(
+                    e.message.contains("too large"),
+                    "Error should mention size issue"
+                )
+            }
+        }
+    }
+
+    #[test]
+    fn test_negative_duration_handling() {
+        // Negative duration
+        let negative_duration = chrono::Duration::seconds(-1);
+        let result = chrono_to_iso_8601_duration(&negative_duration);
+        assert!(result.is_err(), "Should result in negative duration");
+
+        let error = result.unwrap_err();
+        assert_eq!(error.r#type, "InvalidDuration");
+        assert!(
+            error.message.contains("Negative"),
+            "Error should mention negative duration"
+        );
+
+        // Negative days
+        let negative_days = chrono::Duration::days(-1);
+        let result = chrono_to_iso_8601_duration(&negative_days);
+        assert!(result.is_err(), "Should reject in negative day duration");
+
+        // Test negative milliseconds
+        let negative_ms = chrono::Duration::milliseconds(-100);
+        let result = chrono_to_iso_8601_duration(&negative_ms);
+        assert!(
+            result.is_err(),
+            "Should reject in negative millisecond duration"
+        )
+    }
+
+    #[test]
+    fn test_week_boundary_logic() {
+        // Exact week boundaries
+        let exactly_one_week = chrono::Duration::days(7);
+        let result = chrono_to_iso_8601_duration(&exactly_one_week).unwrap();
+        match result {
+            iso8601::Duration::Weeks(1) => {}
+            _ => panic!("7 days should be converted to 1 week"),
+        }
+
+        let exactly_two_weeks = chrono::Duration::days(14);
+        let result = chrono_to_iso_8601_duration(&exactly_two_weeks).unwrap();
+        match result {
+            iso8601::Duration::Weeks(2) => {}
+            _ => panic!("14 days should be converted to 2 weeks"),
+        }
+
+        // near-week values that should not use weeks format
+        let six_days_23_hours = chrono::Duration::days(6) + chrono::Duration::hours(23);
+        let result = chrono_to_iso_8601_duration(&six_days_23_hours).unwrap();
+        match result {
+            iso8601::Duration::YMDHMS { .. } => {}
+            iso8601::Duration::Weeks(_) => panic!("6d23h should not use weeks format"),
+        }
+    }
+
+    #[test]
+    fn test_complex_roundtrip_scenarios() {
+        // Test complex durations that should maintain precision through roundtrip
+        let complex_cases = vec![
+            // Mix of all time components (no weeks)
+            chrono::Duration::days(3)
+                + chrono::Duration::hours(7)
+                + chrono::Duration::minutes(25)
+                + chrono::Duration::seconds(45)
+                + chrono::Duration::milliseconds(678),
+            // Large values in each component
+            chrono::Duration::days(999)
+                + chrono::Duration::hours(23)
+                + chrono::Duration::minutes(59)
+                + chrono::Duration::seconds(59)
+                + chrono::Duration::milliseconds(999),
+            // Just milliseconds
+            chrono::Duration::milliseconds(12345),
+            // Just hours (should not use weeks even if it's 168 hours = 7 days)
+            chrono::Duration::hours(168) + chrono::Duration::minutes(1),
+        ];
+
+        for original in complex_cases {
+            // Convert to ISO8601
+            let iso_result = chrono_to_iso_8601_duration(&original);
+            assert!(
+                iso_result.is_ok(),
+                "Should convert complex duration: {:?}",
+                original
+            );
+
+            let iso_duration = iso_result.unwrap();
+
+            // Convert back to chrono
+            let roundtrip_result = iso_8601_duration_to_chrono(&iso_duration);
+            assert!(
+                roundtrip_result.is_ok(),
+                "Should convert back from ISO8601: {:?}",
+                iso_duration
+            );
+
+            let roundtrip = roundtrip_result.unwrap();
+
+            assert_eq!(
+                original, roundtrip,
+                "Roundtrip failed for: {:?} -> {:?} -> {:?}",
+                original, iso_duration, roundtrip
+            );
+        }
+    }
+}
