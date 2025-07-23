@@ -18,6 +18,7 @@ use crate::{
             CloudEventsPublisherBackgroundTask,
         },
         health::ServiceHealthProvider,
+        stats_retention::{StatisticsRetentionConfig, StatisticsRetentionService, StatisticsRetentionTask},
         task_queue::TaskQueueRegistry,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, ServerInfo,
     },
@@ -45,6 +46,9 @@ pub struct ServeConfiguration<
     #[builder(default)]
     /// A list of statistics sinks to collect endpoint statistics
     pub stats: Vec<Arc<dyn EndpointStatisticsSink + 'static>>,
+    #[builder(default)]
+    /// Statistics retention service for cleanup
+    pub stats_retention_service: Option<Arc<dyn StatisticsRetentionService + 'static>>,
     #[builder(default)]
     /// Contract verifiers that can prohibit invalid table changes
     pub contract_verification: ContractVerifiers,
@@ -87,6 +91,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         authorizer,
         authenticator,
         stats,
+        stats_retention_service,
         contract_verification,
         modify_router_fn,
         cloud_event_sinks,
@@ -140,6 +145,24 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         FlushMode::Automatic,
     );
     let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
+
+    // Statistics retention task
+    let retention_handle = if let Some(retention_service) = stats_retention_service {
+        let retention_config = StatisticsRetentionConfig {
+            endpoint_max_entries: CONFIG.endpoint_stat_max_entries,
+            endpoint_max_age: CONFIG.endpoint_stat_max_age,
+            warehouse_max_entries: CONFIG.warehouse_stat_max_entries,
+            warehouse_max_age: CONFIG.warehouse_stat_max_age,
+        };
+        let retention_task = StatisticsRetentionTask::new(
+            Arc::clone(&retention_service), 
+            retention_config, 
+            CONFIG.stat_retention_cleanup_interval
+        );
+        Some(tokio::task::spawn(retention_task.run()))
+    } else {
+        None
+    };
 
     // Endpoint Hooks
     let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
@@ -210,6 +233,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         _ = metrics_future => tracing::error!("Metrics server failed"),
         Some(_) = health_handles_stream.next() => tracing::error!("Health check thread failed."),
         Some(_) = additional_services_futures.next() => tracing::error!("An additional background service finished unexpectedly."),
+        _ = async { if let Some(handle) = retention_handle { handle.await.ok(); } } => tracing::error!("Statistics retention task failed."),
     );
 
     tracing::debug!("Sending shutdown signal to threads");

@@ -241,11 +241,23 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 
 ### Endpoint Statistics
 
-Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options are available:
+Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeeper instance accumulates endpoint calls for a certain duration in memory before writing them into the database. The following configuration options control this behavior:
 
-| Variable                                               | Example | Description |
-|--------------------------------------------------------|---------|-----------|
+| Configuration Key                                            | Default | Description                                                                                                  |
+| ------------------------------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
 | <nobr>`LAKEKEEPER__ENDPOINT_STAT_FLUSH_INTERVAL`<nobr> | 30s     | Interval in seconds to write endpoint statistics into the database. Default: 30s, valid units are (s\|ms) |
+
+### Statistics Retention
+
+Lakekeeper can automatically clean up old statistics to prevent unbounded growth. The following configuration options control retention policies:
+
+| Configuration Key                                                  | Default | Description                                                                                                                                                           |
+| ------------------------------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| <nobr>`LAKEKEEPER__ENDPOINT_STAT_MAX_ENTRIES`</nobr>              | 1000    | Maximum number of endpoint statistics entries to retain per (project_id, warehouse_id, matched_path, status_code) combination. Set to 0 to disable count-based retention. |
+| <nobr>`LAKEKEEPER__ENDPOINT_STAT_MAX_AGE`</nobr>                  | 7d      | Maximum age for endpoint statistics entries. Entries older than this will be deleted. Set to 0 to disable time-based retention. Valid units are (d\|h\|m\|s)    |
+| <nobr>`LAKEKEEPER__WAREHOUSE_STAT_MAX_ENTRIES`</nobr>             | 1000    | Maximum number of warehouse statistics history entries to retain per warehouse. Set to 0 to disable count-based retention.                                       |
+| <nobr>`LAKEKEEPER__WAREHOUSE_STAT_MAX_AGE`</nobr>                 | 7d      | Maximum age for warehouse statistics history entries. Entries older than this will be deleted. Set to 0 to disable time-based retention. Valid units are (d\|h\|m\|s) |
+| <nobr>`LAKEKEEPER__STAT_RETENTION_CLEANUP_INTERVAL`</nobr>        | 1h      | Interval to run statistics retention cleanup. Valid units are (d\|h\|m\|s)                                                                                         |
 
 ### SSL Dependencies
 

@@ -253,6 +253,42 @@ pub struct DynAppConfig {
     )]
     pub endpoint_stat_flush_interval: Duration,
 
+    /// Maximum number of endpoint statistics entries to retain per (project_id, warehouse_id, matched_path, status_code) combination.
+    /// When this limit is exceeded, older entries will be deleted.
+    /// Set to 0 to disable count-based retention.
+    pub endpoint_stat_max_entries: u32,
+
+    /// Maximum age for endpoint statistics entries. Entries older than this duration will be deleted.
+    /// Accepts a string of format "{number}{d|h|m|s}", e.g. "7d" for 7 days, "24h" for 24 hours.
+    /// Set to 0 to disable time-based retention.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub endpoint_stat_max_age: Duration,
+
+    /// Maximum number of warehouse statistics history entries to retain per warehouse.
+    /// When this limit is exceeded, older entries will be deleted.
+    /// Set to 0 to disable count-based retention.
+    pub warehouse_stat_max_entries: u32,
+
+    /// Maximum age for warehouse statistics history entries. Entries older than this duration will be deleted.
+    /// Accepts a string of format "{number}{d|h|m|s}", e.g. "30d" for 30 days, "168h" for 7 days.
+    /// Set to 0 to disable time-based retention.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub warehouse_stat_max_age: Duration,
+
+    /// Interval to run statistics retention cleanup.
+    /// Accepts a string of format "{number}{d|h|m|s}", e.g. "1h" for 1 hour, "6h" for 6 hours.
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub stat_retention_cleanup_interval: Duration,
+
     // ------------- Internal -------------
     /// Optional server id. We recommend to not change this unless multiple catalogs
     /// are sharing the same Authorization system.
@@ -519,6 +555,11 @@ impl Default for DynAppConfig {
             pagination_size_default: 100,
             pagination_size_max: 1000,
             endpoint_stat_flush_interval: Duration::from_secs(30),
+            endpoint_stat_max_entries: 1000,
+            endpoint_stat_max_age: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
+            warehouse_stat_max_entries: 1000,
+            warehouse_stat_max_age: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
+            stat_retention_cleanup_interval: Duration::from_secs(60 * 60), // 1 hour
             server_id: uuid::Uuid::nil(),
             serve_swagger_ui: true,
             skip_storage_validation: false,

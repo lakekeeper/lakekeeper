@@ -3,6 +3,7 @@ mod catalog;
 pub(crate) mod dbutils;
 pub mod endpoint_statistics;
 pub mod migrations;
+pub mod stats_retention;
 pub(crate) mod namespace;
 mod pagination;
 pub(crate) mod role;
@@ -16,8 +17,30 @@ use std::{str::FromStr, sync::Arc};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+pub use bootstrap::*;
+pub use catalog::*;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
-pub use secrets::SecretsState;
+pub use stats_retention::PostgresStatisticsRetentionService;
+
+/// Creates a PostgreSQL-based serve configuration with statistics retention enabled
+pub fn postgres_serve_config_with_retention<A: crate::service::authz::Authorizer>(
+    bind_addr: std::net::SocketAddr,
+    catalog_state: PostgresCatalog,
+    authorizer: A,
+    pool: sqlx::PgPool,
+) -> crate::serve::ServeConfigurationBuilder<PostgresCatalog, PostgresSecretStore, A> {
+    let stats_sink = std::sync::Arc::new(PostgresStatisticsSink::new(pool.clone()));
+    let retention_service = std::sync::Arc::new(PostgresStatisticsRetentionService::new(pool.clone()));
+
+    crate::serve::ServeConfiguration::builder()
+        .bind_addr(bind_addr)
+        .catalog_state(catalog_state)
+        .secrets_state(PostgresSecretStore::new(pool))
+        .authorizer(authorizer)
+        .stats(vec![stats_sink])
+        .stats_retention_service(Some(retention_service))
+}
+
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     ConnectOptions, Executor, PgPool,
