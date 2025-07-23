@@ -7,6 +7,7 @@ pub mod endpoint_statistics;
 pub mod event_publisher;
 pub mod health;
 pub mod secrets;
+pub mod stats_retention;
 pub mod storage;
 mod tabular_idents;
 pub mod task_queue;
