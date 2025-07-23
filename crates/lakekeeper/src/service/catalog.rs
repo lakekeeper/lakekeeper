@@ -164,6 +164,7 @@ pub struct TableCommit {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit<'a> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub view_id: ViewId,
     pub view_ident: &'a TableIdent,
@@ -175,6 +176,7 @@ pub struct ViewCommit<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
+    pub(crate) warehouse_id: WarehouseId,
     pub(crate) namespace_id: NamespaceId,
     pub(crate) table_ident: &'c TableIdent,
     pub(crate) metadata_location: Option<&'c Location>,
@@ -704,6 +706,7 @@ where
     ) -> Result<Option<ViewId>>;
 
     async fn create_view<'a>(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,

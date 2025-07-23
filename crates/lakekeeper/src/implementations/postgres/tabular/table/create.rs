@@ -23,6 +23,7 @@ use crate::{
 
 pub(crate) async fn create_table(
     TableCreation {
+        warehouse_id,
         namespace_id,
         table_ident,
         table_metadata,
@@ -46,6 +47,7 @@ pub(crate) async fn create_table(
             id: table_metadata.uuid(),
             name,
             namespace_id: *namespace_id,
+            warehouse_id: *warehouse_id,
             typ: TabularType::Table,
             metadata_location,
             location: &location,
@@ -54,6 +56,7 @@ pub(crate) async fn create_table(
     )
     .await?;
 
+    // TODO(moori) all these need to be extended with warehouse_id
     insert_table(&table_metadata, transaction, tabular_id).await?;
 
     common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;

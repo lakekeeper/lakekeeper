@@ -1034,6 +1034,7 @@ pub(crate) mod tests {
             .unwrap()
             .metadata;
         let create = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1075,6 +1076,7 @@ pub(crate) mod tests {
                 .unwrap();
 
         let request = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1143,6 +1145,7 @@ pub(crate) mod tests {
         let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,
@@ -1188,6 +1191,7 @@ pub(crate) mod tests {
         let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
 
         let request = TableCreation {
+            warehouse_id,
             namespace_id,
             table_ident: &table_ident,
             table_metadata,

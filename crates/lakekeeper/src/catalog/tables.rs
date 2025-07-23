@@ -211,6 +211,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
+                warehouse_id: warehouse.id,
                 namespace_id: namespace.namespace_id,
                 table_ident: &table,
                 table_metadata,
@@ -393,8 +394,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
             if let Some(previous_table_id) = previous_table_id {
                 tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' with id {previous_table_id} for overwrite operation",
-                    table.name, table.namespace
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table_id} for overwrite operation",
+                    table.name, warehouse.id, table.namespace
                 );
                 // Verify authorization to drop the table first
                 authorizer
@@ -423,6 +424,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             staged_table_id,
         } = C::create_table(
             TableCreation {
+                warehouse_id: warehouse.id,
                 namespace_id,
                 table_ident: &table,
                 table_metadata,

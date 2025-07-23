@@ -63,6 +63,7 @@ where
 }
 
 pub(crate) async fn create_view(
+    warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     metadata_location: &Location,
     transaction: &mut Transaction<'_, Postgres>,
@@ -89,6 +90,7 @@ pub(crate) async fn create_view(
             id: metadata.uuid(),
             name,
             namespace_id: *namespace_id,
+            warehouse_id: *warehouse_id,
             typ: TabularType::View,
             metadata_location: Some(metadata_location),
             location,
@@ -99,10 +101,11 @@ pub(crate) async fn create_view(
 
     let view_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO view (view_id, view_format_version)
-        VALUES ($1, $2)
+        INSERT INTO view (warehouse_id, view_id, view_format_version)
+        VALUES ($1, $2, $3)
         returning view_id
         "#,
+        *warehouse_id,
         tabular_id,
         ViewFormatVersion::from(metadata.format_version()) as _,
     )
@@ -662,6 +665,7 @@ pub(crate) mod tests {
         let request = view_request(Some(*view_uuid), &location);
         let mut tx = pool.begin().await.unwrap();
         super::create_view(
+            warehouse_id,
             namespace_id,
             &format!(
                 "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
@@ -681,6 +685,7 @@ pub(crate) mod tests {
         let mut tx = pool.begin().await.unwrap();
         // recreate with same uuid should fail
         let created_view = super::create_view(
+            warehouse_id,
             namespace_id,
             &format!(
                 "s3://my_bucket/my_table/metadata/barz/metadata-{}.gz.json",
@@ -703,6 +708,7 @@ pub(crate) mod tests {
 
         // recreate with other uuid should fail
         let created_view = super::create_view(
+            warehouse_id,
             namespace_id,
             &format!(
                 "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
@@ -926,6 +932,7 @@ pub(crate) mod tests {
         let request = view_request(None, &location);
         let mut tx = pool.begin().await.unwrap();
         super::create_view(
+            warehouse_id,
             namespace_id,
             &metadata_location,
             &mut tx,
