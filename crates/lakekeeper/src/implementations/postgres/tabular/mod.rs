@@ -336,6 +336,7 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) id: Uuid,
     pub(crate) name: &'a str,
     pub(crate) namespace_id: Uuid,
+    pub(crate) warehouse_id: Uuid,
     pub(crate) typ: TabularType,
     pub(crate) metadata_location: Option<&'a Location>,
     pub(crate) location: &'a Location,
@@ -359,6 +360,7 @@ pub(crate) async fn create_tabular(
         id,
         name,
         namespace_id,
+        warehouse_id,
         typ,
         metadata_location,
         location,
@@ -370,13 +372,14 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO tabular (tabular_id, name, namespace_id, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING tabular_id
         "#,
         id,
         name,
         namespace_id,
+        warehouse_id,
         typ as _,
         metadata_location.map(iceberg_ext::configs::Location::as_str),
         fs_protocol,
@@ -393,8 +396,8 @@ pub(crate) async fn create_tabular(
         r#"SELECT EXISTS (
                SELECT 1
                FROM tabular ta
-               JOIN namespace n ON ta.namespace_id = n.namespace_id
-               JOIN warehouse w ON w.warehouse_id = n.warehouse_id
+               -- What's the purpose of these joins?
+               JOIN warehouse w ON ta.warehouse_id = w.warehouse_id
                WHERE (fs_location = ANY($1) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
                       (length($3) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $3 || '/%'))

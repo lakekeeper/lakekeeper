@@ -204,6 +204,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     C::update_view_metadata(
         ViewCommit {
+            warehouse_id,
             namespace_id: ctx.namespace_id,
             view_id: ctx.view_id,
             view_ident: ctx.identifier,
