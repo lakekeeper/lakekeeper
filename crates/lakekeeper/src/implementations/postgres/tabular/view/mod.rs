@@ -125,7 +125,7 @@ pub(crate) async fn create_view(
         let ViewVersionResponse {
             version_id,
             view_id,
-        } = create_view_version(view_id, view_version.clone(), transaction).await?;
+        } = create_view_version(namespace_id, view_id, view_version.clone(), transaction).await?;
 
         tracing::debug!(
             "Inserted view version with id: '{}' for view_id: '{}'",
@@ -305,6 +305,7 @@ struct ViewVersionResponse {
 
 #[allow(clippy::too_many_lines)]
 async fn create_view_version(
+    namespace_id: NamespaceId, // Namespace the view is created in != default namespace
     view_id: Uuid,
     view_version_request: ViewVersionRef,
     transaction: &mut Transaction<'_, Postgres>,
@@ -317,10 +318,12 @@ async fn create_view_version(
     let default_namespace_id: Option<Uuid> = sqlx::query_scalar!(
         r#"
         SELECT namespace_id
-        FROM namespace
+        FROM namespace n
         WHERE namespace_name = $1
+        AND warehouse_id in (SELECT warehouse_id FROM namespace WHERE namespace_id = $2)
         "#,
-        &default_ns
+        &default_ns,
+        *namespace_id
     )
     .fetch_optional(&mut **transaction)
     .await
