@@ -1,6 +1,6 @@
 [package]
 name = "iceberg-ext"
-version = "0.9.2"
+version = "0.9.3"
 edition = { workspace = true }
 homepage = { workspace = true }
 rust-version = { workspace = true }

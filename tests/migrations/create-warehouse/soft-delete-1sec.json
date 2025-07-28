@@ -1,0 +1,25 @@
+{
+  "warehouse-name": "demo",
+  "project-id": "00000000-0000-0000-0000-000000000000",
+  "storage-profile": {
+    "type": "s3",
+    "bucket": "examples",
+    "key-prefix": "initial-warehouse",
+    "assume-role-arn": null,
+    "endpoint": "http://minio:9000",
+    "region": "local-01",
+    "path-style-access": true,
+    "flavor": "minio",
+    "sts-enabled": true
+  },
+  "storage-credential": {
+    "type": "s3",
+    "credential-type": "access-key",
+    "aws-access-key-id": "minio-root-user",
+    "aws-secret-access-key": "minio-root-password"
+  },
+  "delete-profile": {
+    "type": "soft",
+    "expiration-seconds": 1
+  }
+}

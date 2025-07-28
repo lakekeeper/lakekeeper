@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.3](https://github.com/lakekeeper/lakekeeper/compare/v0.9.2...v0.9.3) (2025-07-18)
+
+
+### Features
+
+* Add Tracing, Compression and Timeout Layers to UI serving endpoints ([#1247](https://github.com/lakekeeper/lakekeeper/issues/1247)) ([3008211](https://github.com/lakekeeper/lakekeeper/commit/3008211f333a4e6a919bd0eac3acaa7372902edf))
+* Enable client side caching for S3 remote signing ([#1226](https://github.com/lakekeeper/lakekeeper/issues/1226)) ([2004d17](https://github.com/lakekeeper/lakekeeper/commit/2004d179a4565edf3480f42688111daa3d1d984f))
+* Globally disable storage validation ([#1239](https://github.com/lakekeeper/lakekeeper/issues/1239)) ([743d5b5](https://github.com/lakekeeper/lakekeeper/commit/743d5b595f1303b6f75432319fa9e083d30754f1))
+* **router:** allow 'x-project-id' header in CORS ([#1245](https://github.com/lakekeeper/lakekeeper/issues/1245)) ([3ca0e4f](https://github.com/lakekeeper/lakekeeper/commit/3ca0e4f4fca4f10440d65e2d3079eb9765262847))
+
+
+### Bug Fixes
+
+* Create Warehouse Endpoint should respect X-Project-ID Header ([#1238](https://github.com/lakekeeper/lakekeeper/issues/1238)) ([7fb01dd](https://github.com/lakekeeper/lakekeeper/commit/7fb01dd323e502072d1814650219b19ffb05ccfc))
+* GetAccessQuery should not require nested objects ([#1242](https://github.com/lakekeeper/lakekeeper/issues/1242)) ([528ab5e](https://github.com/lakekeeper/lakekeeper/commit/528ab5e08a89e97bd8ddb2de0946b9ad7f6dd70c))
+* Skip port in determine_base_uri if host already contains it ([#1248](https://github.com/lakekeeper/lakekeeper/issues/1248)) ([4e12628](https://github.com/lakekeeper/lakekeeper/commit/4e12628924a262c8167902907103b2c08d4c4305))
+* Use camelCase for principalUser & Role in GetAccessQuery ([#1243](https://github.com/lakekeeper/lakekeeper/issues/1243)) ([83dce04](https://github.com/lakekeeper/lakekeeper/commit/83dce04e088d9be891e315cd360c8c4afe2e1577))
+
+
+### Miscellaneous Chores
+
+* release 0.9.3 ([44f6986](https://github.com/lakekeeper/lakekeeper/commit/44f698692f2dc6e63f31cd0ba94e200410fdf0ca))
+
 ## [0.9.2](https://github.com/lakekeeper/lakekeeper/compare/v0.9.1...v0.9.2) (2025-07-03)
 
 

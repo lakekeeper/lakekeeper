@@ -3,9 +3,22 @@ use std::{default::Default, env::VarError, sync::LazyLock};
 use axum::{
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
+    routing::get,
 };
-use lakekeeper::{determine_base_uri, AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER};
+use lakekeeper::{
+    determine_base_uri,
+    tracing::{MakeRequestUuid7, RestMakeSpan},
+    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
+};
 use lakekeeper_console::{CacheItem, FileCache, LakekeeperConsoleConfig};
+use tower_http::{
+    catch_panic::CatchPanicLayer,
+    compression::CompressionLayer,
+    sensitive_headers::SetSensitiveHeadersLayer,
+    timeout::TimeoutLayer,
+    trace::{self, TraceLayer},
+    ServiceBuilderExt,
+};
 
 // Static configuration for UI
 static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
@@ -114,6 +127,42 @@ fn cache_item_to_response(item: CacheItem) -> Response {
         CacheItem::Found { mime, data } => {
             ([(header::CONTENT_TYPE, mime.as_ref())], data).into_response()
         }
+    }
+}
+
+pub(crate) fn get_ui_router() -> axum::Router {
+    axum::Router::new()
+        .route("/ui", get(redirect_to_ui))
+        .route("/", get(redirect_to_ui))
+        .route("/ui/index.html", get(redirect_to_ui))
+        .route("/ui/", get(index_handler))
+        .route("/ui/favicon.ico", get(favicon_handler))
+        .route("/ui/assets/{*file}", get(static_handler))
+        .route("/ui/{*file}", get(index_handler))
+        .layer(
+            tower::ServiceBuilder::new()
+                .set_x_request_id(MakeRequestUuid7)
+                .layer(SetSensitiveHeadersLayer::new([
+                    axum::http::header::AUTHORIZATION,
+                ]))
+                .layer(CompressionLayer::new())
+                .layer(
+                    TraceLayer::new_for_http()
+                        .on_failure(())
+                        .make_span_with(RestMakeSpan::new(tracing::Level::INFO))
+                        .on_response(trace::DefaultOnResponse::new().level(tracing::Level::DEBUG)),
+                )
+                .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
+                .layer(CatchPanicLayer::new())
+                .propagate_x_request_id(),
+        )
+}
+
+async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redirect {
+    if let Some(prefix) = lakekeeper::determine_forwarded_prefix(&headers) {
+        axum::response::Redirect::permanent(format!("/{prefix}/ui/").as_str())
+    } else {
+        axum::response::Redirect::permanent("/ui/")
     }
 }
 

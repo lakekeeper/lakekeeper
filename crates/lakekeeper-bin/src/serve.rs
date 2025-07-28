@@ -1,7 +1,5 @@
 use std::{sync::Arc, vec};
 
-#[cfg(feature = "ui")]
-use axum::routing::get;
 use lakekeeper::{
     implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
     serve::{serve, ServeConfiguration},
@@ -87,25 +85,11 @@ async fn serve_inner<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator
 
 fn add_ui_routes(router: axum::Router) -> axum::Router {
     #[cfg(feature = "ui")]
-    let router = router
-        .route("/ui", get(redirect_to_ui))
-        .route("/", get(redirect_to_ui))
-        .route("/ui/index.html", get(redirect_to_ui))
-        .route("/ui/", get(ui::index_handler))
-        .route("/ui/favicon.ico", get(ui::favicon_handler))
-        .route("/ui/assets/{*file}", get(ui::static_handler))
-        .route("/ui/{*file}", get(ui::index_handler));
-    #[cfg(not(feature = "ui"))]
-    let router = router;
-
-    router
-}
-
-#[cfg(feature = "ui")]
-async fn redirect_to_ui(headers: axum::http::HeaderMap) -> axum::response::Redirect {
-    if let Some(prefix) = lakekeeper::determine_forwarded_prefix(&headers) {
-        axum::response::Redirect::permanent(format!("/{prefix}/ui/").as_str())
-    } else {
-        axum::response::Redirect::permanent("/ui/")
+    {
+        let ui_router = ui::get_ui_router();
+        router.merge(ui_router)
     }
+
+    #[cfg(not(feature = "ui"))]
+    router
 }
