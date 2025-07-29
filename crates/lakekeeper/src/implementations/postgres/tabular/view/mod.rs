@@ -303,9 +303,13 @@ struct ViewVersionResponse {
     view_id: Uuid,
 }
 
+/// Creates a `view_version` in the namespace specified by `namespace_id`.
+///
+/// Note that `namespace_id` is not the view's default namespace. Instead the default namespace is
+/// specified separately via `view_version_request`.
 #[allow(clippy::too_many_lines)]
 async fn create_view_version(
-    namespace_id: NamespaceId, // Namespace the view is created in != default namespace
+    namespace_id: NamespaceId,
     view_id: Uuid,
     view_version_request: ViewVersionRef,
     transaction: &mut Transaction<'_, Postgres>,
