@@ -120,7 +120,8 @@ pub(crate) async fn create_view(
 
     tracing::debug!("Inserted base view and tabular.");
     for schema in metadata.schemas_iter() {
-        let schema_id = create_view_schema(view_id, schema.clone(), transaction).await?;
+        let schema_id =
+            create_view_schema(*warehouse_id, view_id, schema.clone(), transaction).await?;
         tracing::debug!("Inserted schema with id: '{}'", schema_id);
     }
 
@@ -128,20 +129,28 @@ pub(crate) async fn create_view(
         let ViewVersionResponse {
             version_id,
             view_id,
-        } = create_view_version(view_id, view_version.clone(), transaction).await?;
+            warehouse_id,
+        } = create_view_version(*warehouse_id, view_id, view_version.clone(), transaction).await?;
 
         tracing::debug!(
-            "Inserted view version with id: '{}' for view_id: '{}'",
+            "Inserted view version with id: '{}' for view_id: '{}' in warehouse with id '{}'",
             version_id,
-            view_id
+            view_id,
+            warehouse_id,
         );
     }
 
-    set_current_view_metadata_version(metadata.current_version_id(), metadata.uuid(), transaction)
-        .await?;
+    set_current_view_metadata_version(
+        metadata.current_version_id(),
+        metadata.uuid(),
+        *warehouse_id,
+        transaction,
+    )
+    .await?;
 
     for history in metadata.history() {
         insert_view_version_log(
+            *warehouse_id,
             view_id,
             history.version_id(),
             Some(history.timestamp().map_err(|e| {
@@ -156,7 +165,7 @@ pub(crate) async fn create_view(
         .await?;
     }
 
-    set_view_properties(metadata.properties(), view_id, transaction).await?;
+    set_view_properties(metadata.properties(), view_id, *warehouse_id, transaction).await?;
 
     tracing::debug!("Inserted view properties for view",);
 
@@ -200,6 +209,7 @@ pub(crate) async fn rename_view(
 
 // TODO: do we wanna do this via a trigger?
 async fn insert_view_version_log(
+    warehouse_id: Uuid,
     view_id: Uuid,
     version_id: ViewVersionId,
     timestamp_ms: Option<DateTime<Utc>>,
@@ -208,9 +218,10 @@ async fn insert_view_version_log(
     if let Some(ts) = timestamp_ms {
         sqlx::query!(
             r#"
-        INSERT INTO view_version_log (view_id, version_id, timestamp)
-        VALUES ($1, $2, $3)
+        INSERT INTO view_version_log (warehouse_id, view_id, version_id, timestamp)
+        VALUES ($1, $2, $3, $4)
         "#,
+            warehouse_id,
             view_id,
             version_id,
             ts
@@ -218,9 +229,10 @@ async fn insert_view_version_log(
     } else {
         sqlx::query!(
             r#"
-        INSERT INTO view_version_log (view_id, version_id)
-        VALUES ($1, $2)
+        INSERT INTO view_version_log (warehouse_id, view_id, version_id)
+        VALUES ($1, $2, $3)
         "#,
+            warehouse_id,
             view_id,
             version_id,
         )
@@ -239,6 +251,7 @@ async fn insert_view_version_log(
 pub(crate) async fn set_view_properties(
     properties: &HashMap<String, String>,
     view_id: Uuid,
+    warehouse_id: Uuid,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<()> {
     let (keys, vals): (Vec<String>, Vec<String>) = properties
@@ -246,11 +259,12 @@ pub(crate) async fn set_view_properties(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .unzip();
     sqlx::query!(
-        r#"INSERT INTO view_properties (view_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
-              ON CONFLICT (view_id, key)
+        r#"INSERT INTO view_properties (warehouse_id, view_id, key, value)
+           VALUES ($1, $2, UNNEST($3::text[]), UNNEST($4::text[]))
+              ON CONFLICT (warehouse_id, view_id, key)
                 DO UPDATE SET value = EXCLUDED.value
            ;"#,
+        warehouse_id,
         view_id,
         &keys,
         &vals
@@ -266,6 +280,7 @@ pub(crate) async fn set_view_properties(
 }
 
 pub(crate) async fn create_view_schema(
+    warehouse_id: Uuid,
     view_id: Uuid,
     schema: SchemaRef,
     transaction: &mut Transaction<'_, Postgres>,
@@ -280,10 +295,11 @@ pub(crate) async fn create_view_schema(
     })?;
     Ok(sqlx::query_scalar!(
         r#"
-        INSERT INTO view_schema (view_id, schema_id, schema)
-        VALUES ($1, $2, $3)
+        INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
+        VALUES ($1, $2, $3, $4)
         RETURNING schema_id
         "#,
+        warehouse_id,
         view_id,
         schema.schema_id(),
         schema_as_value
@@ -304,10 +320,12 @@ pub(crate) async fn create_view_schema(
 struct ViewVersionResponse {
     version_id: ViewVersionId,
     view_id: Uuid,
+    warehouse_id: Uuid,
 }
 
 #[allow(clippy::too_many_lines)]
 async fn create_view_version(
+    warehouse_id: Uuid,
     view_id: Uuid,
     view_version_request: ViewVersionRef,
     transaction: &mut Transaction<'_, Postgres>,
@@ -345,10 +363,11 @@ async fn create_view_version(
 
     let insert_response = sqlx::query_as!(ViewVersionResponse,
                 r#"
-                    INSERT INTO view_version (view_id, version_id, schema_id, timestamp, default_namespace_id, default_catalog, summary)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    returning view_id, version_id
+                    INSERT INTO view_version (warehouse_id, view_id, version_id, schema_id, timestamp, default_namespace_id, default_catalog, summary)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    returning warehouse_id, view_id, version_id
                 "#,
+                warehouse_id,
                 view_id,
                 version_id,
                 schema_id,
@@ -403,18 +422,21 @@ async fn create_view_version(
 pub(crate) async fn set_current_view_metadata_version(
     version_id: ViewVersionId,
     view_id: Uuid,
+    warehouse_id: Uuid,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<()> {
     sqlx::query!(
         r#"
-        INSERT INTO current_view_metadata_version (version_id, view_id)
-        VALUES ($1, $2)
-        ON CONFLICT (view_id)
+        INSERT INTO current_view_metadata_version (version_id, view_id, warehouse_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (view_id, warehouse_id)
         DO UPDATE SET version_id = $1
         WHERE current_view_metadata_version.view_id = $2
+        AND current_view_metadata_version.warehouse_id = $3
         "#,
         version_id,
-        view_id
+        view_id,
+        warehouse_id,
     )
     .execute(&mut **transaction)
     .await
@@ -475,9 +497,10 @@ async fn insert_representation(
     let ViewRepresentation::Sql(repr) = rep;
     sqlx::query!(
         r#"
-            INSERT INTO view_representation (view_id, view_version_id, typ, sql, dialect)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO view_representation (warehouse_id, view_id, view_version_id, typ, sql, dialect)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
+        view_version_response.warehouse_id,
         view_version_response.view_id,
         view_version_response.version_id,
         ViewRepresentationType::from(rep) as _,
