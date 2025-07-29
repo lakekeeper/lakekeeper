@@ -565,8 +565,9 @@ pub mod v1 {
     async fn list_projects<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(request): Query<crate::api::management::v1::project::ListProjectsRequest>,
     ) -> Result<ListProjectsResponse> {
-        ApiServer::<C, A, S>::list_projects(api_context, metadata).await
+        ApiServer::<C, A, S>::list_projects(request, api_context, metadata).await
     }
 
     /// Create Project

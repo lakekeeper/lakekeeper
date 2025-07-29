@@ -1,4 +1,5 @@
 use chrono::Utc;
+use futures::future::ok;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -12,7 +13,7 @@ pub use crate::service::{
     WarehouseStatus,
 };
 use crate::{
-    api::{management::v1::ApiServer, ApiContext, Result},
+    api::{iceberg::v1::PaginationQuery, management::v1::ApiServer, ApiContext, Result},
     request_metadata::RequestMetadata,
     service::{
         authz::{
@@ -42,11 +43,37 @@ pub struct RenameProjectRequest {
     pub new_name: String,
 }
 
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub struct ListProjectsRequest {
+    /// Next page token for pagination
+    #[serde(default)]
+    pub page_token: Option<String>,
+    /// Signal an upper bound of the number of results that a client will receive
+    /// Default: 100
+    #[serde(default = "crate::api::management::v1::default_page_size")]
+    pub page_size: i64,
+}
+impl ListProjectsRequest {
+    #[must_use]
+    pub fn pagination_query(&self) -> PaginationQuery {
+        PaginationQuery {
+            page_token: self.page_token.clone().map_or(
+                crate::api::iceberg::v1::PageToken::Empty,
+                crate::api::iceberg::v1::PageToken::Present,
+            ),
+            page_size: Some(self.page_size),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct ListProjectsResponse {
     /// List of projects
     pub projects: Vec<GetProjectResponse>,
+    /// Token for next page of results
+    pub next_page_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -201,6 +228,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
     }
 
     async fn list_projects(
+        request: ListProjectsRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ListProjectsResponse> {
@@ -215,18 +243,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         };
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
 
-        let projects = C::list_projects(project_id_filter, trx.transaction()).await?;
+        let response = C::list_projects(
+            project_id_filter,
+            request.pagination_query(),
+            trx.transaction(),
+        )
+        .await?;
         trx.commit().await?;
-
-        Ok(ListProjectsResponse {
-            projects: projects
-                .into_iter()
-                .map(|project| GetProjectResponse {
-                    project_id: project.project_id,
-                    project_name: project.name,
-                })
-                .collect(),
-        })
+        Ok(response)
     }
 
     async fn get_endpoint_statistics(

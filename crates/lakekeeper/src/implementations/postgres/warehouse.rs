@@ -412,29 +412,72 @@ pub(crate) async fn get_warehouse(
 
 pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     project_ids: Option<HashSet<ProjectId>>,
+    pagination: PaginationQuery,
     connection: E,
-) -> Result<Vec<GetProjectResponse>> {
+) -> Result<crate::api::management::v1::project::ListProjectsResponse> {
+    use crate::{
+        api::iceberg::v1::PageToken,
+        config::CONFIG,
+        implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
+    };
+
+    let page_size = CONFIG.page_size_or_pagination_max(pagination.page_size);
     let return_all = project_ids.is_none();
+
+    let token = pagination
+        .page_token
+        .as_option()
+        .map(PaginateToken::try_from)
+        .transpose()?;
+
+    let (token_ts, token_id): (_, Option<&String>) = token
+        .as_ref()
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
     let projects = sqlx::query!(
         r#"
-        SELECT project_id, project_name FROM project WHERE project_id = ANY($1) or $2
+        SELECT project_id, project_name, created_at
+        FROM project
+        WHERE (project_id = ANY($1) or $2)
+        AND ((created_at > $3 or $3 IS NULL) OR (created_at = $3 AND project_id > $4))
+        ORDER BY created_at, project_id ASC
+        LIMIT $5
         "#,
         project_ids
             .map(|ids| ids.into_iter().map(|i| i.to_string()).collect::<Vec<_>>())
             .unwrap_or_default() as Vec<String>,
-        return_all
+        return_all,
+        token_ts,
+        token_id,
+        page_size,
     )
     .fetch_all(connection)
     .await
     .map_err(|e| e.into_error_model("Error fetching projects"))?;
 
-    Ok(projects
-        .into_iter()
-        .map(|project| GetProjectResponse {
-            project_id: ProjectId::from_db_unchecked(project.project_id),
-            name: project.project_name,
+    let next_page_token = if projects.len() == page_size as usize {
+        projects.last().map(|p| {
+            PaginateToken::V1(V1PaginateToken {
+                created_at: p.created_at,
+                id: p.project_id.clone(),
+            })
+            .to_string()
         })
-        .collect())
+    } else {
+        None
+    };
+
+    Ok(crate::api::management::v1::project::ListProjectsResponse {
+        projects: projects
+            .into_iter()
+            .map(|project| GetProjectResponse {
+                project_id: ProjectId::from_db_unchecked(project.project_id),
+                name: project.project_name,
+            })
+            .collect(),
+        next_page_token,
+    })
 }
 
 pub(crate) async fn delete_warehouse(
@@ -837,15 +880,22 @@ pub(crate) mod test {
             .await
             .unwrap();
 
-        let projects = PostgresCatalog::list_projects(None, trx.transaction())
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|p| p.project_id)
-            .collect::<Vec<_>>();
+        let projects = PostgresCatalog::list_projects(
+            None,
+            PaginationQuery {
+                page_size: None,
+                page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
+            },
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
         trx.commit().await.unwrap();
-        assert_eq!(projects.len(), 1);
-        assert!(projects.contains(&project_id_1));
+        assert_eq!(projects.projects.len(), 1);
+        assert!(projects
+            .projects
+            .iter()
+            .any(|p| p.project_id == project_id_1));
 
         let project_id_2 = ProjectId::from(uuid::Uuid::new_v4());
         initialize_warehouse(state.clone(), None, Some(&project_id_2), None, true).await;
@@ -854,31 +904,45 @@ pub(crate) mod test {
             .await
             .unwrap();
 
-        let projects = PostgresCatalog::list_projects(None, trx.transaction())
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|p| p.project_id)
-            .collect::<Vec<_>>();
+        let projects = PostgresCatalog::list_projects(
+            None,
+            PaginationQuery {
+                page_size: None,
+                page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
+            },
+            trx.transaction(),
+        )
+        .await
+        .unwrap();
         trx.commit().await.unwrap();
-        assert_eq!(projects.len(), 2);
-        assert!(projects.contains(&project_id_1));
-        assert!(projects.contains(&project_id_2));
+        assert_eq!(projects.projects.len(), 2);
+        assert!(projects
+            .projects
+            .iter()
+            .any(|p| p.project_id == project_id_1));
+        assert!(projects
+            .projects
+            .iter()
+            .any(|p| p.project_id == project_id_2));
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
         let projects = PostgresCatalog::list_projects(
             Some(HashSet::from_iter(vec![project_id_1.clone()])),
+            PaginationQuery {
+                page_size: None,
+                page_token: crate::api::iceberg::v1::PageToken::NotSpecified,
+            },
             trx.transaction(),
         )
         .await
-        .unwrap()
-        .into_iter()
-        .map(|p| p.project_id)
-        .collect::<Vec<_>>();
+        .unwrap();
         trx.commit().await.unwrap();
 
-        assert_eq!(projects.len(), 1);
-        assert!(projects.contains(&project_id_1));
+        assert_eq!(projects.projects.len(), 1);
+        assert!(projects
+            .projects
+            .iter()
+            .any(|p| p.project_id == project_id_1));
     }
 
     #[sqlx::test]
@@ -1208,5 +1272,58 @@ pub(crate) mod test {
         .await
         .unwrap_err();
         assert_eq!(e.error.code, StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn test_list_projects_pagination(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // Create 4 projects
+        let mut project_ids = Vec::new();
+        for i in 0..4 {
+            let project_id = ProjectId::from(uuid::Uuid::new_v4());
+            initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
+            project_ids.push(project_id);
+        }
+
+        // Test pagination with page size 2
+        let page1 = list_projects(
+            None,
+            PaginationQuery {
+                page_size: Some(2),
+                page_token: PageToken::NotSpecified,
+            },
+            &pool.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(page1.projects.len(), 2);
+        assert!(page1.next_page_token.is_some());
+
+        // Test next page
+        let page2 = list_projects(
+            None,
+            PaginationQuery {
+                page_size: Some(2),
+                page_token: PageToken::Present(page1.next_page_token.unwrap()),
+            },
+            &pool.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(page2.projects.len(), 2);
+        assert!(page2.next_page_token.is_none());
+
+        // Verify all projects are returned
+        let mut all_project_ids = Vec::new();
+        all_project_ids.extend(page1.projects.iter().map(|p| p.project_id.clone()));
+        all_project_ids.extend(page2.projects.iter().map(|p| p.project_id.clone()));
+
+        assert_eq!(all_project_ids.len(), 4);
+        for expected_id in &project_ids {
+            assert!(all_project_ids.contains(expected_id));
+        }
     }
 }
