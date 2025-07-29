@@ -1,5 +1,4 @@
 use chrono::Utc;
-use futures::future::ok;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

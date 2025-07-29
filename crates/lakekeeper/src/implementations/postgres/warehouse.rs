@@ -416,7 +416,6 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     connection: E,
 ) -> Result<crate::api::management::v1::project::ListProjectsResponse> {
     use crate::{
-        api::iceberg::v1::PageToken,
         config::CONFIG,
         implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     };
@@ -450,13 +449,18 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
         return_all,
         token_ts,
         token_id,
-        page_size,
+        page_size + 1,
     )
     .fetch_all(connection)
     .await
     .map_err(|e| e.into_error_model("Error fetching projects"))?;
 
-    let next_page_token = if projects.len() == page_size as usize {
+    let has_more = projects.len() > page_size as usize;
+    let mut projects = projects;
+    if has_more {
+        projects.pop()
+    }
+    let next_page_token = if has_more {
         projects.last().map(|p| {
             PaginateToken::V1(V1PaginateToken {
                 created_at: p.created_at,
@@ -471,9 +475,9 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     Ok(crate::api::management::v1::project::ListProjectsResponse {
         projects: projects
             .into_iter()
-            .map(|project| GetProjectResponse {
+            .map(|project| crate::api::management::v1::project::GetProjectResponse {
                 project_id: ProjectId::from_db_unchecked(project.project_id),
-                name: project.project_name,
+                project_name: project.project_name,
             })
             .collect(),
         next_page_token,
@@ -1280,7 +1284,7 @@ pub(crate) mod test {
 
         // Create 4 projects
         let mut project_ids = Vec::new();
-        for i in 0..4 {
+        for _i in 0..4 {
             let project_id = ProjectId::from(uuid::Uuid::new_v4());
             initialize_warehouse(state.clone(), None, Some(&project_id), None, true).await;
             project_ids.push(project_id);
