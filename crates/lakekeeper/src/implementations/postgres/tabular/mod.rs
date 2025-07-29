@@ -812,6 +812,7 @@ pub(crate) async fn mark_tabular_as_deleted(
 }
 
 pub(crate) async fn drop_tabular(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     force: bool,
     required_metadata_location: Option<&Location>,
@@ -822,20 +823,24 @@ pub(crate) async fn drop_tabular(
                SELECT
                    protected
                FROM tabular
-               WHERE tabular_id = $1 AND typ = $2
-                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
+               WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = $3
+                   AND (warehouse_id, tabular_id) IN
+                       (SELECT warehouse_id, tabular_id FROM active_tabulars)
            ),
            deleted as (
            DELETE FROM tabular
-               WHERE tabular_id = $1
-                   AND typ = $2
-                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-                   AND ((NOT protected) OR $3)
+               WHERE warehouse_id = $1
+                   AND tabular_id = $2
+                   AND typ = $3
+                   AND (warehouse_id, tabular_id) IN
+                       (SELECT warehouse_id, tabular_id FROM active_tabulars)
+                   AND ((NOT protected) OR $4)
               RETURNING metadata_location, fs_location, fs_protocol)
               SELECT protected as "protected!",
                      (SELECT metadata_location from deleted),
                      (SELECT fs_protocol from deleted),
                      (SELECT fs_location from deleted) from delete_info"#,
+        *warehouse_id,
         *tabular_id,
         TabularType::from(tabular_id) as _,
         force

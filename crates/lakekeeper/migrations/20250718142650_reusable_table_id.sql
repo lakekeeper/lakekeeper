@@ -8,6 +8,7 @@
 -- 4. Migrate the 'table' table and all 'table_*' related tables.
 -- 5. Update all Primary Keys to their new composite form.
 -- 6. Re-establish all Foreign Keys to reference the new composite keys.
+-- 7. Recreate views
 
 -- =================================================================================================
 -- 1: Drop all Foreign Key constraints that will be affected by Primary Key changes.
@@ -420,3 +421,47 @@ ALTER TABLE partition_statistics ADD CONSTRAINT partition_statistics_table_id_sn
 ALTER TABLE table_statistics ADD CONSTRAINT table_statistics_table_id_snapshot_id_fkey
     FOREIGN KEY (warehouse_id, table_id, snapshot_id)
     REFERENCES table_snapshot(warehouse_id, table_id, snapshot_id) ON DELETE CASCADE;
+
+-- =================================================================================================
+-- 7: Recreate views
+-- =================================================================================================
+
+DROP VIEW IF EXISTS active_tables;
+DROP VIEW IF EXISTS active_views;
+DROP VIEW IF EXISTS active_tabulars;
+
+CREATE VIEW active_tabulars
+AS SELECT t.tabular_id,
+    t.namespace_id,
+    t.name,
+    t.typ,
+    t.metadata_location,
+    t.fs_protocol,
+    t.fs_location,
+    t.warehouse_id,
+    n.namespace_name
+   FROM tabular t
+     JOIN namespace n ON t.namespace_id = n.namespace_id
+     JOIN warehouse w ON n.warehouse_id = w.warehouse_id AND w.status = 'active'::warehouse_status;
+
+CREATE VIEW active_tables
+AS SELECT tabular_id AS table_id,
+    namespace_id,
+    warehouse_id,
+    name,
+    metadata_location,
+    fs_protocol,
+    fs_location
+   FROM active_tabulars t
+  WHERE typ = 'table'::tabular_type;
+
+CREATE VIEW active_views
+AS SELECT tabular_id AS view_id,
+    namespace_id,
+    warehouse_id,
+    name,
+    metadata_location,
+    fs_protocol,
+    fs_location
+   FROM active_tabulars t
+  WHERE typ = 'view'::tabular_type;

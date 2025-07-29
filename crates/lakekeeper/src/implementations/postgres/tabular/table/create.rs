@@ -56,7 +56,7 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    // TODO(moori) all these need to be extended with warehouse_id
+    // TODO(mooori) all these need to be extended with warehouse_id
     insert_table(&table_metadata, transaction, tabular_id).await?;
 
     common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
@@ -153,11 +153,13 @@ async fn maybe_delete_staged_table(
 async fn insert_table(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> Result<()> {
     let _ = sqlx::query!(
         r#"
-        INSERT INTO "table" (table_id,
+        INSERT INTO "table" (warehouse_id,
+                             table_id,
                              table_format_version,
                              last_column_id,
                              last_sequence_number,
@@ -165,12 +167,14 @@ async fn insert_table(
                              last_partition_id
                              )
         (
-            SELECT $1, $2, $3, $4, $5, $6
+            SELECT $1, $2, $3, $4, $5, $6, $7
             WHERE EXISTS (SELECT 1
                 FROM active_tables
-                WHERE active_tables.table_id = $1))
+                WHERE active_tables.warehouse_id = $1
+                    AND active_tables.table_id = $2))
         RETURNING "table_id"
         "#,
+        warehouse_id,
         tabular_id,
         match table_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
