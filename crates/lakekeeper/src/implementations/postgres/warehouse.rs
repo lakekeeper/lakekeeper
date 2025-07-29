@@ -458,7 +458,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     let has_more = projects.len() > page_size as usize;
     let mut projects = projects;
     if has_more {
-        projects.pop()
+        projects.pop();
     }
     let next_page_token = if has_more {
         projects.last().map(|p| {
