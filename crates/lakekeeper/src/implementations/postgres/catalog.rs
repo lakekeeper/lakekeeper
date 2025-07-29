@@ -541,6 +541,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn create_view<'a>(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,
@@ -549,6 +550,7 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<()> {
         create_view(
+            warehouse_id,
             namespace_id,
             metadata_location,
             transaction,
@@ -586,6 +588,7 @@ impl Catalog for super::PostgresCatalog {
 
     async fn update_view_metadata(
         ViewCommit {
+            warehouse_id,
             namespace_id,
             new_metadata_location,
             previous_metadata_location,
@@ -598,6 +601,7 @@ impl Catalog for super::PostgresCatalog {
     ) -> Result<()> {
         drop_view(view_id, true, Some(previous_metadata_location), transaction).await?;
         create_view(
+            warehouse_id,
             namespace_id,
             new_metadata_location,
             transaction,
