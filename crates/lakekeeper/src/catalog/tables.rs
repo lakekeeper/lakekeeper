@@ -407,8 +407,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .await?;
 
                 // Drop the existing table to overwrite it
-                let _previous_table_location =
-                    C::drop_table(previous_table_id, false, t_write.transaction()).await?;
+                let _previous_table_location = C::drop_table(
+                    warehouse_id,
+                    previous_table_id,
+                    false,
+                    t_write.transaction(),
+                )
+                .await?;
                 // We don't drop the files for the previous table on overwrite
             }
         }
@@ -772,7 +777,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         match warehouse.tabular_delete_profile {
             TabularDeleteProfile::Hard {} => {
-                let location = C::drop_table(table_id, force, t.transaction()).await?;
+                let location =
+                    C::drop_table(warehouse_id, table_id, force, t.transaction()).await?;
 
                 if purge_requested {
                     C::queue_tabular_purge(
@@ -821,8 +827,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 )
                 .await?;
 
-                C::mark_tabular_as_deleted(TabularId::Table(*table_id), force, t.transaction())
-                    .await?;
+                C::mark_tabular_as_deleted(
+                    warehouse_id,
+                    TabularId::Table(*table_id),
+                    force,
+                    t.transaction(),
+                )
+                .await?;
 
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
                 t.commit().await?;

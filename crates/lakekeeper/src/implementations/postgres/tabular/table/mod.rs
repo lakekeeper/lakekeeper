@@ -816,11 +816,19 @@ pub(crate) async fn rename_table(
 }
 
 pub(crate) async fn drop_table(
+    warehouse_id: WarehouseId,
     table_id: TableId,
     force: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
-    drop_tabular(TabularId::Table(*table_id), force, None, transaction).await
+    drop_tabular(
+        warehouse_id,
+        TabularId::Table(*table_id),
+        force,
+        None,
+        transaction,
+    )
+    .await
 }
 
 #[derive(Default)]
@@ -1805,6 +1813,7 @@ pub(crate) mod tests {
         .unwrap();
 
         mark_tabular_as_deleted(
+            warehouse_id,
             TabularId::Table(*table.table_id),
             false,
             None,
@@ -1840,7 +1849,7 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        drop_table(table.table_id, false, &mut transaction)
+        drop_table(warehouse_id, table.table_id, false, &mut transaction)
             .await
             .unwrap();
         transaction.commit().await.unwrap();

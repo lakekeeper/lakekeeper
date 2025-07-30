@@ -57,7 +57,7 @@ pub(crate) async fn create_table(
     .await?;
 
     // TODO(mooori) all these need to be extended with warehouse_id
-    insert_table(&table_metadata, transaction, tabular_id).await?;
+    insert_table(&table_metadata, transaction, *warehouse_id, tabular_id).await?;
 
     common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
     common::set_current_schema(table_metadata.current_schema_id(), transaction, tabular_id).await?;

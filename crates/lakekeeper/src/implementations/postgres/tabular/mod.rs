@@ -757,6 +757,7 @@ pub(crate) async fn clear_tabular_deleted_at(
 }
 
 pub(crate) async fn mark_tabular_as_deleted(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     force: bool,
     delete_date: Option<chrono::DateTime<Utc>>,
@@ -767,16 +768,17 @@ pub(crate) async fn mark_tabular_as_deleted(
         WITH update_info as (
             SELECT protected
             FROM tabular
-            WHERE tabular_id = $1
+            WHERE warehouse_id = $1 AND tabular_id = $2
         ), update as (
             UPDATE tabular
-            SET deleted_at = $2
-            WHERE tabular_id = $1
-                AND ((NOT protected) OR $3)
-            RETURNING tabular_id
+            SET deleted_at = $3
+            WHERE warehouse_id = $1 AND tabular_id = $2
+                AND ((NOT protected) OR $4)
+            RETURNING warehouse_id, tabular_id
         )
         SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
         "#,
+        *warehouse_id,
         *tabular_id,
         delete_date.unwrap_or(Utc::now()),
         force,

@@ -468,6 +468,7 @@ where
     ///
     /// Returns the table location
     async fn drop_table<'a>(
+        warehouse_id: WarehouseId,
         table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -484,6 +485,7 @@ where
     ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
+        warehouse_id: WarehouseId,
         table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -737,6 +739,7 @@ where
     /// Returns location of the dropped view.
     /// Used for cleanup
     async fn drop_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,

@@ -173,12 +173,14 @@ pub(crate) async fn create_view(
 }
 
 pub(crate) async fn drop_view(
+    warehouse_id: WarehouseId,
     view_id: ViewId,
     force: bool,
     required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     drop_tabular(
+        warehouse_id,
         TabularId::View(*view_id),
         force,
         required_metadata_location,
@@ -775,11 +777,17 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_unconditionally(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(created_meta.uuid().into(), false, None, &mut tx)
-            .await
-            .unwrap();
+        super::drop_view(
+            warehouse_id,
+            created_meta.uuid().into(),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.uuid().into(),
@@ -792,9 +800,10 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_correct_location(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, metadata_location) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, metadata_location) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         super::drop_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             Some(&metadata_location),
@@ -814,9 +823,10 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn test_drop_view_metadata_mismatch(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         super::drop_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             Some(&Location::parse_value("s3://not-the/old-location").unwrap()),
@@ -847,9 +857,15 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        mark_tabular_as_deleted(TabularId::View(created_meta.uuid()), false, None, &mut tx)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            warehouse_id,
+            TabularId::View(created_meta.uuid()),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
             created_meta.uuid().into(),
@@ -860,9 +876,15 @@ pub(crate) mod tests {
         .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        super::drop_view(created_meta.uuid().into(), false, None, &mut tx)
-            .await
-            .unwrap();
+        super::drop_view(
+            warehouse_id,
+            created_meta.uuid().into(),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
 
         load_view(
@@ -876,9 +898,9 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn view_exists(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_ident, namespace, name, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, namespace, name, _) = prepare_view(pool).await;
         let exists = super::view_ident_to_id(
-            warehouse_ident,
+            warehouse_id,
             &TableIdent {
                 namespace: namespace.clone(),
                 name,
@@ -896,7 +918,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             super::view_ident_to_id(
-                warehouse_ident,
+                warehouse_id,
                 &TableIdent {
                     namespace,
                     name: "non_existing".to_string(),
@@ -913,9 +935,9 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
-        let (state, _, _, _, _, _) = prepare_view(pool).await;
+        let (state, _, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        let e = super::drop_view(Uuid::now_v7().into(), false, None, &mut tx)
+        let e = super::drop_view(warehouse_id, Uuid::now_v7().into(), false, None, &mut tx)
             .await
             .expect_err("dropping random uuid should not succeed");
         tx.commit().await.unwrap();

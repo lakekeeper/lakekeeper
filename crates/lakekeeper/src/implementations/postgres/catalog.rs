@@ -242,11 +242,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn drop_table<'a>(
+        warehouse_id: WarehouseId,
         table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String> {
-        drop_table(table_id, force, transaction).await
+        drop_table(warehouse_id, table_id, force, transaction).await
     }
 
     async fn undrop_tabulars(
@@ -263,11 +264,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn mark_tabular_as_deleted(
+        warehouse_id: WarehouseId,
         table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        mark_tabular_as_deleted(table_id, force, None, transaction).await
+        mark_tabular_as_deleted(warehouse_id, table_id, force, None, transaction).await
     }
 
     async fn commit_table_transaction<'a>(
@@ -599,7 +601,14 @@ impl Catalog for super::PostgresCatalog {
         }: ViewCommit<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        drop_view(view_id, true, Some(previous_metadata_location), transaction).await?;
+        drop_view(
+            warehouse_id,
+            view_id,
+            true,
+            Some(previous_metadata_location),
+            transaction,
+        )
+        .await?;
         create_view(
             warehouse_id,
             namespace_id,
@@ -613,11 +622,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn drop_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<String> {
-        drop_view(view_id, force, None, transaction).await
+        drop_view(warehouse_id, view_id, force, None, transaction).await
     }
 
     async fn rename_view(
