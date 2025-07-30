@@ -3534,7 +3534,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3625,7 +3625,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-bin"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "axum 0.8.4",
