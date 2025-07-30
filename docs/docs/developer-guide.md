@@ -7,13 +7,9 @@ If you want to work on something but don't know what, take a look at our issues 
 ## Foundation & CLA
 We hate red tape. Currently, all committers need to sign the CLA in Github. To ensure the future of Lakekeeper, we want to donate the project to a foundation. We are not sure yet if this is going to be Apache, Linux, a Lakekeeper foundation or something else. Currently, we prefer to spend our time on adding cool new features to Lakekeeper, but we will revisit this topic during 2026.
 
-## First steps
+## Initial Setup
 
-To work on small and self-contained features, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy. Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`. 
-
-There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
-
-If you made any changes to SQL queries, you'll have to run from the repository root `just sqlx-prepare` before submitting your PR. This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub. Always run `just fix-format` before committing, you may have to install a nightly rust toolchain, for linting, run `just check-clippy`. If you're interested in what these commands do, take a look at the `justfile` in the root of the repository.
+To work on small and self-contained features, it is usually enough to have a Postgres database running while setting a few envs. The code block below should get you started up to running most unit tests as well as clippy.
 
 ```bash
 # start postgres
@@ -25,17 +21,15 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
-# migrate db
-cd crates/lakekeeper
-sqlx database create && sqlx migrate run
-cd ../..
-
 # run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
 cargo nextest run --all-features
 
 # run clippy
 just check-clippy
 ```
+Keep in mind, that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`.
+There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
+If you made any changes to SQL queries, please follow [Working with SQLx](#working-with-sqlx)  before submitting your PR.
 
 ## Code structure
 
@@ -59,7 +53,7 @@ The main function branches out into multiple commands, amongst others, there's a
 
 ### Where to put tests?
 
-We try to keep unit-tests close to the code they are testing. E.g., all tests for the database module of tables are located in `crates/lakekeeper/src/implementations/postgres/tabular/table/mod.rs`. While working on more complex features we noticed a lot of repetition within tests and started to put commonly used functions into `crates/lakekeeper/src/tests/mod.rs`. Within the `tests` module, there are also some higher-level tests that cannot be easily mapped to a single module or require a non-trivial setup. Depending on what you are working on, you may want to put your tests there.
+We try to keep unit-tests close to the code they are testing. E.g., all tests for the database module of tables is located in `crates/lakekeeper/src/implementations/postgres/tabular/table/mod.rs`. While working on more complex features we noticed a lot of repetition within tests and started to put commonly used functions into `crates/lakekeeper/src/tests/mod.rs`. Within the `tests` module, there are also some higher-level tests that cannot be easily mapped to a single module or require a non-trivial setup. Depending on what you are working on, you may want to put your tests there.
 
 ### I need to add an endpoint
 
@@ -74,29 +68,25 @@ After spinning the example up, you may head to `localhost:8888` and use one of t
 
 ## Working with SQLx
 
-This crate uses sqlx. For development and compilation a Postgres Database is required. You can use Docker to launch
-one.:
-
-```sh
-docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
-```
-The `crates/lakekeeper` folder contains a `.env.sample` File.
-Copy this file to `.env` and add your database credentials if they differ.
+This crate uses sqlx. For development and compilation a Postgres Database is required. This is part of the [Initial setup](#initial-setup).
+If your database credentials used differ, please modify the `.env` accordingly and run `source .env` again.
 
 Run:
-
 ```sh
-sqlx database create
-sqlx migrate run
+# migrate db. Make sure you have sqlx-install with `cargo install sqlx-cli`
+cd crates/lakekeeper
+sqlx database create && sqlx migrate run
+
+just sqlx-prepare
+
+# formatting the code. You may have to install nightly rust toolchain
+just fix-format
+
+# linting
+just check-clippy
 ```
-
-Before committing changes to SQL queries, run: 
-
-```sh
-`just sqlx-prepare`
-```
-
-Then `git add` the changes to `.sqlx` and commit them. Careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on Github so there's no way of really breaking things.
+This will update the sqlx queries in `.sqlx` to enable static checking of the queries without a migrated database. Remember to `git add .sqlx` before committing. If you forget, your PR will fail to build on GitHub.
+Be careful, if the command failed, `.sqlx` will be empty. But do not worry, it wouldn't build on GitHub so there's no way of really breaking things.
 
 ## KV2 / Vault
 
