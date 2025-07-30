@@ -11,19 +11,22 @@ use uuid::Uuid;
 use crate::{api, implementations::postgres::dbutils::DBErrorHandler};
 
 pub(super) async fn remove_schemas(
+    warehouse_id: Uuid,
     table_id: Uuid,
     schema_ids: Vec<i32>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_schema WHERE table_id = $1 AND schema_id = ANY($2::INT[])"#,
+        r#"DELETE FROM table_schema
+           WHERE warehouse_id = $1 AND table_id = $2 AND schema_id = ANY($3::INT[])"#,
+        warehouse_id,
         table_id,
         &schema_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error deleting table schema: {}", err);
         err.into_error_model("Error deleting table schemas".to_string())
     })?;
 
@@ -33,16 +36,17 @@ pub(super) async fn remove_schemas(
 pub(super) async fn insert_schemas(
     schema_iter: impl ExactSizeIterator<Item = &SchemaRef>,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
-    let schemas = schema_iter.len();
-    let mut ids = Vec::with_capacity(schemas);
-    let mut table_ids = Vec::with_capacity(schemas);
-    let mut schemas = Vec::with_capacity(schemas);
+    let num_schemas = schema_iter.len();
+    let mut ids = Vec::with_capacity(num_schemas);
+    let mut schemas = Vec::with_capacity(num_schemas);
+    let warehouse_ids = vec![warehouse_id; num_schemas];
+    let table_ids = vec![tabular_id; num_schemas];
 
     for s in schema_iter {
         ids.push(s.schema_id());
-        table_ids.push(tabular_id);
         schemas.push(serde_json::to_value(s).map_err(|er| {
             ErrorModel::internal(
                 "Error serializing schema",
@@ -53,16 +57,17 @@ pub(super) async fn insert_schemas(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_schema(schema_id, table_id, schema)
-           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::JSONB[])"#,
+        r#"INSERT INTO table_schema(schema_id, table_id, warehouse_id, schema)
+           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::UUID[], $4::JSONB[])"#,
         &ids,
         &table_ids,
+        &warehouse_ids,
         &schemas
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table schema: {}", err);
         err.into_error_model("Error inserting table schema".to_string())
     })?;
 
@@ -72,38 +77,43 @@ pub(super) async fn insert_schemas(
 pub(super) async fn set_current_schema(
     new_schema_id: i32,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"INSERT INTO table_current_schema (table_id, schema_id) VALUES ($1, $2)
-           ON CONFLICT (table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id
+        r#"INSERT INTO table_current_schema (warehouse_id, table_id, schema_id) VALUES ($1, $2, $3)
+           ON CONFLICT (warehouse_id, table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id
         "#,
+        warehouse_id,
         tabular_id,
         new_schema_id
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table current schema: {}", err);
         err.into_error_model("Error inserting table current schema".to_string())
     })?;
     Ok(())
 }
 
 pub(super) async fn remove_partition_specs(
+    warehouse_id: Uuid,
     table_id: Uuid,
     spec_ids: Vec<i32>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_partition_spec WHERE table_id = $1 AND partition_spec_id = ANY($2::INT[])"#,
+        r#"DELETE FROM table_partition_spec
+           WHERE warehouse_id = $1 AND table_id = $2 AND partition_spec_id = ANY($3::INT[])"#,
+        warehouse_id,
         table_id,
         &spec_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error deleting table partition specs: {}", err);
         err.into_error_model("Error deleting table partition specs".to_string())
     })?;
 
@@ -113,6 +123,7 @@ pub(super) async fn remove_partition_specs(
 pub(crate) async fn insert_partition_specs(
     partition_specs: impl ExactSizeIterator<Item = &PartitionSpecRef>,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let mut spec_ids = Vec::with_capacity(partition_specs.len());
@@ -130,16 +141,17 @@ pub(crate) async fn insert_partition_specs(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
-               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])"#,
+        r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, warehouse_id, partition_spec)
+           SELECT UNNEST($1::INT[]), $2, $3, UNNEST($4::JSONB[])"#,
         &spec_ids,
         tabular_id,
+        warehouse_id,
         &specs
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table partition spec: {}", err);
         err.into_error_model("Error inserting table partition spec".to_string())
     })?;
 
@@ -148,39 +160,45 @@ pub(crate) async fn insert_partition_specs(
 
 pub(crate) async fn set_default_partition_spec(
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
     default_spec_id: i32,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id)
-           VALUES ($1, $2)
-           ON CONFLICT (table_id) DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
+        r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, warehouse_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (table_id, warehouse_id)
+           DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec_id,
         tabular_id,
+        warehouse_id,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table default partition spec: {}", err);
         err.into_error_model("Error inserting table default partition spec".to_string())
     })?;
     Ok(())
 }
 
 pub(crate) async fn remove_sort_orders(
+    warehouse_id: Uuid,
     table_id: Uuid,
     order_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_sort_order WHERE table_id = $1 AND sort_order_id = ANY($2::BIGINT[])"#,
+        r#"DELETE FROM table_sort_order
+           WHERE warehouse_id = $1 AND table_id = $2 AND sort_order_id = ANY($3::BIGINT[])"#,
+        warehouse_id,
         table_id,
         &order_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error deleting table sort orders: {}", err);
         err.into_error_model("Error deleting table sort orders".to_string())
     })?;
 
@@ -190,6 +208,7 @@ pub(crate) async fn remove_sort_orders(
 pub(crate) async fn insert_sort_orders(
     sort_orders_iter: impl ExactSizeIterator<Item = &SortOrderRef>,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let n_orders = sort_orders_iter.len();
@@ -208,16 +227,17 @@ pub(crate) async fn insert_sort_orders(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])"#,
+        r#"INSERT INTO table_sort_order(sort_order_id, table_id, warehouse_id, sort_order)
+           SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::JSONB[])"#,
         &sort_order_ids,
         tabular_id,
+        warehouse_id,
         &sort_orders
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table sort order: {}", err);
         err.into_error_model("Error inserting table sort order".to_string())
     })?;
 
@@ -227,19 +247,22 @@ pub(crate) async fn insert_sort_orders(
 pub(crate) async fn set_default_sort_order(
     default_sort_order_id: i64,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"INSERT INTO table_default_sort_order(table_id, sort_order_id)
-           VALUES ($1, $2)
-           ON CONFLICT (table_id) DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
+        r#"INSERT INTO table_default_sort_order(warehouse_id, table_id, sort_order_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (warehouse_id, table_id)
+           DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
+        warehouse_id,
         tabular_id,
         default_sort_order_id,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table sort order: {}", err);
         err.into_error_model("Error inserting table sort order".to_string())
     })?;
     Ok(())
@@ -248,6 +271,7 @@ pub(crate) async fn set_default_sort_order(
 pub(crate) async fn remove_snapshot_log_entries(
     n_entries: usize,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let i: i64 = n_entries.try_into().map_err(|e| {
@@ -258,22 +282,27 @@ pub(crate) async fn remove_snapshot_log_entries(
         )
     })?;
     let exec = sqlx::query!(
-        r#"DELETE FROM table_snapshot_log WHERE table_id = $1
-           AND sequence_number IN (SELECT sequence_number FROM table_snapshot_log WHERE table_id = $1 ORDER BY sequence_number ASC LIMIT $2)"#,
+        r#"DELETE FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = $2
+           AND sequence_number
+           IN (SELECT sequence_number FROM table_snapshot_log
+                   WHERE warehouse_id = $1 AND table_id =  $2
+                   ORDER BY sequence_number ASC LIMIT $3)"#,
+        warehouse_id,
         tabular_id,
         i
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error expiring table snapshot log entries: {}", err);
         err.into_error_model("Error expiring table snapshot log entries".to_string())
     })?;
 
     tracing::debug!(
-        "Expired {} snapshot log entries for table_id: {}",
+        "Expired {} snapshot log entries for table_id {} in warehouse_id {}",
         exec.rows_affected(),
-        tabular_id
+        tabular_id,
+        warehouse_id,
     );
     Ok(())
 }
@@ -281,6 +310,7 @@ pub(crate) async fn remove_snapshot_log_entries(
 pub(crate) async fn insert_snapshot_log(
     snapshots: impl ExactSizeIterator<Item = &SnapshotLog>,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let (snap, stamp): (Vec<_>, Vec<_>) = snapshots
@@ -294,9 +324,11 @@ pub(crate) async fn insert_snapshot_log(
         )
     })?;
     let _ = sqlx::query!(
-        r#"INSERT INTO table_snapshot_log(table_id, snapshot_id, timestamp)
-           SELECT $2, UNNEST($1::BIGINT[]), UNNEST($3::BIGINT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,
+        r#"INSERT INTO table_snapshot_log(warehouse_id, table_id, snapshot_id, timestamp)
+           SELECT $2, $3, UNNEST($1::BIGINT[]), UNNEST($4::BIGINT[])
+               ORDER BY UNNEST($5::BIGINT[]) ASC"#,
         &snap,
+        &warehouse_id,
         &tabular_id,
         &stamp,
         &seq.collect::<Vec<_>>()
@@ -304,13 +336,14 @@ pub(crate) async fn insert_snapshot_log(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table snapshot log: {}", err);
         err.into_error_model("Error inserting table snapshot log".to_string())
     })?;
     Ok(())
 }
 
 pub(super) async fn expire_metadata_log_entries(
+    warehouse_id: Uuid,
     tabular_id: Uuid,
     n_entries: usize,
     transaction: &mut Transaction<'_, Postgres>,
@@ -323,27 +356,33 @@ pub(super) async fn expire_metadata_log_entries(
         )
     })?;
     let exec = sqlx::query!(
-        r#"DELETE FROM table_metadata_log WHERE table_id = $1
-           AND sequence_number IN (SELECT sequence_number FROM table_metadata_log WHERE table_id = $1 ORDER BY sequence_number ASC LIMIT $2)"#,
+        r#"DELETE FROM table_metadata_log WHERE warehouse_id = $1 AND table_id = $2
+           AND sequence_number
+           IN (SELECT sequence_number FROM table_metadata_log
+                   WHERE warehouse_id = $1 AND table_id = $2
+                   ORDER BY sequence_number ASC LIMIT $3)"#,
+        warehouse_id,
         tabular_id,
         i
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error expiring table metadata log entries: {}", err);
         err.into_error_model("Error expiring table metadata log entries".to_string())
     })?;
 
     tracing::debug!(
-        "Expired {} metadata log entries for table_id: {}",
+        "Expired {} metadata log entries for table_id {} in warehouse_id {}",
         exec.rows_affected(),
-        tabular_id
+        tabular_id,
+        warehouse_id,
     );
     Ok(())
 }
 
 pub(super) async fn insert_metadata_log(
+    warehouse_id: Uuid,
     tabular_id: Uuid,
     log: impl ExactSizeIterator<Item = MetadataLog>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -367,8 +406,10 @@ pub(super) async fn insert_metadata_log(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file)
-           SELECT $1, UNNEST($2::BIGINT[]), UNNEST($3::TEXT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,
+        r#"INSERT INTO table_metadata_log(warehouse_id, table_id, timestamp, metadata_file)
+           SELECT $1, $2, UNNEST($3::BIGINT[]), UNNEST($4::TEXT[])
+               ORDER BY UNNEST($5::BIGINT[]) ASC"#,
+        warehouse_id,
         tabular_id,
         &timestamps,
         &metadata_files,
@@ -377,13 +418,14 @@ pub(super) async fn insert_metadata_log(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table metadata log: {}", err);
         err.into_error_model("Error inserting table metadata log".to_string())
     })?;
     Ok(())
 }
 
 pub(super) async fn insert_snapshot_refs(
+    warehouse_id: Uuid,
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
@@ -406,15 +448,19 @@ pub(super) async fn insert_snapshot_refs(
     let _ = sqlx::query!(
         r#"
         WITH deleted AS (
-            DELETE FROM table_refs WHERE table_id = $1 AND table_ref_name not in (select unnest($2::TEXT[]))
+            DELETE FROM table_refs
+            WHERE warehouse_id = $1 AND table_id = $2
+            AND table_ref_name NOT IN (SELECT unnest($3::TEXT[]))
         )
-        INSERT INTO table_refs(table_id,
+        INSERT INTO table_refs(warehouse_id,
+                              table_id,
                               table_ref_name,
                               snapshot_id,
                               retention)
-        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])
-        ON CONFLICT (table_id, table_ref_name)
+        SELECT $1, $2, unnest($3::TEXT[]), unnest($4::BIGINT[]), unnest($5::JSONB[])
+        ON CONFLICT (warehouse_id, table_id, table_ref_name)
         DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
+        warehouse_id,
         table_metadata.uuid(),
         &refnames,
         &snapshot_ids,
@@ -423,7 +469,7 @@ pub(super) async fn insert_snapshot_refs(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table refs: {}", err);
         err.into_error_model("Error inserting table refs".to_string())
     })?;
 
@@ -431,19 +477,22 @@ pub(super) async fn insert_snapshot_refs(
 }
 
 pub(super) async fn remove_snapshots(
+    warehouse_id: Uuid,
     table_id: Uuid,
     snapshot_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_snapshot WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        r#"DELETE FROM table_snapshot
+           WHERE warehouse_id = $1 AND table_id = $2 AND snapshot_id = ANY($3::BIGINT[])"#,
+        warehouse_id,
         table_id,
         &snapshot_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error deleting table snapshots: {}", err);
         err.into_error_model("Error deleting table snapshots".to_string())
     })?;
 

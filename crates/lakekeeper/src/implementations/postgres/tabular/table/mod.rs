@@ -461,6 +461,7 @@ pub(crate) async fn load_tables(
 ) -> Result<HashMap<TableId, LoadTableResponse>> {
     let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
 
+    // TODO(mooori) update below query
     let table = sqlx::query_as!(
         TableQueryStruct,
         r#"
