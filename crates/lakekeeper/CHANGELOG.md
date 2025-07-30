@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/lakekeeper/lakekeeper/compare/v0.9.3...v0.9.4) (2025-07-30)
+
+
+### Bug Fixes
+
+* View Versions default Namespace should be limited to its own Warehouse ([#1259](https://github.com/lakekeeper/lakekeeper/issues/1259)) ([10bb9da](https://github.com/lakekeeper/lakekeeper/commit/10bb9dab6c5c8300f7a06aec47ab978d08d1e141))
+
 ## [0.9.3](https://github.com/lakekeeper/lakekeeper/compare/v0.9.2...v0.9.3) (2025-07-18)
 
 
