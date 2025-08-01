@@ -584,19 +584,19 @@ pub(super) async fn insert_partition_statistics(
 
 pub(super) async fn remove_partition_statistics(
     table_id: Uuid,
-    statistics_ids: Vec<i64>,
+    snapshot_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_statistics WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        r#"DELETE FROM partition_statistics WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
         table_id,
-        &statistics_ids,
+        &snapshot_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
-        err.into_error_model("Error deleting table statistics".to_string())
+        tracing::warn!("Error deleting partition statistics for table {table_id}: {err}");
+        err.into_error_model("Error deleting partition statistics".to_string())
     })?;
 
     Ok(())
