@@ -56,40 +56,79 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    // TODO(mooori) all these need to be extended with warehouse_id
     insert_table(&table_metadata, transaction, *warehouse_id, tabular_id).await?;
 
-    common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
-    common::set_current_schema(table_metadata.current_schema_id(), transaction, tabular_id).await?;
+    common::insert_schemas(
+        table_metadata.schemas_iter(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
+    common::set_current_schema(
+        table_metadata.current_schema_id(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
 
     common::insert_partition_specs(
         table_metadata.partition_specs_iter(),
         transaction,
+        warehouse_id,
         tabular_id,
     )
     .await?;
     common::set_default_partition_spec(
         transaction,
+        warehouse_id,
         tabular_id,
         table_metadata.default_partition_spec().spec_id(),
     )
     .await?;
 
-    common::insert_snapshots(tabular_id, table_metadata.snapshots(), transaction).await?;
-    common::insert_snapshot_refs(&table_metadata, transaction).await?;
-    common::insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
-
-    common::insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
-    common::set_default_sort_order(
-        table_metadata.default_sort_order_id(),
+    common::insert_snapshots(
+        warehouse_id,
+        tabular_id,
+        table_metadata.snapshots(),
         transaction,
+    )
+    .await?;
+    common::insert_snapshot_refs(warehouse_id, &table_metadata, transaction).await?;
+    common::insert_snapshot_log(
+        table_metadata.history().iter(),
+        transaction,
+        warehouse_id,
         tabular_id,
     )
     .await?;
 
-    common::set_table_properties(tabular_id, table_metadata.properties(), transaction).await?;
+    common::insert_sort_orders(
+        table_metadata.sort_orders_iter(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
+    common::set_default_sort_order(
+        table_metadata.default_sort_order_id(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
+
+    common::set_table_properties(
+        warehouse_id,
+        tabular_id,
+        table_metadata.properties(),
+        transaction,
+    )
+    .await?;
 
     common::insert_metadata_log(
+        warehouse_id,
         tabular_id,
         table_metadata.metadata_log().iter().cloned(),
         transaction,
@@ -97,13 +136,19 @@ pub(crate) async fn create_table(
     .await?;
 
     common::insert_partition_statistics(
+        warehouse_id,
         tabular_id,
         table_metadata.partition_statistics_iter(),
         transaction,
     )
     .await?;
-    common::insert_table_statistics(tabular_id, table_metadata.statistics_iter(), transaction)
-        .await?;
+    common::insert_table_statistics(
+        warehouse_id,
+        tabular_id,
+        table_metadata.statistics_iter(),
+        transaction,
+    )
+    .await?;
 
     Ok(CreateTableResponse {
         table_metadata,

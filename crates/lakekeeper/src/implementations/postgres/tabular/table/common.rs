@@ -8,10 +8,10 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::{api, implementations::postgres::dbutils::DBErrorHandler};
+use crate::{api, implementations::postgres::dbutils::DBErrorHandler, WarehouseId};
 
 pub(super) async fn remove_schemas(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     table_id: Uuid,
     schema_ids: Vec<i32>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -19,7 +19,7 @@ pub(super) async fn remove_schemas(
     let _ = sqlx::query!(
         r#"DELETE FROM table_schema
            WHERE warehouse_id = $1 AND table_id = $2 AND schema_id = ANY($3::INT[])"#,
-        warehouse_id,
+        *warehouse_id,
         table_id,
         &schema_ids,
     )
@@ -36,13 +36,13 @@ pub(super) async fn remove_schemas(
 pub(super) async fn insert_schemas(
     schema_iter: impl ExactSizeIterator<Item = &SchemaRef>,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let num_schemas = schema_iter.len();
     let mut ids = Vec::with_capacity(num_schemas);
     let mut schemas = Vec::with_capacity(num_schemas);
-    let warehouse_ids = vec![warehouse_id; num_schemas];
+    let warehouse_ids = vec![*warehouse_id; num_schemas];
     let table_ids = vec![tabular_id; num_schemas];
 
     for s in schema_iter {
@@ -77,14 +77,14 @@ pub(super) async fn insert_schemas(
 pub(super) async fn set_current_schema(
     new_schema_id: i32,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
         r#"INSERT INTO table_current_schema (warehouse_id, table_id, schema_id) VALUES ($1, $2, $3)
            ON CONFLICT (warehouse_id, table_id) DO UPDATE SET schema_id = EXCLUDED.schema_id
         "#,
-        warehouse_id,
+        *warehouse_id,
         tabular_id,
         new_schema_id
     )
@@ -98,7 +98,7 @@ pub(super) async fn set_current_schema(
 }
 
 pub(super) async fn remove_partition_specs(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     table_id: Uuid,
     spec_ids: Vec<i32>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -106,7 +106,7 @@ pub(super) async fn remove_partition_specs(
     let _ = sqlx::query!(
         r#"DELETE FROM table_partition_spec
            WHERE warehouse_id = $1 AND table_id = $2 AND partition_spec_id = ANY($3::INT[])"#,
-        warehouse_id,
+        *warehouse_id,
         table_id,
         &spec_ids,
     )
@@ -123,7 +123,7 @@ pub(super) async fn remove_partition_specs(
 pub(crate) async fn insert_partition_specs(
     partition_specs: impl ExactSizeIterator<Item = &PartitionSpecRef>,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let mut spec_ids = Vec::with_capacity(partition_specs.len());
@@ -145,7 +145,7 @@ pub(crate) async fn insert_partition_specs(
            SELECT UNNEST($1::INT[]), $2, $3, UNNEST($4::JSONB[])"#,
         &spec_ids,
         tabular_id,
-        warehouse_id,
+        *warehouse_id,
         &specs
     )
     .execute(&mut **transaction)
@@ -160,7 +160,7 @@ pub(crate) async fn insert_partition_specs(
 
 pub(crate) async fn set_default_partition_spec(
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
     default_spec_id: i32,
 ) -> api::Result<()> {
@@ -171,7 +171,7 @@ pub(crate) async fn set_default_partition_spec(
            DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec_id,
         tabular_id,
-        warehouse_id,
+        *warehouse_id,
     )
     .execute(&mut **transaction)
     .await
@@ -183,7 +183,7 @@ pub(crate) async fn set_default_partition_spec(
 }
 
 pub(crate) async fn remove_sort_orders(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     table_id: Uuid,
     order_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -191,7 +191,7 @@ pub(crate) async fn remove_sort_orders(
     let _ = sqlx::query!(
         r#"DELETE FROM table_sort_order
            WHERE warehouse_id = $1 AND table_id = $2 AND sort_order_id = ANY($3::BIGINT[])"#,
-        warehouse_id,
+        *warehouse_id,
         table_id,
         &order_ids,
     )
@@ -208,7 +208,7 @@ pub(crate) async fn remove_sort_orders(
 pub(crate) async fn insert_sort_orders(
     sort_orders_iter: impl ExactSizeIterator<Item = &SortOrderRef>,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let n_orders = sort_orders_iter.len();
@@ -231,7 +231,7 @@ pub(crate) async fn insert_sort_orders(
            SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::JSONB[])"#,
         &sort_order_ids,
         tabular_id,
-        warehouse_id,
+        *warehouse_id,
         &sort_orders
     )
     .execute(&mut **transaction)
@@ -247,7 +247,7 @@ pub(crate) async fn insert_sort_orders(
 pub(crate) async fn set_default_sort_order(
     default_sort_order_id: i64,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
@@ -255,7 +255,7 @@ pub(crate) async fn set_default_sort_order(
            VALUES ($1, $2, $3)
            ON CONFLICT (warehouse_id, table_id)
            DO UPDATE SET sort_order_id = EXCLUDED.sort_order_id"#,
-        warehouse_id,
+        *warehouse_id,
         tabular_id,
         default_sort_order_id,
     )
@@ -271,7 +271,7 @@ pub(crate) async fn set_default_sort_order(
 pub(crate) async fn remove_snapshot_log_entries(
     n_entries: usize,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let i: i64 = n_entries.try_into().map_err(|e| {
@@ -287,7 +287,7 @@ pub(crate) async fn remove_snapshot_log_entries(
            IN (SELECT sequence_number FROM table_snapshot_log
                    WHERE warehouse_id = $1 AND table_id =  $2
                    ORDER BY sequence_number ASC LIMIT $3)"#,
-        warehouse_id,
+        *warehouse_id,
         tabular_id,
         i
     )
@@ -310,7 +310,7 @@ pub(crate) async fn remove_snapshot_log_entries(
 pub(crate) async fn insert_snapshot_log(
     snapshots: impl ExactSizeIterator<Item = &SnapshotLog>,
     transaction: &mut Transaction<'_, Postgres>,
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
 ) -> api::Result<()> {
     let (snap, stamp): (Vec<_>, Vec<_>) = snapshots
@@ -328,7 +328,7 @@ pub(crate) async fn insert_snapshot_log(
            SELECT $2, $3, UNNEST($1::BIGINT[]), UNNEST($4::BIGINT[])
                ORDER BY UNNEST($5::BIGINT[]) ASC"#,
         &snap,
-        &warehouse_id,
+        *warehouse_id,
         &tabular_id,
         &stamp,
         &seq.collect::<Vec<_>>()
@@ -343,7 +343,7 @@ pub(crate) async fn insert_snapshot_log(
 }
 
 pub(super) async fn expire_metadata_log_entries(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
     n_entries: usize,
     transaction: &mut Transaction<'_, Postgres>,
@@ -361,7 +361,7 @@ pub(super) async fn expire_metadata_log_entries(
            IN (SELECT sequence_number FROM table_metadata_log
                    WHERE warehouse_id = $1 AND table_id = $2
                    ORDER BY sequence_number ASC LIMIT $3)"#,
-        warehouse_id,
+        *warehouse_id,
         tabular_id,
         i
     )
@@ -382,7 +382,7 @@ pub(super) async fn expire_metadata_log_entries(
 }
 
 pub(super) async fn insert_metadata_log(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
     log: impl ExactSizeIterator<Item = MetadataLog>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -409,7 +409,7 @@ pub(super) async fn insert_metadata_log(
         r#"INSERT INTO table_metadata_log(warehouse_id, table_id, timestamp, metadata_file)
            SELECT $1, $2, UNNEST($3::BIGINT[]), UNNEST($4::TEXT[])
                ORDER BY UNNEST($5::BIGINT[]) ASC"#,
-        warehouse_id,
+        *warehouse_id,
         tabular_id,
         &timestamps,
         &metadata_files,
@@ -425,7 +425,7 @@ pub(super) async fn insert_metadata_log(
 }
 
 pub(super) async fn insert_snapshot_refs(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
@@ -460,7 +460,7 @@ pub(super) async fn insert_snapshot_refs(
         SELECT $1, $2, unnest($3::TEXT[]), unnest($4::BIGINT[]), unnest($5::JSONB[])
         ON CONFLICT (warehouse_id, table_id, table_ref_name)
         DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
-        warehouse_id,
+        *warehouse_id,
         table_metadata.uuid(),
         &refnames,
         &snapshot_ids,
@@ -477,7 +477,7 @@ pub(super) async fn insert_snapshot_refs(
 }
 
 pub(super) async fn remove_snapshots(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     table_id: Uuid,
     snapshot_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -485,7 +485,7 @@ pub(super) async fn remove_snapshots(
     let _ = sqlx::query!(
         r#"DELETE FROM table_snapshot
            WHERE warehouse_id = $1 AND table_id = $2 AND snapshot_id = ANY($3::BIGINT[])"#,
-        warehouse_id,
+        *warehouse_id,
         table_id,
         &snapshot_ids,
     )
@@ -500,14 +500,15 @@ pub(super) async fn remove_snapshots(
 }
 
 pub(super) async fn insert_snapshots(
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
     snapshots: impl ExactSizeIterator<Item = &SnapshotRef>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let snap_cnt = snapshots.len();
 
+    // Column values changing for every row.
     let mut ids = Vec::with_capacity(snap_cnt);
-    let mut tabs = Vec::with_capacity(snap_cnt);
     let mut parents = Vec::with_capacity(snap_cnt);
     let mut seqs = Vec::with_capacity(snap_cnt);
     let mut manifs = Vec::with_capacity(snap_cnt);
@@ -515,9 +516,12 @@ pub(super) async fn insert_snapshots(
     let mut schemas = Vec::with_capacity(snap_cnt);
     let mut timestamps = Vec::with_capacity(snap_cnt);
 
+    // Column values the same for every row.
+    let warehouses = vec![*warehouse_id; snap_cnt];
+    let tabs = vec![tabular_id; snap_cnt];
+
     for snap in snapshots {
         ids.push(snap.snapshot_id());
-        tabs.push(tabular_id);
         parents.push(snap.parent_snapshot_id());
         seqs.push(snap.sequence_number());
         manifs.push(snap.manifest_list().to_string());
@@ -534,6 +538,7 @@ pub(super) async fn insert_snapshots(
     let _ = sqlx::query!(
         r#"INSERT INTO table_snapshot(snapshot_id,
                                           table_id,
+                                          warehouse_id,
                                           parent_snapshot_id,
                                           sequence_number,
                                           manifest_list,
@@ -543,15 +548,17 @@ pub(super) async fn insert_snapshots(
             SELECT * FROM UNNEST(
                 $1::BIGINT[],
                 $2::UUID[],
-                $3::BIGINT[],
+                $3::UUID[],
                 $4::BIGINT[],
-                $5::TEXT[],
-                $6::JSONB[],
-                $7::INT[],
-                $8::BIGINT[]
+                $5::BIGINT[],
+                $6::TEXT[],
+                $7::JSONB[],
+                $8::INT[],
+                $9::BIGINT[]
             )"#,
         &ids,
         &tabs,
+        &warehouses,
         &parents as _,
         &seqs,
         &manifs,
@@ -562,7 +569,7 @@ pub(super) async fn insert_snapshots(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table snapshot: {}", err);
         err.into_error_model("Error inserting table snapshot".to_string())
     })?;
 
@@ -570,6 +577,7 @@ pub(super) async fn insert_snapshots(
 }
 
 pub(crate) async fn set_table_properties(
+    warehouse_id: WarehouseId,
     table_id: Uuid,
     properties: &HashMap<String, String>,
     transaction: &mut PgConnection,
@@ -579,10 +587,11 @@ pub(crate) async fn set_table_properties(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .unzip();
     sqlx::query!(
-        r#"WITH drop as (DELETE FROM table_properties WHERE table_id = $1)
-           INSERT INTO table_properties (table_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
-           ON CONFLICT (key, table_id) DO UPDATE SET value = EXCLUDED.value;"#,
+        r#"WITH drop as (DELETE FROM table_properties WHERE warehouse_id = $1 AND table_id = $2)
+           INSERT INTO table_properties (warehouse_id, table_id, key, value)
+           VALUES ($1, $2, UNNEST($3::text[]), UNNEST($4::text[]))
+           ON CONFLICT (key, table_id, warehouse_id) DO UPDATE SET value = EXCLUDED.value;"#,
+        *warehouse_id,
         table_id,
         &keys,
         &vals
@@ -598,6 +607,7 @@ pub(crate) async fn set_table_properties(
 }
 
 pub(super) async fn insert_partition_statistics(
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
     partition_statistics: impl ExactSizeIterator<Item = &PartitionStatisticsFile>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -614,17 +624,18 @@ pub(super) async fn insert_partition_statistics(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO partition_statistics(snapshot_id, table_id, statistics_path, file_size_in_bytes)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::TEXT[]), UNNEST($4::BIGINT[])"#,
+        r#"INSERT INTO partition_statistics(snapshot_id, table_id, warehouse_id, statistics_path, file_size_in_bytes)
+           SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::TEXT[]), UNNEST($5::BIGINT[])"#,
         &snapshot_ids,
         tabular_id,
+        *warehouse_id,
         &paths,
         &file_size_in_bytes
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting partition statistics: {}", err);
         err.into_error_model("Error inserting partition statistics".to_string())
     })?;
 
@@ -632,19 +643,22 @@ pub(super) async fn insert_partition_statistics(
 }
 
 pub(super) async fn remove_partition_statistics(
+    warehouse_id: WarehouseId,
     table_id: Uuid,
-    statistics_ids: Vec<i64>,
+    snapshot_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_statistics WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        r#"DELETE FROM table_statistics
+           WHERE warehouse_id = $1 AND table_id = $2 AND snapshot_id = ANY($3::BIGINT[])"#,
+        *warehouse_id,
         table_id,
-        &statistics_ids,
+        &snapshot_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error deleting table statistics: {}", err);
         err.into_error_model("Error deleting table statistics".to_string())
     })?;
 
@@ -652,6 +666,7 @@ pub(super) async fn remove_partition_statistics(
 }
 
 pub(super) async fn insert_table_statistics(
+    warehouse_id: WarehouseId,
     tabular_id: Uuid,
     statistics: impl ExactSizeIterator<Item = &StatisticsFile>,
     transaction: &mut Transaction<'_, Postgres>,
@@ -683,10 +698,11 @@ pub(super) async fn insert_table_statistics(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_statistics(snapshot_id, table_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::TEXT[]), UNNEST($4::BIGINT[]), UNNEST($5::BIGINT[]), UNNEST($6::TEXT[]), UNNEST($7::JSONB[])"#,
+        r#"INSERT INTO table_statistics(snapshot_id, table_id, warehouse_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
+           SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::TEXT[]), UNNEST($5::BIGINT[]), UNNEST($6::BIGINT[]), UNNEST($7::TEXT[]), UNNEST($8::JSONB[])"#,
         &snapshot_ids,
         tabular_id,
+        *warehouse_id,
         &paths,
         &file_size_in_bytes,
         &file_footer_size_in_bytes,
@@ -696,7 +712,7 @@ pub(super) async fn insert_table_statistics(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error inserting table statistics: {}", err);
         err.into_error_model("Error inserting table statistics".to_string())
     })?;
 
@@ -704,19 +720,22 @@ pub(super) async fn insert_table_statistics(
 }
 
 pub(super) async fn remove_table_statistics(
+    warehouse_id: WarehouseId,
     table_id: Uuid,
     statistics_ids: Vec<i64>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_statistics WHERE table_id = $1 AND snapshot_id = ANY($2::BIGINT[])"#,
+        r#"DELETE FROM table_statistics
+           WHERE warehouse_id = $1 AND table_id = $2 AND snapshot_id = ANY($3::BIGINT[])"#,
+        *warehouse_id,
         table_id,
         &statistics_ids,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error creating table: {}", err);
+        tracing::warn!("Error deleting table statistics: {}", err);
         err.into_error_model("Error deleting table statistics".to_string())
     })?;
 
