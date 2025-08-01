@@ -595,8 +595,8 @@ pub(super) async fn remove_partition_statistics(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error deleting table statistics: {}", err);
-        err.into_error_model("Error deleting table statistics".to_string())
+        tracing::warn!("Error deleting partition statistics for table {table_id}: {err}");
+        err.into_error_model("Error deleting partition statistics".to_string())
     })?;
 
     Ok(())
