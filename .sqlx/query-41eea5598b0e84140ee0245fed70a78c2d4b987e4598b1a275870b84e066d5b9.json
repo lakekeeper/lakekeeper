@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = $2\n           AND sequence_number\n           IN (SELECT sequence_number FROM table_snapshot_log\n                   WHERE warehouse_id = $1 AND table_id =  $2\n                   ORDER BY sequence_number ASC LIMIT $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41eea5598b0e84140ee0245fed70a78c2d4b987e4598b1a275870b84e066d5b9"
+}

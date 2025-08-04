@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n               SELECT 1\n               FROM tabular ta\n               -- What's the purpose of these joins?\n               JOIN warehouse w ON ta.warehouse_id = w.warehouse_id\n               WHERE (fs_location = ANY($1) OR\n                      -- TODO: revisit this after knowing performance impact, may need an index\n                      (length($3) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $3 || '/%'))\n               ) AND tabular_id != $2\n           ) as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bc1ed054abb82e12d06b65099109003504fab400369b21fd22452523ae42e1ec"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_metadata_log(warehouse_id, table_id, timestamp, metadata_file)\n           SELECT $1, $2, UNNEST($3::BIGINT[]), UNNEST($4::TEXT[])\n               ORDER BY UNNEST($5::BIGINT[]) ASC",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8Array",
+        "TextArray",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "06008ceac1e6d9b23c1411d3091273759c410ad6f000ad42a24ef29ab481dc1d"
+}
