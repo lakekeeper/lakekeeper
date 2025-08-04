@@ -455,7 +455,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     .await
     .map_err(|e| e.into_error_model("Error fetching projects"))?;
 
-    let has_more = projects.len() > page_size as usize;
+    let has_more = projects.len() > usize::try_from(page_size).unwrap_or(usize::MAX);
     let mut projects = projects;
     if has_more {
         projects.pop();
@@ -475,10 +475,12 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     Ok(crate::api::management::v1::project::ListProjectsResponse {
         projects: projects
             .into_iter()
-            .map(|project| crate::api::management::v1::project::GetProjectResponse {
-                project_id: ProjectId::from_db_unchecked(project.project_id),
-                project_name: project.project_name,
-            })
+            .map(
+                |project| crate::api::management::v1::project::GetProjectResponse {
+                    project_id: ProjectId::from_db_unchecked(project.project_id),
+                    project_name: project.project_name,
+                },
+            )
             .collect(),
         next_page_token,
     })
