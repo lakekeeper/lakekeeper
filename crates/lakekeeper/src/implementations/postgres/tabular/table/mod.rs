@@ -175,6 +175,7 @@ struct TableQueryStruct {
     table_name: String,
     namespace_name: Vec<String>,
     namespace_id: Uuid,
+    warehouse_id: Uuid,
     table_ref_names: Option<Vec<String>>,
     table_ref_snapshot_ids: Option<Vec<i64>>,
     table_ref_retention: Option<Vec<Json<SnapshotRetention>>>,
@@ -461,12 +462,12 @@ pub(crate) async fn load_tables(
 ) -> Result<HashMap<TableId, LoadTableResponse>> {
     let table_ids = &tables.into_iter().map(Into::into).collect::<Vec<_>>();
 
-    // TODO(mooori) update below query
     let table = sqlx::query_as!(
         TableQueryStruct,
         r#"
         SELECT
             t."table_id",
+            t.warehouse_id,
             t.last_sequence_number,
             t.last_column_id,
             t.last_updated_ms,
@@ -515,26 +516,29 @@ pub(crate) async fn load_tables(
             tstat.key_metadatas as "table_stats_key_metadata: Vec<Option<String>>",
             tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
+        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        INNER JOIN table_current_schema tcs ON tcs.table_id = t.table_id
-        LEFT JOIN table_default_partition_spec tdps ON tdps.table_id = t.table_id
-        LEFT JOIN table_default_sort_order tdsort ON tdsort.table_id = t.table_id
+        INNER JOIN table_current_schema tcs
+            ON tcs.warehouse_id = t.warehouse_id AND tcs.table_id = t.table_id
+        LEFT JOIN table_default_partition_spec tdps
+            ON tdps.warehouse_id = t.warehouse_id AND tdps.table_id = t.table_id
+        LEFT JOIN table_default_sort_order tdsort
+            ON tdsort.warehouse_id = t.warehouse_id AND tdsort.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(schema) as schemas
-                   FROM table_schema WHERE table_id = ANY($2)
+                   FROM table_schema WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) ts ON ts.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(partition_spec) as partition_spec,
                           ARRAY_AGG(partition_spec_id) as partition_spec_id
-                   FROM table_partition_spec WHERE table_id = ANY($2)
+                   FROM table_partition_spec WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tps ON tps.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                             ARRAY_AGG(key) as keys,
                             ARRAY_AGG(value) as values
-                     FROM table_properties WHERE table_id = ANY($2)
+                     FROM table_properties WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tp ON tp.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -544,34 +548,34 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(summary) as summaries,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(timestamp_ms) as timestamp
-                   FROM table_snapshot WHERE table_id = ANY($2)
+                   FROM table_snapshot WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
-                     FROM table_snapshot_log WHERE table_id = ANY($2)
+                     FROM table_snapshot_log WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tsl ON tsl.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps,
                           ARRAY_AGG(metadata_file ORDER BY sequence_number) as metadata_files
-                   FROM table_metadata_log WHERE table_id = ANY($2)
+                   FROM table_metadata_log WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tml ON tml.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(sort_order_id) as sort_order_ids,
                           ARRAY_AGG(sort_order) as sort_orders
-                     FROM table_sort_order WHERE table_id = ANY($2)
+                     FROM table_sort_order WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tso ON tso.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(table_ref_name) as table_ref_names,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(retention) as retentions
-                   FROM table_refs WHERE table_id = ANY($2)
+                   FROM table_refs WHERE warehouse_id = $1 AND table_id = ANY($2)
                    GROUP BY table_id) tr ON tr.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
                           ARRAY_AGG(statistics_path) as statistics_paths,
                           ARRAY_AGG(file_size_in_bytes) as file_size_in_bytes_s
-                    FROM partition_statistics WHERE table_id = ANY($2)
+                    FROM partition_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)
                     GROUP BY table_id) pstat ON pstat.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id) as snapshot_ids,
@@ -580,7 +584,7 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(file_footer_size_in_bytes) as file_footer_size_in_bytes_s,
                           ARRAY_AGG(key_metadata) as key_metadatas,
                           ARRAY_AGG(blob_metadata) as blob_metadatas
-                    FROM table_statistics WHERE table_id = ANY($2)
+                    FROM table_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)
                     GROUP BY table_id) tstat ON tstat.table_id = t.table_id
         WHERE w.warehouse_id = $1
             AND w.status = 'active'
@@ -616,6 +620,7 @@ pub(crate) async fn load_tables(
             }
         };
         let namespace_id = table.namespace_id.into();
+        let warehouse_id = table.warehouse_id.into();
         let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
         let storage_profile = table.storage_profile.deref().clone();
 
@@ -632,6 +637,7 @@ pub(crate) async fn load_tables(
             LoadTableResponse {
                 table_id,
                 namespace_id,
+                warehouse_id,
                 table_metadata,
                 metadata_location,
                 storage_secret_ident,
