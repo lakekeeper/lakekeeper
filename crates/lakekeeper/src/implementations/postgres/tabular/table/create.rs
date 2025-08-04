@@ -21,6 +21,7 @@ use crate::{
     service::{CreateTableResponse, NamespaceId, TableCreation, TableId},
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn create_table(
     TableCreation {
         warehouse_id,

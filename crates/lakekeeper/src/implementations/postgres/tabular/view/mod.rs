@@ -326,6 +326,7 @@ pub(crate) async fn create_view_schema(
 }
 
 #[derive(Debug, FromRow, Clone, Copy)]
+#[allow(clippy::struct_field_names)]
 struct ViewVersionResponse {
     version_id: ViewVersionId,
     view_id: Uuid,

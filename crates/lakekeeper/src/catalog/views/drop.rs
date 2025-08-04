@@ -19,6 +19,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     DropParams {
