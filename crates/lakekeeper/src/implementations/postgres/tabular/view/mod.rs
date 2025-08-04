@@ -129,14 +129,15 @@ pub(crate) async fn create_view(
         let ViewVersionResponse {
             version_id,
             view_id,
-<<<<<<< HEAD
             warehouse_id,
-        } = create_view_version(*warehouse_id, view_id, view_version.clone(), transaction).await?;
-||||||| 5b0cd7e3
-        } = create_view_version(view_id, view_version.clone(), transaction).await?;
-=======
-        } = create_view_version(namespace_id, view_id, view_version.clone(), transaction).await?;
->>>>>>> origin/main
+        } = create_view_version(
+            warehouse_id,
+            namespace_id,
+            view_id,
+            view_version.clone(),
+            transaction,
+        )
+        .await?;
 
         tracing::debug!(
             "Inserted view version with id: '{}' for view_id: '{}' in warehouse with id '{}'",
@@ -337,7 +338,7 @@ struct ViewVersionResponse {
 /// specified separately via `view_version_request`.
 #[allow(clippy::too_many_lines)]
 async fn create_view_version(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     view_id: Uuid,
     view_version_request: ViewVersionRef,
@@ -382,7 +383,7 @@ async fn create_view_version(
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     returning warehouse_id, view_id, version_id
                 "#,
-                warehouse_id,
+                *warehouse_id,
                 view_id,
                 version_id,
                 schema_id,
