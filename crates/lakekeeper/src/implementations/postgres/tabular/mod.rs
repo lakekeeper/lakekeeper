@@ -396,7 +396,6 @@ pub(crate) async fn create_tabular(
         r#"SELECT EXISTS (
                SELECT 1
                FROM tabular ta
-               -- What's the purpose of these joins?
                JOIN warehouse w ON ta.warehouse_id = w.warehouse_id
                WHERE (fs_location = ANY($1) OR
                       -- TODO: revisit this after knowing performance impact, may need an index

@@ -395,7 +395,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             if let Some(previous_table_id) = previous_table_id {
                 tracing::debug!(
                     "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table_id} for overwrite operation",
-                    table.name, warehouse.id, table.namespace
+                    table.name, table.namespace, warehouse.name
                 );
                 // Verify authorization to drop the table first
                 authorizer
