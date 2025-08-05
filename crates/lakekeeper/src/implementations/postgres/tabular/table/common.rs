@@ -649,7 +649,7 @@ pub(super) async fn remove_partition_statistics(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
     let _ = sqlx::query!(
-        r#"DELETE FROM table_statistics
+        r#"DELETE FROM partition_statistics
            WHERE warehouse_id = $1 AND table_id = $2 AND snapshot_id = ANY($3::BIGINT[])"#,
         *warehouse_id,
         table_id,
@@ -658,8 +658,8 @@ pub(super) async fn remove_partition_statistics(
     .execute(&mut **transaction)
     .await
     .map_err(|err| {
-        tracing::warn!("Error deleting table statistics: {}", err);
-        err.into_error_model("Error deleting table statistics".to_string())
+        tracing::warn!("Error deleting partition statistics for table {table_id}: {err}");
+        err.into_error_model("Error deleting partition statistics".to_string())
     })?;
 
     Ok(())
