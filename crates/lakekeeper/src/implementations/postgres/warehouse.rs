@@ -7,6 +7,7 @@ use crate::{
     api::{
         iceberg::v1::PaginationQuery,
         management::v1::{
+            project::{GetProjectResponse, ListProjectsResponse},
             warehouse::{TabularDeleteProfile, WarehouseStatistics, WarehouseStatisticsResponse},
             DeleteWarehouseQuery, ProtectionResponse,
         },
@@ -14,7 +15,7 @@ use crate::{
     },
     implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
     request_metadata::RequestMetadata,
-    service::{storage::StorageProfile, GetProjectResponse, GetWarehouseResponse, WarehouseStatus},
+    service::{storage::StorageProfile, GetWarehouseResponse, WarehouseStatus},
     ProjectId, SecretIdent, WarehouseId, CONFIG,
 };
 
@@ -261,7 +262,7 @@ pub(crate) async fn get_project(
     if let Some(project) = project {
         Ok(Some(GetProjectResponse {
             project_id: ProjectId::from_db_unchecked(project.project_id),
-            name: project.project_name,
+            project_name: project.project_name,
         }))
     } else {
         Ok(None)
@@ -414,11 +415,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     project_ids: Option<HashSet<ProjectId>>,
     pagination: PaginationQuery,
     connection: E,
-) -> Result<crate::api::management::v1::project::ListProjectsResponse> {
-    use crate::{
-        config::CONFIG,
-        implementations::postgres::pagination::{PaginateToken, V1PaginateToken},
-    };
+) -> Result<ListProjectsResponse> {
 
     let page_size = CONFIG.page_size_or_pagination_max(pagination.page_size);
     let return_all = project_ids.is_none();
@@ -455,7 +452,10 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     .await
     .map_err(|e| e.into_error_model("Error fetching projects"))?;
 
-    let has_more = projects.len() > usize::try_from(page_size).unwrap_or(usize::MAX);
+    let page_as_usize: usize = page_size
+        .try_into()
+        .expect("should be running on at least 32 bit architecture");
+    let has_more = projects.len() > page_as_usize;
     let mut projects = projects;
     if has_more {
         projects.pop();
@@ -472,11 +472,11 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
         None
     };
 
-    Ok(crate::api::management::v1::project::ListProjectsResponse {
+    Ok(ListProjectsResponse {
         projects: projects
             .into_iter()
             .map(
-                |project| crate::api::management::v1::project::GetProjectResponse {
+                |project| GetProjectResponse {
                     project_id: ProjectId::from_db_unchecked(project.project_id),
                     project_name: project.project_name,
                 },
@@ -1321,6 +1321,25 @@ pub(crate) mod test {
 
         assert_eq!(page2.projects.len(), 2);
         assert!(page2.next_page_token.is_none());
+
+        // Paginated results are return in the expected order
+        let all_projects = list_projects(
+            None,
+            PaginationQuery {
+                page_size: Some(4),
+                page_token: PageToken::NotSpecified,
+            },
+            &pool.clone(),
+        )
+        .await
+        .unwrap();
+
+        // the first page results are in order
+        assert_eq!(page1.projects[0].project_id, all_projects.projects[0].project_id);
+        assert_eq!(page1.projects[1].project_id, all_projects.projects[1].project_id);
+        // on the second page results are in order
+        assert_eq!(page2.projects[0].project_id, all_projects.projects[2].project_id);
+        assert_eq!(page2.projects[1].project_id, all_projects.projects[3].project_id);
 
         // Verify all projects are returned
         let mut all_project_ids = Vec::new();
