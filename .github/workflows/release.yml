@@ -313,12 +313,18 @@ jobs:
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
 
-      - name: Test Login to Quay.io (Lakekeeper)
+      - name: Test Login to Quay.io
         uses: docker/login-action@v3
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
+
+      - name: Test Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
   publish-container-main:
     name: Publish Container (main branch)
@@ -340,13 +346,19 @@ jobs:
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
+      - name: Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
       - name: Load Docker
         run: |
           docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
           docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
           docker images
 
-      - name: Push Full Tag to quay.io
+      - name: Push to quay.io
         run: |
           COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
           docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
@@ -355,6 +367,16 @@ jobs:
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest create quay.io/lakekeeper/catalog:latest-main quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest push quay.io/lakekeeper/catalog:latest-main
+
+      - name: Push to Dockerhub
+        run: |
+          COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${COMMIT_SHA}-amd64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker push vakamo/lakekeeper:${COMMIT_SHA}-amd64
+          docker push vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker manifest create vakamo/lakekeeper:latest-main vakamo/lakekeeper:${COMMIT_SHA}-amd64 vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker manifest push vakamo/lakekeeper:latest-main
 
   # Create GitHub release with Rust build targets and release notes
   publish-binary:
