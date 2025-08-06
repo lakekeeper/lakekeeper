@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-
+use axum::routing::options;
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
 use iceberg_ext::{
@@ -427,14 +427,20 @@ impl Catalog for super::PostgresCatalog {
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<GetProjectResponse>> {
-        get_project(project_id, transaction).await
+        get_project(project_id, transaction).await.map(|opt|
+            opt.map(|response| GetProjectResponse{
+                project_id: response.project_id,
+                name: response.project_name,
+            })
+        )
     }
 
     async fn list_projects(
         project_ids: Option<HashSet<ProjectId>>,
+        pagination: PaginationQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<GetProjectResponse>> {
-        list_projects(project_ids, &mut **transaction).await
+    ) -> Result<crate::api::management::v1::project::ListProjectsResponse> {
+        list_projects(project_ids, pagination, &mut **transaction).await
     }
 
     async fn get_endpoint_statistics(
