@@ -313,12 +313,18 @@ jobs:
       - name: Release Please
         run: echo ${{ needs.release_please.outputs.tag_name }}
 
-      - name: Test Login to Quay.io (Lakekeeper)
+      - name: Test Login to Quay.io
         uses: docker/login-action@v3
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
+
+      - name: Test Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
   publish-container-main:
     name: Publish Container (main branch)
@@ -340,13 +346,19 @@ jobs:
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
+      - name: Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
       - name: Load Docker
         run: |
           docker load -i docker-lakekeeper/docker-lakekeeper-amd64.tar
           docker load -i docker-lakekeeper/docker-lakekeeper-arm64.tar
           docker images
 
-      - name: Push Full Tag to quay.io
+      - name: Push to quay.io
         run: |
           COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
           docker tag localhost/lakekeeper-local:amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64
@@ -355,6 +367,16 @@ jobs:
           docker push quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest create quay.io/lakekeeper/catalog:latest-main quay.io/lakekeeper/catalog:${COMMIT_SHA}-amd64 quay.io/lakekeeper/catalog:${COMMIT_SHA}-arm64
           docker manifest push quay.io/lakekeeper/catalog:latest-main
+
+      - name: Push to Dockerhub
+        run: |
+          COMMIT_SHA=${GITHUB_SHA::8}  # Get the first 8 characters of the commit SHA
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${COMMIT_SHA}-amd64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker push vakamo/lakekeeper:${COMMIT_SHA}-amd64
+          docker push vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker manifest create vakamo/lakekeeper:latest-main vakamo/lakekeeper:${COMMIT_SHA}-amd64 vakamo/lakekeeper:${COMMIT_SHA}-arm64
+          docker manifest push vakamo/lakekeeper:latest-main
 
   # Create GitHub release with Rust build targets and release notes
   publish-binary:
@@ -413,6 +435,13 @@ jobs:
           docker tag localhost/lakekeeper-local:arm64 quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-amd64
           docker push quay.io/lakekeeper/catalog:${{ needs.release_please.outputs.tag_name }}-arm64
+      
+      - name: Push Images to Dockerhub
+        run: |
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-arm64
+          docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-amd64
+          docker push vakamo/lakekeeper:${{ needs.release_please.outputs.tag_name }}-arm64
 
       - name: Check if Tag is vX.Y.Z
         id: check-tag
@@ -450,3 +479,33 @@ jobs:
           docker manifest rm quay.io/lakekeeper/catalog:latest || true
           docker manifest create quay.io/lakekeeper/catalog:latest quay.io/lakekeeper/catalog:latest-amd64 quay.io/lakekeeper/catalog:latest-arm64
           docker manifest push quay.io/lakekeeper/catalog:latest
+
+      - name: Push Partial Tag to Dockerhub
+        if: steps.check-tag.outputs.match == 'true'
+        run: |
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:latest-amd64
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
+          docker tag localhost/lakekeeper-local:amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:latest-arm64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-arm64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
+          docker tag localhost/lakekeeper-local:arm64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
+          docker push vakamo/lakekeeper:latest-amd64
+          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64
+          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64
+          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64
+          docker push vakamo/lakekeeper:latest-arm64
+          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-arm64
+          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
+          docker push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
+          docker manifest create vakamo/lakekeeper:v${{ needs.release_please.outputs.major }} vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}-arm64
+          docker manifest push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}
+          docker manifest create vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }} vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}-arm64
+          docker manifest push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}
+          docker manifest create vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }} vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-amd64 vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}-arm64
+          docker manifest push vakamo/lakekeeper:v${{ needs.release_please.outputs.major }}.${{ needs.release_please.outputs.minor }}.${{ needs.release_please.outputs.patch }}
+          docker image rm vakamo/lakekeeper:latest || true
+          docker manifest rm vakamo/lakekeeper:latest || true
+          docker manifest create vakamo/lakekeeper:latest vakamo/lakekeeper:latest-amd64 vakamo/lakekeeper:latest-arm64
+          docker manifest push vakamo/lakekeeper:latest
