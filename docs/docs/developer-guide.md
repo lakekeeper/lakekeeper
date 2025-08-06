@@ -156,9 +156,9 @@ cargo test service::storage::s3::test::aws::test_can_validate
 
 Our integration tests are written in Python and use pytest. They are located in the `tests` folder. The integration tests spin up Lakekeeper and all the dependencies via `docker compose`. Please check the [Integration Test Docs](https://github.com/lakekeeper/lakekeeper/tree/main/tests) for more information.
 
-### OpenFGA
+### Running Authorization unit tests
 
-Some tests are run against an OpenFGA server.
+Some authorization unit tests need to be run against an OpenFGA server. They are enabled only if TEST_OPENFGA is set. The workflow for executing them is:
 
 ```bash
 # Start an OpenFGA server in a docker container
