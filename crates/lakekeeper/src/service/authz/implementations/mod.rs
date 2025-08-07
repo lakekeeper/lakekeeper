@@ -1,4 +1,6 @@
-use crate::{service::authz::ErrorModel, AuthZBackend, CONFIG};
+use iceberg::Catalog;
+
+use crate::{implementations::postgres, service::authz::ErrorModel, AuthZBackend, CONFIG};
 
 pub(super) mod allow_all;
 
@@ -24,14 +26,16 @@ pub async fn get_default_authorizer_from_config() -> Result<BuiltInAuthorizers, 
 /// # Errors
 /// Migration fails - for details check the documentation of the configured
 /// Authorizer implementation
-pub async fn migrate_default_authorizer() -> std::result::Result<(), ErrorModel> {
+pub async fn migrate_default_authorizer(
+    catalog_state: postgres::CatalogState,
+) -> std::result::Result<(), ErrorModel> {
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => Ok(()),
         #[cfg(feature = "authz-openfga")]
         AuthZBackend::OpenFGA => {
             let client = openfga::new_client_from_config().await?;
             let store_name = None;
-            openfga::migrate(&client, store_name).await?;
+            openfga::migrate(&client, store_name, catalog_state).await?;
             Ok(())
         }
     }
