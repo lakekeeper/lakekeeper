@@ -175,12 +175,11 @@ pub(crate) mod tests {
         OpenFGAAuthorizer,
         postgres::CatalogState,
     ) {
-        let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
-
         let client = new_client_from_config().await.unwrap();
 
         let test_uuid = uuid::Uuid::now_v7();
         let store_name = format!("test_store_{test_uuid}");
+        let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
         migrate(&client, Some(store_name.clone()), catalog_state.clone())
             .await
             .unwrap();

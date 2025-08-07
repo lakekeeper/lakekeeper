@@ -1066,17 +1066,23 @@ pub(crate) mod tests {
         use tower_http::ServiceExt;
 
         use super::super::*;
-        use crate::service::{authz::implementations::openfga::client::new_authorizer, RoleId};
+        use crate::{
+            implementations::postgres,
+            service::{authz::implementations::openfga::client::new_authorizer, RoleId},
+        };
 
         const TEST_CONSISTENCY: ConsistencyPreference = ConsistencyPreference::HigherConsistency;
 
-        async fn new_authorizer_in_empty_store() -> OpenFGAAuthorizer {
+        async fn new_authorizer_in_empty_store(pool: sqlx::PgPool) -> OpenFGAAuthorizer {
             let client = new_client_from_config()
                 .await
                 .expect("Failed to create OpenFGA client");
 
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            migrate(&client, Some(store_name.clone())).await.unwrap();
+            let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
+            migrate(&client, Some(store_name.clone()), catalog_state)
+                .await
+                .unwrap();
 
             new_authorizer(client, Some(store_name), TEST_CONSISTENCY)
                 .await
