@@ -317,6 +317,15 @@ async fn create_view_version(
     let view_version = view_version_request;
     let version_id = view_version.version_id();
     let schema_id = view_version.schema_id();
+
+    // According to the [iceberg spec] `view_version.default_namespace` is a required field. However
+    // some query engines (e.g. Spark) may send an empty string for `default_namespace`. We
+    // represent this by NULL in the `default_namespace_id` column.
+    //
+    // While the [iceberg spec] specifies `default_namespace` as namespace identifier, we store
+    // the corresponding namespace's id as surrogate key for performance reasons.
+    //
+    // [iceberg spec]: https://iceberg.apache.org/view-spec/#view-metadata
     let default_ns = view_version.default_namespace();
     let default_ns = default_ns.clone().inner();
     let default_namespace_id: Option<Uuid> = sqlx::query_scalar!(
