@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+use anyhow;
 use axum::Router;
 use futures::future::try_join_all;
 use openfga_client::{
@@ -620,6 +621,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&namespace_id).await
     }
 
+    // TODO(mooori) write `warehouse/table_id`, also when creating views and assigning to table
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
@@ -1061,6 +1063,7 @@ pub(crate) mod tests {
     mod openfga {
         use http::StatusCode;
         use openfga_client::client::ConsistencyPreference;
+        use tower_http::ServiceExt;
 
         use super::super::*;
         use crate::service::{authz::implementations::openfga::client::new_authorizer, RoleId};
@@ -1114,6 +1117,139 @@ pub(crate) mod tests {
                 projects,
                 ListProjectsResponse::Projects(HashSet::from_iter(vec![project]))
             );
+        }
+
+        #[tokio::test]
+        async fn test_read_objects_per_user() -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", "this_user");
+            let actor = Actor::Principal(user_id.clone());
+            let table_id = TableId::from(uuid::Uuid::now_v7());
+
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:actor".to_string(),
+                            relation: TableRelation::Ownership.to_string(),
+                            object: "table:t1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t2".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t3".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let tuples = authorizer
+                .read_all(ReadRequestTupleKey {
+                    user: "namespace:ns1".to_string(),
+                    relation: "parent".to_string(),
+                    object: "table:".to_string(),
+                })
+                .await?;
+            println!("relation name: {}", TableRelation::Parent.to_string());
+            println!("{tuples:?}");
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_list_objects() -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", "this_user");
+            let actor = Actor::Principal(user_id.clone());
+            let table_id = TableId::from(uuid::Uuid::now_v7());
+
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:actor".to_string(),
+                            relation: TableRelation::Ownership.to_string(),
+                            object: "table:t1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t2".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t3".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let tuples = authorizer
+                .client
+                .list_objects("table", "parent", "namespace:ns1", None, None)
+                .await?;
+
+            println!("relation name: {}", TableRelation::Parent.to_string());
+            println!("{:?}", tuples.get_ref().objects);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn test_read_users_per_object() -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", "this_user");
+            let actor = Actor::Principal(user_id.clone());
+            let table_id = TableId::from(uuid::Uuid::now_v7());
+
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:user_1".to_string(),
+                            relation: TableRelation::Describe.to_string(),
+                            object: "table:t1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "user:user_2".to_string(),
+                            relation: TableRelation::Describe.to_string(),
+                            object: "table:t1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "user:user_3".to_string(),
+                            relation: TableRelation::Describe.to_string(),
+                            object: "table:t2".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let tuples = authorizer
+                .read_all(ReadRequestTupleKey {
+                    user: "user:".to_string(),
+                    relation: "describe".to_string(),
+                    object: "table:t1".to_string(),
+                })
+                .await?;
+            println!("relation name: {}", TableRelation::Describe.to_string());
+            println!("{tuples:?}");
+            Ok(())
         }
 
         #[tokio::test]
