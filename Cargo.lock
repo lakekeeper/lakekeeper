@@ -4422,8 +4422,6 @@ dependencies = [
 [[package]]
 name = "openfga-client"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13cc298d5e71fdedababffc68519356e427d042fc6170e8f49cf3d6657e96499"
 dependencies = [
  "async-stream",
  "futures",

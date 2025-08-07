@@ -16,7 +16,7 @@ pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
-) -> openfga_client::migration::TupleModelManager<BasicAuthLayer> {
+) -> openfga_client::migration::TupleModelManager<BasicAuthLayer, String> {
     openfga_client::migration::TupleModelManager::new(
         client.clone(),
         &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
@@ -33,18 +33,20 @@ fn get_model_manager(
         .expect("Model v3.4 is a valid AuthorizationModel in JSON format."),
         AuthorizationModelVersion::new(3, 4),
         // For major version upgrades, this is where tuple migrations go.
-        None::<MigrationFn<_>>,
+        None::<MigrationFn<_, _>>,
         Some(push_down_warehouse_id),
     )
 }
 
+// catalog trait reingeben, nicht postgres db
 async fn push_down_warehouse_id(
     mut client: BasicOpenFgaServiceClient,
+    state: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    println!("state in migration fn: {state}");
     // Construct OpenFGAClient to be able to use convenience methods.
-    // Correct to operate on default store and active_auth_model?
     let store = client
-        .get_store_by_name(&AUTH_CONFIG.store_name)
+        .get_store_by_name(&state)
         .await?
         .expect("default store should exist");
     // vermutlich: oben neues add model, und dann hier get_active_auth_model
@@ -68,7 +70,7 @@ async fn push_down_warehouse_id(
     //     - user: table id, object: nur `namespace:`
     //   - copy these tuples and replace table_id with warehouse_id/table_id
     //     - alte tuple erst spaeter loeschen
-    //   - write the new tuples, delete the old ones
+    //   - write the new tuples, delete the old ones only after community is off 0.9
     //
     // - Do the same for views
     //
@@ -80,8 +82,8 @@ async fn push_down_warehouse_id(
 }
 
 async fn add_warehouse_id_to_tables<T>(
-    client: OpenFgaClient<T>,
-    warhouse_ids: &HashMap<TableId, WarehouseId>,
+    _client: OpenFgaClient<T>,
+    _warhouse_ids: &HashMap<TableId, WarehouseId>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // let tables_
     Ok(())
@@ -137,7 +139,7 @@ pub(crate) async fn migrate(
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
     tracing::info!("Starting OpenFGA Migration for store {store_name}");
     let mut manager = get_model_manager(client, Some(store_name.clone()));
-    manager.migrate().await?;
+    manager.migrate(store_name.clone()).await?;
     tracing::info!("OpenFGA Migration finished");
     Ok(())
 }
