@@ -615,7 +615,7 @@ mod test {
         },
         service::{
             authz::AllowAllAuthorizer,
-            storage::TestProfile,
+            storage::MemoryProfile,
             task_queue::{
                 tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
             },
@@ -645,7 +645,7 @@ mod test {
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),
-            Some(TestProfile::default().into()),
+            Some(MemoryProfile::default().into()),
             None,
             None,
             true,

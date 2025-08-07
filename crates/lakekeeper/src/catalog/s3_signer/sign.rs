@@ -5,6 +5,7 @@ use aws_sigv4::{
     sign::v4,
     {self},
 };
+use lakekeeper_io::s3::S3Location;
 
 use super::{super::CatalogServer, error::SignError};
 use crate::{
@@ -18,7 +19,8 @@ use crate::{
         authz::{Authorizer, CatalogTableAction, CatalogWarehouseAction},
         secrets::SecretStore,
         storage::{
-            s3::S3UrlStyleDetectionMode, S3Credential, S3Location, S3Profile, StorageCredential,
+            s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
+            ValidationError,
         },
         Catalog, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
     },
@@ -274,18 +276,7 @@ async fn sign(
     let mut sign_settings = SigningSettings::default();
     sign_settings.percent_encoding_mode = aws_sigv4::http_request::PercentEncodingMode::Single;
     sign_settings.payload_checksum_kind = aws_sigv4::http_request::PayloadChecksumKind::XAmzSha256;
-    let aws_credentials = storage_profile
-        .get_aws_credentials_with_assumed_role(credentials)
-        .await?
-        .ok_or_else(|| {
-            ErrorModel::precondition_failed(
-                "Cannot sign requests for Warehouses without S3 credentials",
-                "SignWithoutCredentials",
-                None,
-            )
-        })?;
-    let identity = aws_credentials.into();
-    // let identity = credentials.into();
+    let identity = storage_profile.get_signing_identity(credentials).await?;
     let signing_params = v4::SigningParams::builder()
         .identity(&identity)
         .region(request_region)
@@ -522,7 +513,8 @@ fn validate_uri(
     // i.e. s3://bucket/key
     table_location: &str,
 ) -> Result<()> {
-    let table_location = S3Location::try_from_str(table_location, false)?;
+    let table_location =
+        S3Location::try_from_str(table_location, false).map_err(ValidationError::from)?;
 
     for url_location in &parsed_url.locations {
         if !url_location
@@ -531,8 +523,8 @@ fn validate_uri(
         {
             return Err(SignError::RequestUriMismatch {
                 request_uri: parsed_url.url.to_string(),
-                expected_location: table_location.into_normalized_location().to_string(),
-                actual_location: url_location.as_normalized_location().to_string(),
+                expected_location: table_location.to_string(),
+                actual_location: url_location.to_string(),
             }
             .into());
         }
@@ -542,11 +534,12 @@ fn validate_uri(
 }
 
 pub(super) mod s3_utils {
+    use lakekeeper_io::s3::S3Location;
     use lazy_regex::regex;
     use serde::{Deserialize, Serialize};
 
     use super::{ErrorModel, Operation, Result};
-    use crate::service::storage::{s3::S3UrlStyleDetectionMode, S3Location};
+    use crate::service::storage::{s3::S3UrlStyleDetectionMode, ValidationError};
 
     #[derive(Debug, Clone)]
     pub(super) struct ParsedSignRequest {
@@ -703,7 +696,8 @@ pub(super) mod s3_utils {
                         bucket.clone(),
                         key.split('/').map(ToString::to_string).collect(),
                         None,
-                    )?;
+                    )
+                    .map_err(ValidationError::from)?;
                     locations.push(location);
                 }
 
@@ -725,6 +719,7 @@ pub(super) mod s3_utils {
         let host = uri.host().ok_or_else(|| {
             ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
         })?;
+        println!("Host: {host:?}");
         let path_segments = get_path_segments(uri, allow_no_key)?;
         let port = uri.port_or_known_default().unwrap_or(443);
 
@@ -751,14 +746,10 @@ pub(super) mod s3_utils {
             )
             .into());
         };
-
         Ok(ParsedSignRequest {
             url: uri.clone(),
-            locations: vec![S3Location::new(
-                bucket.to_string(),
-                path_segments,
-                Some(used_endpoint.to_string()),
-            )?],
+            locations: vec![S3Location::new(bucket.to_string(), path_segments, None)
+                .map_err(ValidationError::from)?],
             endpoint: used_endpoint.to_string(),
             port,
         })
@@ -800,7 +791,8 @@ pub(super) mod s3_utils {
                     vec![]
                 },
                 None,
-            )?],
+            )
+            .map_err(ValidationError::from)?],
             endpoint: uri
                 .host_str()
                 .ok_or_else(|| {
@@ -1088,10 +1080,7 @@ mod test {
                 None,
             )
             .unwrap_or_else(|_| panic!("Failed to parse {uri}"));
-            let result = parsed.locations[0]
-                .clone()
-                .into_normalized_location()
-                .to_string();
+            let result = parsed.locations[0].clone().to_string();
             assert_eq!(result, expected);
         }
     }
@@ -1141,7 +1130,7 @@ mod test {
             let result = parsed
                 .locations
                 .iter()
-                .map(|location| location.clone().into_normalized_location().to_string())
+                .map(|location| location.clone().to_string())
                 .collect_vec();
             assert_eq!(result, expected);
             assert_eq!(operation, Operation::Delete);

@@ -9,7 +9,7 @@
 pub mod catalog;
 mod config;
 pub mod service;
-pub use config::{AuthZBackend, OpenFGAAuth, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
+pub use config::{AuthZBackend, OpenFGAAuth, PgSslMode, SecretBackend, CONFIG, DEFAULT_PROJECT_ID};
 pub use service::{ProjectId, SecretIdent, WarehouseId};
 
 #[cfg(feature = "router")]
@@ -35,7 +35,6 @@ pub use utoipa;
 
 #[cfg(feature = "router")]
 pub mod metrics;
-mod retry;
 #[cfg(feature = "router")]
 pub mod tracing;
 

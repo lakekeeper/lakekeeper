@@ -4,10 +4,8 @@ use iceberg::{
     spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder},
     TableIdent,
 };
-use iceberg_ext::{
-    catalog::{rest::ViewUpdate, ViewRequirement},
-    configs::Location,
-};
+use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
+use lakekeeper_io::Location;
 use uuid::Uuid;
 
 use crate::{
@@ -17,7 +15,7 @@ use crate::{
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_metadata_file},
+        io::{remove_all, write_file},
         require_warehouse_id,
         tables::{
             determine_table_ident, extract_count_from_metadata_location, require_active_warehouse,
@@ -232,11 +230,11 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     // Write metadata file
     let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
-    write_metadata_file(
+    write_file(
+        &file_io,
         &metadata_location,
         &requested_update_metadata,
         CompressionCodec::try_from_metadata(&requested_update_metadata)?,
-        &file_io,
     )
     .await?;
 
@@ -401,12 +399,12 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
         let prefix = whi.to_string();
         let view_name = "myview";
-        let view = create_view(
+        let view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             create_view_request(Some(view_name), None),
             Some(prefix.clone()),
-        )
+        ))
         .await
         .unwrap();
 
@@ -454,12 +452,12 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
         let prefix = whi.to_string();
         let view_name = "myview";
-        let _ = create_view(
+        let _ = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             create_view_request(Some(view_name), None),
             Some(prefix.clone()),
-        )
+        ))
         .await
         .unwrap();
 

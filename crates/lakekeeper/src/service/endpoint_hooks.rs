@@ -9,13 +9,11 @@ use iceberg::{
     spec::{TableMetadata, ViewMetadata},
     TableIdent,
 };
-use iceberg_ext::{
-    catalog::rest::{
-        CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
-        RegisterTableRequest, RenameTableRequest,
-    },
-    configs::Location,
+use iceberg_ext::catalog::rest::{
+    CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
+    RegisterTableRequest, RenameTableRequest,
 };
+use lakekeeper_io::Location;
 
 use crate::{
     api::{

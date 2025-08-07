@@ -17,14 +17,9 @@ use azure_storage::{
     StorageCredentials,
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use iceberg::io::{
-    ADLS_ACCOUNT_KEY, ADLS_ACCOUNT_NAME, ADLS_AUTHORITY_HOST, ADLS_CLIENT_ID, ADLS_CLIENT_SECRET,
-    ADLS_TENANT_ID,
-};
-use iceberg_ext::configs::{
-    table::{custom, TableProperties},
-    Location,
-};
+use iceberg::io::ADLS_AUTHORITY_HOST;
+use iceberg_ext::configs::table::{custom, TableProperties};
+use lakekeeper_io::{InvalidLocationError, Location};
 use lazy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -37,8 +32,11 @@ use crate::{
         CatalogConfig, Result,
     },
     service::storage::{
-        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
-        StoragePermissions, StorageType, TableConfig,
+        error::{
+            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+            UpdateError, ValidationError,
+        },
+        StoragePermissions, TableConfig,
     },
     WarehouseId, CONFIG,
 };
@@ -107,11 +105,12 @@ impl AdlsProfile {
         if let Some(sas_validity) = self.sas_token_validity_seconds {
             // 7 days in seconds
             if sas_validity > MAX_SAS_TOKEN_VALIDITY_SECONDS {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
                     reason: "SAS token can be only valid up to a week.".to_string(),
                     entity: "sas-token-validity-seconds".to_string(),
-                });
+                }
+                .into());
             }
         }
         validate_filesystem_name(&self.filesystem)?;
@@ -165,7 +164,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Can fail for un-normalized profiles
-    pub fn base_location(&self) -> Result<Location, ValidationError> {
+    pub fn base_location(&self) -> Result<Location, InvalidLocationError> {
         let location = if let Some(key_prefix) = &self.key_prefix {
             format!(
                 "abfss://{}@{}.{}/{}/",
@@ -185,13 +184,11 @@ impl AdlsProfile {
                     .trim_end_matches('/'),
             )
         };
-        let location =
-            Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
-                source: Some(Box::new(e)),
-                reason: "Failed to create location for storage profile.".to_string(),
-                storage_type: StorageType::Adls,
-                location,
-            })?;
+        let location = Location::from_str(&location).map_err(|e| InvalidLocationError {
+            source: Some(Box::new(e)),
+            reason: "Failed to create location for storage profile.".to_string(),
+            location,
+        })?;
 
         Ok(location)
     }
@@ -301,76 +298,76 @@ impl AdlsProfile {
             })
     }
 
-    /// Create a new `FileIO` instance for Adls.
-    ///
-    /// # Errors
-    /// Fails if the `FileIO` instance cannot be created.
-    pub async fn file_io(
-        &self,
-        credential: &AzCredential,
-    ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("abfss").with_client(HTTP_CLIENT.clone());
+    // /// Create a new `FileIO` instance for Adls.
+    // ///
+    // /// # Errors
+    // /// Fails if the `FileIO` instance cannot be created.
+    // pub async fn file_io(
+    //     &self,
+    //     credential: &AzCredential,
+    // ) -> Result<iceberg::io::FileIO, FileIoError> {
+    //     let mut builder = iceberg::io::FileIOBuilder::new("abfss").with_client(HTTP_CLIENT.clone());
 
-        builder = builder
-            .with_prop(ADLS_ACCOUNT_NAME, self.account_name.clone())
-            .with_prop(
-                ADLS_AUTHORITY_HOST,
-                self.authority_host
-                    .as_ref()
-                    .map_or_else(|| DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string),
-            )
-            .with_client(HTTP_CLIENT.clone());
+    //     builder = builder
+    //         .with_prop(ADLS_ACCOUNT_NAME, self.account_name.clone())
+    //         .with_prop(
+    //             ADLS_AUTHORITY_HOST,
+    //             self.authority_host
+    //                 .as_ref()
+    //                 .map_or_else(|| DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string),
+    //         )
+    //         .with_client(HTTP_CLIENT.clone());
 
-        match credential {
-            AzCredential::ClientCredentials {
-                client_id,
-                tenant_id,
-                client_secret,
-            } => {
-                builder = builder
-                    .with_prop(ADLS_CLIENT_SECRET, client_secret.to_string())
-                    .with_prop(ADLS_CLIENT_ID, client_id.to_string())
-                    .with_prop(ADLS_TENANT_ID, tenant_id.to_string());
-            }
-            AzCredential::SharedAccessKey { key } => {
-                builder = builder.with_prop(ADLS_ACCOUNT_KEY, key.to_string());
-            }
-            AzCredential::AzureSystemIdentity {} => {
-                // ToDo: Use azure_identity to get token, then pass it to FileIO.
-                // As of writing this is not supported in OpenDAL and iceberg-rust.
-                if !CONFIG.enable_azure_system_credentials {
-                    return Err(CredentialsError::Misconfiguration(
-                        "Azure System identity credentials are disabled in this Lakekeeper deployment.".to_string(),
-                    ).into());
-                }
-                let table_config = self
-                    .generate_table_config(
-                        DataAccess {
-                            vended_credentials: true,
-                            remote_signing: false,
-                        },
-                        self.base_location()
-                            .map_err(|e| CredentialsError::ShortTermCredential {
-                                reason: "Failed to get base location for storage profile"
-                                    .to_string(),
-                                source: Some(Box::new(e)),
-                            })?
-                            .without_trailing_slash(),
-                        credential,
-                        StoragePermissions::ReadWriteDelete,
-                    )
-                    .await
-                    .map_err(|e| CredentialsError::ShortTermCredential {
-                        reason: e.to_string(),
-                        source: Some(Box::new(e)),
-                    })?;
+    //     match credential {
+    //         AzCredential::ClientCredentials {
+    //             client_id,
+    //             tenant_id,
+    //             client_secret,
+    //         } => {
+    //             builder = builder
+    //                 .with_prop(ADLS_CLIENT_SECRET, client_secret.to_string())
+    //                 .with_prop(ADLS_CLIENT_ID, client_id.to_string())
+    //                 .with_prop(ADLS_TENANT_ID, tenant_id.to_string());
+    //         }
+    //         AzCredential::SharedAccessKey { key } => {
+    //             builder = builder.with_prop(ADLS_ACCOUNT_KEY, key.to_string());
+    //         }
+    //         AzCredential::AzureSystemIdentity {} => {
+    //             // ToDo: Use azure_identity to get token, then pass it to FileIO.
+    //             // As of writing this is not supported in OpenDAL and iceberg-rust.
+    //             if !CONFIG.enable_azure_system_credentials {
+    //                 return Err(CredentialsError::Misconfiguration(
+    //                     "Azure System identity credentials are disabled in this Lakekeeper deployment.".to_string(),
+    //                 ).into());
+    //             }
+    //             let table_config = self
+    //                 .generate_table_config(
+    //                     DataAccess {
+    //                         vended_credentials: true,
+    //                         remote_signing: false,
+    //                     },
+    //                     self.base_location()
+    //                         .map_err(|e| CredentialsError::ShortTermCredential {
+    //                             reason: "Failed to get base location for storage profile"
+    //                                 .to_string(),
+    //                             source: Some(Box::new(e)),
+    //                         })?
+    //                         .without_trailing_slash(),
+    //                     credential,
+    //                     StoragePermissions::ReadWriteDelete,
+    //                 )
+    //                 .await
+    //                 .map_err(|e| CredentialsError::ShortTermCredential {
+    //                     reason: e.to_string(),
+    //                     source: Some(Box::new(e)),
+    //                 })?;
 
-                builder = builder.with_props(table_config.config.inner());
-            }
-        }
+    //             builder = builder.with_props(table_config.config.inner());
+    //         }
+    //     }
 
-        Ok(builder.build()?)
-    }
+    //     Ok(builder.build()?)
+    // }
 
     async fn sas_via_delegation_key(
         &self,
@@ -420,7 +417,7 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(&path.to_string(), true);
+        let path = reduce_scheme_string(path.as_ref(), true);
         let rootless_path = path.trim_start_matches('/');
         let depth = rootless_path.split('/').count();
         let canonical_resource = format!(
@@ -467,13 +464,14 @@ impl AdlsProfile {
         // Azure supports a max of 1024 chars and we need some buffer for tables.
         if let Some(key_prefix) = &self.key_prefix {
             if key_prefix.len() > 512 {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
 
                     reason: "Storage Profile `key-prefix` must be less than 512 characters."
                         .to_string(),
                     entity: "key-prefix".to_string(),
-                });
+                }
+                .into());
             }
             for key in key_prefix.split('/') {
                 validate_path_segment(key)?;
@@ -546,13 +544,13 @@ impl AdlsLocation {
         let endpoint_suffix = normalize_host(host)?.unwrap_or(DEFAULT_HOST.to_string());
 
         let location = format!("abfss://{filesystem}@{account_name}.{endpoint_suffix}",);
-        let mut location =
-            Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
+        let mut location = Location::from_str(&location).map_err(|e| {
+            Box::new(InvalidLocationError {
                 source: Some(Box::new(e)),
                 reason: "Invalid adls location".to_string(),
-                storage_type: StorageType::Adls,
                 location,
-            })?;
+            })
+        })?;
         if !key.is_empty() {
             location.without_trailing_slash().extend(key.iter());
         }
@@ -614,35 +612,35 @@ impl AdlsLocation {
                 )
             };
 
-            return Err(ValidationError::InvalidLocation {
+            return Err(Box::new(InvalidLocationError {
                 reason,
                 location: location.to_string(),
                 source: None,
-                storage_type: StorageType::Adls,
-            });
+            })
+            .into());
         }
 
         let filesystem = location.url().username().to_string();
         let host = location
             .url()
             .host_str()
-            .ok_or_else(|| ValidationError::InvalidLocation {
-                reason: "ADLS location has no host specified".to_string(),
-                location: location.to_string(),
-                source: None,
-                storage_type: StorageType::Adls,
+            .ok_or_else(|| {
+                Box::new(InvalidLocationError {
+                    reason: "ADLS location has no host specified".to_string(),
+                    location: location.to_string(),
+                    source: None,
+                })
             })?
             .to_string();
         // Host: account_name.endpoint_suffix
         let (account_name, endpoint_suffix) =
             host.split_once('.')
-                .ok_or_else(|| ValidationError::InvalidLocation {
+                .ok_or_else(|| Box::new(InvalidLocationError {
                     reason: "ADLS location host must be in the format <account_name>.<endpoint>. Specified location has no point (.)"
                         .to_string(),
                     location: location.to_string(),
                     source: None,
-                    storage_type: StorageType::Adls,
-                })?;
+                }))?;
 
         let key: Vec<String> = location
             .url()
@@ -754,7 +752,7 @@ fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String
 
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, FileIoError> {
+) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
     // Add Authority host if not present
     let mut config = config.inner().clone();
 
@@ -799,9 +797,9 @@ fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServ
 }
 
 // https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
+fn validate_filesystem_name(container: &str) -> Result<(), InvalidProfileError> {
     if container.is_empty() {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: "`filesystem` must not be empty.".to_string(),
             entity: "FilesystemName".to_string(),
@@ -810,7 +808,7 @@ fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
 
     // Container names must not contain consecutive hyphens.
     if container.contains("--") {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: "Filesystem name must not contain consecutive hyphens.".to_string(),
             entity: "FilesystemName".to_string(),
@@ -820,7 +818,7 @@ fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
     let container = container.chars().collect::<Vec<char>>();
     // Container names must be between 3 (min) and 63 (max) characters long.
     if container.len() < 3 || container.len() > 63 {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: "`filesystem` must be between 3 and 63 characters long.".to_string(),
             entity: "FilesystemName".to_string(),
@@ -832,7 +830,7 @@ fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
         .iter()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
     {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason:
                 "Filesystem name can consist only of lowercase letters, numbers, and hyphens (-)."
@@ -846,7 +844,7 @@ fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
     if !container.first().is_some_and(char::is_ascii_alphanumeric)
         || !container.last().is_some_and(char::is_ascii_alphanumeric)
     {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: "Filesystem name must begin and end with a letter or number.".to_string(),
             entity: "FilesystemName".to_string(),
@@ -857,7 +855,7 @@ fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
 }
 
 // https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_path_segment(path_segment: &str) -> Result<(), ValidationError> {
+fn validate_path_segment(path_segment: &str) -> Result<(), InvalidProfileError> {
     if path_segment.contains(|c: char| {
         c == ' '
             || c == '!'
@@ -880,7 +878,7 @@ fn validate_path_segment(path_segment: &str) -> Result<(), ValidationError> {
             || c == '['
             || c == ']'
     }) {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason:
                 "Directory path contains reserved URL characters that are not properly escaped."
@@ -891,7 +889,7 @@ fn validate_path_segment(path_segment: &str) -> Result<(), ValidationError> {
 
     // Check if the directory name ends with a dot (.), a backslash (\), or a combination of these.
     if path_segment.ends_with('.') || path_segment.ends_with('\\') {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: format!(
                 "Directory: '{path_segment}' must not end with a dot (.), or a backslash (\\)."
@@ -903,14 +901,14 @@ fn validate_path_segment(path_segment: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn normalize_host(host: String) -> Result<Option<String>, ValidationError> {
+fn normalize_host(host: String) -> Result<Option<String>, InvalidProfileError> {
     // If endpoint suffix is Some(""), set it to None.
     if host.is_empty() {
         Ok(None)
     } else {
         // Endpoint suffix must not contain slashes.
         if host.contains('/') {
-            return Err(ValidationError::InvalidProfile {
+            return Err(InvalidProfileError {
                 source: None,
                 reason: "`endpoint_suffix` must not contain slashes.".to_string(),
                 entity: "EndpointSuffix".to_string(),
@@ -919,7 +917,7 @@ fn normalize_host(host: String) -> Result<Option<String>, ValidationError> {
 
         // Endpoint suffix must be a valid hostname
         if Host::parse(&host).is_err() {
-            return Err(ValidationError::InvalidProfile {
+            return Err(InvalidProfileError {
                 source: None,
                 reason: "`endpoint_suffix` must be a valid hostname.".to_string(),
                 entity: "EndpointSuffix".to_string(),
@@ -932,9 +930,9 @@ fn normalize_host(host: String) -> Result<Option<String>, ValidationError> {
 
 // Storage account names must be between 3 and 24 characters in length
 // and may contain numbers and lowercase letters only.
-fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
+fn validate_account_name(account_name: &str) -> Result<(), InvalidProfileError> {
     if account_name.len() < 3 || account_name.len() > 24 {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: "`account_name` must be between 3 and 24 characters long.".to_string(),
             entity: "AccountName".to_string(),
@@ -945,7 +943,7 @@ fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
     {
-        return Err(ValidationError::InvalidProfile {
+        return Err(InvalidProfileError {
             source: None,
             reason: "`account_name` must contain only lowercase letters and numbers.".to_string(),
             entity: "AccountName".to_string(),
@@ -959,9 +957,9 @@ fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
 pub(crate) mod test {
     use std::str::FromStr;
 
-    use iceberg_ext::configs::Location;
     use needs_env_var::needs_env_var;
 
+    use super::*;
     use crate::service::{
         storage::{
             az::{
@@ -1049,9 +1047,13 @@ pub(crate) mod test {
                 prof.normalize(Some(&cred.clone().into()))
                     .expect("failed to validate profile");
                 let cred: StorageCredential = cred.into();
-                prof.validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                    .await
-                    .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
+                Box::pin(prof.validate_access(
+                    Some(&cred),
+                    None,
+                    &RequestMetadata::new_unauthenticated(),
+                ))
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
             }
         }
 

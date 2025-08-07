@@ -9,7 +9,8 @@ use std::{
 
 use chrono::Utc;
 use http::StatusCode;
-use iceberg_ext::{configs::Location, NamespaceIdent};
+use iceberg_ext::NamespaceIdent;
+use lakekeeper_io::Location;
 use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
 use uuid::Uuid;
 
@@ -378,7 +379,7 @@ pub(crate) async fn create_tabular(
         name,
         namespace_id,
         typ as _,
-        metadata_location.map(iceberg_ext::configs::Location::as_str),
+        metadata_location.map(Location::as_str),
         fs_protocol,
         fs_location
     )

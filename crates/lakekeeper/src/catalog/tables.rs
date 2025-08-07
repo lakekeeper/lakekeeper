@@ -17,15 +17,16 @@ use iceberg::{
 };
 use iceberg_ext::{
     catalog::rest::{LoadCredentialsResponse, StorageCredential},
-    configs::{namespace::NamespaceProperties, Location, ParseFromStr},
+    configs::{namespace::NamespaceProperties, ParseFromStr},
 };
 use itertools::Itertools;
+use lakekeeper_io::{InvalidLocationError, Location};
 use serde::Serialize;
 use uuid::Uuid;
 
 use super::{
     commit_tables::apply_commit,
-    io::{delete_file, read_metadata_file, write_metadata_file},
+    io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::{authorized_namespace_ident_to_id, validate_namespace_ident},
     require_warehouse_id, CatalogServer,
@@ -46,7 +47,6 @@ use crate::{
     },
     catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
     request_metadata::RequestMetadata,
-    retry::retry_fn,
     service::{
         authz::{
             Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
@@ -229,46 +229,23 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
-        retry_fn(|| async {
-            match crate::service::storage::check_location_is_empty(
-                &file_io,
-                &table_location,
-                storage_profile,
-                || crate::service::storage::ValidationError::InvalidLocation {
-                    reason: "Unexpected files in location, tabular locations have to be empty"
-                        .to_string(),
-                    location: table_location.to_string(),
-                    source: None,
-                    storage_type: storage_profile.storage_type(),
-                },
-            )
-            .await
-            {
-                Err(e @ ValidationError::IoOperationFailed(_, _)) => {
-                    tracing::warn!(
-                        "Error while checking location is empty: {e}, retrying up to three times.."
-                    );
-                    Err(e)
-                }
-                Ok(()) => {
-                    tracing::debug!("Location is empty");
-                    Ok(Ok(()))
-                }
-                Err(other) => {
-                    tracing::error!("Unrecoverable error: {other:?}");
-                    Ok(Err(other))
-                }
-            }
-        })
-        .await??;
+        if !crate::service::storage::is_empty(&file_io, &table_location).await? {
+            return Err(ValidationError::from(InvalidLocationError {
+                reason: "Unexpected files in location, tabular locations have to be empty"
+                    .to_string(),
+                location: table_location.to_string(),
+                source: None,
+            })
+            .into());
+        }
 
         if let Some(metadata_location) = &metadata_location {
             let compression_codec = CompressionCodec::try_from_metadata(&table_metadata)?;
-            write_metadata_file(
+            write_file(
+                &file_io,
                 metadata_location,
                 &table_metadata,
                 compression_codec,
-                &file_io,
             )
             .await?;
         }
@@ -1311,11 +1288,11 @@ async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     let write_futures: Vec<_> = commits
         .iter()
         .map(|commit| {
-            write_metadata_file(
+            write_file(
+                &file_io,
                 &commit.new_metadata_location,
                 &commit.new_metadata,
                 commit.new_compression_codec,
-                &file_io,
             )
         })
         .collect();
@@ -1574,26 +1551,26 @@ fn calculate_diffs(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TableMetadataDiffs {
-    pub(crate) removed_snapshots: Vec<i64>,
-    pub(crate) added_snapshots: Vec<i64>,
-    pub(crate) removed_schemas: Vec<i32>,
-    pub(crate) added_schemas: Vec<i32>,
-    pub(crate) new_current_schema_id: Option<i32>,
-    pub(crate) removed_partition_specs: Vec<i32>,
-    pub(crate) added_partition_specs: Vec<i32>,
-    pub(crate) default_partition_spec_id: Option<i32>,
-    pub(crate) removed_sort_orders: Vec<i64>,
-    pub(crate) added_sort_orders: Vec<i64>,
-    pub(crate) default_sort_order_id: Option<i64>,
-    pub(crate) head_of_snapshot_log_changed: bool,
-    pub(crate) n_removed_snapshot_log: usize,
-    pub(crate) expired_metadata_logs: usize,
-    pub(crate) added_metadata_log: usize,
-    pub(crate) added_stats: Vec<i64>,
-    pub(crate) removed_stats: Vec<i64>,
-    pub(crate) added_partition_stats: Vec<i64>,
-    pub(crate) removed_partition_stats: Vec<i64>,
+pub struct TableMetadataDiffs {
+    pub removed_snapshots: Vec<i64>,
+    pub added_snapshots: Vec<i64>,
+    pub removed_schemas: Vec<i32>,
+    pub added_schemas: Vec<i32>,
+    pub new_current_schema_id: Option<i32>,
+    pub removed_partition_specs: Vec<i32>,
+    pub added_partition_specs: Vec<i32>,
+    pub default_partition_spec_id: Option<i32>,
+    pub removed_sort_orders: Vec<i64>,
+    pub added_sort_orders: Vec<i64>,
+    pub default_sort_order_id: Option<i64>,
+    pub head_of_snapshot_log_changed: bool,
+    pub n_removed_snapshot_log: usize,
+    pub expired_metadata_logs: usize,
+    pub added_metadata_log: usize,
+    pub added_stats: Vec<i64>,
+    pub removed_stats: Vec<i64>,
+    pub added_partition_stats: Vec<i64>,
+    pub removed_partition_stats: Vec<i64>,
 }
 
 pub(crate) fn determine_table_ident(
@@ -1903,13 +1880,11 @@ pub(crate) mod test {
         },
         TableIdent,
     };
-    use iceberg_ext::{
-        catalog::rest::{
-            CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
-        },
-        configs::Location,
+    use iceberg_ext::catalog::rest::{
+        CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
     };
     use itertools::Itertools;
+    use lakekeeper_io::Location;
     use sqlx::PgPool;
     use uuid::Uuid;
 
@@ -2783,7 +2758,7 @@ pub(crate) mod test {
         NamespaceParameters,
         String,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let base_loc = prof.base_location().unwrap().to_string();
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
@@ -3005,7 +2980,7 @@ pub(crate) mod test {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let base_location = prof.base_location().unwrap();
         let authz = HidingAuthorizer::new();
         // Prevent hidden tables from becoming visible through `can_list_everything`.
@@ -3063,7 +3038,7 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_table_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden tables from becoming visible through `can_list_everything`.
@@ -3271,7 +3246,7 @@ pub(crate) mod test {
 
     #[sqlx::test]
     async fn test_list_tables(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
@@ -3499,6 +3474,8 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+
+        // Read table metadata
 
         // Drop second table, keep data
         CatalogServer::drop_table(

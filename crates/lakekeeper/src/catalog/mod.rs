@@ -254,17 +254,17 @@ pub(crate) mod test {
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
         service::{
-            authz::Authorizer,
+            authz::{AllowAllAuthorizer, Authorizer},
             storage::{
-                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-                StorageProfile, TestProfile,
+                s3::S3AccessKeyCredential, MemoryProfile, S3Credential, S3Flavor, S3Profile,
+                StorageCredential, StorageProfile,
             },
             State, UserId,
         },
     };
 
-    pub(crate) fn test_io_profile() -> StorageProfile {
-        TestProfile::default().into()
+    pub(crate) fn memory_io_profile() -> StorageProfile {
+        MemoryProfile::default().into()
     }
 
     pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
@@ -340,6 +340,20 @@ pub(crate) mod test {
             1,
         )
         .await
+    }
+
+    #[sqlx::test]
+    async fn test_setup(pool: PgPool) {
+        let prof = memory_io_profile();
+        setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
     }
 
     macro_rules! impl_pagination_tests {

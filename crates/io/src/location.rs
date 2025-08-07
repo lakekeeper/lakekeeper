@@ -1,0 +1,291 @@
+use std::str::{FromStr, RMatchIndices};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Location(url::Url);
+
+#[derive(thiserror::Error, Debug)]
+#[error("Failed to parse '{value}' as Location: {reason}")]
+pub struct LocationParseError {
+    pub value: String,
+    pub reason: String,
+}
+
+impl Location {
+    #[must_use]
+    pub fn url(&self) -> &url::Url {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_url(self) -> url::Url {
+        self.0
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[must_use]
+    pub fn scheme(&self) -> &str {
+        self.0.scheme()
+    }
+
+    pub fn with_trailing_slash(&mut self) -> &mut Self {
+        if let Ok(mut path) = self.0.path_segments_mut() {
+            path.pop_if_empty().push("");
+        }
+        self
+    }
+
+    pub fn without_trailing_slash(&mut self) -> &mut Self {
+        if let Ok(mut path) = self.0.path_segments_mut() {
+            path.pop_if_empty();
+        }
+        self
+    }
+
+    pub fn set_scheme_mut(&mut self, scheme: &str) -> &mut Self {
+        self.0.set_scheme(scheme).ok();
+        self
+    }
+
+    /// Follows the same logic as `url::MutPathSegments::extend`,
+    /// except that getting `MutPathSegments`is not fallible.
+    /// Non-fallibility by the constructor which checks
+    /// cannot-be-a-base.
+    pub fn extend<I>(&mut self, segments: I) -> &mut Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        if let Ok(mut path) = self.0.path_segments_mut() {
+            path.extend(segments);
+        }
+        self
+    }
+
+    /// Follows the same logic as `url::MutPathSegments::push`,
+    /// except that getting `MutPathSegments`is not fallible.
+    /// Non-fallibility by the constructor which checks
+    /// cannot-be-a-base.
+    pub fn push(&mut self, segment: &str) -> &mut Self {
+        if let Ok(mut path) = self.0.path_segments_mut() {
+            path.push(segment);
+        }
+        self
+    }
+
+    /// Clones the location and pushes a segment to the path.
+    #[must_use]
+    pub fn cloning_push(&self, segment: &str) -> Self {
+        let mut cloned = self.clone();
+        cloned.push(segment);
+        cloned
+    }
+
+    /// Follows the same logic as `url::MutPathSegments::pop`,
+    /// except that getting `MutPathSegments`is not fallible.
+    /// Non-fallibility by the constructor which checks
+    /// cannot-be-a-base.
+    pub fn pop(&mut self) -> &mut Self {
+        if let Ok(mut path) = self.0.path_segments_mut() {
+            path.pop();
+        }
+        self
+    }
+
+    // Check if the location is a sublocation of the other location.
+    // If the locations are the same, it is considered a sublocation.
+    #[must_use]
+    pub fn is_sublocation_of(&self, other: &Location) -> bool {
+        if self == other {
+            return true;
+        }
+
+        let mut other_folder = other.clone();
+        other_folder.with_trailing_slash();
+
+        self.to_string().starts_with(other_folder.as_str())
+    }
+
+    #[must_use]
+    pub fn partial_locations<'a>(&'a self) -> impl IntoIterator<Item = &'a str> {
+        let scheme_index = self.url().scheme().len() + 3; // 3 for "://"
+        let url_string = self.url().as_str().trim_end_matches('/');
+        let pointer = url_string.rmatch_indices('/');
+
+        let iter: PartialLocationsIter<'a> = PartialLocationsIter {
+            pointer,
+            loc: url_string,
+            full_loc: Some(url_string),
+            scheme_index,
+        };
+        iter
+    }
+}
+
+struct PartialLocationsIter<'a> {
+    pointer: RMatchIndices<'a, char>,
+    loc: &'a str,
+    full_loc: Option<&'a str>,
+    scheme_index: usize,
+}
+
+impl<'a> Iterator for PartialLocationsIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(full_loc) = self.full_loc.take() {
+            return Some(full_loc);
+        }
+
+        let (idx, _) = self.pointer.next()?;
+
+        if idx < self.scheme_index {
+            return None;
+        }
+        Some(&self.loc[..idx])
+    }
+}
+
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Location {
+    type Err = LocationParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.trim_end_matches('/').ends_with(' ') {
+            return Err(LocationParseError {
+                value: value.to_string(),
+                reason: "Trailing whitespace".to_string(),
+            });
+        }
+
+        let location = url::Url::parse(value).map_err(|e| LocationParseError {
+            value: value.to_string(),
+            reason: format!("Not a valid URL - `{e}`"),
+        })?;
+
+        if location.cannot_be_a_base() {
+            return Err(LocationParseError {
+                value: value.to_string(),
+                reason: "Malformed URL (Cannot be a base). Adding a relative path to this URL results in a malformed URL.".to_string(),
+            });
+        }
+
+        if location.fragment().is_some() {
+            return Err(LocationParseError {
+                value: value.to_string(),
+                reason: "URL has a fragment (#)".to_string(),
+            });
+        }
+
+        if location.query().is_some() {
+            return Err(LocationParseError {
+                value: value.to_string(),
+                reason: "URL has a query string".to_string(),
+            });
+        }
+
+        Ok(Location(location))
+    }
+}
+
+impl AsRef<str> for Location {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn test_location_with_whitespace() {
+        let location = Location::from_str("s3://bucket/foo /bar").unwrap();
+        assert_eq!(location.as_str(), "s3://bucket/foo%20/bar");
+    }
+
+    #[test]
+    fn test_location_with_trailing_whitespace() {
+        let location = Location::from_str("s3://bucket/foo/bar ")
+            .expect_err("Trailing whitespaces are forbidden.");
+        assert_eq!(location.reason, "Trailing whitespace");
+    }
+
+    #[test]
+    fn test_is_sublocation_of() {
+        let cases = vec![
+            ("s3://bucket/foo", "s3://bucket/foo", true),
+            ("s3://bucket/foo/", "s3://bucket/foo/bar", true),
+            ("s3://bucket/foo", "s3://bucket/foo/bar", true),
+            ("s3://bucket/foo", "s3://bucket/baz/bar", false),
+            ("s3://bucket/foo", "s3://bucket/foo-bar", false),
+        ];
+
+        for (parent, maybe_sublocation, expected) in cases {
+            let parent = Location::from_str(parent).unwrap();
+            let maybe_sublocation = Location::from_str(maybe_sublocation).unwrap();
+            let result = maybe_sublocation.is_sublocation_of(&parent);
+            assert_eq!(
+                result, expected,
+                "Parent: {parent}, Sublocation: {maybe_sublocation}, Expected: {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_partial_locations() {
+        let cases = vec![
+            (
+                "s3://bucket/foo/bar/baz",
+                vec![
+                    "s3://bucket",
+                    "s3://bucket/foo",
+                    "s3://bucket/foo/bar",
+                    "s3://bucket/foo/bar/baz",
+                ],
+            ),
+            (
+                "s3://bucket/foo/bar/baz/",
+                vec![
+                    "s3://bucket",
+                    "s3://bucket/foo",
+                    "s3://bucket/foo/bar",
+                    "s3://bucket/foo/bar/baz",
+                ],
+            ),
+            ("s3://bucket", vec!["s3://bucket"]),
+            ("s3://bucket/", vec!["s3://bucket"]),
+        ];
+
+        for (location, expected) in cases {
+            let location = Location::from_str(location).unwrap();
+            let mut result: Vec<_> = location.partial_locations().into_iter().collect();
+            result.sort_unstable();
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut location = Location::from_str("s3://bucket").unwrap();
+        location.extend(["foo", "bar"]);
+        assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+
+        let mut location = Location::from_str("s3://bucket/").unwrap();
+        location.extend(["foo", "bar"]);
+        assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+    }
+}

@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/iceberg-ext", "crates/lakekeeper", "crates/lakekeeper-bin"]
+members = [
+    "crates/iceberg-ext",
+    "crates/io",
+    "crates/lakekeeper",
+    "crates/lakekeeper-bin",
+]
 resolver = "2"
 
 [workspace.package]
@@ -39,6 +44,7 @@ aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-sts = "1.65.0"
 aws-smithy-http = "0.62.0"
 aws-smithy-http-client = { version = "1.0.1" }
+aws-smithy-runtime-api = { version = "1.7.4" }
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
@@ -69,6 +75,7 @@ iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "fbc7a
     "storage-s3",
 ] }
 iso8601 = "0.6.2"
+bytes = "1.10"
 openfga-client = { version = "0.3", features = ["auth-middle"] }
 typed-builder = "^0.21.0"
 async-trait = "0.1.83"

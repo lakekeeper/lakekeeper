@@ -20,7 +20,8 @@ use iceberg::{
     },
     TableUpdate,
 };
-use iceberg_ext::{configs::Location, spec::TableMetadata, NamespaceIdent};
+use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
+use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -865,7 +866,8 @@ pub(crate) mod tests {
         },
         NamespaceIdent,
     };
-    use iceberg_ext::{catalog::rest::CreateTableRequest, configs::Location};
+    use iceberg_ext::catalog::rest::CreateTableRequest;
+    use lakekeeper_io::Location;
     use uuid::Uuid;
 
     use super::*;
