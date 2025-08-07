@@ -1,9 +1,12 @@
-use std::sync::LazyLock;
+use std::{collections::HashMap, sync::LazyLock};
 
 use openfga_client::{
-    client::{BasicAuthLayer, BasicOpenFgaServiceClient},
+    client::{BasicAuthLayer, BasicOpenFgaServiceClient, OpenFgaClient},
     migration::{AuthorizationModelVersion, MigrationFn},
 };
+
+use crate::service::TableId;
+use crate::WarehouseId;
 
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 
@@ -20,6 +23,7 @@ fn get_model_manager(
         &AUTH_CONFIG.authorization_model_prefix,
     )
     .add_model(
+        // put 4 here
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
             // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
@@ -30,8 +34,57 @@ fn get_model_manager(
         AuthorizationModelVersion::new(3, 4),
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_>>,
-        None::<MigrationFn<_>>,
+        Some(push_down_warehouse_id),
     )
+}
+
+async fn push_down_warehouse_id(
+    mut client: BasicOpenFgaServiceClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    // Construct OpenFGAClient to be able to use convenience methods.
+    // Correct to operate on default store and active_auth_model?
+    let store = client
+        .get_store_by_name(&AUTH_CONFIG.store_name)
+        .await?
+        .expect("default store should exist");
+    // vermutlich: oben neues add model, und dann hier get_active_auth_model
+    let auth_model_id = "TODO make below compile";
+    // let auth_model_id = get_active_auth_model_id(&mut client.clone(), Some(store.name)).await?;
+    let c = client.into_client(&store.id, &auth_model_id);
+
+    // - Get all table ids
+    //
+    // - Get map of (TableId, WarehouseId)
+    //   - Via OpenFGA or retrieve from db and inject into this fn?
+    //   - try via db!
+    // - need to assert no table written during migration
+    // - check if there's a way to lock openfga during migration
+    //
+    // think: how to avoid creating tables from old binary why migration is running
+    //
+    // - For every table id
+    //   - get all tuples that have this id as user or object
+    //     - propaply only for NamespaceRelation::Child table id is on user side
+    //     - user: table id, object: nur `namespace:`
+    //   - copy these tuples and replace table_id with warehouse_id/table_id
+    //     - alte tuple erst spaeter loeschen
+    //   - write the new tuples, delete the old ones
+    //
+    // - Do the same for views
+    //
+    // All new writes must then be wareho,use_id/table_id and warehouse_id/view_id
+    // checks
+
+    let _res = add_warehouse_id_to_tables(c.clone(), &HashMap::new()).await?;
+    Ok(())
+}
+
+async fn add_warehouse_id_to_tables<T>(
+    client: OpenFgaClient<T>,
+    warhouse_ids: &HashMap<TableId, WarehouseId>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    // let tables_
+    Ok(())
 }
 
 /// Get the active authorization model id.
