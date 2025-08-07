@@ -158,12 +158,17 @@ where
     let tabular_location = match expiration.tabular_type {
         TabularType::Table => {
             let table_id = TableId::from(tabular_id);
-            let location = C::drop_table(table_id, true, trx.transaction())
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, "Failed to drop table: {}", e.error);
-                    e.error
-                })?;
+            let location = C::drop_table(
+                task.task_metadata.warehouse_id,
+                table_id,
+                true,
+                trx.transaction(),
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "Failed to drop table: {}", e.error);
+                e.error
+            })?;
 
             authorizer
                 .delete_table(table_id)
@@ -176,12 +181,17 @@ where
         }
         TabularType::View => {
             let view_id = ViewId::from(tabular_id);
-            let location = C::drop_view(view_id, true, trx.transaction())
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, "Failed to drop view: {}", e.error);
-                    e
-                })?;
+            let location = C::drop_view(
+                task.task_metadata.warehouse_id,
+                view_id,
+                true,
+                trx.transaction(),
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "Failed to drop view: {}", e.error);
+                e
+            })?;
             authorizer
                 .delete_view(view_id)
                 .await

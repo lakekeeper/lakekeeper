@@ -20,8 +20,7 @@ use crate::{
 };
 
 pub(crate) async fn commit_table_transaction(
-    // We do not need the warehouse_id here, because table_ids are unique across warehouses
-    _: WarehouseId,
+    warehouse_id: WarehouseId,
     commits: impl IntoIterator<Item = TableCommit> + Send,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> api::Result<()> {
@@ -60,7 +59,7 @@ pub(crate) async fn commit_table_transaction(
         .zip(location_metadata_pairs.iter())
     {
         let updates = TableUpdates::from(updates.as_slice());
-        apply_metadata_changes(transaction, updates, new_metadata, diffs).await?;
+        apply_metadata_changes(transaction, warehouse_id, updates, new_metadata, diffs).await?;
     }
 
     // Update tabular (metadata location, fs_location, fs_protocol) and top level table metadata
@@ -247,6 +246,7 @@ fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
 #[allow(clippy::too_many_lines)]
 async fn apply_metadata_changes(
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: WarehouseId,
     table_updates: TableUpdates,
     new_metadata: &TableMetadata,
     diffs: TableMetadataDiffs,
@@ -265,6 +265,7 @@ async fn apply_metadata_changes(
                 .collect::<Vec<_>>()
                 .into_iter(),
             transaction,
+            warehouse_id,
             new_metadata.uuid(),
         )
         .await?;
@@ -272,7 +273,8 @@ async fn apply_metadata_changes(
 
     // must run after insert_schemas
     if let Some(schema_id) = diffs.new_current_schema_id {
-        common::set_current_schema(schema_id, transaction, new_metadata.uuid()).await?;
+        common::set_current_schema(schema_id, transaction, warehouse_id, new_metadata.uuid())
+            .await?;
     }
 
     // No dependencies technically, could depend on columns in schema, so run after set_current_schema
@@ -285,6 +287,7 @@ async fn apply_metadata_changes(
                 .collect::<Vec<_>>()
                 .into_iter(),
             transaction,
+            warehouse_id,
             new_metadata.uuid(),
         )
         .await?;
@@ -292,8 +295,13 @@ async fn apply_metadata_changes(
 
     // Must run after insert_partition_specs
     if let Some(default_spec_id) = diffs.default_partition_spec_id {
-        common::set_default_partition_spec(transaction, new_metadata.uuid(), default_spec_id)
-            .await?;
+        common::set_default_partition_spec(
+            transaction,
+            warehouse_id,
+            new_metadata.uuid(),
+            default_spec_id,
+        )
+        .await?;
     }
 
     // Should run after insert_schemas
@@ -306,6 +314,7 @@ async fn apply_metadata_changes(
                 .collect_vec()
                 .into_iter(),
             transaction,
+            warehouse_id,
             new_metadata.uuid(),
         )
         .await?;
@@ -313,13 +322,19 @@ async fn apply_metadata_changes(
 
     // Must run after insert_sort_orders
     if let Some(default_sort_order_id) = diffs.default_sort_order_id {
-        common::set_default_sort_order(default_sort_order_id, transaction, new_metadata.uuid())
-            .await?;
+        common::set_default_sort_order(
+            default_sort_order_id,
+            transaction,
+            warehouse_id,
+            new_metadata.uuid(),
+        )
+        .await?;
     }
 
     // Must run after insert_schemas
     if !diffs.added_snapshots.is_empty() {
         common::insert_snapshots(
+            warehouse_id,
             new_metadata.uuid(),
             diffs
                 .added_snapshots
@@ -334,14 +349,19 @@ async fn apply_metadata_changes(
 
     // Must run after insert_snapshots
     if snapshot_refs {
-        common::insert_snapshot_refs(new_metadata, transaction).await?;
+        common::insert_snapshot_refs(warehouse_id, new_metadata, transaction).await?;
     }
 
     // Must run after insert_snapshots, technically not enforced
     if diffs.head_of_snapshot_log_changed {
         if let Some(snap) = new_metadata.history().last() {
-            common::insert_snapshot_log([snap].into_iter(), transaction, new_metadata.uuid())
-                .await?;
+            common::insert_snapshot_log(
+                [snap].into_iter(),
+                transaction,
+                warehouse_id,
+                new_metadata.uuid(),
+            )
+            .await?;
         }
     }
 
@@ -350,6 +370,7 @@ async fn apply_metadata_changes(
         remove_snapshot_log_entries(
             diffs.n_removed_snapshot_log,
             transaction,
+            warehouse_id,
             new_metadata.uuid(),
         )
         .await?;
@@ -358,6 +379,7 @@ async fn apply_metadata_changes(
     // no deps technically enforced
     if diffs.expired_metadata_logs > 0 {
         expire_metadata_log_entries(
+            warehouse_id,
             new_metadata.uuid(),
             diffs.expired_metadata_logs,
             transaction,
@@ -367,6 +389,7 @@ async fn apply_metadata_changes(
     // no deps technically enforced
     if diffs.added_metadata_log > 0 {
         common::insert_metadata_log(
+            warehouse_id,
             new_metadata.uuid(),
             new_metadata
                 .metadata_log()
@@ -383,6 +406,7 @@ async fn apply_metadata_changes(
     // Must run after insert_snapshots
     if !diffs.added_partition_stats.is_empty() {
         common::insert_partition_statistics(
+            warehouse_id,
             new_metadata.uuid(),
             diffs
                 .added_partition_stats
@@ -397,6 +421,7 @@ async fn apply_metadata_changes(
     // Must run after insert_partition_statistics
     if !diffs.added_stats.is_empty() {
         common::insert_table_statistics(
+            warehouse_id,
             new_metadata.uuid(),
             diffs
                 .added_stats
@@ -410,12 +435,18 @@ async fn apply_metadata_changes(
     }
     // Must run before remove_snapshots
     if !diffs.removed_stats.is_empty() {
-        common::remove_table_statistics(new_metadata.uuid(), diffs.removed_stats, transaction)
-            .await?;
+        common::remove_table_statistics(
+            warehouse_id,
+            new_metadata.uuid(),
+            diffs.removed_stats,
+            transaction,
+        )
+        .await?;
     }
     // Must run before remove_snapshots
     if !diffs.removed_partition_stats.is_empty() {
         common::remove_partition_statistics(
+            warehouse_id,
             new_metadata.uuid(),
             diffs.removed_partition_stats,
             transaction,
@@ -425,12 +456,19 @@ async fn apply_metadata_changes(
 
     // Must run after insert_snapshots
     if !diffs.removed_snapshots.is_empty() {
-        common::remove_snapshots(new_metadata.uuid(), diffs.removed_snapshots, transaction).await?;
+        common::remove_snapshots(
+            warehouse_id,
+            new_metadata.uuid(),
+            diffs.removed_snapshots,
+            transaction,
+        )
+        .await?;
     }
 
     // Must run after set_default_partition_spec
     if !diffs.removed_partition_specs.is_empty() {
         common::remove_partition_specs(
+            warehouse_id,
             new_metadata.uuid(),
             diffs.removed_partition_specs,
             transaction,
@@ -440,18 +478,34 @@ async fn apply_metadata_changes(
 
     // Must run after set_default_sort_order
     if !diffs.removed_sort_orders.is_empty() {
-        common::remove_sort_orders(new_metadata.uuid(), diffs.removed_sort_orders, transaction)
-            .await?;
+        common::remove_sort_orders(
+            warehouse_id,
+            new_metadata.uuid(),
+            diffs.removed_sort_orders,
+            transaction,
+        )
+        .await?;
     }
 
     // Must run after remove_snapshots, and remove_partition_specs and remove_sort_orders
     if !&diffs.removed_schemas.is_empty() {
-        common::remove_schemas(new_metadata.uuid(), diffs.removed_schemas, transaction).await?;
+        common::remove_schemas(
+            warehouse_id,
+            new_metadata.uuid(),
+            diffs.removed_schemas,
+            transaction,
+        )
+        .await?;
     }
 
     if properties {
-        common::set_table_properties(new_metadata.uuid(), new_metadata.properties(), transaction)
-            .await?;
+        common::set_table_properties(
+            warehouse_id,
+            new_metadata.uuid(),
+            new_metadata.properties(),
+            transaction,
+        )
+        .await?;
     }
     Ok(())
 }

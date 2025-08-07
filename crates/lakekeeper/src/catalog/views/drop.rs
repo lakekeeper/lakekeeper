@@ -19,6 +19,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     DropParams {
@@ -65,7 +66,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
     match warehouse.tabular_delete_profile {
         TabularDeleteProfile::Hard {} => {
-            let location = C::drop_view(view_id, force, t.transaction()).await?;
+            let location = C::drop_view(warehouse_id, view_id, force, t.transaction()).await?;
 
             if purge_requested {
                 C::queue_tabular_purge(
@@ -113,7 +114,13 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 t.transaction(),
             )
             .await?;
-            C::mark_tabular_as_deleted(TabularId::View(*view_id), force, t.transaction()).await?;
+            C::mark_tabular_as_deleted(
+                warehouse_id,
+                TabularId::View(*view_id),
+                force,
+                t.transaction(),
+            )
+            .await?;
 
             tracing::debug!("Queued expiration task for dropped view '{view_id}'.");
             t.commit().await?;

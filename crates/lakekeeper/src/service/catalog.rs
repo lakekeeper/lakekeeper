@@ -95,6 +95,7 @@ pub struct CreateTableResponse {
 pub struct LoadTableResponse {
     pub table_id: TableId,
     pub namespace_id: NamespaceId,
+    pub warehouse_id: WarehouseId,
     pub table_metadata: TableMetadata,
     pub metadata_location: Option<Location>,
     pub storage_secret_ident: Option<SecretIdent>,
@@ -164,6 +165,7 @@ pub struct TableCommit {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit<'a> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub view_id: ViewId,
     pub view_ident: &'a TableIdent,
@@ -175,6 +177,7 @@ pub struct ViewCommit<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
+    pub(crate) warehouse_id: WarehouseId,
     pub(crate) namespace_id: NamespaceId,
     pub(crate) table_ident: &'c TableIdent,
     pub(crate) metadata_location: Option<&'c Location>,
@@ -466,6 +469,7 @@ where
     ///
     /// Returns the table location
     async fn drop_table<'a>(
+        warehouse_id: WarehouseId,
         table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -482,6 +486,7 @@ where
     ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
+        warehouse_id: WarehouseId,
         table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -704,6 +709,7 @@ where
     ) -> Result<Option<ViewId>>;
 
     async fn create_view<'a>(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,
@@ -734,6 +740,7 @@ where
     /// Returns location of the dropped view.
     /// Used for cleanup
     async fn drop_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,

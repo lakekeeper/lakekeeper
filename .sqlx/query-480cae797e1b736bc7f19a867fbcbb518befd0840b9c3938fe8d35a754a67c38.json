@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM table_sort_order\n           WHERE warehouse_id = $1 AND table_id = $2 AND sort_order_id = ANY($3::BIGINT[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "480cae797e1b736bc7f19a867fbcbb518befd0840b9c3938fe8d35a754a67c38"
+}
