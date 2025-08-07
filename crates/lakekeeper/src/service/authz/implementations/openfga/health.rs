@@ -44,16 +44,22 @@ mod tests {
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::{
-            client::new_authorizer, migrate, new_client_from_config,
+        use crate::{
+            implementations::postgres,
+            service::authz::implementations::openfga::{
+                client::new_authorizer, migrate, new_client_from_config,
+            },
         };
 
-        #[tokio::test]
-        async fn test_health() {
+        #[sqlx::test]
+        async fn test_health(pool: sqlx::PgPool) {
             let client = new_client_from_config().await.unwrap();
 
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            migrate(&client, Some(store_name.clone())).await.unwrap();
+            let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
+            migrate(&client, Some(store_name.clone()), catalog_state)
+                .await
+                .unwrap();
 
             let authorizer = new_authorizer(
                 client.clone(),

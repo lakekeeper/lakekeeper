@@ -1089,9 +1089,9 @@ pub(crate) mod tests {
                 .unwrap()
         }
 
-        #[tokio::test]
-        async fn test_list_projects() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_list_projects(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let user_id = UserId::new_unchecked("oidc", "this_user");
             let actor = Actor::Principal(user_id.clone());
             let project = ProjectId::from(uuid::Uuid::now_v7());
@@ -1125,9 +1125,9 @@ pub(crate) mod tests {
             );
         }
 
-        #[tokio::test]
-        async fn test_read_objects_per_user() -> anyhow::Result<()> {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_read_objects_per_user(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let user_id = UserId::new_unchecked("oidc", "this_user");
             let actor = Actor::Principal(user_id.clone());
             let table_id = TableId::from(uuid::Uuid::now_v7());
@@ -1170,9 +1170,9 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        #[tokio::test]
-        async fn test_list_objects() -> anyhow::Result<()> {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_list_objects(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let user_id = UserId::new_unchecked("oidc", "this_user");
             let actor = Actor::Principal(user_id.clone());
             let table_id = TableId::from(uuid::Uuid::now_v7());
@@ -1213,9 +1213,9 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        #[tokio::test]
-        async fn test_read_users_per_object() -> anyhow::Result<()> {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_read_users_per_object(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let user_id = UserId::new_unchecked("oidc", "this_user");
             let actor = Actor::Principal(user_id.clone());
             let table_id = TableId::from(uuid::Uuid::now_v7());
@@ -1258,9 +1258,9 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        #[tokio::test]
-        async fn test_require_no_relations_own_relations() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_require_no_relations_own_relations(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
 
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
@@ -1286,9 +1286,9 @@ pub(crate) mod tests {
             assert_eq!(err.error.r#type, "ObjectHasRelations");
         }
 
-        #[tokio::test]
-        async fn test_require_no_relations_used_in_other_relations() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_require_no_relations_used_in_other_relations(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1313,9 +1313,9 @@ pub(crate) mod tests {
             assert_eq!(err.error.r#type, "ObjectUsedInRelation");
         }
 
-        #[tokio::test]
-        async fn test_delete_own_relations_direct() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_own_relations_direct(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1340,9 +1340,9 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_own_relations_usersets() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_own_relations_usersets(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1367,9 +1367,9 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_own_relations_many() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_own_relations_many(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1406,9 +1406,9 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_own_relations_empty() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_own_relations_empty(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1416,9 +1416,9 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_user_relations() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_user_relations(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1445,9 +1445,9 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_non_existing_relation_gives_404() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_non_existing_relation_gives_404(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             let result = authorizer
                 .write(
@@ -1467,9 +1467,9 @@ pub(crate) mod tests {
             );
         }
 
-        #[tokio::test]
-        async fn test_duplicate_writes_give_409() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_duplicate_writes_give_409(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer
                 .write(
@@ -1499,18 +1499,18 @@ pub(crate) mod tests {
             assert_eq!(ErrorModel::from(result).code, StatusCode::CONFLICT.as_u16());
         }
 
-        #[tokio::test]
-        async fn test_delete_user_relations_empty() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_user_relations_empty(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
             authorizer.delete_user_relations(&project_id).await.unwrap();
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_user_relations_many() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_user_relations_many(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let project_id = ProjectId::from(uuid::Uuid::now_v7());
             authorizer.require_no_relations(&project_id).await.unwrap();
 
@@ -1545,9 +1545,9 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&project_id).await.unwrap();
         }
 
-        #[tokio::test]
-        async fn test_delete_user_relations_userset() {
-            let authorizer = new_authorizer_in_empty_store().await;
+        #[sqlx::test]
+        async fn test_delete_user_relations_userset(pool: sqlx::PgPool) {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
             let user = RoleId::new(uuid::Uuid::nil());
             authorizer.require_no_relations(&user).await.unwrap();
 
