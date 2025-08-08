@@ -2,6 +2,18 @@
 
 
 
+## [0.9.4](https://github.com/lakekeeper/lakekeeper/compare/v0.9.3...v0.9.4) (2025-08-06)
+
+
+### Features
+
+* Update UI to 0.9.0 with multi-project support ([#1275](https://github.com/lakekeeper/lakekeeper/issues/1275)) ([43275bf](https://github.com/lakekeeper/lakekeeper/commit/43275bfc22994a09a9a6bbe5dc0da44b2bc03716))
+
+
+### Miscellaneous Chores
+
+* release 0.9.4 ([0278948](https://github.com/lakekeeper/lakekeeper/commit/027894835a26569ad47895d5b9e03acb2dd6aacd))
+
 ## [0.9.3](https://github.com/lakekeeper/lakekeeper/compare/v0.9.2...v0.9.3) (2025-07-18)
 
 

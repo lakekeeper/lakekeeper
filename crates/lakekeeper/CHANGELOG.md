@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.4](https://github.com/lakekeeper/lakekeeper/compare/v0.9.3...v0.9.4) (2025-08-06)
+
+
+### Bug Fixes
+
+* `partition_statistics` deletion ([#1269](https://github.com/lakekeeper/lakekeeper/issues/1269)) ([f323c58](https://github.com/lakekeeper/lakekeeper/commit/f323c58c261593e4ec8983b96a312871abcec8a3))
+* View Versions default Namespace should be limited to its own Warehouse ([#1259](https://github.com/lakekeeper/lakekeeper/issues/1259)) ([10bb9da](https://github.com/lakekeeper/lakekeeper/commit/10bb9dab6c5c8300f7a06aec47ab978d08d1e141))
+
+
+### Miscellaneous Chores
+
+* release 0.9.4 ([0278948](https://github.com/lakekeeper/lakekeeper/commit/027894835a26569ad47895d5b9e03acb2dd6aacd))
+
 ## [0.9.3](https://github.com/lakekeeper/lakekeeper/compare/v0.9.2...v0.9.3) (2025-07-18)
 
 
