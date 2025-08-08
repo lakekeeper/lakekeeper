@@ -1,6 +1,7 @@
-use iceberg::Catalog;
-
-use crate::{implementations::postgres, service::authz::ErrorModel, AuthZBackend, CONFIG};
+use crate::{
+    service::{authz::ErrorModel, Catalog},
+    AuthZBackend, CONFIG,
+};
 
 pub(super) mod allow_all;
 
@@ -13,11 +14,12 @@ pub mod openfga;
 /// Default model is not obtainable, i.e. if the model is not found in openfga
 // Return error model here to convert it into anyhow in bin. IcebergErrorResponse does
 // not implement StdError
-pub async fn get_default_authorizer_from_config() -> Result<BuiltInAuthorizers, ErrorModel> {
+pub async fn get_default_authorizer_from_config<C: Catalog>(
+) -> Result<BuiltInAuthorizers, ErrorModel> {
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => Ok(allow_all::AllowAllAuthorizer.into()),
         #[cfg(feature = "authz-openfga")]
-        AuthZBackend::OpenFGA => Ok(openfga::new_authorizer_from_config().await?.into()),
+        AuthZBackend::OpenFGA => Ok(openfga::new_authorizer_from_config::<C>().await?.into()),
     }
 }
 
@@ -26,8 +28,9 @@ pub async fn get_default_authorizer_from_config() -> Result<BuiltInAuthorizers, 
 /// # Errors
 /// Migration fails - for details check the documentation of the configured
 /// Authorizer implementation
-pub async fn migrate_default_authorizer(
-    catalog_state: postgres::CatalogState,
+pub async fn migrate_default_authorizer<C: Catalog>(
+    catalog: C,
+    catalog_state: C::State,
 ) -> std::result::Result<(), ErrorModel> {
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => Ok(()),
@@ -35,7 +38,7 @@ pub async fn migrate_default_authorizer(
         AuthZBackend::OpenFGA => {
             let client = openfga::new_client_from_config().await?;
             let store_name = None;
-            openfga::migrate(&client, store_name, catalog_state).await?;
+            openfga::migrate(&client, store_name, catalog, catalog_state).await?;
             Ok(())
         }
     }

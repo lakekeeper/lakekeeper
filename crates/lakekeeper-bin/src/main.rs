@@ -10,7 +10,10 @@
 use clap::{Parser, Subcommand};
 use lakekeeper::{
     api::management::v1::api_doc as v1_api_doc,
-    implementations::postgres,
+    implementations::{
+        get_default_catalog_from_config,
+        postgres::{self, PostgresCatalog},
+    },
     service::{
         authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
         task_queue::BUILT_IN_API_CONFIGS,
@@ -137,21 +140,13 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Migrate {}) => {
             print_info();
             println!("Migrating authorizer...");
-            let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-                CONFIG
-                    .to_pool_opts()
-                    .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
+            let catalog = PostgresCatalog {};
+            let (catalog_state, _, _) = get_default_catalog_from_config().await?;
+            lakekeeper::service::authz::implementations::migrate_default_authorizer(
+                catalog,
+                catalog_state,
             )
             .await?;
-            let read_pool = lakekeeper::implementations::postgres::get_reader_pool(
-                CONFIG
-                    .to_pool_opts()
-                    .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
-            )
-            .await?;
-            let catalog_state = postgres::CatalogState::from_pools(read_pool, write_pool);
-            lakekeeper::service::authz::implementations::migrate_default_authorizer(catalog_state)
-                .await?;
             println!("Authorizer migration complete.");
 
             println!("Migrating database...");

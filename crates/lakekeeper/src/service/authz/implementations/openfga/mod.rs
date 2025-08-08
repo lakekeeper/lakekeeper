@@ -5,7 +5,6 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use anyhow;
 use axum::Router;
 use futures::future::try_join_all;
 use openfga_client::{
@@ -1067,7 +1066,7 @@ pub(crate) mod tests {
 
         use super::super::*;
         use crate::{
-            implementations::postgres,
+            implementations::postgres::{self, PostgresCatalog},
             service::{authz::implementations::openfga::client::new_authorizer, RoleId},
         };
 
@@ -1079,12 +1078,13 @@ pub(crate) mod tests {
                 .expect("Failed to create OpenFGA client");
 
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
+            let catalog = PostgresCatalog {};
             let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
-            migrate(&client, Some(store_name.clone()), catalog_state)
+            migrate(&client, Some(store_name.clone()), catalog, catalog_state)
                 .await
                 .unwrap();
 
-            new_authorizer(client, Some(store_name), TEST_CONSISTENCY)
+            new_authorizer::<PostgresCatalog>(client, Some(store_name), TEST_CONSISTENCY)
                 .await
                 .unwrap()
         }
@@ -1128,9 +1128,6 @@ pub(crate) mod tests {
         #[sqlx::test]
         async fn test_read_objects_per_user(pool: sqlx::PgPool) -> anyhow::Result<()> {
             let authorizer = new_authorizer_in_empty_store(pool).await;
-            let user_id = UserId::new_unchecked("oidc", "this_user");
-            let actor = Actor::Principal(user_id.clone());
-            let table_id = TableId::from(uuid::Uuid::now_v7());
 
             authorizer
                 .write(
@@ -1173,9 +1170,6 @@ pub(crate) mod tests {
         #[sqlx::test]
         async fn test_list_objects(pool: sqlx::PgPool) -> anyhow::Result<()> {
             let authorizer = new_authorizer_in_empty_store(pool).await;
-            let user_id = UserId::new_unchecked("oidc", "this_user");
-            let actor = Actor::Principal(user_id.clone());
-            let table_id = TableId::from(uuid::Uuid::now_v7());
 
             authorizer
                 .write(
@@ -1216,9 +1210,6 @@ pub(crate) mod tests {
         #[sqlx::test]
         async fn test_read_users_per_object(pool: sqlx::PgPool) -> anyhow::Result<()> {
             let authorizer = new_authorizer_in_empty_store(pool).await;
-            let user_id = UserId::new_unchecked("oidc", "this_user");
-            let actor = Actor::Principal(user_id.clone());
-            let table_id = TableId::from(uuid::Uuid::now_v7());
 
             authorizer
                 .write(

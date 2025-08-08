@@ -5,8 +5,8 @@ use openfga_client::{
     migration::{AuthorizationModelVersion, MigrationFn},
 };
 
-use crate::service::TableId;
-use crate::{implementations::postgres, WarehouseId};
+use crate::service::{Catalog, TableId};
+use crate::WarehouseId;
 
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 
@@ -14,15 +14,16 @@ pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(3, 4)); // <- Change this for every change in the model
 
 #[derive(Clone, Debug)]
-pub struct MigrationState {
+pub struct MigrationState<C: Catalog> {
     store_name: String,
-    catalog_state: postgres::CatalogState,
+    catalog: C,
+    catalog_state: C::State,
 }
 
-fn get_model_manager(
+fn get_model_manager<C: Catalog>(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
-) -> openfga_client::migration::TupleModelManager<BasicAuthLayer, MigrationState> {
+) -> openfga_client::migration::TupleModelManager<BasicAuthLayer, MigrationState<C>> {
     openfga_client::migration::TupleModelManager::new(
         client.clone(),
         &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
@@ -45,9 +46,10 @@ fn get_model_manager(
 }
 
 // catalog trait reingeben, nicht postgres db
-async fn push_down_warehouse_id(
+async fn push_down_warehouse_id<C: Catalog>(
     mut client: BasicOpenFgaServiceClient,
-    state: MigrationState,
+    auth_model_id: String,
+    state: MigrationState<C>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     println!("state in migration fn: {}", state.store_name);
     // Construct OpenFGAClient to be able to use convenience methods.
@@ -55,9 +57,6 @@ async fn push_down_warehouse_id(
         .get_store_by_name(&state.store_name)
         .await?
         .expect("default store should exist");
-    // vermutlich: oben neues add model, und dann hier get_active_auth_model
-    let auth_model_id = "TODO make below compile";
-    // let auth_model_id = get_active_auth_model_id(&mut client.clone(), Some(store.name)).await?;
     let c = client.into_client(&store.id, &auth_model_id);
 
     // - Get all table ids
@@ -103,11 +102,11 @@ async fn add_warehouse_id_to_tables<T>(
 ///
 /// # Errors
 /// * [`OpenFGAError::ClientError`] if the client fails to get the active model id
-pub(super) async fn get_active_auth_model_id(
+pub(super) async fn get_active_auth_model_id<C: Catalog>(
     client: &mut BasicOpenFgaServiceClient,
     store_name: Option<String>,
 ) -> OpenFGAResult<String> {
-    let mut manager = get_model_manager(client, store_name);
+    let mut manager = get_model_manager::<C>(client, store_name);
     let model_version = super::CONFIGURED_MODEL_VERSION.unwrap_or(*ACTIVE_MODEL_VERSION);
     tracing::info!("Getting active OpenFGA Authorization Model ID for version {model_version}.");
     manager
@@ -137,10 +136,11 @@ pub(super) async fn get_active_auth_model_id(
 /// - Failed to read existing models
 /// - Failed to write new model
 /// - Failed to write new version tuples
-pub(crate) async fn migrate(
+pub(crate) async fn migrate<C: Catalog>(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
-    catalog_state: postgres::CatalogState,
+    catalog: C,
+    catalog_state: C::State,
 ) -> OpenFGAResult<()> {
     if let Some(configured_model) = *super::CONFIGURED_MODEL_VERSION {
         tracing::info!("Skipping OpenFGA Migration because a model version is explicitly is configured. Version: {configured_model}");
@@ -151,6 +151,7 @@ pub(crate) async fn migrate(
     let mut manager = get_model_manager(client, Some(store_name.clone()));
     let state = MigrationState {
         store_name,
+        catalog,
         catalog_state,
     };
     manager.migrate(state).await?;
@@ -168,7 +169,7 @@ pub(crate) mod tests {
         super::{client::new_authorizer, OpenFGAAuthorizer},
         *,
     };
-    use crate::implementations::postgres;
+    use crate::implementations::postgres::{self, PostgresCatalog};
     use crate::service::authz::implementations::openfga::new_client_from_config;
 
     pub(crate) async fn authorizer_for_empty_store(
@@ -182,12 +183,18 @@ pub(crate) mod tests {
 
         let test_uuid = uuid::Uuid::now_v7();
         let store_name = format!("test_store_{test_uuid}");
+        let catalog = PostgresCatalog {};
         let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
-        migrate(&client, Some(store_name.clone()), catalog_state.clone())
-            .await
-            .unwrap();
+        migrate(
+            &client,
+            Some(store_name.clone()),
+            catalog,
+            catalog_state.clone(),
+        )
+        .await
+        .unwrap();
 
-        let authorizer = new_authorizer(
+        let authorizer = new_authorizer::<PostgresCatalog>(
             client.clone(),
             Some(store_name),
             ConsistencyPreference::HigherConsistency,
@@ -203,29 +210,49 @@ pub(crate) mod tests {
         use openfga_client::client::ReadAuthorizationModelsRequest;
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::new_client_from_config;
+        use crate::{
+            implementations::postgres::{self, PostgresCatalog},
+            service::authz::implementations::openfga::new_client_from_config,
+        };
 
         #[sqlx::test]
         async fn test_migrate(pool: sqlx::PgPool) {
+            let catalog = PostgresCatalog {};
             let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
 
             let mut client = new_client_from_config().await.unwrap();
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
 
-            let _model = get_active_auth_model_id(&mut client, Some(store_name.clone()))
-                .await
-                .unwrap_err();
+            let _model =
+                get_active_auth_model_id::<PostgresCatalog>(&mut client, Some(store_name.clone()))
+                    .await
+                    .unwrap_err();
 
             // Multiple migrations should be idempotent
-            migrate(&client, Some(store_name.clone()), catalog_state.clone())
-                .await
-                .unwrap();
-            migrate(&client, Some(store_name.clone()), catalog_state.clone())
-                .await
-                .unwrap();
-            migrate(&client, Some(store_name.clone()), catalog_state.clone())
-                .await
-                .unwrap();
+            migrate(
+                &client,
+                Some(store_name.clone()),
+                catalog.clone(),
+                catalog_state.clone(),
+            )
+            .await
+            .unwrap();
+            migrate(
+                &client,
+                Some(store_name.clone()),
+                catalog.clone(),
+                catalog_state.clone(),
+            )
+            .await
+            .unwrap();
+            migrate(
+                &client,
+                Some(store_name.clone()),
+                catalog.clone(),
+                catalog_state.clone(),
+            )
+            .await
+            .unwrap();
 
             let store_id = client
                 .get_store_by_name(&store_name)
@@ -233,9 +260,10 @@ pub(crate) mod tests {
                 .unwrap()
                 .unwrap()
                 .id;
-            let _model = get_active_auth_model_id(&mut client, Some(store_name.clone()))
-                .await
-                .expect("Active model should exist after migration");
+            let _model =
+                get_active_auth_model_id::<PostgresCatalog>(&mut client, Some(store_name.clone()))
+                    .await
+                    .expect("Active model should exist after migration");
 
             // Check that there is only a single model in the store
             let models = client
