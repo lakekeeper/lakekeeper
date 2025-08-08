@@ -298,7 +298,6 @@ fn create_delete_futures(
                         .map_err(|e| InvalidLocationError {
                             reason: format!("Could not build S3 ObjectIdentifier: {e}"),
                             location: key.0.clone(),
-                            source: None,
                         })
                 })
                 .collect::<Result<_, _>>()?;
@@ -313,7 +312,6 @@ fn create_delete_futures(
                         .map_err(|e| InvalidLocationError {
                             reason: format!("Could not build S3 Delete: {e}"),
                             location: format!("s3://{bucket}"),
-                            source: None,
                         })?,
                 )
                 .send();

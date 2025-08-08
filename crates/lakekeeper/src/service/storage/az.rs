@@ -512,186 +512,21 @@ impl AdlsProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AdlsLocation {
-    account_name: String,
-    filesystem: String,
-    endpoint_suffix: String,
-    key: Vec<String>,
-    // Redundant, but useful for failsafe access
-    location: Location,
-    custom_prefix: Option<String>,
-}
-
-impl AdlsLocation {
-    /// Create a new [`AdlsLocation`] from the given parameters.
-    ///
-    /// # Errors
-    /// Fails if validation of account name, filesystem name or key fails.
-    pub fn new(
-        account_name: String,
-        filesystem: String,
-        host: String,
-        key: Vec<String>,
-        custom_prefix: Option<String>,
-    ) -> Result<Self, ValidationError> {
-        validate_filesystem_name(&filesystem)?;
-        validate_account_name(&account_name)?;
-        for k in &key {
-            validate_path_segment(k)?;
-        }
-
-        let endpoint_suffix = normalize_host(host)?.unwrap_or(DEFAULT_HOST.to_string());
-
-        let location = format!("abfss://{filesystem}@{account_name}.{endpoint_suffix}",);
-        let mut location = Location::from_str(&location).map_err(|e| {
-            Box::new(InvalidLocationError {
-                source: Some(Box::new(e)),
-                reason: "Invalid adls location".to_string(),
-                location,
-            })
-        })?;
-        if !key.is_empty() {
-            location.without_trailing_slash().extend(key.iter());
-        }
-
-        Ok(Self {
-            account_name,
-            filesystem,
-            endpoint_suffix,
-            key,
-            location,
-            custom_prefix,
-        })
-    }
-
-    #[must_use]
-    pub fn location(&self) -> &Location {
-        &self.location
-    }
-
-    #[must_use]
-    pub fn account_name(&self) -> &str {
-        &self.account_name
-    }
-
-    #[must_use]
-    pub fn filesystem(&self) -> &str {
-        &self.filesystem
-    }
-
-    #[must_use]
-    pub fn endpoint_suffix(&self) -> &str {
-        &self.endpoint_suffix
-    }
-
-    /// Create a new `AdlsLocation` from a Location.
-    ///
-    /// If `allow_variants` is set to true, `wasbs://` schemes are allowed.
-    ///
-    /// # Errors
-    /// - Fails if the location is not a valid ADLS location
-    pub fn try_from_location(
-        location: &Location,
-        allow_variants: bool,
-    ) -> Result<Self, ValidationError> {
-        let schema = location.url().scheme();
-        let is_custom_variant = ALTERNATIVE_PROTOCOLS.contains(&schema);
-
-        // Protocol must be abfss or wasbs (if allowed)
-        if schema != "abfss" && !(allow_variants && is_custom_variant) {
-            let reason = if allow_variants {
-                format!(
-                    "ADLS location must use abfss or wasbs protocol. Found: {}",
-                    location.url().scheme()
-                )
-            } else {
-                format!(
-                    "ADLS location must use abfss protocol. Found: {}",
-                    location.url().scheme()
-                )
-            };
-
-            return Err(Box::new(InvalidLocationError {
-                reason,
-                location: location.to_string(),
-                source: None,
-            })
-            .into());
-        }
-
-        let filesystem = location.url().username().to_string();
-        let host = location
-            .url()
-            .host_str()
-            .ok_or_else(|| {
-                Box::new(InvalidLocationError {
-                    reason: "ADLS location has no host specified".to_string(),
-                    location: location.to_string(),
-                    source: None,
-                })
-            })?
-            .to_string();
-        // Host: account_name.endpoint_suffix
-        let (account_name, endpoint_suffix) =
-            host.split_once('.')
-                .ok_or_else(|| Box::new(InvalidLocationError {
-                    reason: "ADLS location host must be in the format <account_name>.<endpoint>. Specified location has no point (.)"
-                        .to_string(),
-                    location: location.to_string(),
-                    source: None,
-                }))?;
-
-        let key: Vec<String> = location
-            .url()
-            .path_segments()
-            .map_or(Vec::new(), |segments| {
-                segments.map(std::string::ToString::to_string).collect()
-            });
-
-        let custom_prefix = if is_custom_variant {
-            Some(schema.to_string())
-        } else {
-            None
-        };
-
-        Self::new(
-            account_name.to_string(),
-            filesystem,
-            endpoint_suffix.to_string(),
-            key,
-            custom_prefix,
-        )
-    }
-
-    #[cfg(test)]
-    /// Always returns `abfss://` prefixed location.
-    pub(crate) fn into_normalized_location(self) -> Location {
-        self.location
-    }
-}
-
-impl From<AdlsLocation> for Location {
-    fn from(location: AdlsLocation) -> Location {
-        location.location
-    }
-}
-
-/// Removes the hostname and user from the path.
-/// Keeps only the path and optionally the scheme.
-#[must_use]
-pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
-    if let Some(caps) = ADLS_PATH_PATTERN.captures(path) {
-        let mut location = String::new();
-        if only_path {
-            caps.expand("$path", &mut location);
-        } else {
-            caps.expand("$protocol$path", &mut location);
-        }
-        return location;
-    }
-    path.to_string()
-}
+// /// Removes the hostname and user from the path.
+// /// Keeps only the path and optionally the scheme.
+// #[must_use]
+// pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
+//     if let Some(caps) = ADLS_PATH_PATTERN.captures(path) {
+//         let mut location = String::new();
+//         if only_path {
+//             caps.expand("$path", &mut location);
+//         } else {
+//             caps.expand("$protocol$path", &mut location);
+//         }
+//         return location;
+//     }
+//     path.to_string()
+// }
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
@@ -783,175 +618,18 @@ pub(super) fn get_file_io_from_table_config(
         .build()?)
 }
 
-fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
-    azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
-        .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-        .client_options(
-            azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-                FixedRetryOptions::default()
-                    .max_retries(3u32)
-                    .max_total_elapsed(std::time::Duration::from_secs(5)),
-            )),
-        )
-        .blob_service_client()
-}
-
-// https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_filesystem_name(container: &str) -> Result<(), InvalidProfileError> {
-    if container.is_empty() {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "`filesystem` must not be empty.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    // Container names must not contain consecutive hyphens.
-    if container.contains("--") {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "Filesystem name must not contain consecutive hyphens.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    let container = container.chars().collect::<Vec<char>>();
-    // Container names must be between 3 (min) and 63 (max) characters long.
-    if container.len() < 3 || container.len() > 63 {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "`filesystem` must be between 3 and 63 characters long.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    // Container names can consist only of lowercase letters, numbers, and hyphens (-).
-    if !container
-        .iter()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
-    {
-        return Err(InvalidProfileError {
-            source: None,
-            reason:
-                "Filesystem name can consist only of lowercase letters, numbers, and hyphens (-)."
-                    .to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    // Container names must begin and end with a letter or number.
-    // Unwrap will not fail as the length is already checked.
-    if !container.first().is_some_and(char::is_ascii_alphanumeric)
-        || !container.last().is_some_and(char::is_ascii_alphanumeric)
-    {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "Filesystem name must begin and end with a letter or number.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-// https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_path_segment(path_segment: &str) -> Result<(), InvalidProfileError> {
-    if path_segment.contains(|c: char| {
-        c == ' '
-            || c == '!'
-            || c == '*'
-            || c == '\''
-            || c == '('
-            || c == ')'
-            || c == ';'
-            || c == ':'
-            || c == '@'
-            || c == '&'
-            || c == '='
-            || c == '+'
-            || c == '$'
-            || c == ','
-            || c == '/'
-            || c == '?'
-            || c == '%'
-            || c == '#'
-            || c == '['
-            || c == ']'
-    }) {
-        return Err(InvalidProfileError {
-            source: None,
-            reason:
-                "Directory path contains reserved URL characters that are not properly escaped."
-                    .to_string(),
-            entity: "DirectoryPath".to_string(),
-        });
-    }
-
-    // Check if the directory name ends with a dot (.), a backslash (\), or a combination of these.
-    if path_segment.ends_with('.') || path_segment.ends_with('\\') {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: format!(
-                "Directory: '{path_segment}' must not end with a dot (.), or a backslash (\\)."
-            ),
-            entity: "DirectoryPath".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-fn normalize_host(host: String) -> Result<Option<String>, InvalidProfileError> {
-    // If endpoint suffix is Some(""), set it to None.
-    if host.is_empty() {
-        Ok(None)
-    } else {
-        // Endpoint suffix must not contain slashes.
-        if host.contains('/') {
-            return Err(InvalidProfileError {
-                source: None,
-                reason: "`endpoint_suffix` must not contain slashes.".to_string(),
-                entity: "EndpointSuffix".to_string(),
-            });
-        }
-
-        // Endpoint suffix must be a valid hostname
-        if Host::parse(&host).is_err() {
-            return Err(InvalidProfileError {
-                source: None,
-                reason: "`endpoint_suffix` must be a valid hostname.".to_string(),
-                entity: "EndpointSuffix".to_string(),
-            });
-        }
-
-        Ok(Some(host))
-    }
-}
-
-// Storage account names must be between 3 and 24 characters in length
-// and may contain numbers and lowercase letters only.
-fn validate_account_name(account_name: &str) -> Result<(), InvalidProfileError> {
-    if account_name.len() < 3 || account_name.len() > 24 {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "`account_name` must be between 3 and 24 characters long.".to_string(),
-            entity: "AccountName".to_string(),
-        });
-    }
-
-    if !account_name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-    {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "`account_name` must contain only lowercase letters and numbers.".to_string(),
-            entity: "AccountName".to_string(),
-        });
-    }
-
-    Ok(())
-}
+// fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
+//     azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
+//         .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
+//         .client_options(
+//             azure_core::ClientOptions::default().retry(RetryOptions::fixed(
+//                 FixedRetryOptions::default()
+//                     .max_retries(3u32)
+//                     .max_total_elapsed(std::time::Duration::from_secs(5)),
+//             )),
+//         )
+//         .blob_service_client()
+// }
 
 #[cfg(test)]
 pub(crate) mod test {
@@ -962,11 +640,7 @@ pub(crate) mod test {
     use super::*;
     use crate::service::{
         storage::{
-            az::{
-                normalize_host, reduce_scheme_string, validate_account_name,
-                validate_filesystem_name, validate_path_segment, DEFAULT_AUTHORITY_HOST,
-            },
-            AdlsLocation, AdlsProfile, StorageLocations, StorageProfile,
+            az::DEFAULT_AUTHORITY_HOST, AdlsLocation, AdlsProfile, StorageLocations, StorageProfile,
         },
         tabular_idents::TabularId,
         NamespaceId,
@@ -1080,22 +754,6 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_validate_endpoint_suffix() {
-        assert_eq!(
-            normalize_host("dfs.core.windows.net".to_string()).unwrap(),
-            Some("dfs.core.windows.net".to_string())
-        );
-        assert!(normalize_host(String::new()).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_valid_account_names() {
-        for name in &["abc", "a1b2c3", "abc123", "123abc"] {
-            assert!(validate_account_name(name).is_ok(), "{}", name);
-        }
-    }
-
-    #[test]
     fn test_default_adls_locations() {
         let profile = AdlsProfile {
             filesystem: "filesystem".to_string(),
@@ -1130,199 +788,6 @@ pub(crate) mod test {
             location.to_string(),
             format!("abfss://filesystem@account.blob.com/{namespace_id}/{table_id}")
         );
-    }
-
-    #[test]
-    fn test_parse_adls_location() {
-        let cases = vec![
-            (
-                "abfss://filesystem@account0name.foo.com",
-                "account0name",
-                "filesystem",
-                "foo.com",
-                vec![],
-            ),
-            (
-                "abfss://filesystem@account0name.dfs.core.windows.net/one",
-                "account0name",
-                "filesystem",
-                "dfs.core.windows.net",
-                vec!["one"],
-            ),
-            (
-                "abfss://filesystem@account0name.foo.com/one",
-                "account0name",
-                "filesystem",
-                "foo.com",
-                vec!["one"],
-            ),
-        ];
-
-        for (location_str, account_name, filesystem, endpoint_suffix, key) in cases {
-            let adls_location =
-                AdlsLocation::try_from_location(&Location::from_str(location_str).unwrap(), false)
-                    .unwrap();
-            assert_eq!(adls_location.account_name(), account_name);
-            assert_eq!(adls_location.filesystem(), filesystem);
-            assert_eq!(adls_location.endpoint_suffix(), endpoint_suffix);
-            assert_eq!(adls_location.key, key);
-            // Roundtrip
-            assert_eq!(
-                adls_location.into_normalized_location().to_string(),
-                location_str
-            );
-        }
-    }
-
-    #[test]
-    fn test_invalid_adls_location() {
-        let cases = vec![
-            "abfss://filesystem@account_name",
-            "abfss://filesystem@account_name.example.com./foo",
-            "s3://filesystem@account_name.dfs.core.windows/foo",
-            "abfss://account_name.dfs.core.windows/foo",
-        ];
-
-        for location in cases {
-            let location = Location::from_str(location).unwrap();
-            let parsed_location = AdlsLocation::try_from_location(&location, false);
-            assert!(parsed_location.is_err(), "{parsed_location:?}");
-        }
-    }
-
-    #[test]
-    fn test_invalid_account_names() {
-        for name in &["Abc", "abc!", "abc.def", "abc_def", "abc/def"] {
-            assert!(validate_account_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_valid_container_names() {
-        for name in &[
-            "abc", "a1b2c3", "a-b-c", "1-2-3", "a1-b2-c3", "abc123", "123abc",
-        ] {
-            assert!(validate_filesystem_name(name).is_ok(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_invalid_container_length() {
-        assert!(validate_filesystem_name("ab").is_err(), "ab");
-        assert!(
-            validate_filesystem_name(&"a".repeat(64)).is_err(),
-            "64 character long string"
-        );
-    }
-
-    #[test]
-    fn test_invalid_container_characters() {
-        for name in &[
-            "Abc",     // Uppercase letter
-            "abc!",    // Special character
-            "abc.def", // Dot character
-            "abc_def", // Underscore character
-        ] {
-            assert!(validate_filesystem_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_invalid_start_end() {
-        for name in &[
-            "-abc",   // Starts with hyphen
-            "abc-",   // Ends with hyphen
-            "-abc-",  // Starts and ends with hyphen
-            "1-2-3-", // Ends with hyphen
-        ] {
-            assert!(validate_filesystem_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_consecutive_hyphens_container_name() {
-        for name in &[
-            "a--b", // Consecutive hyphens
-            "1--2", // Consecutive hyphens
-            "a--1", // Consecutive hyphens
-        ] {
-            assert!(validate_filesystem_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_valid_directory_paths() {
-        for path in &[
-            "valid/path",
-            "another/valid/path",
-            "valid/path/with123",
-            "valid/path/with-dash",
-            "valid/path/with_underscore",
-        ] {
-            for segment in path.split('/') {
-                assert!(validate_path_segment(segment).is_ok(), "{}", segment);
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_reserved_characters() {
-        for path in &[
-            " path", "path!", "path*", "path'", "path(", "path)", "path;", "path:", "path@",
-            "path&", "path=", "path+", "path$", "path,", "path?", "path%", "path#", "path[",
-            "path]",
-        ] {
-            for segment in path.split('/') {
-                assert!(validate_path_segment(segment).is_err(), "{}", segment);
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_ending_characters() {
-        for path in &["path.", "path\\", "path/.", "path/\\"] {
-            assert!(validate_path_segment(path).is_err(), "{}", path);
-        }
-    }
-
-    #[test]
-    fn test_normalize_wasbs_location() {
-        let location =
-            Location::from_str("wasbs://filesystem@account0name.foo.com/path/to/data").unwrap();
-
-        let location = AdlsLocation::try_from_location(&location, true).unwrap();
-        assert_eq!(
-            location.into_normalized_location().to_string(),
-            "abfss://filesystem@account0name.foo.com/path/to/data",
-        );
-    }
-
-    #[test]
-    fn test_parse_wasbs_location() {
-        let location = "wasbs://filesystem@account0name.foo.com/path/to/data";
-
-        // Test with allow_variants = true
-        let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), true);
-
-        assert!(result.is_ok(), "Should parse with allow_variants = true");
-        let adls_location = result.unwrap();
-
-        // Check that it was normalized to abfss
-        assert_eq!(
-            adls_location.location().url().scheme(),
-            "abfss",
-            "Protocol should be normalized to abfss"
-        );
-
-        // Check that other properties were preserved
-        assert_eq!(adls_location.account_name(), "account0name");
-        assert_eq!(adls_location.filesystem(), "filesystem");
-        assert_eq!(adls_location.endpoint_suffix(), "foo.com");
-        assert_eq!(adls_location.key, vec!["path", "to", "data"]);
-
-        // Test with allow_variants = false
-        let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), false);
-        assert!(result.is_err(), "Should fail with allow_variants = false");
     }
 
     #[test]

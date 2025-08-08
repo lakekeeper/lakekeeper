@@ -31,14 +31,12 @@ impl S3Location {
         scheme: Option<String>,
     ) -> Result<Self, InvalidLocationError> {
         validate_bucket_name(&bucket_name).map_err(|e| InvalidLocationError {
-            source: None,
             reason: e.to_string(),
             location: format!("s3://{bucket_name}"),
         })?;
         // Keys may not contain slashes
         if key.iter().any(|k| k.contains('/')) {
             return Err(InvalidLocationError {
-                source: None,
                 reason: "S3 key contains unescaped slashes (/)".to_string(),
                 location: format!("{key:?}"),
             });
@@ -48,7 +46,6 @@ impl S3Location {
 
         if !S3_CUSTOM_SCHEMES.contains(&scheme.as_str()) && scheme != "s3" {
             return Err(InvalidLocationError {
-                source: None,
                 reason: format!("S3 location must use s3, s3a or s3n protocol. Found: {scheme}"),
                 location: format!("s3://{bucket_name}"),
             });
@@ -56,9 +53,8 @@ impl S3Location {
 
         let location = format!("{scheme}://{bucket_name}");
         let mut location = Location::from_str(&location).map_err(|e| InvalidLocationError {
-            reason: "Invalid S3 location.".to_string(),
+            reason: format!("Failed to parse as Location - {}", e.reason),
             location: location.clone(),
-            source: Some(e.into()),
         })?;
         if !key.is_empty() {
             location.without_trailing_slash().extend(key.iter());
@@ -113,7 +109,6 @@ impl S3Location {
             return Err(InvalidLocationError {
                 reason,
                 location: location.to_string(),
-                source: None,
             });
         }
 
@@ -123,7 +118,6 @@ impl S3Location {
             .ok_or_else(|| InvalidLocationError {
                 reason: "S3 location does not have a bucket name.".to_string(),
                 location: location.to_string(),
-                source: None,
             })?;
 
         let key: Vec<String> = location
@@ -154,7 +148,6 @@ impl S3Location {
         let location = Location::from_str(s).map_err(|e| InvalidLocationError {
             reason: format!("Could not parse S3 location from string: {e}"),
             location: s.to_string(),
-            source: Some(e.into()),
         })?;
 
         Self::try_from_location(&location, allow_s3a)

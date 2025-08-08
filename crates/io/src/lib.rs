@@ -24,6 +24,8 @@ use tokio::task::JoinHandle;
 pub use tryhard;
 use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
 
+#[cfg(feature = "storage-adls")]
+pub mod adls;
 mod location;
 #[cfg(feature = "storage-in-memory")]
 pub mod memory;

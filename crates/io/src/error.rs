@@ -7,7 +7,6 @@
 pub struct InvalidLocationError {
     pub reason: String,
     pub location: String,
-    pub source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
 }
 
 // #[derive(Debug, thiserror::Error)]
