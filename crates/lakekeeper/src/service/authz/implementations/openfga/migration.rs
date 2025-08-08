@@ -98,6 +98,9 @@ async fn add_warehouse_id_to_tables<T>(
 /// Get the active authorization model id.
 /// Leave `store_name` empty to use the default store name.
 ///
+/// Active here refers to the hardcoded model version. This might not be the version you want
+/// when consecutive migrations are applied, so avoid using it in migration functions.
+///
 /// # Errors
 /// * [`OpenFGAError::ClientError`] if the client fails to get the active model id
 pub(super) async fn get_active_auth_model_id(
