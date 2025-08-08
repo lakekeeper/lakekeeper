@@ -932,6 +932,17 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             return Ok(());
         }
 
+        if let Ok(None) =
+            C::namespace_to_id(warehouse_id, &destination.namespace, t.transaction()).await
+        {
+            return Err(ErrorModel::not_found(
+                "Namespace not found",
+                "NoSuchNamespaceException",
+                None,
+            )
+            .into());
+        }
+
         C::rename_table(
             warehouse_id,
             source_table_id,
@@ -1901,11 +1912,12 @@ pub(crate) mod test {
             SnapshotRetention, Summary, TableMetadata, Transform, Type, UnboundPartitionField,
             UnboundPartitionSpec, MAIN_BRANCH, PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
         },
-        TableIdent,
+        NamespaceIdent, TableIdent,
     };
     use iceberg_ext::{
         catalog::rest::{
             CommitTableRequest, CreateNamespaceResponse, CreateTableRequest, LoadTableResult,
+            RenameTableRequest,
         },
         configs::Location,
     };
@@ -3572,5 +3584,70 @@ pub(crate) mod test {
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());
         assert_ne!(loaded_table.metadata.uuid(), initial_table.metadata.uuid());
+    }
+
+    #[sqlx::test]
+    async fn test_rename_table(pool: sqlx::PgPool) {
+        let prof = crate::catalog::test::test_io_profile();
+
+        let authz = HidingAuthorizer::new();
+
+        let (ctx, warehouse) = crate::catalog::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+
+        let from_ns = crate::catalog::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "from_ns".to_string(),
+        )
+        .await;
+
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: from_ns.namespace.clone(),
+        };
+
+        let prefix = Some(Prefix(warehouse.warehouse_id.to_string()));
+
+        CatalogServer::create_table(
+            ns_params.clone(),
+            create_request(Some("from_table".to_string()), Some(false)),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        let rename_response = CatalogServer::rename_table(
+            prefix,
+            RenameTableRequest {
+                source: TableIdent {
+                    namespace: NamespaceIdent::new("from_ns".to_string()),
+                    name: "from_table".to_string(),
+                },
+                destination: TableIdent {
+                    namespace: NamespaceIdent::new("to_ns".to_string()),
+                    name: "from_table".to_string(),
+                },
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(rename_response.error.code, StatusCode::NOT_FOUND);
+        assert_eq!(rename_response.error.r#type, "NoSuchNamespaceException");
     }
 }
