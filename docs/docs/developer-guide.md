@@ -79,7 +79,8 @@ If your database credentials used differ, please modify the `.env` accordingly a
 Run:
 ```sh
 # Migrate db. Make sure you have sqlx-install with `cargo install sqlx-cli`
-# Run this locally if you change the db schema via crates/lakekeeper/migrations (e.g. after adding a table or dropping a column`).
+# Run this locally if you change the db schema via `crates/lakekeeper/migrations`,
+# e.g. after adding a table or dropping a column.
 cd crates/lakekeeper
 sqlx database create && sqlx migrate run
 
