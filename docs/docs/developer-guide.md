@@ -21,6 +21,9 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
+cd crates/lakekeeper
+sqlx database create && sqlx migrate run
+cd ../..
 # Run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
 cargo nextest run --all-features
 
@@ -28,9 +31,6 @@ cargo nextest run --all-features
 just check-clippy
 # formatting the code. You may have to install nightly rust toolchain
 just fix-format
-
-# linting
-just check-clippy
 ```
 Keep in mind that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`.
 There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
@@ -78,11 +78,12 @@ If your database credentials used differ, please modify the `.env` accordingly a
 
 Run:
 ```sh
-# Migrate db. Make sure you have sqlx-install with `cargo install sqlx-cli`
+# Migrate db. Make sure you have sqlx-cli install with `cargo install sqlx-cli`
 # Run this locally if you change the db schema via `crates/lakekeeper/migrations`,
 # e.g. after adding a table or dropping a column.
 cd crates/lakekeeper
 sqlx database create && sqlx migrate run
+cd ../..
 
 # If you changed any of the SQL statements embedded in Rust code, run this before pushing to GitHub.
 just sqlx-prepare
