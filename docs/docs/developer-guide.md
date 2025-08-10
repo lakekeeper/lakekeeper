@@ -21,7 +21,7 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
-# Once you have made some changes to the code, run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
+# Run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
 cargo nextest run --all-features
 
 # run clippy
