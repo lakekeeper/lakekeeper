@@ -48,7 +48,8 @@ fn get_model_manager<C: Catalog>(
 // catalog trait reingeben, nicht postgres db
 async fn push_down_warehouse_id<C: Catalog>(
     mut client: BasicOpenFgaServiceClient,
-    auth_model_id: String,
+    _prev_auth_model_id: Option<String>,
+    curr_auth_model_id: Option<String>,
     state: MigrationState<C>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     println!("state in migration fn: {}", state.store_name);
@@ -57,7 +58,9 @@ async fn push_down_warehouse_id<C: Catalog>(
         .get_store_by_name(&state.store_name)
         .await?
         .expect("default store should exist");
-    let c = client.into_client(&store.id, &auth_model_id);
+    let curr_auth_model_id =
+        curr_auth_model_id.expect("Migration hook needs current auth model's id");
+    let c = client.into_client(&store.id, &curr_auth_model_id);
 
     // - Get all table ids
     //
