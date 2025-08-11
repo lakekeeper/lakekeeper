@@ -145,6 +145,12 @@ impl Location {
         self
     }
 
+    pub fn cloning_push(&self, segment: &str) -> Self {
+        let mut cloned = self.clone();
+        cloned.push(segment);
+        cloned
+    }
+
     // /// Clones the location and pushes a segment to the path.
     // #[must_use]
     // pub fn cloning_push(&self, segment: &str) -> Self {
@@ -191,6 +197,31 @@ impl Location {
             scheme_index,
         };
         iter
+    }
+
+    #[must_use]
+    /// Remove the last path segment. Always keeps the authority and host.
+    /// Result is a directory (with trailing slash).
+    pub fn parent(&self) -> Self {
+        let mut authority_and_path = self.authority_and_path.clone();
+        if let Some(last_slash) = authority_and_path.trim_end_matches('/').rfind('/') {
+            authority_and_path.truncate(last_slash + 1); // Keep the trailing slash
+        }
+
+        let full_location = format!("{}://{}", self.scheme, authority_and_path);
+        Location {
+            full_location,
+            scheme: self.scheme.clone(),
+            authority_and_path,
+        }
+    }
+
+    pub fn pop(&mut self) -> &mut Self {
+        if let Some(last_slash) = self.authority_and_path.trim_end_matches('/').rfind('/') {
+            self.authority_and_path.truncate(last_slash + 1); // Keep the trailing slash
+        }
+        self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
+        self
     }
 }
 
@@ -291,6 +322,52 @@ mod tests {
         assert_eq!(location.as_str(), "s3://bucket/foo /bar");
         let location = Location::from_str("s3://bucket/foo%20/bar").unwrap();
         assert_eq!(location.as_str(), "s3://bucket/foo%20/bar");
+    }
+
+    #[test]
+    fn test_parent() {
+        let location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        let parent = location.parent();
+        assert_eq!(parent.as_str(), "s3://bucket/foo/");
+
+        let location = Location::from_str("s3://bucket/foo/bar/").unwrap();
+        let parent = location.parent();
+        assert_eq!(parent.as_str(), "s3://bucket/foo/");
+
+        let location = Location::from_str("s3://bucket/").unwrap();
+        let parent = location.parent();
+        assert_eq!(parent.as_str(), "s3://bucket/");
+
+        let location = Location::from_str("s3://bucket").unwrap();
+        let parent = location.parent();
+        assert_eq!(parent.as_str(), "s3://bucket");
+
+        let location = Location::from_str("s3://user:pass@bucket/foo").unwrap();
+        let parent = location.parent();
+        assert_eq!(parent.as_str(), "s3://user:pass@bucket/");
+    }
+
+    #[test]
+    fn test_pop() {
+        let mut location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        location.pop();
+        assert_eq!(location.as_str(), "s3://bucket/foo/");
+
+        let mut location = Location::from_str("s3://bucket/foo/bar/").unwrap();
+        location.pop();
+        assert_eq!(location.as_str(), "s3://bucket/foo/");
+
+        let mut location = Location::from_str("s3://bucket/").unwrap();
+        location.pop();
+        assert_eq!(location.as_str(), "s3://bucket/");
+
+        let mut location = Location::from_str("s3://bucket").unwrap();
+        location.pop();
+        assert_eq!(location.as_str(), "s3://bucket");
+
+        let mut location = Location::from_str("s3://user:pass@bucket/foo").unwrap();
+        location.pop();
+        assert_eq!(location.as_str(), "s3://user:pass@bucket/");
     }
 
     #[test]

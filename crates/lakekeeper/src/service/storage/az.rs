@@ -4,26 +4,29 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
-use azure_identity::{
-    DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
-};
+use azure_identity::DefaultAzureCredential;
 use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
         service_sas::{BlobSharedAccessSignature, SasKey},
         SasToken,
     },
-    StorageCredentials,
+    CloudLocation,
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::ADLS_AUTHORITY_HOST;
 use iceberg_ext::configs::table::{custom, TableProperties};
-use lakekeeper_io::{InvalidLocationError, Location};
+use lakekeeper_io::{
+    adls::{
+        normalize_host, validate_account_name, validate_filesystem_name, AdlsLocation, AdlsStorage,
+        AzureAuth, AzureClientCredentialsAuth, AzureSettings, AzureSharedAccessKeyAuth,
+    },
+    InvalidLocationError, Location,
+};
 use lazy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use url::{Host, Url};
+use url::Url;
 use veil::Redact;
 
 use crate::{
@@ -69,20 +72,11 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
 });
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
-    LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
 
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
 
 pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
-static ADLS_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("^(?<protocol>(abfss|wasbs)?://)[^/@]+@[^/]+(?<path>/.+)")
-        .expect("ADLS path regex is valid")
-});
-
-static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
-    LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
 
 impl AdlsProfile {
     /// Check if an Azure variant is allowed.
@@ -185,12 +179,52 @@ impl AdlsProfile {
             )
         };
         let location = Location::from_str(&location).map_err(|e| InvalidLocationError {
-            source: Some(Box::new(e)),
-            reason: "Failed to create location for storage profile.".to_string(),
+            reason: format!("Failed to create base location for storage profile: {e}"),
             location,
         })?;
 
         Ok(location)
+    }
+
+    fn cloud_location(&self) -> CloudLocation {
+        if let Some(host) = &self.host {
+            CloudLocation::Custom {
+                account: self.account_name.clone(),
+                uri: host.clone(),
+            }
+        } else {
+            CloudLocation::Public {
+                account: self.account_name.clone(),
+            }
+        }
+    }
+
+    fn azure_settings(&self) -> AzureSettings {
+        AzureSettings {
+            authority_host: self.authority_host.clone(),
+            cloud_location: self.cloud_location(),
+        }
+    }
+
+    fn blob_service_client(
+        &self,
+        credential: &AzCredential,
+    ) -> Result<BlobServiceClient, CredentialsError> {
+        let azure_auth = AzureAuth::try_from(credential.clone())?;
+
+        self.azure_settings()
+            .get_blob_service_client(&azure_auth)
+            .map_err(Into::into)
+    }
+
+    pub fn lakekeeper_io(
+        &self,
+        credential: &AzCredential,
+    ) -> Result<AdlsStorage, CredentialsError> {
+        let azure_auth = AzureAuth::try_from(credential.clone())?;
+        self.azure_settings()
+            .get_storage_client(&azure_auth)
+            .map_err(Into::into)
     }
 
     /// Generate the table configuration for Azure Datalake Storage Gen2.
@@ -205,27 +239,10 @@ impl AdlsProfile {
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
         let sas = match credential {
-            AzCredential::ClientCredentials {
-                client_id,
-                tenant_id,
-                client_secret,
-            } => {
-                let token = azure_identity::ClientSecretCredential::new(
-                    HTTP_CLIENT_ARC.clone(),
-                    self.authority_host
-                        .clone()
-                        .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
-                    tenant_id.clone(),
-                    client_id.clone(),
-                    client_secret.clone(),
-                );
-
-                self.sas_via_delegation_key(
-                    table_location,
-                    StorageCredentials::token_credential(Arc::new(token)),
-                    permissions,
-                )
-                .await?
+            AzCredential::ClientCredentials { .. } => {
+                let client = self.blob_service_client(credential)?;
+                self.sas_via_delegation_key(table_location, client, permissions)
+                    .await?
             }
             AzCredential::SharedAccessKey { key } => self.sas(
                 table_location,
@@ -236,28 +253,16 @@ impl AdlsProfile {
                 azure_core::auth::Secret::new(key.to_string()),
             )?,
             AzCredential::AzureSystemIdentity {} => {
-                todo!()
-                // ToDo: + Somewhere else?
-            //     if !CONFIG.enable_azure_system_credentials {
-            //         return Err(CredentialsError::Misconfiguration(
-            //     "Azure System identity credentials are disabled in this Lakekeeper deployment."
-            //         .to_string(),
-            // ));
-            //     }
-                let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
-                self.sas_via_delegation_key(
-                    table_location,
-                    StorageCredentials::token_credential(identity),
-                    permissions,
-                )
-                .await
-                .map_err(|e| {
-                    tracing::debug!("Failed to get azure system identity token: {e}",);
-                    CredentialsError::ShortTermCredential {
-                        reason: "Failed to get azure system identity token".to_string(),
-                        source: Some(Box::new(e)),
-                    }
-                })?
+                let client = self.blob_service_client(credential)?;
+                self.sas_via_delegation_key(table_location, client, permissions)
+                    .await
+                    .map_err(|e| {
+                        tracing::debug!("Failed to get azure system identity token: {e}",);
+                        CredentialsError::ShortTermCredential {
+                            reason: "Failed to get azure system identity token".to_string(),
+                            source: Some(Box::new(e)),
+                        }
+                    })?
             }
         };
 
@@ -275,85 +280,12 @@ impl AdlsProfile {
         })
     }
 
-    // /// Create a new `FileIO` instance for Adls.
-    // ///
-    // /// # Errors
-    // /// Fails if the `FileIO` instance cannot be created.
-    // pub async fn file_io(
-    //     &self,
-    //     credential: &AzCredential,
-    // ) -> Result<iceberg::io::FileIO, FileIoError> {
-    //     let mut builder = iceberg::io::FileIOBuilder::new("abfss").with_client(HTTP_CLIENT.clone());
-
-    //     builder = builder
-    //         .with_prop(ADLS_ACCOUNT_NAME, self.account_name.clone())
-    //         .with_prop(
-    //             ADLS_AUTHORITY_HOST,
-    //             self.authority_host
-    //                 .as_ref()
-    //                 .map_or_else(|| DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string),
-    //         )
-    //         .with_client(HTTP_CLIENT.clone());
-
-    //     match credential {
-    //         AzCredential::ClientCredentials {
-    //             client_id,
-    //             tenant_id,
-    //             client_secret,
-    //         } => {
-    //             builder = builder
-    //                 .with_prop(ADLS_CLIENT_SECRET, client_secret.to_string())
-    //                 .with_prop(ADLS_CLIENT_ID, client_id.to_string())
-    //                 .with_prop(ADLS_TENANT_ID, tenant_id.to_string());
-    //         }
-    //         AzCredential::SharedAccessKey { key } => {
-    //             builder = builder.with_prop(ADLS_ACCOUNT_KEY, key.to_string());
-    //         }
-    //         AzCredential::AzureSystemIdentity {} => {
-    //             // ToDo: Use azure_identity to get token, then pass it to FileIO.
-    //             // As of writing this is not supported in OpenDAL and iceberg-rust.
-    //             if !CONFIG.enable_azure_system_credentials {
-    //                 return Err(CredentialsError::Misconfiguration(
-    //                     "Azure System identity credentials are disabled in this Lakekeeper deployment.".to_string(),
-    //                 ).into());
-    //             }
-    //             let table_config = self
-    //                 .generate_table_config(
-    //                     DataAccess {
-    //                         vended_credentials: true,
-    //                         remote_signing: false,
-    //                     },
-    //                     self.base_location()
-    //                         .map_err(|e| CredentialsError::ShortTermCredential {
-    //                             reason: "Failed to get base location for storage profile"
-    //                                 .to_string(),
-    //                             source: Some(Box::new(e)),
-    //                         })?
-    //                         .without_trailing_slash(),
-    //                     credential,
-    //                     StoragePermissions::ReadWriteDelete,
-    //                 )
-    //                 .await
-    //                 .map_err(|e| CredentialsError::ShortTermCredential {
-    //                     reason: e.to_string(),
-    //                     source: Some(Box::new(e)),
-    //                 })?;
-
-    //             builder = builder.with_props(table_config.config.inner());
-    //         }
-    //     }
-
-    //     Ok(builder.build()?)
-    // }
-
     async fn sas_via_delegation_key(
         &self,
         path: &Location,
-        cred: StorageCredentials,
+        client: BlobServiceClient,
         permissions: StoragePermissions,
     ) -> Result<String, CredentialsError> {
-        let client = blob_service_client(self.account_name.as_str(), cred);
-
         // allow for some clock drift
         let start = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
         let max_validity_seconds = MAX_SAS_TOKEN_VALIDITY_SECONDS_I64;
@@ -394,7 +326,7 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(path.as_ref(), true);
+        let path = reduce_scheme_string(path.as_ref());
         let rootless_path = path.trim_start_matches('/');
         let depth = rootless_path.split('/').count();
         let canonical_resource = format!(
@@ -450,9 +382,6 @@ impl AdlsProfile {
                 }
                 .into());
             }
-            for key in key_prefix.split('/') {
-                validate_path_segment(key)?;
-            }
         }
 
         Ok(())
@@ -489,21 +418,14 @@ impl AdlsProfile {
     }
 }
 
-// /// Removes the hostname and user from the path.
-// /// Keeps only the path and optionally the scheme.
-// #[must_use]
-// pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
-//     if let Some(caps) = ADLS_PATH_PATTERN.captures(path) {
-//         let mut location = String::new();
-//         if only_path {
-//             caps.expand("$path", &mut location);
-//         } else {
-//             caps.expand("$protocol$path", &mut location);
-//         }
-//         return location;
-//     }
-//     path.to_string()
-// }
+/// Removes the hostname and user from the path.
+/// Keeps only the path and optionally the scheme.
+#[must_use]
+pub(crate) fn reduce_scheme_string(path: &str) -> String {
+    AdlsLocation::try_from_str(path, true)
+        .map(|l| l.blob_name().to_string())
+        .unwrap_or(path.to_string())
+}
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "credential-type", rename_all = "kebab-case")]
@@ -595,18 +517,35 @@ pub(super) fn get_file_io_from_table_config(
         .build()?)
 }
 
-// fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
-//     azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
-//         .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-//         .client_options(
-//             azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-//                 FixedRetryOptions::default()
-//                     .max_retries(3u32)
-//                     .max_total_elapsed(std::time::Duration::from_secs(5)),
-//             )),
-//         )
-//         .blob_service_client()
-// }
+impl TryFrom<AzCredential> for AzureAuth {
+    type Error = CredentialsError;
+
+    fn try_from(cred: AzCredential) -> Result<Self, Self::Error> {
+        if !CONFIG.enable_azure_system_credentials
+            && matches!(cred, AzCredential::AzureSystemIdentity {})
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "Azure System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
+        }
+
+        Ok(match cred {
+            AzCredential::ClientCredentials {
+                client_id,
+                tenant_id,
+                client_secret,
+            } => AzureClientCredentialsAuth {
+                client_id,
+                tenant_id,
+                client_secret,
+            }
+            .into(),
+            AzCredential::SharedAccessKey { key } => AzureSharedAccessKeyAuth { key }.into(),
+            AzCredential::AzureSystemIdentity {} => AzureAuth::AzureSystemIdentity {},
+        })
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod test {
@@ -616,9 +555,7 @@ pub(crate) mod test {
 
     use super::*;
     use crate::service::{
-        storage::{
-            az::DEFAULT_AUTHORITY_HOST, AdlsLocation, AdlsProfile, StorageLocations, StorageProfile,
-        },
+        storage::{az::DEFAULT_AUTHORITY_HOST, AdlsProfile, StorageLocations, StorageProfile},
         tabular_idents::TabularId,
         NamespaceId,
     };
@@ -627,24 +564,17 @@ pub(crate) mod test {
     fn test_reduce_scheme_string() {
         // Test abfss protocol
         let path = "abfss://filesystem@dfs.windows.net/path/_test";
-        let reduced_path = reduce_scheme_string(path, true);
+        let reduced_path = reduce_scheme_string(path);
         assert_eq!(reduced_path, "/path/_test");
-
-        let reduced_path = reduce_scheme_string(path, false);
-        assert_eq!(reduced_path, "abfss:///path/_test");
 
         // Test wasbs protocol
         let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path, true);
+        let reduced_wasbs_path = reduce_scheme_string(wasbs_path);
         assert_eq!(reduced_wasbs_path, "/path/to/data");
-
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path, false);
-        assert_eq!(reduced_wasbs_path, "wasbs:///path/to/data");
 
         // Test a non-matching path
         let non_matching = "http://example.com/path";
-        assert_eq!(reduce_scheme_string(non_matching, true), non_matching);
-        assert_eq!(reduce_scheme_string(non_matching, false), non_matching);
+        assert_eq!(reduce_scheme_string(non_matching), non_matching);
     }
 
     #[needs_env_var(TEST_AZURE = 1)]

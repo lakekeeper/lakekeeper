@@ -259,10 +259,15 @@ impl S3Profile {
         }
     }
 
-    pub async fn lakekeeper_io(&self, credential: Option<&S3Credential>) -> S3Storage {
+    pub async fn lakekeeper_io(
+        &self,
+        credential: Option<&S3Credential>,
+    ) -> Result<S3Storage, CredentialsError> {
         let s3_settings = storage_profile_to_s3_settings(self);
-        let auth = credential.map(|c| S3Auth::from(c.clone()));
-        s3_settings.get_storage_client(auth.as_ref()).await
+        let auth = credential
+            .map(|c| S3Auth::try_from(c.clone()))
+            .transpose()?;
+        Ok(s3_settings.get_storage_client(auth.as_ref()).await)
     }
 
     // /// Create a new `FileIO` instance for S3.
@@ -422,9 +427,9 @@ impl S3Profile {
         let prefix = self
             .key_prefix
             .as_ref()
-            .map(|s| s.split('/').map(std::borrow::ToOwned::to_owned).collect())
+            .map(|s| s.split('/').collect::<Vec<_>>())
             .unwrap_or_default();
-        S3Location::new(self.bucket.clone(), prefix, None)
+        S3Location::new(&self.bucket, &prefix, None)
     }
 
     /// Generate the table configuration for S3.
@@ -490,7 +495,7 @@ impl S3Profile {
                         S3Credential::AccessKey(..) | S3Credential::AwsSystemIdentity(..),
                     )
                     | None) => {
-                        let auth = c.map(S3Auth::from);
+                        let auth = c.map(S3Auth::try_from).transpose()?;
                         let sts_arn = self
                             .sts_role_arn
                             .as_ref()
@@ -759,7 +764,9 @@ impl S3Profile {
         &self,
         s3_credential: Option<&S3Credential>,
     ) -> Result<Identity, ErrorModel> {
-        let s3_auth = s3_credential.map(|e| S3Auth::from(e.clone()));
+        let s3_auth = s3_credential
+            .map(|e| S3Auth::try_from(e.clone()))
+            .transpose()?;
         let sdk = self
             .get_aws_sdk_config(s3_auth.as_ref(), self.assume_role_arn.as_deref())
             .await?;
@@ -1073,9 +1080,20 @@ impl From<S3AwsSystemIdentityCredential> for S3AwsSystemIdentityAuth {
     }
 }
 
-impl From<S3Credential> for S3Auth {
-    fn from(credential: S3Credential) -> Self {
-        match credential {
+impl TryFrom<S3Credential> for S3Auth {
+    type Error = CredentialsError;
+
+    fn try_from(credential: S3Credential) -> Result<Self, Self::Error> {
+        if matches!(&credential, S3Credential::AwsSystemIdentity(..))
+            && !CONFIG.enable_aws_system_credentials
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
+        }
+
+        Ok(match credential {
             S3Credential::AccessKey(c) => S3Auth::AccessKey(c.into()),
             S3Credential::AwsSystemIdentity(c) => S3Auth::AwsSystemIdentity(c.into()),
             S3Credential::CloudflareR2(S3CloudflareR2Credential {
@@ -1088,7 +1106,7 @@ impl From<S3Credential> for S3Auth {
                 aws_secret_access_key: secret_access_key,
                 external_id: None, // Cloudflare R2 does not use external ID
             }),
-        }
+        })
     }
 }
 

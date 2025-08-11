@@ -12,8 +12,9 @@ use std::{fmt::Display, future::Future, time::Duration};
 mod error;
 use bytes::Bytes;
 pub use error::{
-    BatchDeleteError, DeleteBatchFatalError, DeleteError, ErrorKind, IOError, InvalidLocationError,
-    ReadError, RetryableError, RetryableErrorKind, WriteError,
+    BatchDeleteError, DeleteBatchFatalError, DeleteError, ErrorKind, IOError,
+    InitializeClientError, InvalidLocationError, ReadError, RetryableError, RetryableErrorKind,
+    WriteError,
 };
 use futures::{
     stream::{BoxStream, FuturesUnordered},
@@ -26,6 +27,8 @@ use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
 
 #[cfg(feature = "storage-adls")]
 pub mod adls;
+#[cfg(feature = "storage-gcs")]
+pub mod gcs;
 mod location;
 #[cfg(feature = "storage-in-memory")]
 pub mod memory;

@@ -103,8 +103,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             t.transaction(),
         )
         .await?;
-        // ------------------- BUSINESS LOGIC -------------------
 
+        // ------------------- BUSINESS LOGIC -------------------
         let (identifiers, table_uuids, next_page_token) =
             catalog::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
@@ -234,7 +234,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 reason: "Unexpected files in location, tabular locations have to be empty"
                     .to_string(),
                 location: table_location.to_string(),
-                source: None,
             })
             .into());
         }

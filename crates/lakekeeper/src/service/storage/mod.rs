@@ -6,9 +6,9 @@ pub(crate) mod gcs;
 pub mod s3;
 
 #[cfg(test)]
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
-pub use az::{AdlsLocation, AdlsProfile, AzCredential};
+pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
@@ -73,8 +73,7 @@ pub enum StorageProfile {
 #[serde(rename_all = "kebab-case")]
 pub struct MemoryProfile {
     /// Base location for the local profile
-    #[schema(value_type = String)]
-    base_location: Location,
+    base_location: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -149,7 +148,7 @@ impl StorageProfile {
         secret: Option<&StorageCredential>,
     ) -> Result<StorageBackend, IOCreationError> {
         match self {
-            StorageProfile::S3(profile) => Ok(profile
+            StorageProfile::S3(profile) => profile
                 .lakekeeper_io(
                     secret
                         .map(|s| s.try_to_s3())
@@ -157,10 +156,17 @@ impl StorageProfile {
                         .map_err(CredentialsError::from)?,
                 )
                 .await
-                .into()),
-            StorageProfile::Adls(_prof) => {
-                unimplemented!()
-            }
+                .map_err(Into::into)
+                .map(Into::into),
+            StorageProfile::Adls(profile) => profile
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_az())
+                        .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
+                        .map_err(CredentialsError::from)?,
+                )
+                .map_err(Into::into)
+                .map(Into::into),
             StorageProfile::Gcs(_prof) => {
                 unimplemented!()
             }
@@ -205,7 +211,9 @@ impl StorageProfile {
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
-            StorageProfile::Memory(profile) => Ok(profile.base_location.clone()),
+            StorageProfile::Memory(profile) => {
+                Ok(Location::from_str(&profile.base_location).unwrap())
+            }
         }
     }
 
@@ -404,7 +412,6 @@ impl StorageProfile {
             }
             Ok(false) => Err(InvalidLocationError {
                 reason: "Files are left after remove_all on test location".to_string(),
-                source: None,
                 location: test_location.to_string(),
             }
             .into()),
@@ -489,14 +496,17 @@ impl StorageProfile {
     ) -> Result<(), ValidationError> {
         let compression_codec = CompressionCodec::Gzip;
 
-        let mut test_file_write = self.default_metadata_location(
+        let metadata_location = self.default_metadata_location(
             test_location,
             &compression_codec,
             uuid::Uuid::now_v7(),
             0,
         );
+        let mut test_file_write = metadata_location.parent();
+        test_file_write.push("test");
         println!("Test file write location: {test_file_write}");
-        test_file_write.pop().push("test");
+        let mut test_file_write = test_file_write.parent();
+        test_file_write.push("test");
         tracing::debug!("Validating access to: {}", test_file_write);
 
         // Test write
@@ -547,10 +557,8 @@ impl StorageProfile {
         );
         if is_vended_credentials {
             let f = test_file_write
-                .url()
                 .path()
-                .split('/')
-                .next_back()
+                .and_then(|s| s.split('/').next_back())
                 .unwrap_or("missing")
                 .to_string();
             test_file_write.pop().push("vended").push(&f);
@@ -657,7 +665,7 @@ impl StorageProfile {
                 return false;
             }
             if other_scheme != base_location.scheme() {
-                base_location.set_scheme_mut(other_scheme);
+                base_location.set_scheme_unchecked_mut(other_scheme);
             }
         }
 
@@ -668,7 +676,7 @@ impl StorageProfile {
                 return false;
             }
             if other_scheme != base_location.scheme() {
-                base_location.set_scheme_mut(other_scheme);
+                base_location.set_scheme_unchecked_mut(other_scheme);
             }
         }
 
@@ -743,7 +751,8 @@ impl Default for MemoryProfile {
             base_location: <Location as std::str::FromStr>::from_str(
                 format!("memory://test-{}", uuid::Uuid::new_v4()).as_str(),
             )
-            .expect("Failed to create temporary directory location"),
+            .expect("Failed to create temporary directory location")
+            .to_string(),
         }
     }
 }

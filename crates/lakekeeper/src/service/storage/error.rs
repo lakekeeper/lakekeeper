@@ -1,7 +1,10 @@
 use std::error::Error;
 
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use lakekeeper_io::{DeleteError, IOError, InvalidLocationError};
+use lakekeeper_io::{
+    adls::{InvalidADLSAccountName, InvalidADLSFilesystemName, InvalidADLSHost},
+    DeleteError, IOError, InitializeClientError, InvalidLocationError,
+};
 
 use crate::catalog::{compression_codec::UnsupportedCompressionCodec, io::IOErrorExt};
 
@@ -28,7 +31,7 @@ pub enum ValidationError {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("{reason}")]
+#[error("Invalid Storage Profile entry for `{entity}`: {reason}")]
 pub struct InvalidProfileError {
     pub source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
     pub reason: String,
@@ -40,6 +43,36 @@ pub struct InvalidProfileError {
 pub struct InternalError {
     pub reason: String,
     pub source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
+}
+
+impl From<InvalidADLSAccountName> for ValidationError {
+    fn from(value: InvalidADLSAccountName) -> Self {
+        ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+            source: None,
+            reason: value.to_string(),
+            entity: "account_name".to_string(),
+        }))
+    }
+}
+
+impl From<InvalidADLSFilesystemName> for ValidationError {
+    fn from(value: InvalidADLSFilesystemName) -> Self {
+        ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+            source: None,
+            reason: value.to_string(),
+            entity: "filesystem".to_string(),
+        }))
+    }
+}
+
+impl From<InvalidADLSHost> for ValidationError {
+    fn from(value: InvalidADLSHost) -> Self {
+        ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+            source: None,
+            reason: value.to_string(),
+            entity: "host".to_string(),
+        }))
+    }
 }
 
 impl From<InvalidLocationError> for ValidationError {
@@ -308,6 +341,8 @@ pub enum CredentialsError {
     SerializationError(#[from] serde_json::Error),
     #[error("Credentials misconfigured: {0}")]
     Misconfiguration(String),
+    #[error("{0}")]
+    InitializeClientError(#[from] InitializeClientError),
 }
 
 impl From<CredentialsError> for ErrorModel {
@@ -332,6 +367,9 @@ impl From<CredentialsError> for ErrorModel {
             }
             CredentialsError::Misconfiguration(_) => {
                 ErrorModel::bad_request(message, "Misconfiguration", Some(boxed))
+            }
+            CredentialsError::InitializeClientError(e) => {
+                ErrorModel::precondition_failed(message, "InitializeClientError", Some(boxed))
             }
         }
     }

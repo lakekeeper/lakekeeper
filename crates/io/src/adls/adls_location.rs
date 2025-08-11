@@ -214,18 +214,27 @@ impl AdlsLocation {
     ///
     /// # Errors
     /// - Fails if the location is not a valid ADLS location
-    pub fn try_from_str(s: &str, allow_s3a: bool) -> Result<Self, InvalidLocationError> {
+    pub fn try_from_str(s: &str, allow_variants: bool) -> Result<Self, InvalidLocationError> {
         let location = Location::from_str(s).map_err(|e| InvalidLocationError {
             reason: format!("Could not parse ADLS location from string: {e}"),
             location: s.to_string(),
         })?;
 
-        Self::try_from_location(&location, allow_s3a)
+        Self::try_from_location(&location, allow_variants)
     }
 }
 
 // https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_filesystem_name(container: &str) -> Result<(), InvalidADLSFilesystemName> {
+/// Validates the filesystem name according to Azure Storage naming rules.
+///
+/// # Errors
+/// - If the filesystem name is empty.
+/// - If the filesystem name contains consecutive hyphens.
+/// - If the filesystem name is not between 3 and 63 characters long.
+/// - If the filesystem name contains characters other than lowercase letters, numbers, and hyphens
+/// - If the filesystem name does not begin and end with a letter or number.
+///
+pub fn validate_filesystem_name(container: &str) -> Result<(), InvalidADLSFilesystemName> {
     if container.is_empty() {
         return Err(InvalidADLSFilesystemName {
             reason: "Filesystem name must not be empty.".to_string(),
