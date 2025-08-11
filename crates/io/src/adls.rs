@@ -1,7 +1,16 @@
 use std::sync::{Arc, LazyLock};
 
+use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_identity::{
+    DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
+};
+use azure_storage::StorageCredentials;
+use azure_storage_blobs::prelude::{BlobServiceClient, ClientBuilder};
+use azure_storage_datalake::prelude::{DataLakeClient, DataLakeClientBuilder};
 use url::Url;
 use veil::Redact;
+
+pub use azure_storage::CloudLocation;
 
 mod adls_error;
 mod adls_location;
@@ -13,26 +22,22 @@ pub use adls_location::{
 };
 pub use adls_storage::AdlsStorage;
 
+use crate::error::InitializeClientError;
+
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
-// static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
-//     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
-// });
+static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
+});
 
-// static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-// static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
-//     LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
-
-// const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
-// const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+// Reqwest client is already cheep to clone. We need this `HTTP_CLIENT_ARC` for the Azure SDK which requires an `Arc<dyn HttpClient>`.
+static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
+    LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
 
 pub(crate) const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
-// static ADLS_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-//     Regex::new("^(?<protocol>(abfss|wasbs)?://)[^/@]+@[^/]+(?<path>/.+)")
-//         .expect("ADLS path regex is valid")
-// });
 
-// static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
-//     LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
+static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
+    LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
 
 #[derive(Debug, Clone, PartialEq, derive_more::From)]
 pub enum AzureAuth {
@@ -55,18 +60,136 @@ pub struct AzureClientCredentialsAuth {
     pub client_secret: String,
 }
 
-#[derive(Debug, Eq, Clone, PartialEq, typed_builder::TypedBuilder)]
+#[derive(Debug, Clone, typed_builder::TypedBuilder)]
 pub struct AzureSettings {
     // -------- Azure Settings for multiple services --------
     /// The authority host to use for authentication. Example: `https://login.microsoftonline.com`.
     #[builder(default, setter(strip_option))]
     pub authority_host: Option<Url>,
-    /// The host to use for the storage account. Example: `dfs.core.windows.net`.
-    #[builder(default, setter(strip_option))]
-    pub host: Option<String>,
-    // // -------- ADLS Gen 2 specific settings --------
-    // /// Name of the adls filesystem, in blobstorage also known as container.
-    // pub filesystem: String,
-    // /// Name of the azure storage account.
-    // pub account_name: String,
+    // Contains the account name and possible a custom URI
+    pub cloud_location: CloudLocation,
+}
+
+impl AzureSettings {
+    /// Creates a new [`AzureSettings`] instance.
+    ///
+    /// # Errors
+    /// - If system identity cannot be retrieved or initialized.
+    pub fn get_storage_client(
+        &self,
+        cred: &AzureAuth,
+    ) -> Result<AdlsStorage, InitializeClientError> {
+        let client = self.get_datalake_client(cred)?;
+        Ok(AdlsStorage::new(client, self.cloud_location.clone()))
+    }
+
+    /// Returns the Azure Storage credentials based on the provided authentication method.
+    ///
+    /// # Errors
+    /// - If system identity cannot be retrieved or initialized.
+    pub fn get_azure_storage_credentials(
+        &self,
+        cred: &AzureAuth,
+    ) -> Result<StorageCredentials, InitializeClientError> {
+        let account_name = self.cloud_location.account();
+
+        Ok(match cred {
+            AzureAuth::ClientCredentials(AzureClientCredentialsAuth {
+                tenant_id,
+                client_id,
+                client_secret,
+            }) => {
+                let azure_auth = azure_identity::ClientSecretCredential::new(
+                    HTTP_CLIENT_ARC.clone(),
+                    self.authority_host
+                        .clone()
+                        .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
+                    tenant_id.clone(),
+                    client_id.clone(),
+                    client_secret.clone(),
+                );
+
+                StorageCredentials::token_credential(Arc::new(azure_auth))
+            }
+            AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth { key }) => {
+                StorageCredentials::access_key(account_name, key.clone())
+            }
+            AzureAuth::AzureSystemIdentity {} => {
+                let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
+                StorageCredentials::token_credential(identity)
+            }
+        })
+    }
+
+    /// Returns a [`DataLakeClient`] for the Azure Storage account.
+    ///
+    /// # Errors
+    /// - If system identity cannot be retrieved or initialized.
+    pub fn get_datalake_client(
+        &self,
+        cred: &AzureAuth,
+    ) -> Result<DataLakeClient, InitializeClientError> {
+        let azure_storage_cred = self.get_azure_storage_credentials(cred)?;
+
+        Ok(
+            DataLakeClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
+                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
+                .client_options(
+                    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
+                        FixedRetryOptions::default()
+                            .max_retries(3u32)
+                            .max_total_elapsed(std::time::Duration::from_secs(5)),
+                    )),
+                )
+                .build(),
+        )
+    }
+
+    /// Returns a [`BlobServiceClient`] for the Azure Storage account.
+    ///
+    /// # Errors
+    /// - If system identity cannot be retrieved or initialized.
+    pub fn get_blob_service_client(
+        &self,
+        cred: &AzureAuth,
+    ) -> Result<BlobServiceClient, InitializeClientError> {
+        let azure_storage_cred = self.get_azure_storage_credentials(cred)?;
+
+        Ok(
+            ClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
+                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
+                .client_options(
+                    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
+                        FixedRetryOptions::default()
+                            .max_retries(3u32)
+                            .max_total_elapsed(std::time::Duration::from_secs(5)),
+                    )),
+                )
+                .blob_service_client(),
+        )
+    }
+
+    fn get_system_identity(&self) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
+        let authority_host_str = (self.authority_host.as_ref()).map_or(
+            DEFAULT_AUTHORITY_HOST.clone().to_string(),
+            std::string::ToString::to_string,
+        );
+
+        SYSTEM_IDENTITY_CACHE
+            .try_get_with(authority_host_str.clone(), || {
+                let mut options = TokenCredentialOptions::default();
+                options.set_authority_host(authority_host_str);
+                DefaultAzureCredentialBuilder::new()
+                    .with_options(options)
+                    .build()
+                    .map(Arc::new)
+            })
+            .map_err(|e| {
+                tracing::error!("Failed to get Azure system identity: {e}");
+                InitializeClientError {
+                    reason: format!("Failed to get Azure system identity: {e}"),
+                    source: Some(Box::new(e)),
+                }
+            })
+    }
 }

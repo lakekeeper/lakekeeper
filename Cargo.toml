@@ -40,6 +40,9 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
 azure_identity = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
+azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-sts = "1.65.0"
 aws-smithy-http = "0.62.0"
@@ -155,3 +158,4 @@ assert-json-diff = "2.0.2"
 maplit = "1.0.2"
 limes = { version = "0.2.1", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }
+rand = "0.9.2"

@@ -1,10 +1,12 @@
 use std::str::{FromStr, RMatchIndices};
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
-#[serde(transparent)]
-pub struct Location(url::Url);
+#[derive(Debug, Eq, PartialEq, Clone)]
+#[allow(clippy::struct_field_names)]
+pub struct Location {
+    full_location: String,
+    scheme: String,
+    authority_and_path: String, // Everything after ://
+}
 
 #[derive(thiserror::Error, Debug)]
 #[error("Failed to parse '{value}' as Location: {reason}")]
@@ -15,88 +17,152 @@ pub struct LocationParseError {
 
 impl Location {
     #[must_use]
-    pub fn url(&self) -> &url::Url {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_url(self) -> url::Url {
-        self.0
-    }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        &self.full_location
     }
 
     #[must_use]
     pub fn scheme(&self) -> &str {
-        self.0.scheme()
+        &self.scheme
+    }
+
+    #[must_use]
+    pub fn host_str(&self) -> Option<&str> {
+        // Everything between @ and the first slash
+        let host_part = if let Some(at_pos) = self.authority_and_path.find('@') {
+            // If there's an @ symbol, take everything after it
+            &self.authority_and_path[at_pos + 1..]
+        } else {
+            // If there's no @ symbol, use the whole location
+            &self.authority_and_path
+        };
+
+        // Now find the first slash and return everything before it
+        match host_part.find('/') {
+            Some(slash_pos) => Some(&host_part[..slash_pos]),
+            None => Some(host_part), // No slash found, return the whole host part
+        }
+    }
+
+    #[must_use]
+    pub fn authority_with_host(&self) -> &str {
+        // Everything before the first slash of authority_and_path
+        if let Some(slash_pos) = self.authority_and_path.find('/') {
+            &self.authority_and_path[..slash_pos]
+        } else {
+            &self.authority_and_path
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        self.authority_and_path.split_once('/').map(|x| x.1)
+    }
+
+    #[must_use]
+    pub fn path_segments(&self) -> Vec<&str> {
+        if let Some(path) = self.path() {
+            path.split('/').collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[must_use]
+    pub fn username(&self) -> &str {
+        if self.authority_and_path.contains('@') {
+            self.authority_and_path.split('@').next().map_or("", |s| {
+                if let Some(u) = s.split(':').next() {
+                    u
+                } else {
+                    s
+                }
+            })
+        } else {
+            ""
+        }
     }
 
     pub fn with_trailing_slash(&mut self) -> &mut Self {
-        if let Ok(mut path) = self.0.path_segments_mut() {
-            path.pop_if_empty().push("");
+        if !self.authority_and_path.ends_with('/') {
+            self.authority_and_path.push('/');
         }
+        self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
         self
     }
 
     pub fn without_trailing_slash(&mut self) -> &mut Self {
-        if let Ok(mut path) = self.0.path_segments_mut() {
-            path.pop_if_empty();
-        }
+        self.authority_and_path = self.authority_and_path.trim_end_matches('/').to_string();
+        self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
         self
     }
 
-    pub fn set_scheme_mut(&mut self, scheme: &str) -> &mut Self {
-        self.0.set_scheme(scheme).ok();
+    pub fn set_scheme_unchecked_mut(&mut self, scheme: &str) -> &mut Self {
+        self.scheme = scheme.to_string();
+        self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
         self
     }
 
-    /// Follows the same logic as `url::MutPathSegments::extend`,
-    /// except that getting `MutPathSegments`is not fallible.
-    /// Non-fallibility by the constructor which checks
-    /// cannot-be-a-base.
     pub fn extend<I>(&mut self, segments: I) -> &mut Self
     where
         I: IntoIterator,
         I::Item: AsRef<str>,
     {
-        if let Ok(mut path) = self.0.path_segments_mut() {
-            path.extend(segments);
+        let extension = segments
+            .into_iter()
+            .map(|s| {
+                if s.as_ref().is_empty() {
+                    "/"
+                } else {
+                    s.as_ref()
+                }
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        // Remove duplicate slashes if any
+        let extension = {
+            let mut ext = extension;
+            while ext.contains("//") {
+                ext = ext.replace("//", "/");
+            }
+            ext
+        };
+
+        if !self.authority_and_path.ends_with('/')
+            && !extension.starts_with('/')
+            && !extension.is_empty()
+        {
+            self.authority_and_path.push('/');
         }
+        self.authority_and_path.push_str(&extension);
+        self.full_location = format!("{}://{}", self.scheme, self.authority_and_path);
         self
     }
 
-    /// Follows the same logic as `url::MutPathSegments::push`,
-    /// except that getting `MutPathSegments`is not fallible.
-    /// Non-fallibility by the constructor which checks
-    /// cannot-be-a-base.
     pub fn push(&mut self, segment: &str) -> &mut Self {
-        if let Ok(mut path) = self.0.path_segments_mut() {
-            path.push(segment);
-        }
+        self.extend([segment]);
         self
     }
 
-    /// Clones the location and pushes a segment to the path.
-    #[must_use]
-    pub fn cloning_push(&self, segment: &str) -> Self {
-        let mut cloned = self.clone();
-        cloned.push(segment);
-        cloned
-    }
+    // /// Clones the location and pushes a segment to the path.
+    // #[must_use]
+    // pub fn cloning_push(&self, segment: &str) -> Self {
+    //     let mut cloned = self.clone();
+    //     cloned.push(segment);
+    //     cloned
+    // }
 
-    /// Follows the same logic as `url::MutPathSegments::pop`,
-    /// except that getting `MutPathSegments`is not fallible.
-    /// Non-fallibility by the constructor which checks
-    /// cannot-be-a-base.
-    pub fn pop(&mut self) -> &mut Self {
-        if let Ok(mut path) = self.0.path_segments_mut() {
-            path.pop();
-        }
-        self
-    }
+    // /// Follows the same logic as `url::MutPathSegments::pop`,
+    // /// except that getting `MutPathSegments`is not fallible.
+    // /// Non-fallibility by the constructor which checks
+    // /// cannot-be-a-base.
+    // pub fn pop(&mut self) -> &mut Self {
+    //     if let Ok(mut path) = self.0.path_segments_mut() {
+    //         path.pop();
+    //     }
+    //     self
+    // }
 
     // Check if the location is a sublocation of the other location.
     // If the locations are the same, it is considered a sublocation.
@@ -114,8 +180,8 @@ impl Location {
 
     #[must_use]
     pub fn partial_locations<'a>(&'a self) -> impl IntoIterator<Item = &'a str> {
-        let scheme_index = self.url().scheme().len() + 3; // 3 for "://"
-        let url_string = self.url().as_str().trim_end_matches('/');
+        let scheme_index = self.scheme().len() + 3; // 3 for "://"
+        let url_string = self.full_location.trim_end_matches('/');
         let pointer = url_string.rmatch_indices('/');
 
         let iter: PartialLocationsIter<'a> = PartialLocationsIter {
@@ -154,7 +220,7 @@ impl<'a> Iterator for PartialLocationsIter<'a> {
 
 impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.full_location)
     }
 }
 
@@ -162,13 +228,6 @@ impl FromStr for Location {
     type Err = LocationParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.trim_end_matches('/').ends_with(' ') {
-            return Err(LocationParseError {
-                value: value.to_string(),
-                reason: "Trailing whitespace".to_string(),
-            });
-        }
-
         let location = url::Url::parse(value).map_err(|e| LocationParseError {
             value: value.to_string(),
             reason: format!("Not a valid URL - `{e}`"),
@@ -195,7 +254,22 @@ impl FromStr for Location {
             });
         }
 
-        Ok(Location(location))
+        let (scheme, location) = {
+            let s = value.split("://").collect::<Vec<_>>();
+            if s.len() != 2 {
+                return Err(LocationParseError {
+                    value: value.to_string(),
+                    reason: "Expected exactly one :// in the Location".to_string(),
+                });
+            }
+            (s[0].to_string(), s[1].to_string())
+        };
+
+        Ok(Location {
+            full_location: value.to_string(),
+            scheme,
+            authority_and_path: location,
+        })
     }
 }
 
@@ -214,14 +288,9 @@ mod tests {
     #[test]
     fn test_location_with_whitespace() {
         let location = Location::from_str("s3://bucket/foo /bar").unwrap();
+        assert_eq!(location.as_str(), "s3://bucket/foo /bar");
+        let location = Location::from_str("s3://bucket/foo%20/bar").unwrap();
         assert_eq!(location.as_str(), "s3://bucket/foo%20/bar");
-    }
-
-    #[test]
-    fn test_location_with_trailing_whitespace() {
-        let location = Location::from_str("s3://bucket/foo/bar ")
-            .expect_err("Trailing whitespaces are forbidden.");
-        assert_eq!(location.reason, "Trailing whitespace");
     }
 
     #[test]
@@ -287,5 +356,99 @@ mod tests {
         let mut location = Location::from_str("s3://bucket/").unwrap();
         location.extend(["foo", "bar"]);
         assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+    }
+
+    #[test]
+    fn test_push() {
+        let mut location = Location::from_str("s3://bucket").unwrap();
+        location.push("foo");
+        assert_eq!(location.as_str(), "s3://bucket/foo");
+
+        let mut location = Location::from_str("s3://bucket/").unwrap();
+        location.push("foo");
+        assert_eq!(location.as_str(), "s3://bucket/foo");
+    }
+
+    #[test]
+    fn test_path() {
+        let location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        assert_eq!(location.path(), Some("foo/bar"));
+
+        let location = Location::from_str("s3://bucket/").unwrap();
+        assert_eq!(location.path(), Some(""));
+
+        let location = Location::from_str("s3://bucket").unwrap();
+        assert_eq!(location.path(), None);
+    }
+
+    #[test]
+    fn test_path_segments() {
+        let location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        assert_eq!(location.path_segments(), vec!["foo", "bar"]);
+
+        let location = Location::from_str("s3://bucket/foo/bar/").unwrap();
+        assert_eq!(location.path_segments(), vec!["foo", "bar", ""]);
+
+        let location = Location::from_str("s3://bucket/").unwrap();
+        assert_eq!(location.path_segments(), vec![""]);
+
+        let location = Location::from_str("s3://bucket").unwrap();
+        assert_eq!(location.path_segments(), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn test_username() {
+        let location = Location::from_str("s3://user:pass@bucket/foo/bar").unwrap();
+        assert_eq!(location.username(), "user");
+
+        let location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        assert_eq!(location.username(), "");
+
+        let location = Location::from_str("s3://user@bucket/foo/bar").unwrap();
+        assert_eq!(location.username(), "user");
+    }
+
+    #[test]
+    fn test_authority_with_host() {
+        let location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        assert_eq!(location.authority_with_host(), "bucket");
+
+        let location = Location::from_str("s3://user@bucket/foo/bar").unwrap();
+        assert_eq!(location.authority_with_host(), "user@bucket");
+
+        let location = Location::from_str("s3://user:pass@bucket/foo/bar").unwrap();
+        assert_eq!(location.authority_with_host(), "user:pass@bucket");
+
+        let location = Location::from_str("s3://bucket/").unwrap();
+        assert_eq!(location.authority_with_host(), "bucket");
+    }
+
+    #[test]
+    fn test_with_trailing_slash() {
+        let mut location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        location.with_trailing_slash();
+        assert_eq!(location.as_str(), "s3://bucket/foo/bar/");
+        assert_eq!(location.full_location, "s3://bucket/foo/bar/");
+        assert_eq!(location.authority_and_path, "bucket/foo/bar/");
+
+        let mut location = Location::from_str("s3://bucket/foo/bar/").unwrap();
+        location.with_trailing_slash();
+        assert_eq!(location.as_str(), "s3://bucket/foo/bar/");
+        assert_eq!(location.full_location, "s3://bucket/foo/bar/");
+        assert_eq!(location.authority_and_path, "bucket/foo/bar/");
+    }
+
+    #[test]
+    fn test_without_trailing_slash() {
+        let mut location = Location::from_str("s3://bucket/foo/bar/").unwrap();
+        location.without_trailing_slash();
+        assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+        assert_eq!(location.full_location, "s3://bucket/foo/bar");
+        assert_eq!(location.authority_and_path, "bucket/foo/bar");
+
+        let mut location = Location::from_str("s3://bucket/foo/bar").unwrap();
+        location.without_trailing_slash();
+        assert_eq!(location.as_str(), "s3://bucket/foo/bar");
+        assert_eq!(location.authority_and_path, "bucket/foo/bar");
     }
 }

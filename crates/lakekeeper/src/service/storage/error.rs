@@ -171,7 +171,7 @@ impl From<ValidationError> for ErrorModel {
                 Some(Box::new(e)),
             ),
             ValidationError::InvalidLocation(e) => {
-                ErrorModel::bad_request(e.to_string(), "InvalidLocation", e.source)
+                ErrorModel::bad_request(e.to_string(), "InvalidLocation", None)
             }
             e @ ValidationError::Internal { .. } => {
                 ErrorModel::internal(e.to_string(), "ValidationFailedError", Some(Box::new(e)))

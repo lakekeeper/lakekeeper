@@ -262,7 +262,7 @@ impl S3Profile {
     pub async fn lakekeeper_io(&self, credential: Option<&S3Credential>) -> S3Storage {
         let s3_settings = storage_profile_to_s3_settings(self);
         let auth = credential.map(|c| S3Auth::from(c.clone()));
-        s3_settings.get_s3_client(auth.as_ref()).await
+        s3_settings.get_storage_client(auth.as_ref()).await
     }
 
     // /// Create a new `FileIO` instance for S3.

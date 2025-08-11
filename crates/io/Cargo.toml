@@ -19,6 +19,7 @@ storage-adls = [
     "dep:azure_core",
     "dep:azure_identity",
     "dep:azure_storage",
+    "dep:azure_storage_datalake",
     "dep:moka",
 ]
 storage-gcs = []
@@ -37,6 +38,7 @@ azure_core = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
 azure_storage = { workspace = true, optional = true }
 azure_storage_blobs = { workspace = true, optional = true }
+azure_storage_datalake = { workspace = true, optional = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 derive_more = { workspace = true }
@@ -62,3 +64,9 @@ paste = "1.0"
 tempfile = "3.0"
 tokio = { workspace = true }
 uuid = { workspace = true }
+rand = { workspace = true }
+
+[profile.dev]
+overflow-checks = true
+opt-level = 1
+panic = 'unwind'

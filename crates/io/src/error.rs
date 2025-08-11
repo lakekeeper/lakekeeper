@@ -24,6 +24,13 @@ pub struct InvalidLocationError {
 //     StorageOperationError(#[from] StorageOperationError),
 // }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Could not initialize storage client: {reason}")]
+pub struct InitializeClientError {
+    pub source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
+    pub reason: String,
+}
+
 pub trait RetryableError {
     /// Get the retryable error kind for this error.
     fn retryable_error_kind(&self) -> RetryableErrorKind;
@@ -36,7 +43,7 @@ pub trait RetryableError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum WriteError {
-    #[error("{0}")]
+    #[error("Invalid Location during write - {0}")]
     InvalidLocation(#[from] InvalidLocationError),
     #[error("Failed to write object: {0}")]
     IOError(#[from] IOError),
@@ -53,7 +60,7 @@ impl RetryableError for WriteError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum DeleteError {
-    #[error("{0}")]
+    #[error("Invalid Location during delete - {0}")]
     InvalidLocation(#[from] InvalidLocationError),
     #[error("Failed to delete object: {0}")]
     IOError(#[from] IOError),
@@ -70,7 +77,7 @@ impl RetryableError for DeleteError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ReadError {
-    #[error("{0}")]
+    #[error("Invalid Location during read - {0}")]
     InvalidLocation(#[from] InvalidLocationError),
     #[error("Failed to delete object: {0}")]
     IOError(#[from] IOError),
@@ -87,7 +94,7 @@ impl RetryableError for ReadError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum DeleteBatchFatalError {
-    #[error("{0}")]
+    #[error("Invalid Location during batch deletion - {0}")]
     InvalidLocation(#[from] InvalidLocationError),
     #[error("Failed to batch delete objects: {0}")]
     IOError(#[from] IOError),
@@ -95,27 +102,19 @@ pub enum DeleteBatchFatalError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchDeleteError {
-    /// The original path that was requested for deletion, if available
-    pub path: Option<String>,
-    /// The storage-specific key (e.g., S3 key) that failed, if available
-    pub storage_key: Option<String>,
+    /// The path that was failed for deletion, if available
+    pub path: String,
     /// Error code from the storage service, if available
     pub error_code: Option<String>,
-    /// Error message from the storage service, if available
-    pub error_message: Option<String>,
+    /// Error message from the storage service
+    pub error_message: String,
 }
 
 impl BatchDeleteError {
     #[must_use]
-    pub fn new(
-        path: Option<String>,
-        storage_key: Option<String>,
-        error_code: Option<String>,
-        error_message: Option<String>,
-    ) -> Self {
+    pub fn new(path: String, error_code: Option<String>, error_message: String) -> Self {
         Self {
             path,
-            storage_key,
             error_code,
             error_message,
         }
@@ -124,17 +123,11 @@ impl BatchDeleteError {
 
 impl std::fmt::Display for BatchDeleteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (&self.path, &self.storage_key) {
-            (Some(path), _) => write!(f, "Failed to delete path '{path}': ")?,
-            (None, Some(key)) => write!(f, "Failed to delete storage key '{key}': ")?,
-            (None, None) => write!(f, "Failed to delete unknown item: ")?,
-        }
+        write!(f, "Failed to delete path '{}': ", self.path)?;
 
         match (&self.error_code, &self.error_message) {
-            (Some(code), Some(message)) => write!(f, "{code} - {message}"),
-            (Some(code), None) => write!(f, "{code}"),
-            (None, Some(message)) => write!(f, "{message}"),
-            (None, None) => write!(f, "Unknown error"),
+            (Some(code), message) => write!(f, "{code} - {message}"),
+            (None, message) => write!(f, "{message}"),
         }
     }
 }
@@ -142,7 +135,7 @@ impl std::fmt::Display for BatchDeleteError {
 impl std::error::Error for BatchDeleteError {}
 
 #[derive(thiserror::Error, Debug)]
-#[error("IO operation failed ({kind}): {message}{}. Source: {}", location.as_ref().map_or(String::new(), |l| format!(" at {l}")), source.as_ref().map_or(String::new(), |s| format!("{s:#}")))]
+#[error("IO operation failed ({kind}): {message}{}. Source: {}", location.as_ref().map_or(String::new(), |l| format!(" at `{l}`")), source.as_ref().map_or(String::new(), |s| format!("{s:#}")))]
 pub struct IOError {
     kind: ErrorKind,
     message: String,

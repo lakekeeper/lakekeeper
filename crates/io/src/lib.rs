@@ -57,6 +57,8 @@ pub enum StorageBackend {
     S3(crate::s3::S3Storage),
     #[cfg(feature = "storage-in-memory")]
     Memory(crate::memory::MemoryStorage),
+    #[cfg(feature = "storage-adls")]
+    Adls(crate::adls::AdlsStorage),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -216,7 +218,7 @@ where
 
             while let Some(result) = delete_futures.next().await {
                 match result {
-                    Ok(Ok(BatchDeleteResult::AllSuccessful(_))) => {}
+                    Ok(Ok(BatchDeleteResult::AllSuccessful())) => {}
                     Ok(Ok(BatchDeleteResult::PartialFailure { errors, .. })) => {
                         // Keep track of the first error we encounter
                         if return_error.is_none() && !errors.is_empty() {
@@ -376,6 +378,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::S3(s3_storage) => s3_storage.delete(path).await,
                 #[cfg(feature = "storage-in-memory")]
                 StorageBackend::Memory(memory_storage) => memory_storage.delete(path).await,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.delete(path).await,
             }
         }
     }
@@ -392,6 +396,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::S3(s3_storage) => s3_storage.delete_batch(paths).await,
                 #[cfg(feature = "storage-in-memory")]
                 StorageBackend::Memory(memory_storage) => memory_storage.delete_batch(paths).await,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.delete_batch(paths).await,
             }
         }
     }
@@ -409,6 +415,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::S3(s3_storage) => s3_storage.write(path, bytes).await,
                 #[cfg(feature = "storage-in-memory")]
                 StorageBackend::Memory(memory_storage) => memory_storage.write(path, bytes).await,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.write(path, bytes).await,
             }
         }
     }
@@ -425,6 +433,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::S3(s3_storage) => s3_storage.read(path).await,
                 #[cfg(feature = "storage-in-memory")]
                 StorageBackend::Memory(memory_storage) => memory_storage.read(path).await,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.read(path).await,
             }
         }
     }
@@ -445,6 +455,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::Memory(memory_storage) => {
                     memory_storage.list(path, page_size).await
                 }
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.list(path, page_size).await,
             }
         }
     }
@@ -460,6 +472,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::S3(s3_storage) => s3_storage.remove_all(path).await,
                 #[cfg(feature = "storage-in-memory")]
                 StorageBackend::Memory(memory_storage) => memory_storage.remove_all(path).await,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.remove_all(path).await,
             }
         }
     }
@@ -467,10 +481,11 @@ impl LakekeeperStorage for StorageBackend {
 
 /// Result of a batch delete operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "this `BatchDeleteResult` may be an `PartialFailure` variant, which should be handled"]
 pub enum BatchDeleteResult {
     /// All deletions were successful.
     /// Contains the list of successfully deleted paths.
-    AllSuccessful(Vec<String>),
+    AllSuccessful(),
     /// Some deletions failed, but some succeeded.
     /// Contains both successful paths and detailed error information.
     /// This variant forces callers to handle partial failures explicitly.
@@ -484,7 +499,7 @@ impl BatchDeleteResult {
     /// Returns true if all deletions were successful.
     #[must_use]
     pub fn is_all_successful(&self) -> bool {
-        matches!(self, BatchDeleteResult::AllSuccessful(_))
+        matches!(self, BatchDeleteResult::AllSuccessful())
     }
 
     /// Returns true if any deletions failed.
@@ -493,30 +508,13 @@ impl BatchDeleteResult {
         matches!(self, BatchDeleteResult::PartialFailure { .. })
     }
 
-    /// Returns the list of successfully deleted paths.
-    #[must_use]
-    pub fn successful_paths(&self) -> &[String] {
-        match self {
-            BatchDeleteResult::AllSuccessful(paths) => paths,
-            BatchDeleteResult::PartialFailure {
-                successful_paths, ..
-            } => successful_paths,
-        }
-    }
-
     /// Returns the list of errors, if any.
     #[must_use]
     pub fn errors(&self) -> Option<&[BatchDeleteError]> {
         match self {
-            BatchDeleteResult::AllSuccessful(_) => None,
+            BatchDeleteResult::AllSuccessful() => None,
             BatchDeleteResult::PartialFailure { errors, .. } => Some(errors),
         }
-    }
-
-    /// Returns the total number of paths that were successfully deleted.
-    #[must_use]
-    pub fn successful_count(&self) -> usize {
-        self.successful_paths().len()
     }
 
     /// Returns the number of errors, if any.

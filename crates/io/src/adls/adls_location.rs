@@ -40,7 +40,6 @@ pub struct AdlsLocation {
     account_name: String,
     filesystem: String,
     endpoint_suffix: String,
-    key: Vec<String>,
     // Redundant, but useful for failsafe access
     location: Location,
 }
@@ -54,7 +53,7 @@ impl AdlsLocation {
         account_name: String,
         filesystem: String,
         host: String,
-        key: Vec<String>,
+        key: &[&str], // Not URL Encoded
         // Optional custom prefix for the scheme, e.g., "abfss"
         scheme: Option<String>,
     ) -> Result<Self, InvalidLocationError> {
@@ -79,11 +78,14 @@ impl AdlsLocation {
             reason: e.to_string(),
             location: location_dbg.clone(),
         })?;
-        for k in &key {
-            validate_path_segment(k).map_err(|e| InvalidLocationError {
-                reason: e.to_string(),
-                location: location_dbg.clone(),
-            })?;
+
+        for path_segment in key {
+            if path_segment.contains('/') {
+                return Err(InvalidLocationError {
+                    reason: format!("ADLS path segment `{path_segment}` must not contain slashes."),
+                    location: location_dbg.clone(),
+                });
+            }
         }
 
         let endpoint_suffix = normalize_host(host)
@@ -107,7 +109,6 @@ impl AdlsLocation {
             account_name,
             filesystem,
             endpoint_suffix,
-            key,
             location,
         })
     }
@@ -134,12 +135,12 @@ impl AdlsLocation {
 
     #[must_use]
     pub fn scheme(&self) -> &str {
-        self.location.url().scheme()
+        self.location.scheme()
     }
 
     #[must_use]
-    pub fn key(&self) -> &[String] {
-        &self.key
+    pub fn blob_name(&self) -> String {
+        self.location.path().unwrap_or_default().to_string()
     }
 
     /// Create a new `AdlsLocation` from a Location.
@@ -152,7 +153,7 @@ impl AdlsLocation {
         location: &Location,
         allow_variants: bool,
     ) -> Result<Self, InvalidLocationError> {
-        let schema = location.url().scheme();
+        let schema = location.scheme();
         let is_custom_variant = ADLS_CUSTOM_SCHEMES.contains(&schema);
 
         // Protocol must be abfss or wasbs (if allowed)
@@ -160,12 +161,12 @@ impl AdlsLocation {
             let reason = if allow_variants {
                 format!(
                     "ADLS location must use abfss or wasbs protocol. Found: {}",
-                    location.url().scheme()
+                    location.scheme()
                 )
             } else {
                 format!(
                     "ADLS location must use abfss protocol. Found: {}",
-                    location.url().scheme()
+                    location.scheme()
                 )
             };
 
@@ -175,9 +176,8 @@ impl AdlsLocation {
             });
         }
 
-        let filesystem = location.url().username().to_string();
+        let filesystem = location.username().to_string();
         let host = location
-            .url()
             .host_str()
             .ok_or_else(|| InvalidLocationError {
                 reason: "ADLS location has no host specified".to_string(),
@@ -193,13 +193,6 @@ impl AdlsLocation {
                     location: location.to_string(),
                 })?;
 
-        let key: Vec<String> = location
-            .url()
-            .path_segments()
-            .map_or(Vec::new(), |segments| {
-                segments.map(std::string::ToString::to_string).collect()
-            });
-
         let custom_prefix = if is_custom_variant {
             Some(schema.to_string())
         } else {
@@ -210,7 +203,7 @@ impl AdlsLocation {
             account_name.to_string(),
             filesystem,
             endpoint_suffix.to_string(),
-            key,
+            &location.path_segments(),
             custom_prefix,
         )
     }
@@ -283,49 +276,12 @@ fn validate_filesystem_name(container: &str) -> Result<(), InvalidADLSFilesystem
     Ok(())
 }
 
-// https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_path_segment(path_segment: &str) -> Result<(), InvalidADLSPathSegment> {
-    if path_segment.contains(|c: char| {
-        c == ' '
-            || c == '!'
-            || c == '*'
-            || c == '\''
-            || c == '('
-            || c == ')'
-            || c == ';'
-            || c == ':'
-            || c == '@'
-            || c == '&'
-            || c == '='
-            || c == '+'
-            || c == '$'
-            || c == ','
-            || c == '/'
-            || c == '?'
-            || c == '%'
-            || c == '#'
-            || c == '['
-            || c == ']'
-    }) {
-        return Err(InvalidADLSPathSegment {
-            reason:
-                "Directory path contains reserved URL characters that are not properly escaped."
-                    .to_string(),
-            segment: path_segment.to_string(),
-        });
-    }
-
-    // Check if the directory name ends with a dot (.), a backslash (\), or a combination of these.
-    if path_segment.ends_with('.') || path_segment.ends_with('\\') {
-        return Err(InvalidADLSPathSegment {
-            reason: "Must not end with a dot (.), or a backslash (\\).".to_string(),
-            segment: path_segment.to_string(),
-        });
-    }
-
-    Ok(())
-}
-
+/// Normalizes the host string.
+///
+/// If the host is empty, it returns `None`.
+///
+/// # Errors
+/// - If the host contains slashes or is not a valid hostname, it returns an `InvalidADLSHost` error.
 pub fn normalize_host(host: String) -> Result<Option<String>, InvalidADLSHost> {
     // If endpoint suffix is Some(""), set it to None.
     if host.is_empty() {
@@ -351,8 +307,11 @@ pub fn normalize_host(host: String) -> Result<Option<String>, InvalidADLSHost> {
     }
 }
 
-// Storage account names must be between 3 and 24 characters in length
-// and may contain numbers and lowercase letters only.
+/// Validates the ADLS account name.
+///
+/// # Errors
+/// - If the length is not between 3 and 24 characters.
+/// - If the account name contains uppercase letters or special characters.
 pub fn validate_account_name(account_name: &str) -> Result<(), InvalidADLSAccountName> {
     if account_name.len() < 3 || account_name.len() > 24 {
         return Err(InvalidADLSAccountName {
@@ -380,6 +339,19 @@ impl std::fmt::Display for AdlsLocation {
         Ok(())
     }
 }
+
+// fn urldecode(s: &str) -> String {
+//     url::form_urlencoded::parse(s.as_bytes())
+//         .map(|(k, v)| {
+//             if v.is_empty() {
+//                 k.to_string()
+//             } else {
+//                 format!("{k}={v}")
+//             }
+//         })
+//         .collect::<Vec<_>>()
+//         .join("&")
+// }
 
 #[cfg(test)]
 mod test {
@@ -439,41 +411,6 @@ mod test {
     }
 
     #[test]
-    fn test_valid_directory_paths() {
-        for path in &[
-            "valid/path",
-            "another/valid/path",
-            "valid/path/with123",
-            "valid/path/with-dash",
-            "valid/path/with_underscore",
-        ] {
-            for segment in path.split('/') {
-                assert!(validate_path_segment(segment).is_ok(), "{}", segment);
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_reserved_characters() {
-        for path in &[
-            " path", "path!", "path*", "path'", "path(", "path)", "path;", "path:", "path@",
-            "path&", "path=", "path+", "path$", "path,", "path?", "path%", "path#", "path[",
-            "path]",
-        ] {
-            for segment in path.split('/') {
-                assert!(validate_path_segment(segment).is_err(), "{}", segment);
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_ending_characters() {
-        for path in &["path.", "path\\", "path/.", "path/\\"] {
-            assert!(validate_path_segment(path).is_err(), "{}", path);
-        }
-    }
-
-    #[test]
     fn test_validate_host() {
         assert_eq!(
             normalize_host("dfs.core.windows.net".to_string()).unwrap(),
@@ -504,32 +441,46 @@ mod test {
                 "account0name",
                 "filesystem",
                 "foo.com",
-                vec![],
             ),
             (
                 "abfss://filesystem@account0name.dfs.core.windows.net/one",
                 "account0name",
                 "filesystem",
                 "dfs.core.windows.net",
-                vec!["one"],
             ),
             (
                 "abfss://filesystem@account0name.foo.com/one",
                 "account0name",
                 "filesystem",
                 "foo.com",
-                vec!["one"],
+            ),
+            (
+                "abfss://filesystem@account0name.foo.com/one/",
+                "account0name",
+                "filesystem",
+                "foo.com",
+            ),
+            (
+                "abfss://filesystem@account0name.foo.com/one/ã.txt",
+                "account0name",
+                "filesystem",
+                "foo.com",
+            ),
+            (
+                "abfss://filesystem@account0name.foo.com/one/other-file with spaces.txt",
+                "account0name",
+                "filesystem",
+                "foo.com",
             ),
         ];
 
-        for (location_str, account_name, filesystem, endpoint_suffix, key) in cases {
+        for (location_str, account_name, filesystem, endpoint_suffix) in cases {
             let adls_location =
                 AdlsLocation::try_from_location(&Location::from_str(location_str).unwrap(), false)
                     .unwrap();
             assert_eq!(adls_location.account_name(), account_name);
             assert_eq!(adls_location.filesystem(), filesystem);
             assert_eq!(adls_location.endpoint_suffix(), endpoint_suffix);
-            assert_eq!(adls_location.key, key);
             // Roundtrip
             assert_eq!(adls_location.to_string(), location_str);
         }
@@ -562,16 +513,31 @@ mod test {
         let adls_location = result.unwrap();
 
         // Check that it was normalized to abfss
-        assert_eq!(adls_location.location().url().scheme(), "wasbs",);
+        assert_eq!(adls_location.location().scheme(), "wasbs",);
 
         // Check that other properties were preserved
         assert_eq!(adls_location.account_name(), "account0name");
         assert_eq!(adls_location.filesystem(), "filesystem");
         assert_eq!(adls_location.endpoint_suffix(), "foo.com");
-        assert_eq!(adls_location.key, vec!["path", "to", "data"]);
 
         // Test with allow_variants = false
         let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), false);
         assert!(result.is_err(), "Should fail with allow_variants = false");
     }
+
+    // #[test]
+    // fn test_url_decode() {
+    //     let cases = vec![
+    //         ("key=value", "key=value"),
+    //         ("%20with%20spaces", " with spaces"),
+    //         ("key%2Fwith%2Fslashes=value", "key/with/slashes=value"),
+    //         ("foo%3Dbar", "foo=bar"),
+    //         ("/key/%C3%BCbersetzen/comp l3x", "/key/übersetzen/comp l3x"),
+    //     ];
+
+    //     for (input, expected) in cases {
+    //         let decoded = urldecode(input);
+    //         assert_eq!(decoded, expected, "Failed for input: {input}");
+    //     }
+    // }
 }

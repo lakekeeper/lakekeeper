@@ -56,7 +56,7 @@ impl LakekeeperStorage for S3Storage {
         self.client
             .delete_object()
             .bucket(s3_location.bucket_name())
-            .key(s3_key_to_str(s3_location.key()))
+            .key(s3_key_to_str(&s3_location.key()))
             .send()
             .await
             .map_err(|e| parse_delete_error(e, &s3_location))?;
@@ -84,7 +84,7 @@ impl LakekeeperStorage for S3Storage {
             .client
             .put_object()
             .bucket(s3_location.bucket_name())
-            .key(s3_key_to_str(s3_location.key()))
+            .key(s3_key_to_str(&s3_location.key()))
             .body(bytes.into());
 
         if let Some(kms_key_arn) = &self.aws_kms_key_arn {
@@ -108,7 +108,7 @@ impl LakekeeperStorage for S3Storage {
             .client
             .get_object()
             .bucket(s3_location.bucket_name())
-            .key(s3_key_to_str(s3_location.key()))
+            .key(s3_key_to_str(&s3_location.key()))
             .send()
             .await
             .map_err(|e| parse_get_object_error(e, &s3_location))?;
@@ -140,7 +140,7 @@ impl LakekeeperStorage for S3Storage {
             .client
             .list_objects_v2()
             .bucket(s3_bucket.clone())
-            .prefix(s3_key_to_str(s3_location.key()));
+            .prefix(s3_key_to_str(&s3_location.key()));
 
         let stream = stream::unfold(
             (None, false), // (continuation_token, is_done)
@@ -192,7 +192,7 @@ impl LakekeeperStorage for S3Storage {
                                 .map(|key| {
                                     // Create a new location directly using the bucket and key
                                     // to avoid duplicate path components - use the same scheme as the base location
-                                    let scheme = base_location.url().scheme();
+                                    let scheme = base_location.scheme();
                                     let full_path = format!("{scheme}://{s3_bucket}/{key}");
                                     Location::from_str(&full_path)
                                         .unwrap_or_else(|_| base_location.clone())
@@ -234,7 +234,7 @@ fn group_paths_by_bucket(
         let path = p.as_ref();
         let s3_location = S3Location::try_from_str(path, true)?;
         let bucket = s3_location.bucket_name().to_string();
-        let key = s3_key_to_str(s3_location.key());
+        let key = s3_key_to_str(&s3_location.key());
         s3_locations
             .entry(bucket)
             .or_default()
@@ -365,16 +365,17 @@ async fn process_delete_results(
                         .cloned();
 
                     let batch_error = BatchDeleteError::new(
-                        original_path,
-                        error_key,
+                        original_path.or(error_key).unwrap_or("Unknown".to_string()),
                         error.code().map(String::from),
-                        error.message().map(String::from),
+                        error
+                            .message()
+                            .map_or_else(|| format!("{error:?}"), String::from),
                     );
                     delete_errors.push(batch_error);
                 }
             }
             Err(e) => {
-                // Network or other SDK-level error - collect but don't return early
+                // Network or other SDK-level error - collect but don't return early.
                 // This allows other batches to continue processing. Exit only if this is the first batch.
                 if batch_index == 0 {
                     return Err(parse_batch_delete_error(e));
@@ -404,7 +405,7 @@ async fn process_delete_results(
         .collect();
 
     if delete_errors.is_empty() {
-        Ok(BatchDeleteResult::AllSuccessful(successful_paths))
+        Ok(BatchDeleteResult::AllSuccessful())
     } else {
         Ok(BatchDeleteResult::PartialFailure {
             successful_paths,
@@ -413,7 +414,7 @@ async fn process_delete_results(
     }
 }
 
-fn s3_key_to_str(key: &[String]) -> String {
+fn s3_key_to_str(key: &[&str]) -> String {
     if key.is_empty() {
         return String::new();
     }
@@ -427,9 +428,9 @@ mod tests {
     #[test]
     fn test_s3_key_to_str() {
         // Keys should not start with a slash!
-        assert_eq!(s3_key_to_str(&[]), "");
-        assert_eq!(s3_key_to_str(&["a".to_string()]), "a");
-        assert_eq!(s3_key_to_str(&["a".to_string(), "b".to_string()]), "a/b");
-        assert_eq!(s3_key_to_str(&["a".to_string(), String::new()]), "a/");
+        assert_eq!(s3_key_to_str(&vec![]), "");
+        assert_eq!(s3_key_to_str(&vec!["a"]), "a");
+        assert_eq!(s3_key_to_str(&vec!["a", "b"]), "a/b");
+        assert_eq!(s3_key_to_str(&vec!["a", ""]), "a/");
     }
 }

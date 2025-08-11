@@ -1,13 +1,10 @@
-use std::str::FromStr;
-
-use azure_core::{error::HttpError, StatusCode};
+use azure_core::StatusCode;
 
 use crate::{error::ErrorKind, IOError};
 
 pub(crate) fn parse_error(err: azure_core::Error, location: &str) -> IOError {
-    let http_err = if let Some(http_err) = err.as_http_error() {
-        http_err
-    } else {
+    let err = Box::new(err);
+    let Some(http_err) = err.as_http_error() else {
         return IOError::new(
             ErrorKind::Unexpected,
             format!("Non-HTTP error occurred while reading from ADLS: {err}"),
@@ -33,7 +30,7 @@ pub(crate) fn parse_error(err: azure_core::Error, location: &str) -> IOError {
         return IOError::new(
             ErrorKind::RateLimited,
             format!("{} - {err}", http_err.status().canonical_reason()),
-            String::new(),
+            location.to_string(),
         )
         .with_context(format!(
             "HTTP Error Message: {}",
@@ -48,6 +45,7 @@ pub(crate) fn parse_error(err: azure_core::Error, location: &str) -> IOError {
         StatusCode::RequestTimeout | StatusCode::GatewayTimeout => ErrorKind::RequestTimeout,
         StatusCode::ServiceUnavailable => ErrorKind::ServiceUnavailable,
         StatusCode::PreconditionFailed | StatusCode::Conflict => ErrorKind::ConditionNotMatch,
+        StatusCode::TooManyRequests => ErrorKind::RateLimited,
         status if status.is_server_error() => ErrorKind::Unexpected,
         _ => ErrorKind::Unexpected,
     };
@@ -55,7 +53,7 @@ pub(crate) fn parse_error(err: azure_core::Error, location: &str) -> IOError {
     IOError::new(
         error_kind,
         format!("{} - {err}", http_err.status().canonical_reason()),
-        String::new(),
+        location.to_string(),
     )
     .with_context(format!(
         "HTTP Error Message: {}",

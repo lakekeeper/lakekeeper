@@ -14,7 +14,6 @@ pub use s3_storage::S3Storage;
 
 static IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
     LazyLock::new(|| IdentityCache::lazy().build());
-// static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
     aws_smithy_http_client::Builder::new()
         .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
@@ -25,7 +24,7 @@ static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
 
 const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, derive_more::From)]
 pub enum S3Auth {
     AccessKey(S3AccessKeyAuth),
     AwsSystemIdentity(S3AwsSystemIdentityAuth),
@@ -75,7 +74,7 @@ pub struct S3Settings {
 }
 
 impl S3Settings {
-    pub async fn get_s3_client(&self, s3_credential: Option<&S3Auth>) -> S3Storage {
+    pub async fn get_storage_client(&self, s3_credential: Option<&S3Auth>) -> S3Storage {
         let sdk_config = self.get_sdk_config(s3_credential).await;
         let s3_config: aws_sdk_s3::config::Config = (&sdk_config).into();
         let mut s3_builder = s3_config.to_builder();
@@ -163,16 +162,4 @@ pub fn validate_region(region: &str) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-impl From<S3AccessKeyAuth> for S3Auth {
-    fn from(auth: S3AccessKeyAuth) -> Self {
-        S3Auth::AccessKey(auth)
-    }
-}
-
-impl From<S3AwsSystemIdentityAuth> for S3Auth {
-    fn from(auth: S3AwsSystemIdentityAuth) -> Self {
-        S3Auth::AwsSystemIdentity(auth)
-    }
 }

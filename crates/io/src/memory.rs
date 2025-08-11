@@ -159,25 +159,23 @@ impl LakekeeperStorage for MemoryStorage {
                 Ok(()) => successful_paths.push(path_str),
                 Err(DeleteError::InvalidLocation(e)) => {
                     errors.push(BatchDeleteError::new(
-                        Some(path_str),
-                        None,
+                        path_str,
                         Some("InvalidLocation".to_string()),
-                        Some(e.reason),
+                        e.reason,
                     ));
                 }
                 Err(DeleteError::IOError(e)) => {
                     errors.push(BatchDeleteError::new(
-                        Some(path_str),
-                        None,
+                        path_str,
                         Some(e.kind().to_string()),
-                        Some(e.reason().to_string()),
+                        e.reason().to_string(),
                     ));
                 }
             }
         }
 
         if errors.is_empty() {
-            Ok(BatchDeleteResult::AllSuccessful(successful_paths))
+            Ok(BatchDeleteResult::AllSuccessful())
         } else {
             Ok(BatchDeleteResult::PartialFailure {
                 successful_paths,
@@ -351,7 +349,6 @@ mod tests {
         // Batch delete
         let result = storage.delete_batch(test_paths.clone()).await.unwrap();
         assert!(result.is_all_successful());
-        assert_eq!(result.successful_count(), 3);
 
         // Verify files are deleted
         for path in &test_paths {

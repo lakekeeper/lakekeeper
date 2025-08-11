@@ -236,6 +236,14 @@ impl AdlsProfile {
                 azure_core::auth::Secret::new(key.to_string()),
             )?,
             AzCredential::AzureSystemIdentity {} => {
+                todo!()
+                // ToDo: + Somewhere else?
+            //     if !CONFIG.enable_azure_system_credentials {
+            //         return Err(CredentialsError::Misconfiguration(
+            //     "Azure System identity credentials are disabled in this Lakekeeper deployment."
+            //         .to_string(),
+            // ));
+            //     }
                 let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
                 self.sas_via_delegation_key(
                     table_location,
@@ -265,37 +273,6 @@ impl AdlsProfile {
             config: creds.clone(),
             creds,
         })
-    }
-
-    fn get_system_identity(&self) -> Result<Arc<DefaultAzureCredential>, CredentialsError> {
-        if !CONFIG.enable_azure_system_credentials {
-            return Err(CredentialsError::Misconfiguration(
-                "Azure System identity credentials are disabled in this Lakekeeper deployment."
-                    .to_string(),
-            ));
-        }
-
-        let authority_host_str = (self.authority_host.as_ref()).map_or(
-            DEFAULT_AUTHORITY_HOST.clone().to_string(),
-            std::string::ToString::to_string,
-        );
-
-        SYSTEM_IDENTITY_CACHE
-            .try_get_with(authority_host_str.clone(), || {
-                let mut options = TokenCredentialOptions::default();
-                options.set_authority_host(authority_host_str);
-                DefaultAzureCredentialBuilder::new()
-                    .with_options(options)
-                    .build()
-                    .map(Arc::new)
-            })
-            .map_err(|e| {
-                tracing::error!("Failed to get Azure system identity: {e}");
-                CredentialsError::ShortTermCredential {
-                    reason: "Failed to get Azure system identity".to_string(),
-                    source: Some(Box::new(e)),
-                }
-            })
     }
 
     // /// Create a new `FileIO` instance for Adls.
