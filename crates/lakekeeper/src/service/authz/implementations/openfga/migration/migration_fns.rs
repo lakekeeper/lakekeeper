@@ -1,7 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use futures::stream::{FuturesUnordered, StreamExt};
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use openfga_client::client::{BasicOpenFgaServiceClient, OpenFgaClient};
 use strum::IntoEnumIterator;
+use tokio::sync::Semaphore;
 
 use crate::service::{catalog::Transaction, TableId};
 use crate::service::{Catalog, WarehouseStatus};
@@ -16,6 +20,10 @@ pub(crate) struct MigrationState<C: Catalog> {
 
 // TODO(mooori): use tokio semaphore to limit the number of concurrent db txs,
 // then can use something like futures unordered
+
+// Limits the number of concurrent transactions. It should be throttled as the catalog's db
+// may still be in use during the migration.
+static DB_TX_PERMITS: Semaphore = Semaphore::const_new(10);
 
 // catalog trait reingeben, nicht postgres db
 pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
@@ -78,7 +86,11 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
     Ok(())
 }
 
-async fn read_transaction<C: Catalog>(state: C::State) -> crate::api::Result<C::Transaction> {
+/// Creates a new read transaction. Throttled by awaiting a [`DB_TX_PERMITS`] before creation.
+async fn read_transaction_throttled<C: Catalog>(
+    state: C::State,
+) -> crate::api::Result<C::Transaction> {
+    let _permit = DB_TX_PERMITS.acquire().await.unwrap();
     C::Transaction::begin_read(state).await
 }
 
@@ -87,17 +99,25 @@ async fn get_all_warehouse_ids<C: Catalog>(
     catalog_state: C::State,
     project_ids: &[ProjectId],
 ) -> crate::api::Result<Vec<WarehouseId>> {
-    // TODO parallelize
     let all_statuses: Vec<_> = WarehouseStatus::iter().collect();
+    let mut jobs = futures::stream::FuturesUnordered::new();
     let mut warehouse_ids = vec![];
+
     for pid in project_ids.iter() {
-        let mut tx = read_transaction::<C>(catalog_state.clone()).await?;
-        // This returns all warehouses in the project since it is not (yet) possible to
-        // deactivate a warehouse.
-        let responses =
-            C::list_warehouses(pid, Some(all_statuses.clone()), tx.transaction()).await?;
-        let ids = responses.iter().map(|res| res.id);
-        warehouse_ids.extend(ids);
+        let mut tx = read_transaction_throttled::<C>(catalog_state.clone()).await?;
+        let all_statuses = all_statuses.clone();
+
+        jobs.push(async move {
+            // This returns all warehouses in the project since it is not (yet) possible to
+            // deactivate a warehouse.
+            let responses = C::list_warehouses(pid, Some(all_statuses), tx.transaction()).await?;
+            let ids = responses.into_iter().map(|res| res.id);
+            Ok::<_, IcebergErrorResponse>(ids)
+        });
+    }
+
+    while let Some(res) = jobs.next().await {
+        warehouse_ids.extend(res?)
     }
     Ok(warehouse_ids)
 }
