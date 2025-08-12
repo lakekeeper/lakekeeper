@@ -13,10 +13,9 @@ pub use crate::service::{
 };
 use crate::{
     api::{
-        iceberg::v1::{PageToken,PaginationQuery},
+        iceberg::v1::{PageToken, PaginationQuery},
         management::v1::ApiServer,
-        ApiContext,
-        Result
+        ApiContext, Result,
     },
     request_metadata::RequestMetadata,
     service::{

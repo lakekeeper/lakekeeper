@@ -416,7 +416,6 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     pagination: PaginationQuery,
     connection: E,
 ) -> Result<ListProjectsResponse> {
-
     let page_size = CONFIG.page_size_or_pagination_max(pagination.page_size);
     let return_all = project_ids.is_none();
 
@@ -475,12 +474,10 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     Ok(ListProjectsResponse {
         projects: projects
             .into_iter()
-            .map(
-                |project| GetProjectResponse {
-                    project_id: ProjectId::from_db_unchecked(project.project_id),
-                    project_name: project.project_name,
-                },
-            )
+            .map(|project| GetProjectResponse {
+                project_id: ProjectId::from_db_unchecked(project.project_id),
+                project_name: project.project_name,
+            })
             .collect(),
         next_page_token,
     })
@@ -1335,11 +1332,23 @@ pub(crate) mod test {
         .unwrap();
 
         // the first page results are in order
-        assert_eq!(page1.projects[0].project_id, all_projects.projects[0].project_id);
-        assert_eq!(page1.projects[1].project_id, all_projects.projects[1].project_id);
+        assert_eq!(
+            page1.projects[0].project_id,
+            all_projects.projects[0].project_id
+        );
+        assert_eq!(
+            page1.projects[1].project_id,
+            all_projects.projects[1].project_id
+        );
         // on the second page results are in order
-        assert_eq!(page2.projects[0].project_id, all_projects.projects[2].project_id);
-        assert_eq!(page2.projects[1].project_id, all_projects.projects[3].project_id);
+        assert_eq!(
+            page2.projects[0].project_id,
+            all_projects.projects[2].project_id
+        );
+        assert_eq!(
+            page2.projects[1].project_id,
+            all_projects.projects[3].project_id
+        );
 
         // Verify all projects are returned
         let mut all_project_ids = Vec::new();
