@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
@@ -8,7 +8,7 @@ use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
 
 use crate::service::{catalog::Transaction, TableId};
-use crate::service::{Catalog, WarehouseStatus};
+use crate::service::{Catalog, NamespaceId, WarehouseStatus};
 use crate::{ProjectId, WarehouseId};
 
 #[derive(Clone, Debug)]
@@ -21,9 +21,12 @@ pub(crate) struct MigrationState<C: Catalog> {
 // TODO(mooori): use tokio semaphore to limit the number of concurrent db txs,
 // then can use something like futures unordered
 
-// Limits the number of concurrent transactions. It should be throttled as the catalog's db
-// may still be in use during the migration.
-static DB_TX_PERMITS: Semaphore = Semaphore::const_new(10);
+/// Limits the number of concurrent transactions. It should be throttled as the catalog's db
+/// may still be in use during the migration.
+///
+/// Ensure permits are dropped as soon as the tx is not needed anymore, to unblock other threads.
+static DB_TX_PERMITS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::const_new(10)));
 
 // catalog trait reingeben, nicht postgres db
 pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
@@ -78,7 +81,7 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         .map(|response| response.project_id)
         .collect();
     // currently all active
-    let warehouse_ids = get_all_warehouse_ids::<C>(state.catalog_state.clone(), &project_ids)
+    let warehouse_ids = all_warehouse_ids::<C>(state.catalog_state.clone(), &project_ids)
         .await
         .map_err(|e| e.error)?;
 
@@ -86,36 +89,41 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
     Ok(())
 }
 
-/// Creates a new read transaction. Throttled by awaiting a [`DB_TX_PERMITS`] before creation.
-async fn read_transaction_throttled<C: Catalog>(
-    state: C::State,
-) -> crate::api::Result<C::Transaction> {
+/// Creates a new read transaction. To use it responsibly, first acquire a permit from
+/// [`DB_TX_PERMITS`].
+async fn new_read_transaction<C: Catalog>(state: C::State) -> crate::api::Result<C::Transaction> {
     let _permit = DB_TX_PERMITS.acquire().await.unwrap();
     C::Transaction::begin_read(state).await
 }
 
 /// Returns the ids of all warehouses, regardless of their status.
-async fn get_all_warehouse_ids<C: Catalog>(
+async fn all_warehouse_ids<C: Catalog>(
     catalog_state: C::State,
     project_ids: &[ProjectId],
 ) -> crate::api::Result<Vec<WarehouseId>> {
     let all_statuses: Vec<_> = WarehouseStatus::iter().collect();
-    let mut jobs = futures::stream::FuturesUnordered::new();
-    let mut warehouse_ids = vec![];
+    let mut jobs = FuturesUnordered::new();
 
     for pid in project_ids.iter() {
-        let mut tx = read_transaction_throttled::<C>(catalog_state.clone()).await?;
+        let semaphore = DB_TX_PERMITS.clone();
+        let catalog_state = catalog_state.clone();
         let all_statuses = all_statuses.clone();
 
         jobs.push(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let mut tx = new_read_transaction::<C>(catalog_state).await?;
+
             // This returns all warehouses in the project since it is not (yet) possible to
             // deactivate a warehouse.
             let responses = C::list_warehouses(pid, Some(all_statuses), tx.transaction()).await?;
+            drop(_permit);
+
             let ids = responses.into_iter().map(|res| res.id);
             Ok::<_, IcebergErrorResponse>(ids)
         });
     }
 
+    let mut warehouse_ids = vec![];
     while let Some(res) = jobs.next().await {
         warehouse_ids.extend(res?)
     }
