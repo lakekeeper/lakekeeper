@@ -7,8 +7,9 @@ use openfga_client::client::{BasicOpenFgaServiceClient, OpenFgaClient};
 use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
 
+use crate::api::iceberg::v1::PageToken;
 use crate::service::{catalog::Transaction, TableId};
-use crate::service::{Catalog, NamespaceId, WarehouseStatus};
+use crate::service::{Catalog, ListNamespacesQuery, NamespaceId, WarehouseStatus};
 use crate::{ProjectId, WarehouseId};
 
 #[derive(Clone, Debug)]
@@ -132,7 +133,51 @@ async fn all_warehouse_ids<C: Catalog>(
 
 // TODO in catalog: implement fn that traverses all namespaces
 // catalog's basic `list_namespaces` is only one level, not its children
-async fn get_all_namespaces() {}
+/// Returns `(NamespaceId, WarehouseId)` for all namespaces, which is needed to get all tabulars
+/// via [`Catalog::list_tables`] and [`Catalog::list_views`]
+async fn get_all_tabular_query_params<C: Catalog>(
+    catalog_state: C::State,
+    warehouse_ids: Vec<WarehouseId>,
+) -> crate::api::Result<Vec<(WarehouseId, NamespaceId)>> {
+    let mut jobs = FuturesUnordered::new();
+
+    for wid in warehouse_ids.into_iter() {
+        let semaphore = DB_TX_PERMITS.clone();
+        let catalog_state = catalog_state.clone();
+
+        jobs.push(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let mut tx = new_read_transaction::<C>(catalog_state).await?;
+
+            // The function mentioned in TODO above is expected to use smaller page size + paginate
+            let response = C::list_namespaces(
+                wid.clone(),
+                &ListNamespacesQuery {
+                    page_token: PageToken::Empty,
+                    page_size: Some(i64::MAX),
+                    parent: None,
+                    return_uuids: true,
+                    return_protection_status: false,
+                },
+                tx.transaction(),
+            )
+            .await?;
+            drop(_permit);
+
+            let query_params = response
+                .into_iter()
+                .map(move |(nsid, _)| (wid.clone(), nsid));
+            Ok::<_, IcebergErrorResponse>(query_params)
+        })
+    }
+
+    let mut all_query_params = vec![];
+    while let Some(res) = jobs.next().await {
+        all_query_params.extend(res?);
+    }
+
+    Ok(all_query_params)
+}
 
 async fn add_warehouse_id_to_tables<T>(
     _client: OpenFgaClient<T>,
