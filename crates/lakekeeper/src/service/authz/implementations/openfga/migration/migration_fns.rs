@@ -131,14 +131,25 @@ async fn all_warehouse_ids<C: Catalog>(
     Ok(warehouse_ids)
 }
 
+struct TabularQueryParams {
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+}
+
+struct TableParams {
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    table_id: TableId,
+}
+
 // TODO in catalog: implement fn that traverses all namespaces
 // catalog's basic `list_namespaces` is only one level, not its children
-/// Returns `(NamespaceId, WarehouseId)` for all namespaces, which is needed to get all tabulars
-/// via [`Catalog::list_tables`] and [`Catalog::list_views`]
-async fn get_all_tabular_query_params<C: Catalog>(
+/// Returns the query paramaters for all namespaces, which are needed to get all tabulars
+/// via [`Catalog::list_tables`] and [`Catalog::list_views`].
+async fn all_tabular_query_params<C: Catalog>(
     catalog_state: C::State,
     warehouse_ids: Vec<WarehouseId>,
-) -> crate::api::Result<Vec<(WarehouseId, NamespaceId)>> {
+) -> crate::api::Result<Vec<TabularQueryParams>> {
     let mut jobs = FuturesUnordered::new();
 
     for wid in warehouse_ids.into_iter() {
@@ -166,7 +177,10 @@ async fn get_all_tabular_query_params<C: Catalog>(
 
             let query_params = response
                 .into_iter()
-                .map(move |(nsid, _)| (wid.clone(), nsid));
+                .map(move |(nsid, _)| TabularQueryParams {
+                    warehouse_id: wid,
+                    namespace_id: nsid,
+                });
             Ok::<_, IcebergErrorResponse>(query_params)
         })
     }
@@ -177,6 +191,12 @@ async fn get_all_tabular_query_params<C: Catalog>(
     }
 
     Ok(all_query_params)
+}
+
+async fn all_tables<C: Catalog>(
+    catalog_state: C::State,
+    params: TabularQueryParams,
+) -> crate::api::Result<Vec<TableParams>> {
 }
 
 async fn add_warehouse_id_to_tables<T>(
