@@ -140,7 +140,11 @@ impl AdlsLocation {
 
     #[must_use]
     pub fn blob_name(&self) -> String {
-        self.location.path().unwrap_or_default().to_string()
+        self.location
+            .path()
+            .unwrap_or_default()
+            .to_string()
+            .replace('?', "%3F")
     }
 
     /// Create a new `AdlsLocation` from a Location.

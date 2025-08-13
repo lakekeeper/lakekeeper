@@ -692,12 +692,9 @@ pub(super) mod s3_utils {
                 // Create S3 locations for each key
                 let mut locations = Vec::with_capacity(keys.len());
                 for key in keys {
-                    let location = S3Location::new(
-                        bucket.clone(),
-                        key.split('/').map(ToString::to_string).collect(),
-                        None,
-                    )
-                    .map_err(ValidationError::from)?;
+                    let location =
+                        S3Location::new(&bucket, &key.split('/').collect::<Vec<_>>(), None)
+                            .map_err(ValidationError::from)?;
                     locations.push(location);
                 }
 
@@ -748,8 +745,12 @@ pub(super) mod s3_utils {
         };
         Ok(ParsedSignRequest {
             url: uri.clone(),
-            locations: vec![S3Location::new(bucket.to_string(), path_segments, None)
-                .map_err(ValidationError::from)?],
+            locations: vec![S3Location::new(
+                &bucket,
+                &path_segments.iter().map(String::as_str).collect::<Vec<_>>(),
+                None,
+            )
+            .map_err(ValidationError::from)?],
             endpoint: used_endpoint.to_string(),
             port,
         })
@@ -781,14 +782,16 @@ pub(super) mod s3_utils {
             .into());
         }
 
+        let path_segments_borrowed: Vec<&str> = path_segments.iter().map(String::as_str).collect();
+
         Ok(ParsedSignRequest {
             url: uri.clone(),
             locations: vec![S3Location::new(
-                path_segments[0].to_string(),
-                if path_segments.len() > 1 {
-                    path_segments[1..].to_vec()
+                path_segments_borrowed[0],
+                if path_segments_borrowed.len() > 1 {
+                    &(path_segments_borrowed[1..])
                 } else {
-                    vec![]
+                    &[]
                 },
                 None,
             )

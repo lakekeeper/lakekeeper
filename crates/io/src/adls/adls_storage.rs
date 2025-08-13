@@ -2,10 +2,13 @@ use std::{collections::HashMap, num::NonZeroU32, str::FromStr, sync::atomic::Ato
 
 use crate::{
     adls::{adls_error::parse_error, AdlsLocation},
+    calculate_ranges, delete_not_found_is_ok,
     error::ErrorKind,
-    BatchDeleteError, BatchDeleteResult, DeleteBatchFatalError, DeleteError, IOError,
-    InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
+    safe_usize_to_i64, validate_file_size, BatchDeleteError, BatchDeleteResult,
+    DeleteBatchFatalError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
+    ReadError, WriteError,
 };
+use azure_core::prelude::Range;
 use azure_storage::CloudLocation;
 use azure_storage_datalake::prelude::{
     DataLakeClient, DirectoryClient, FileClient, FileSystemClient,
@@ -122,6 +125,7 @@ impl LakekeeperStorage for AdlsStorage {
 
         // Create futures for parallel deletion
         let mut delete_futures = FuturesUnordered::new();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1000));
 
         // Create delete operations for each path
         for ((_account, _filesystem), paths) in &grouped_paths {
@@ -133,6 +137,14 @@ impl LakekeeperStorage for AdlsStorage {
             for path in paths {
                 let file_client = filesystem_client.get_file_client(path.blob_name());
                 let mut deletion_stream = file_client.delete().into_stream();
+
+                let _permit = semaphore.acquire().await.map_err(|e| {
+                    DeleteBatchFatalError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Failed to acquire semaphore permit for deletion: {e}"),
+                        path.location().to_string(),
+                    ))
+                })?;
 
                 delete_futures.push(async move {
                     let mut last_err = None;
@@ -216,13 +228,7 @@ impl LakekeeperStorage for AdlsStorage {
             .await
             .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
 
-        let file_length = i64::try_from(bytes.len()).map_err(|_| {
-            WriteError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                "File to write is too large".to_string(),
-                path.to_string(),
-            ))
-        })?;
+        let file_length = safe_usize_to_i64(bytes.len(), path)?;
 
         // If the data is small enough, upload in a single request
         if bytes.len() <= MAX_BYTES_PER_REQUEST {
@@ -251,11 +257,11 @@ impl LakekeeperStorage for AdlsStorage {
                 let semaphore = semaphore.clone();
 
                 let future = async move {
-                    let _permit = semaphore.acquire().await.map_err(|_| {
+                    let _permit = semaphore.acquire().await.map_err(|e| {
                         WriteError::IOError(IOError::new(
                             ErrorKind::Unexpected,
                             format!(
-                                "Failed to acquire semaphore permit for chunk at offset {offset}",
+                                "Failed to acquire semaphore permit for chunk at offset {offset}: {e}",
                             ),
                             path.clone(),
                         ))
@@ -285,7 +291,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn read(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
+    async fn read_single(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
         let path = path.as_ref();
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
@@ -294,19 +300,96 @@ impl LakekeeperStorage for AdlsStorage {
 
         let client = self.get_file_client(&adls_location)?;
 
-        let read_file_response = client
-            .read()
-            .await
-            .map_err(|e| ReadError::IOError(parse_error(e, path)))?;
+        let read_file_response = client.read().await.map_err(|e| {
+            ReadError::IOError(
+                parse_error(e, path).with_context("Failed to read ADLS file in single request."),
+            )
+        })?;
 
         Ok(read_file_response.data)
+    }
+
+    async fn read(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
+        let path = path.as_ref();
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+
+        // Get the container/filesystem name and the blob path (key)
+        require_key(&adls_location)?;
+
+        let client = self.get_file_client(&adls_location)?;
+        let status = client.get_properties().await.map_err(|e| {
+            ReadError::IOError(parse_error(e, path).with_context("Failed to get ADLS file status"))
+        })?;
+
+        let Some(content_length) = status.content_length else {
+            return self.read_single(path).await;
+        };
+
+        let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
+
+        if file_size < MAX_BYTES_PER_REQUEST {
+            // If the file is small enough, read it in a single request
+            return self.read_single(path).await;
+        }
+
+        let download_futures = FuturesUnordered::new();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+
+        let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
+
+        for (chunk_index, (start, end)) in chunks.into_iter().enumerate() {
+            let semaphore = semaphore.clone();
+            let client = client.clone();
+            let path = path.to_string();
+
+            let future = async move {
+                let _permit = semaphore.acquire().await.map_err(|_| {
+                    ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Failed to acquire semaphore permit for ADLS download chunk {chunk_index}"),
+                        path.clone(),
+                    ))
+                })?;
+
+                let chunk_data = client
+                    .read()
+                    .range(Range::new(start as u64, (end + 1) as u64))
+                    .await
+                    .map_err(|e| {
+                        ReadError::IOError(parse_error(e, &path).with_context(format!(
+                            "Failed to download chunk {chunk_index} (bytes {start}-{end})"
+                        )))
+                    })?;
+
+                if chunk_data.last_modified != status.last_modified {
+                    return Err(ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!(
+                            "File was modified during multi-part download: expected last modified time {}, got {}",
+                            status.last_modified,
+                            chunk_data.last_modified
+                        ),
+                        path.clone(),
+                    )));
+                }
+
+                Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.data))
+            };
+
+            download_futures.push(future);
+        }
+
+        // Use the shared utility function to assemble chunks
+        let bytes =
+            crate::assemble_chunks(download_futures, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
+
+        Ok(bytes)
     }
 
     async fn list(
         &self,
         path: impl AsRef<str> + Send,
         page_size: Option<usize>,
-        // ToDo: Non-recursive listing?
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>
     {
         let path = format!("{}/", path.as_ref().trim_end_matches('/'));
@@ -332,7 +415,7 @@ impl LakekeeperStorage for AdlsStorage {
             let base_location = base_location.clone();
             result
                 .map_err(|e| parse_error(e, path.as_str()))
-                .and_then(|page| {
+                .map(|page| {
                     let locations = page
                         .paths
                         .iter()
@@ -352,7 +435,7 @@ impl LakekeeperStorage for AdlsStorage {
                             Location::from_str(&full_path).ok()
                         })
                         .collect::<Vec<_>>();
-                    Ok(locations)
+                    locations
                 })
         });
 
@@ -415,12 +498,4 @@ fn group_paths_by_container(
     }
 
     Ok(grouped_paths)
-}
-
-fn delete_not_found_is_ok(result: Result<(), IOError>) -> Result<(), IOError> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
 }

@@ -9,14 +9,8 @@ pub struct InvalidBucketName {
     pub bucket: String,
 }
 
-// S3Location exists as part of aws_sdk_s3::types, however we don't depend on it yet
-// and there is no parse() function available. The prefix is also represented as a
-// String, which makes it harder to work with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct S3Location {
-    // bucket_name: String,
-    // key: Vec<String>,
-    // Location is redundant but useful for type-safe access.
     location: Location,
 }
 

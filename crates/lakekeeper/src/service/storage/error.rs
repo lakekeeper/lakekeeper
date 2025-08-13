@@ -368,7 +368,7 @@ impl From<CredentialsError> for ErrorModel {
             CredentialsError::Misconfiguration(_) => {
                 ErrorModel::bad_request(message, "Misconfiguration", Some(boxed))
             }
-            CredentialsError::InitializeClientError(e) => {
+            CredentialsError::InitializeClientError(_) => {
                 ErrorModel::precondition_failed(message, "InitializeClientError", Some(boxed))
             }
         }

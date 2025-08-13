@@ -22,7 +22,13 @@ storage-adls = [
     "dep:azure_storage_datalake",
     "dep:moka",
 ]
-storage-gcs = []
+storage-gcs = [
+    # "dep:google-cloud-auth",
+    "dep:google-cloud-storage",
+    "dep:reqwest-middleware",
+    "dep:reqwest-retry",
+    # "dep:google-cloud-token",
+]
 storage-in-memory = []
 default = ["storage-s3", "storage-adls", "storage-gcs"]
 
@@ -55,7 +61,17 @@ typed-builder = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 veil = { workspace = true }
+utoipa = { workspace = true, optional = true }
 moka = { workspace = true, optional = true }
+# google-cloud-auth = { workspace = true, optional = true }
+# google-cloud-token = { workspace = true, optional = true }
+# google-cloud-auth = { version = "0.22", optional = true }
+google-cloud-storage = { version = "0.24.0", features = [
+    # "stream",
+], optional = true }
+# Todo: Check if we can use for S3 & Azure as well
+reqwest-middleware = { version = "0.4", optional = true }
+reqwest-retry = { version = "0.7", optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -65,6 +81,7 @@ tempfile = "3.0"
 tokio = { workspace = true }
 uuid = { workspace = true }
 rand = { workspace = true }
+serde_json = { workspace = true }
 
 [profile.dev]
 overflow-checks = true

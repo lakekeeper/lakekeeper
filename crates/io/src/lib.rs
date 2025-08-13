@@ -35,6 +35,45 @@ pub mod memory;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
 
+pub(crate) fn safe_usize_to_i32(value: usize, context: &str) -> Result<i32, IOError> {
+    i32::try_from(value).map_err(|_| {
+        IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("Platform usize too large for i32: {value}"),
+            context.to_string(),
+        )
+    })
+}
+
+pub(crate) fn safe_usize_to_i64(value: usize, context: &str) -> Result<i64, IOError> {
+    i64::try_from(value).map_err(|_| {
+        IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("File too large - Platform usize too large for i64: {value}"),
+            context.to_string(),
+        )
+    })
+}
+
+pub(crate) fn validate_file_size(size: i64, location: &str) -> Result<usize, IOError> {
+    if size < 0 {
+        return Err(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            "File size cannot be negative".to_string(),
+            location.to_string(),
+        ));
+    }
+
+    match usize::try_from(size) {
+        Ok(size) => Ok(size),
+        Err(_) => Err(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            format!("File size too large for this platform: {size}"),
+            location.to_string(),
+        )),
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, strum_macros::Display)]
 pub enum OperationType {
     Delete,
@@ -62,6 +101,8 @@ pub enum StorageBackend {
     Memory(crate::memory::MemoryStorage),
     #[cfg(feature = "storage-adls")]
     Adls(crate::adls::AdlsStorage),
+    #[cfg(feature = "storage-gcs")]
+    Gcs(crate::gcs::GcsStorage),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -152,7 +193,19 @@ where
     ) -> impl Future<Output = Result<(), WriteError>> + Send;
 
     /// Read a file from the specified path.
+    ///
+    /// # Arguments
+    /// path: It should be an absolute path starting with scheme string.
     fn read(
+        &self,
+        path: impl AsRef<str> + Send,
+    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send;
+
+    /// Read a file from the specified path.
+    ///
+    /// # Arguments
+    /// path: It should be an absolute path starting with scheme string.
+    fn read_single(
         &self,
         path: impl AsRef<str> + Send,
     ) -> impl Future<Output = Result<Bytes, ReadError>> + Send;
@@ -258,114 +311,6 @@ where
             }
         }
     }
-
-    fn delete_with_retry<B>(
-        &self,
-        path: &str,
-        retry_config: RetryConfig<B, DeleteError>,
-    ) -> impl std::future::Future<Output = Result<(), DeleteError>> + Send
-    where
-        for<'a> B: BackoffStrategy<'a, DeleteError>,
-        for<'a> <B as BackoffStrategy<'a, DeleteError>>::Output: Into<RetryPolicy>,
-        B: Send + Clone,
-    {
-        async move {
-            let f = tryhard::retry_fn(|| async {
-                let path = path.to_owned();
-                match self.delete(path).await {
-                    Ok(()) => Ok(Ok(())),
-                    Err(e) => {
-                        if e.should_retry() {
-                            Err(e)
-                        } else {
-                            Ok(Err(e))
-                        }
-                    }
-                }
-            })
-            .retries(3)
-            .custom_backoff(retry_config.backoff_strategy());
-            if let Some(max_delay) = retry_config.max_delay() {
-                f.max_delay(max_delay)
-            } else {
-                f
-            }
-            .await?
-        }
-    }
-
-    fn write_with_retry<B>(
-        &self,
-        path: &str,
-        bytes: Bytes,
-        retry_config: RetryConfig<B, WriteError>,
-    ) -> impl std::future::Future<Output = Result<(), WriteError>> + Send
-    where
-        for<'a> B: BackoffStrategy<'a, WriteError>,
-        for<'a> <B as BackoffStrategy<'a, WriteError>>::Output: Into<RetryPolicy>,
-        B: Send + Clone,
-    {
-        async move {
-            let f = tryhard::retry_fn(|| async {
-                let path = path.to_owned();
-                match self.write(path, bytes.clone()).await {
-                    Ok(()) => Ok(Ok(())),
-                    Err(e) => {
-                        if e.should_retry() {
-                            Err(e)
-                        } else {
-                            Ok(Err(e))
-                        }
-                    }
-                }
-            })
-            .retries(retry_config.retries())
-            .custom_backoff(retry_config.backoff_strategy());
-
-            if let Some(max_delay) = retry_config.max_delay() {
-                f.max_delay(max_delay)
-            } else {
-                f
-            }
-            .await?
-        }
-    }
-
-    fn read_with_retry<B>(
-        &self,
-        path: &str,
-        retry_config: RetryConfig<B, ReadError>,
-    ) -> impl std::future::Future<Output = Result<Bytes, ReadError>> + Send
-    where
-        for<'a> B: BackoffStrategy<'a, ReadError>,
-        for<'a> <B as BackoffStrategy<'a, ReadError>>::Output: Into<RetryPolicy>,
-        B: Send + Clone,
-    {
-        async move {
-            let f = tryhard::retry_fn(|| async {
-                let path = path.to_owned();
-                match self.read(path).await {
-                    Ok(bytes) => Ok(Ok(bytes)),
-                    Err(e) => {
-                        if e.should_retry() {
-                            Err(e)
-                        } else {
-                            Ok(Err(e))
-                        }
-                    }
-                }
-            })
-            .retries(retry_config.retries())
-            .custom_backoff(retry_config.backoff_strategy());
-
-            if let Some(max_delay) = retry_config.max_delay() {
-                f.max_delay(max_delay)
-            } else {
-                f
-            }
-            .await?
-        }
-    }
 }
 
 impl LakekeeperStorage for StorageBackend {
@@ -383,6 +328,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::Memory(memory_storage) => memory_storage.delete(path).await,
                 #[cfg(feature = "storage-adls")]
                 StorageBackend::Adls(adls_storage) => adls_storage.delete(path).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.delete(path).await,
             }
         }
     }
@@ -401,6 +348,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::Memory(memory_storage) => memory_storage.delete_batch(paths).await,
                 #[cfg(feature = "storage-adls")]
                 StorageBackend::Adls(adls_storage) => adls_storage.delete_batch(paths).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.delete_batch(paths).await,
             }
         }
     }
@@ -420,6 +369,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::Memory(memory_storage) => memory_storage.write(path, bytes).await,
                 #[cfg(feature = "storage-adls")]
                 StorageBackend::Adls(adls_storage) => adls_storage.write(path, bytes).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.write(path, bytes).await,
             }
         }
     }
@@ -438,6 +389,28 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::Memory(memory_storage) => memory_storage.read(path).await,
                 #[cfg(feature = "storage-adls")]
                 StorageBackend::Adls(adls_storage) => adls_storage.read(path).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.read(path).await,
+            }
+        }
+    }
+
+    fn read_single(
+        &self,
+        path: impl AsRef<str> + Send,
+    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
+        let path = path.as_ref().to_string();
+        let storage = self.clone();
+        async move {
+            match storage {
+                #[cfg(feature = "storage-s3")]
+                StorageBackend::S3(s3_storage) => s3_storage.read_single(path).await,
+                #[cfg(feature = "storage-in-memory")]
+                StorageBackend::Memory(memory_storage) => memory_storage.read_single(path).await,
+                #[cfg(feature = "storage-adls")]
+                StorageBackend::Adls(adls_storage) => adls_storage.read_single(path).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.read_single(path).await,
             }
         }
     }
@@ -460,6 +433,8 @@ impl LakekeeperStorage for StorageBackend {
                 }
                 #[cfg(feature = "storage-adls")]
                 StorageBackend::Adls(adls_storage) => adls_storage.list(path, page_size).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.list(path, page_size).await,
             }
         }
     }
@@ -477,6 +452,8 @@ impl LakekeeperStorage for StorageBackend {
                 StorageBackend::Memory(memory_storage) => memory_storage.remove_all(path).await,
                 #[cfg(feature = "storage-adls")]
                 StorageBackend::Adls(adls_storage) => adls_storage.remove_all(path).await,
+                #[cfg(feature = "storage-gcs")]
+                StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
             }
         }
     }
@@ -555,5 +532,99 @@ async fn abort_unfinished_batch_delete_futures<R, E>(
     }
 }
 
+/// Helper function to calculate the ranges for reading the object in chunks.
+/// Returns start and end (inclusive) indices for each chunk.
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-gcs",
+    feature = "storage-adls"
+))]
+pub(crate) fn calculate_ranges(total_size: usize, chunksize: usize) -> Vec<(usize, usize)> {
+    (0..total_size)
+        .step_by(chunksize)
+        .map(|start| {
+            let end = std::cmp::min(start + chunksize - 1, total_size - 1);
+            (start, end)
+        })
+        .collect()
+}
+
+/// Helper function to assemble downloaded chunks into a final buffer.
+/// Takes a stream of results containing `(chunk_index, chunk_data)` pairs and assembles them
+/// into a pre-allocated buffer of the specified total size.
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-gcs",
+    feature = "storage-adls"
+))]
+pub(crate) async fn assemble_chunks<S, E>(
+    mut chunk_stream: S,
+    total_size: usize,
+    chunk_size: usize,
+) -> Result<bytes::Bytes, E>
+where
+    S: futures::StreamExt<Item = Result<(usize, bytes::Bytes), E>> + Unpin,
+{
+    // Pre-allocate buffer with exact size
+    let mut combined_data = vec![0u8; total_size];
+
+    while let Some(result) = chunk_stream.next().await {
+        let (chunk_index, chunk_data) = result?;
+
+        // Calculate the offset for this chunk
+        let offset = chunk_index * chunk_size;
+        let end_offset = std::cmp::min(offset + chunk_data.len(), combined_data.len());
+
+        // Write directly to the pre-allocated buffer
+        combined_data[offset..end_offset].copy_from_slice(&chunk_data);
+    }
+
+    let bytes = bytes::Bytes::from(combined_data);
+    Ok(bytes)
+}
+
+#[cfg(any(feature = "storage-gcs", feature = "storage-adls"))]
+pub(crate) fn delete_not_found_is_ok(result: Result<(), IOError>) -> Result<(), IOError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_ranges() {
+        let result = calculate_ranges(10, 4);
+        assert_eq!(result, vec![(0, 3), (4, 7), (8, 9)]);
+
+        let result = calculate_ranges(3, 4);
+        assert_eq!(result, vec![(0, 2)]);
+
+        // Edge cases
+        let result = calculate_ranges(0, 4);
+        assert_eq!(result, vec![]);
+
+        let result = calculate_ranges(1, 4);
+        assert_eq!(result, vec![(0, 0)]);
+
+        // Exact chunk size boundary
+        let result = calculate_ranges(8, 4);
+        assert_eq!(result, vec![(0, 3), (4, 7)]);
+
+        // Single byte file
+        let result = calculate_ranges(1, 1000);
+        assert_eq!(result, vec![(0, 0)]);
+
+        // File size exactly equal to chunk size
+        let result = calculate_ranges(10, 10);
+        assert_eq!(result, vec![(0, 10 - 1)]);
+
+        // Very small chunk size
+        let result = calculate_ranges(5, 1);
+        assert_eq!(result, vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]);
+    }
+}

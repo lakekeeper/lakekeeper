@@ -3,8 +3,10 @@ use std::str::FromStr;
 use aws_sdk_s3::{
     error::SdkError,
     operation::{
-        delete_object::DeleteObjectError, delete_objects::DeleteObjectsError,
-        list_objects_v2::ListObjectsV2Error, put_object::PutObjectError,
+        complete_multipart_upload::CompleteMultipartUploadError,
+        create_multipart_upload::CreateMultipartUploadError, delete_object::DeleteObjectError,
+        delete_objects::DeleteObjectsError, list_objects_v2::ListObjectsV2Error,
+        put_object::PutObjectError, upload_part::UploadPartError,
     },
 };
 
@@ -68,8 +70,85 @@ pub(crate) fn parse_put_object_error(err: SdkError<PutObjectError>, location: &s
     IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
 }
 
+pub(crate) fn parse_create_multipart_upload_error(
+    err: SdkError<CreateMultipartUploadError>,
+    location: &str,
+) -> IOError {
+    let e = err.into_service_error();
+
+    let lakekeeper_kind = e
+        .meta()
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.meta().message().map_or_else(
+        || format!("Unknown S3 error during multipart upload creation: {e}"),
+        |m| format!("S3 create multipart upload failed: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
+pub(crate) fn parse_upload_part_error(err: SdkError<UploadPartError>, location: &str) -> IOError {
+    let e = err.into_service_error();
+
+    let lakekeeper_kind = e
+        .meta()
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.meta().message().map_or_else(
+        || format!("Unknown S3 error during part upload: {e}"),
+        |m| format!("S3 upload part failed: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
+pub(crate) fn parse_complete_multipart_upload_error(
+    err: SdkError<CompleteMultipartUploadError>,
+    location: &str,
+) -> IOError {
+    let e = err.into_service_error();
+
+    let lakekeeper_kind = e
+        .meta()
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.meta().message().map_or_else(
+        || format!("Unknown S3 error during multipart upload completion: {e}"),
+        |m| format!("S3 complete multipart upload failed: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
 pub(crate) fn parse_get_object_error(
     err: SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
+    location: &str,
+) -> IOError {
+    let e = err.into_service_error();
+
+    let lakekeeper_kind = e
+        .meta()
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = e.meta().message().map_or_else(
+        || format!("Unknown S3 error during read: {e}"),
+        |m| format!("S3 get failed: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
+}
+
+pub(crate) fn parse_head_object_error(
+    err: SdkError<aws_sdk_s3::operation::head_object::HeadObjectError>,
     location: &str,
 ) -> IOError {
     let e = err.into_service_error();

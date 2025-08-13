@@ -145,6 +145,7 @@ impl Location {
         self
     }
 
+    #[must_use]
     pub fn cloning_push(&self, segment: &str) -> Self {
         let mut cloned = self.clone();
         cloned.push(segment);
@@ -275,13 +276,6 @@ impl FromStr for Location {
             return Err(LocationParseError {
                 value: value.to_string(),
                 reason: "URL has a fragment (#)".to_string(),
-            });
-        }
-
-        if location.query().is_some() {
-            return Err(LocationParseError {
-                value: value.to_string(),
-                reason: "URL has a query string".to_string(),
             });
         }
 

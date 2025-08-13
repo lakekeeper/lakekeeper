@@ -208,6 +208,10 @@ impl LakekeeperStorage for MemoryStorage {
         }
     }
 
+    async fn read_single(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
+        self.read(path).await
+    }
+
     async fn list(
         &self,
         path: impl AsRef<str> + Send,

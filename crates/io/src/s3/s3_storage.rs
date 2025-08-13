@@ -11,15 +11,22 @@ use crate::{
     error::{ErrorKind, InvalidLocationError, RetryableError},
     s3::{
         s3_error::{
-            parse_batch_delete_error, parse_delete_error, parse_get_object_error,
-            parse_list_objects_v2_error, parse_put_object_error,
+            parse_batch_delete_error, parse_complete_multipart_upload_error,
+            parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
+            parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
+            parse_upload_part_error,
         },
         S3Location,
     },
-    BatchDeleteError, BatchDeleteResult, DeleteBatchFatalError, DeleteError, IOError,
-    LakekeeperStorage, Location, ReadError, WriteError,
+    safe_usize_to_i32, validate_file_size, BatchDeleteError, BatchDeleteResult,
+    DeleteBatchFatalError, DeleteError, IOError, LakekeeperStorage, Location, ReadError,
+    WriteError,
 };
 
+// Convert MB constants to bytes - these will always be safe conversions from u16
+const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
+const DEFAULT_BYTES_PER_REQUEST: usize = 16 * 1024 * 1024;
+const MAX_PARTS_PER_UPLOAD: usize = 10_000; // S3 limit for multipart uploads
 const MAX_DELETE_BATCH_SIZE: usize = 1000;
 
 #[derive(Debug, Clone)]
@@ -77,30 +84,246 @@ impl LakekeeperStorage for S3Storage {
             .map_err(Into::into)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
         let path = path.as_ref();
         let s3_location = S3Location::try_from_str(path, true)?;
-        let mut put_object = self
-            .client
-            .put_object()
-            .bucket(s3_location.bucket_name())
-            .key(s3_key_to_str(&s3_location.key()))
-            .body(bytes.into());
 
-        if let Some(kms_key_arn) = &self.aws_kms_key_arn {
-            put_object = put_object
-                .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
-                .set_ssekms_key_id(Some(kms_key_arn.clone()));
+        if bytes.len() < MAX_BYTES_PER_REQUEST {
+            // Small file - use single PUT request
+            let mut put_object = self
+                .client
+                .put_object()
+                .bucket(s3_location.bucket_name())
+                .key(s3_key_to_str(&s3_location.key()))
+                .body(bytes.into());
+
+            if let Some(kms_key_arn) = &self.aws_kms_key_arn {
+                put_object = put_object
+                    .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
+                    .set_ssekms_key_id(Some(kms_key_arn.clone()));
+            }
+            put_object.send().await.map_err(|e| {
+                WriteError::IOError(parse_put_object_error(e, s3_location.as_str()))
+            })?;
+
+            Ok(())
+        } else {
+            // Large file - use multipart upload
+            let file_size = bytes.len();
+
+            // Calculate optimal chunk size to respect MAX_PARTS_PER_UPLOAD constraint
+            let mut chunk_size = DEFAULT_BYTES_PER_REQUEST;
+            let estimated_parts = file_size.div_ceil(chunk_size);
+
+            if estimated_parts > MAX_PARTS_PER_UPLOAD {
+                // Increase chunk size to stay within MAX_PARTS_PER_UPLOAD
+                chunk_size = file_size.div_ceil(MAX_PARTS_PER_UPLOAD);
+            }
+
+            // Create multipart upload
+            let mut create_multipart = self
+                .client
+                .create_multipart_upload()
+                .bucket(s3_location.bucket_name())
+                .key(s3_key_to_str(&s3_location.key()));
+
+            if let Some(kms_key_arn) = &self.aws_kms_key_arn {
+                create_multipart = create_multipart
+                    .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
+                    .set_ssekms_key_id(Some(kms_key_arn.clone()));
+            }
+
+            let multipart_response = create_multipart.send().await.map_err(|e| {
+                WriteError::IOError(
+                    parse_create_multipart_upload_error(e, s3_location.as_str())
+                        .with_context("Failed to create multipart upload."),
+                )
+            })?;
+
+            let upload_id = multipart_response.upload_id().ok_or_else(|| {
+                WriteError::IOError(IOError::new(
+                    ErrorKind::Unexpected,
+                    "S3 multipart upload response missing upload_id".to_string(),
+                    s3_location.as_str().to_string(),
+                ))
+            })?;
+
+            // Create chunks and upload them in parallel
+            let chunks: Vec<_> = bytes
+                .chunks(chunk_size)
+                .enumerate()
+                .map(|(i, chunk)| (i + 1, Bytes::copy_from_slice(chunk))) // S3 part numbers start at 1
+                .collect();
+
+            let mut upload_futures = FuturesUnordered::new();
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10)); // Limit concurrent uploads
+
+            for (part_number, chunk_data) in chunks {
+                let semaphore = semaphore.clone();
+                let client = self.client.clone();
+                let s3_location = s3_location.clone();
+                let upload_id = upload_id.to_string();
+
+                let future = async move {
+                    let _permit = semaphore.acquire().await.map_err(|_| {
+                        WriteError::IOError(IOError::new(
+                            ErrorKind::Unexpected,
+                            format!("Failed to acquire semaphore permit for part {part_number}"),
+                            s3_location.as_str().to_string(),
+                        ))
+                    })?;
+
+                    let part_number_i32 = safe_usize_to_i32(part_number, s3_location.as_str())
+                        .map_err(|e| e.with_context("Too many parts to write"))?;
+                    let upload_part_response = client
+                        .upload_part()
+                        .bucket(s3_location.bucket_name())
+                        .key(s3_key_to_str(&s3_location.key()))
+                        .upload_id(&upload_id)
+                        .part_number(part_number_i32)
+                        .body(chunk_data.into())
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            WriteError::IOError(
+                                parse_upload_part_error(e, s3_location.as_str())
+                                    .with_context(format!("Failed to upload part {part_number}")),
+                            )
+                        })?;
+
+                    let etag = upload_part_response.e_tag().ok_or_else(|| {
+                        WriteError::IOError(IOError::new(
+                            ErrorKind::Unexpected,
+                            format!("S3 upload part response missing ETag for part {part_number}"),
+                            s3_location.as_str().to_string(),
+                        ))
+                    })?;
+
+                    let completed_part = aws_sdk_s3::types::CompletedPart::builder()
+                        .part_number(part_number_i32)
+                        .e_tag(etag)
+                        .build();
+
+                    Ok::<(i32, aws_sdk_s3::types::CompletedPart), WriteError>((
+                        part_number_i32,
+                        completed_part,
+                    ))
+                };
+
+                upload_futures.push(future);
+            }
+
+            // Collect all completed parts
+            let mut completed_parts = Vec::new();
+            while let Some(result) = upload_futures.next().await {
+                let (part_number, completed_part) = result?;
+                completed_parts.push((part_number, completed_part));
+            }
+
+            // Sort parts by part number to ensure correct order
+            completed_parts.sort_by_key(|(part_number, _)| *part_number);
+            let completed_parts: Vec<_> =
+                completed_parts.into_iter().map(|(_, part)| part).collect();
+
+            // Complete the multipart upload
+            let completed_multipart_upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+                .set_parts(Some(completed_parts))
+                .build();
+
+            self.client
+                .complete_multipart_upload()
+                .bucket(s3_location.bucket_name())
+                .key(s3_key_to_str(&s3_location.key()))
+                .upload_id(upload_id)
+                .multipart_upload(completed_multipart_upload)
+                .send()
+                .await
+                .map_err(|e| {
+                    WriteError::IOError(
+                        parse_complete_multipart_upload_error(e, s3_location.as_str())
+                            .with_context("Failed to complete multipart upload."),
+                    )
+                })?;
+
+            Ok(())
         }
-        put_object
-            .send()
-            .await
-            .map_err(|e| parse_put_object_error(e, &s3_location))?;
-
-        Ok(())
     }
 
     async fn read(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
+        let path = path.as_ref();
+        let s3_location = S3Location::try_from_str(path, true)?;
+
+        // First, get object metadata to determine size
+        let head_response = self
+            .client
+            .head_object()
+            .bucket(s3_location.bucket_name())
+            .key(s3_key_to_str(&s3_location.key()))
+            .send()
+            .await
+            .map_err(|e| parse_head_object_error(e, &s3_location))?;
+
+        let content_length = head_response.content_length().unwrap_or(0);
+        let file_size = validate_file_size(content_length, path)?;
+
+        if file_size < MAX_BYTES_PER_REQUEST {
+            return self.read_single(path).await;
+        }
+
+        // For large files, use parallel chunk downloads
+        let download_futures = FuturesUnordered::new();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+
+        let chunks = crate::calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
+
+        for (chunk_index, (start, end)) in chunks.into_iter().enumerate() {
+            let semaphore = semaphore.clone();
+            let client = self.client.clone();
+            let s3_location = s3_location.clone();
+            let path = path.to_string();
+
+            let future = async move {
+                let _permit = semaphore.acquire().await.map_err(|_| {
+                    ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Failed to acquire semaphore permit for S3 download chunk {chunk_index}"),
+                        path.clone(),
+                    ))
+                })?;
+
+                let range_header = format!("bytes={start}-{end}");
+                let response = client
+                    .get_object()
+                    .bucket(s3_location.bucket_name())
+                    .key(s3_key_to_str(&s3_location.key()))
+                    .range(range_header)
+                    .send()
+                    .await
+                    .map_err(|e| parse_get_object_error(e, &s3_location))?;
+
+                let chunk_data = response.body.collect().await.map_err(|e| {
+                    ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Error collecting S3 chunk {chunk_index} bytestream (bytes {start}-{end}): {e}"),
+                        path.clone(),
+                    ).set_source(anyhow::anyhow!(e)))
+                })?;
+
+                Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.into_bytes()))
+            };
+
+            download_futures.push(future);
+        }
+
+        // Use the shared utility function to assemble chunks
+        let combined_data =
+            crate::assemble_chunks(download_futures, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
+
+        Ok(combined_data)
+    }
+
+    async fn read_single(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
         let path = path.as_ref();
         let s3_location = S3Location::try_from_str(path, true)?;
 
@@ -263,6 +486,14 @@ fn build_key_to_path_mapping(
     key_to_path_mapping
 }
 
+#[derive(derive_more::From, Debug)]
+enum AWSBatchDeleteError {
+    SDKError(
+        aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::delete_objects::DeleteObjectsError>,
+    ),
+    IOError(IOError),
+}
+
 /// Creates delete futures for batch operations, processing keys in batches of `MAX_DELETE_BATCH_SIZE`.
 fn create_delete_futures(
     client: &aws_sdk_s3::Client,
@@ -272,15 +503,14 @@ fn create_delete_futures(
         impl std::future::Future<
                 Output = Result<
                     aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
-                    aws_sdk_s3::error::SdkError<
-                        aws_sdk_s3::operation::delete_objects::DeleteObjectsError,
-                    >,
+                    AWSBatchDeleteError,
                 >,
             > + '_,
     >,
     InvalidLocationError,
 > {
     let delete_futures = FuturesUnordered::new();
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(100));
 
     for (bucket, keys) in s3_locations {
         // Process keys in batches of MAX_DELETE_BATCH_SIZE
@@ -302,19 +532,34 @@ fn create_delete_futures(
                 })
                 .collect::<Result<_, _>>()?;
 
-            let delete_future = client
-                .delete_objects()
-                .bucket(&bucket)
-                .delete(
-                    aws_sdk_s3::types::Delete::builder()
-                        .set_objects(Some(objects))
-                        .build()
-                        .map_err(|e| InvalidLocationError {
-                            reason: format!("Could not build S3 Delete: {e}"),
-                            location: format!("s3://{bucket}"),
-                        })?,
-                )
-                .send();
+            let delete = aws_sdk_s3::types::Delete::builder()
+                .set_objects(Some(objects))
+                .build()
+                .map_err(|e| InvalidLocationError {
+                    reason: format!("Could not build S3 Delete: {e}"),
+                    location: format!("s3://{bucket}"),
+                })?;
+
+            let bucket_clone = bucket.clone();
+            let semaphore = semaphore.clone();
+            let delete_future = async move {
+                // Acquire a permit from the semaphore to limit concurrency
+                let _permit = semaphore.acquire().await.map_err(|e| {
+                    IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Failed to acquire semaphore permit for deletion: {e}"),
+                        format!("s3://{bucket_clone}"),
+                    )
+                })?;
+
+                client
+                    .delete_objects()
+                    .bucket(&bucket_clone)
+                    .delete(delete)
+                    .send()
+                    .await
+                    .map_err(AWSBatchDeleteError::SDKError)
+            };
 
             delete_futures.push(delete_future);
         }
@@ -329,9 +574,7 @@ async fn process_delete_results(
         impl std::future::Future<
             Output = Result<
                 aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
-                aws_sdk_s3::error::SdkError<
-                    aws_sdk_s3::operation::delete_objects::DeleteObjectsError,
-                >,
+                AWSBatchDeleteError,
             >,
         >,
     >,
@@ -378,7 +621,12 @@ async fn process_delete_results(
                 // Network or other SDK-level error - collect but don't return early.
                 // This allows other batches to continue processing. Exit only if this is the first batch.
                 if batch_index == 0 {
-                    return Err(parse_batch_delete_error(e));
+                    match e {
+                        AWSBatchDeleteError::IOError(io_error) => return Err(io_error),
+                        AWSBatchDeleteError::SDKError(sdk_error) => {
+                            return Err(parse_batch_delete_error(sdk_error));
+                        }
+                    }
                 }
                 sdk_errors.push(e);
             }
@@ -390,7 +638,12 @@ async fn process_delete_results(
     if !sdk_errors.is_empty() {
         let error_messages: Vec<String> = sdk_errors
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(|e| match e {
+                AWSBatchDeleteError::SDKError(sdk_error) => {
+                    format!("SDK error: {sdk_error}")
+                }
+                AWSBatchDeleteError::IOError(io_error) => io_error.to_string(),
+            })
             .collect();
         return Err(IOError::new_without_location(
             ErrorKind::Unexpected,

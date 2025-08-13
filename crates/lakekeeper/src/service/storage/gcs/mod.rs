@@ -87,7 +87,7 @@ pub enum GcsCredential {
     GcpSystemIdentity {},
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GcsServiceKey {
     pub r#type: String,
     pub project_id: String,
@@ -101,6 +101,47 @@ pub struct GcsServiceKey {
     pub auth_provider_x509_cert_url: String,
     pub client_x509_cert_url: String,
     pub universe_domain: String,
+}
+
+impl From<GcsServiceKey> for CredentialsFile {
+    fn from(key: GcsServiceKey) -> Self {
+        let GcsServiceKey {
+            r#type,
+            project_id,
+            private_key_id,
+            private_key,
+            client_email,
+            client_id,
+            auth_uri,
+            token_uri,
+            auth_provider_x509_cert_url,
+            client_x509_cert_url,
+            universe_domain,
+        } = key;
+
+        CredentialsFile {
+            tp: r#type,
+            client_email: Some(client_email),
+            private_key_id: Some(private_key_id),
+            private_key: Some(private_key),
+            auth_uri: (),
+            token_uri: (),
+            project_id: (),
+            client_secret: (),
+            client_id: (),
+            refresh_token: (),
+            audience: (),
+            subject_token_type: (),
+            token_url_external: (),
+            token_info_url: (),
+            service_account_impersonation_url: (),
+            service_account_impersonation: (),
+            delegates: (),
+            credential_source: (),
+            quota_project_id: (),
+            workforce_pool_user_project: (),
+        }
+    }
 }
 
 pub(crate) enum TokenSource {
@@ -233,9 +274,8 @@ impl GcsProfile {
                 l
             })
             .map_err(|e| InvalidLocationError {
-                reason: "Invalid GCS location.".to_string(),
+                reason: format!("Invalid GCS location. {e}"),
                 location: format!("gs://{}/", self.bucket),
-                source: Some(e.into()),
             })
     }
 
@@ -399,128 +439,9 @@ pub(super) fn get_file_io_from_table_config(
         .build()?)
 }
 
-fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
-    // Bucket names must be between 3 (min) and 63 (max) characters long.
-    if bucket.len() < 3 || bucket.len() > 63 {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "`bucket` must be between 3 and 63 characters long.".to_string(),
-            entity: "BucketName".to_string(),
-        }
-        .into());
-    }
-
-    // Bucket names can consist only of lowercase letters, numbers, dots (.), and hyphens (-).
-    if !bucket
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
-    {
-        return Err(
-            InvalidProfileError {
-                source: None,
-                reason: "Bucket name can consist only of lowercase letters, numbers, dots (.), and hyphens (-).".to_string(),
-                entity: "BucketName".to_string(),
-            }.into()
-        );
-    }
-
-    // Bucket names must begin and end with a letter or number.
-    if !bucket.chars().next().unwrap().is_ascii_alphanumeric()
-        || !bucket.chars().last().unwrap().is_ascii_alphanumeric()
-    {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "Bucket name must begin and end with a letter or number.".to_string(),
-            entity: "BucketName".to_string(),
-        }
-        .into());
-    }
-
-    // Bucket names must not contain two adjacent periods.
-    if bucket.contains("..") {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "Bucket name must not contain two adjacent periods.".to_string(),
-            entity: "BucketName".to_string(),
-        }
-        .into());
-    }
-
-    // Bucket names cannot be represented as an IP address in dotted-decimal notation.
-    if bucket.parse::<std::net::Ipv4Addr>().is_ok() {
-        return Err(InvalidProfileError {
-            source: None,
-            reason:
-                "Bucket name cannot be represented as an IP address in dotted-decimal notation."
-                    .to_string(),
-            entity: "BucketName".to_string(),
-        }
-        .into());
-    }
-
-    // Bucket names cannot begin with the "goog" prefix.
-    if bucket.starts_with("goog") {
-        return Err(InvalidProfileError {
-            source: None,
-            reason: "Bucket name cannot begin with the \"goog\" prefix.".to_string(),
-            entity: "BucketName".to_string(),
-        }
-        .into());
-    }
-
-    // Bucket names cannot contain "google" or close misspellings.
-    let lower_bucket = bucket.to_lowercase();
-    if lazy_regex::regex!(r"(g[0o][0o]+g[l1]e)").is_match(&lower_bucket) {
-        return Err(InvalidProfileError {
-            source: None,
-            reason:
-                "Bucket name cannot contain \"google\" or close misspellings, such as \"g00gle\"."
-                    .to_string(),
-            entity: "BucketName".to_string(),
-        }
-        .into());
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 pub(crate) mod test {
     use needs_env_var::needs_env_var;
-
-    use crate::service::storage::gcs::validate_bucket_name;
-
-    // Bucket names: Your bucket names must meet the following requirements:
-    //
-    // Bucket names can only contain lowercase letters, numeric characters, dashes (-), underscores (_), and dots (.). Spaces are not allowed. Names containing dots require verification.
-    // Bucket names must start and end with a number or letter.
-    // Bucket names must contain 3-63 characters. Names containing dots can contain up to 222 characters, but each dot-separated component can be no longer than 63 characters.
-    // Bucket names cannot be represented as an IP address in dotted-decimal notation (for example, 192.168.5.4).
-    // Bucket names cannot begin with the "goog" prefix.
-    // Bucket names cannot contain "google" or close misspellings, such as "g00gle".
-    #[test]
-    fn test_valid_bucket_names() {
-        // Valid bucket names
-        assert!(validate_bucket_name("valid-bucket-name").is_ok());
-        assert!(validate_bucket_name("valid.bucket.name").is_ok());
-        assert!(validate_bucket_name("valid-bucket-name-123").is_ok());
-        assert!(validate_bucket_name("123-valid-bucket-name").is_ok());
-        assert!(validate_bucket_name("valid-bucket-name-123").is_ok());
-        assert!(validate_bucket_name("valid.bucket.name.123").is_ok());
-
-        // Invalid bucket names
-        assert!(validate_bucket_name("Invalid-Bucket-Name").is_err()); // Uppercase letters
-        assert!(validate_bucket_name("invalid_bucket_name").is_err()); // Underscores
-        assert!(validate_bucket_name("invalid bucket name").is_err()); // Spaces
-        assert!(validate_bucket_name("invalid..bucket..name").is_err()); // Adjacent periods
-        assert!(validate_bucket_name("invalid-bucket-name-").is_err()); // Ends with hyphen
-        assert!(validate_bucket_name("-invalid-bucket-name").is_err()); // Starts with hyphen
-        assert!(validate_bucket_name("gooogle-bucket-name").is_err()); // Contains "gooogle"
-        assert!(validate_bucket_name("192.168.5.4").is_err()); // IP address format
-        assert!(validate_bucket_name("goog-bucket-name").is_err()); // Begins with "goog"
-        assert!(validate_bucket_name("a").is_err()); // Less than 3 characters
-        assert!(validate_bucket_name("a".repeat(64).as_str()).is_err()); // More than 63 characters
-    }
 
     #[needs_env_var(TEST_GCS = 1)]
     pub(crate) mod cloud_tests {
