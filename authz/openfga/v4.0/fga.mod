@@ -8,4 +8,6 @@ contents:
   - components/warehouse.fga
   - components/namespace.fga
   - components/table.fga
+  - components/lakekeeper_table.fga
   - components/view.fga
+  - components/lakekeeper_view.fga

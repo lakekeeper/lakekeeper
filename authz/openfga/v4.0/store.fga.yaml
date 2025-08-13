@@ -1,3 +1,5 @@
+# TODO: add tests for lakekeeper_table and lakekeeper_view
+
 name: Lakekeeper Core
 model_file: ./fga.mod
 tuples:
