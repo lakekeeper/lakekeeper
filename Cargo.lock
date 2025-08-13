@@ -3430,9 +3430,9 @@ dependencies = [
 
 [[package]]
 name = "jwks_client_rs"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f7ab6f30de9be5b3f9a2cebcd53288f3073963fc1315789791d1c7b17ecead7"
+checksum = "f688d134ca08600e638312d8d442f0c0a5bdabd5ef398f817bb03a7c4eefd97d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3440,7 +3440,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
  "tracing",
  "url",
@@ -3794,7 +3794,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -3856,9 +3856,9 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e63ea0b048ae70f12d2f4d8954e6d7634f61f91528689d4ab9ce9b68e868845"
+checksum = "0d566edade23f0ce72e5abbaefa56e04888ea8eb6fa5a810f8ad130da87cb4e1"
 dependencies = [
  "axum 0.8.4",
  "axum-extra",
@@ -7817,7 +7817,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
