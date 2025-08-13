@@ -8,7 +8,11 @@ use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
 
 use crate::api::iceberg::v1::PageToken;
-use crate::service::{catalog::Transaction, TableId};
+pub use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
+use crate::service::{
+    catalog::{ListFlags, Transaction},
+    TableId,
+};
 use crate::service::{Catalog, ListNamespacesQuery, NamespaceId, WarehouseStatus};
 use crate::{ProjectId, WarehouseId};
 
@@ -134,11 +138,13 @@ async fn all_warehouse_ids<C: Catalog>(
 struct TabularQueryParams {
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
+    namespace_ident: NamespaceIdent,
 }
 
 struct TableParams {
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
+    namespace_ident: NamespaceIdent,
     table_id: TableId,
 }
 
@@ -175,12 +181,14 @@ async fn all_tabular_query_params<C: Catalog>(
             .await?;
             drop(_permit);
 
-            let query_params = response
-                .into_iter()
-                .map(move |(nsid, _)| TabularQueryParams {
-                    warehouse_id: wid,
-                    namespace_id: nsid,
-                });
+            let query_params =
+                response
+                    .into_iter()
+                    .map(move |(nsid, ns_info)| TabularQueryParams {
+                        warehouse_id: wid,
+                        namespace_id: nsid,
+                        namespace_ident: ns_info.namespace_ident,
+                    });
             Ok::<_, IcebergErrorResponse>(query_params)
         })
     }
@@ -195,8 +203,52 @@ async fn all_tabular_query_params<C: Catalog>(
 
 async fn all_tables<C: Catalog>(
     catalog_state: C::State,
-    params: TabularQueryParams,
+    params: &[TabularQueryParams],
 ) -> crate::api::Result<Vec<TableParams>> {
+    let mut jobs = FuturesUnordered::new();
+
+    for param in params.into_iter() {
+        let semaphore = DB_TX_PERMITS.clone();
+        let catalog_state = catalog_state.clone();
+
+        jobs.push(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let mut tx = new_read_transaction::<C>(catalog_state).await?;
+
+            let response = C::list_tables(
+                param.warehouse_id,
+                &param.namespace_ident,
+                ListFlags {
+                    include_active: true,
+                    include_staged: true,
+                    include_deleted: true,
+                },
+                tx.transaction(),
+                // TODO pagination with more reasonable page size
+                PaginationQuery {
+                    page_token: PageToken::Empty,
+                    page_size: Some(i64::MAX),
+                },
+            )
+            .await?;
+            drop(_permit);
+
+            let table_params = response.into_iter().map(move |(table_id, _)| TableParams {
+                warehouse_id: param.warehouse_id,
+                namespace_id: param.namespace_id,
+                namespace_ident: param.namespace_ident.clone(),
+                table_id,
+            });
+            Ok::<_, IcebergErrorResponse>(table_params)
+        });
+    }
+
+    let mut all_table_params = vec![];
+    while let Some(res) = jobs.next().await {
+        all_table_params.extend(res?);
+    }
+
+    Ok(all_table_params)
 }
 
 async fn add_warehouse_id_to_tables<T>(
