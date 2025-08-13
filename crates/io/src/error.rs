@@ -9,21 +9,6 @@ pub struct InvalidLocationError {
     pub location: String,
 }
 
-// #[derive(Debug, thiserror::Error)]
-// #[error("Failed to refresh credentials Storage Credentials: {message}")]
-// pub(crate) struct CredentialRefreshError {
-//     pub message: String,
-//     pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
-// }
-
-// #[derive(thiserror::Error, Debug)]
-// pub enum StorageError {
-//     #[error("{0}")]
-//     InvalidLocation(#[from] InvalidLocationError),
-//     #[error("{0}")]
-//     StorageOperationError(#[from] StorageOperationError),
-// }
-
 #[derive(Debug, thiserror::Error)]
 #[error("Could not initialize storage client: {reason}")]
 pub struct InitializeClientError {

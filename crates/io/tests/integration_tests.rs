@@ -519,8 +519,7 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
         if !written_paths.contains(&location.to_string()) {
             assert!(
                 location.to_string().ends_with('/'),
-                "Unexpected location found that is not a directory: {}",
-                location
+                "Unexpected location found that is not a directory: {location}",
             );
         }
     }
@@ -563,7 +562,7 @@ async fn test_list_with_page_size_impl(
 
     // Write test files
     for i in 0..num_files {
-        let filename = format!("file{:03}.txt", i);
+        let filename = format!("file{i:03}.txt");
         let path = format!("{base_dir}{filename}");
         storage
             .write(&path, Bytes::from(format!("Content of file {i}")))
@@ -1085,8 +1084,7 @@ async fn test_remove_all_deletes_directory_impl(
     // The target directory should be completely gone
     assert!(
         !still_has_target_dir,
-        "Target directory should be completely removed after remove_all. Found locations: {:?}",
-        post_location_strings
+        "Target directory should be completely removed after remove_all. Found locations: {post_location_strings:?}"
     );
 
     // The sibling directory should still exist

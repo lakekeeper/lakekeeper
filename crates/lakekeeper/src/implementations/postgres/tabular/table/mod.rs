@@ -726,7 +726,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
     list_flags: crate::service::ListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
-    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let (fs_protocol, fs_location) = split_location(location.as_str())?;
     let partial_locations = get_partial_fs_locations(location)?;
 
     // Location might also be a subpath of the table location.

@@ -366,7 +366,7 @@ pub(crate) async fn create_tabular(
     }: CreateTabular<'_>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Uuid> {
-    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let (fs_protocol, fs_location) = split_location(location.as_str())?;
     let partial_locations = get_partial_fs_locations(location)?;
 
     let tabular_id = sqlx::query_scalar!(

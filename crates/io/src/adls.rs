@@ -4,13 +4,12 @@ use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
 use azure_identity::{
     DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
 };
+pub use azure_storage::CloudLocation;
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::prelude::{BlobServiceClient, ClientBuilder};
 use azure_storage_datalake::prelude::{DataLakeClient, DataLakeClientBuilder};
 use url::Url;
 use veil::Redact;
-
-pub use azure_storage::CloudLocation;
 
 mod adls_error;
 mod adls_location;

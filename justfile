@@ -23,6 +23,7 @@ fix-format:
     cargo sort -w
 
 fix:
+    cargo +nightly fmt --all
     cargo clippy --all-targets --all-features --workspace --fix --allow-staged
     cargo +nightly fmt --all
     cargo sort -w

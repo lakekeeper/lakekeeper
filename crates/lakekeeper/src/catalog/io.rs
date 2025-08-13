@@ -1,14 +1,10 @@
-use std::time::Duration;
-
 use futures::stream::BoxStream;
 use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use lakekeeper_io::{
-    DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError,
-    RetryConfig, WriteError,
+    DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
 };
 use serde::Serialize;
-use tryhard::backoff_strategies::ExponentialBackoff;
 
 use super::compression_codec::CompressionCodec;
 use crate::api::{ErrorModel, Result};
@@ -23,9 +19,7 @@ pub(crate) async fn write_file(
     let buf = serde_json::to_vec(&data).map_err(IOErrorExt::Serialization)?;
     let metadata_bytes = compression_codec.compress(buf).await?;
 
-    let retry_strategy = RetryConfig::new(3, ExponentialBackoff::new(Duration::from_millis(100)))
-        .with_max_delay(Duration::from_secs(1));
-    io.write_with_retry(location.as_str(), metadata_bytes.into(), retry_strategy)
+    io.write(location.as_str(), metadata_bytes.into())
         .await
         .map_err(Into::into)
 }
@@ -34,12 +28,7 @@ pub(crate) async fn delete_file(
     io: &impl LakekeeperStorage,
     location: &Location,
 ) -> Result<(), IOErrorExt> {
-    let retry_strategy = RetryConfig::new(3, ExponentialBackoff::new(Duration::from_millis(100)))
-        .with_max_delay(Duration::from_secs(1));
-
-    io.delete_with_retry(location.as_str(), retry_strategy)
-        .await
-        .map_err(Into::into)
+    io.delete(location.as_str()).await.map_err(Into::into)
 }
 
 pub(crate) async fn read_file(
@@ -47,13 +36,7 @@ pub(crate) async fn read_file(
     file: &Location,
     compression_codec: CompressionCodec,
 ) -> Result<Vec<u8>, IOErrorExt> {
-    let retry_strategy = RetryConfig::new(3, ExponentialBackoff::new(Duration::from_millis(100)))
-        .with_max_delay(Duration::from_secs(1));
-
-    let content: Vec<_> = io
-        .read_with_retry(file.as_str(), retry_strategy)
-        .await
-        .map(Into::into)?;
+    let content: Vec<_> = io.read(file.as_str()).await.map(Into::into)?;
 
     if matches!(compression_codec, CompressionCodec::None) {
         Ok(content)

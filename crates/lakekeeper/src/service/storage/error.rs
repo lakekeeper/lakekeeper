@@ -3,6 +3,7 @@ use std::error::Error;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{
     adls::{InvalidADLSAccountName, InvalidADLSFilesystemName, InvalidADLSHost},
+    gcs::InvalidGCSBucketName,
     DeleteError, IOError, InitializeClientError, InvalidLocationError,
 };
 
@@ -75,6 +76,16 @@ impl From<InvalidADLSHost> for ValidationError {
     }
 }
 
+impl From<InvalidGCSBucketName> for ValidationError {
+    fn from(value: InvalidGCSBucketName) -> Self {
+        ValidationError::InvalidProfile(Box::new(InvalidProfileError {
+            source: None,
+            reason: value.to_string(),
+            entity: "bucket_name".to_string(),
+        }))
+    }
+}
+
 impl From<InvalidLocationError> for ValidationError {
     fn from(value: InvalidLocationError) -> Self {
         ValidationError::InvalidLocation(Box::new(value))
@@ -118,11 +129,9 @@ impl From<IOErrorExt> for ValidationError {
     }
 }
 
-impl From<IOCreationError> for ValidationError {
-    fn from(value: IOCreationError) -> Self {
-        match value {
-            IOCreationError::Credentials(e) => e.into(),
-        }
+impl From<InitializeClientError> for ValidationError {
+    fn from(value: InitializeClientError) -> Self {
+        ValidationError::Credentials(Box::new(value.into()))
     }
 }
 
@@ -257,25 +266,25 @@ impl From<IcebergFileIoError> for ErrorModel {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum IOCreationError {
-    #[error(transparent)]
-    Credentials(#[from] CredentialsError),
-}
+// #[derive(thiserror::Error, Debug)]
+// pub enum IOCreationError {
+//     #[error(transparent)]
+//     Credentials(#[from] CredentialsError),
+// }
 
-impl From<IOCreationError> for ErrorModel {
-    fn from(value: IOCreationError) -> Self {
-        match value {
-            IOCreationError::Credentials(e) => e.into(),
-        }
-    }
-}
+// impl From<IOCreationError> for ErrorModel {
+//     fn from(value: IOCreationError) -> Self {
+//         match value {
+//             IOCreationError::Credentials(e) => e.into(),
+//         }
+//     }
+// }
 
-impl From<IOCreationError> for IcebergErrorResponse {
-    fn from(value: IOCreationError) -> Self {
-        ErrorModel::from(value).into()
-    }
-}
+// impl From<IOCreationError> for IcebergErrorResponse {
+//     fn from(value: IOCreationError) -> Self {
+//         ErrorModel::from(value).into()
+//     }
+// }
 
 #[derive(thiserror::Error, Debug)]
 pub enum TableConfigError {

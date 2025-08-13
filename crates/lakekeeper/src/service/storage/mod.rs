@@ -29,7 +29,7 @@ use crate::{
     catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
     service::{
-        storage::error::{IOCreationError, IcebergFileIoError, UnexpectedStorageType},
+        storage::error::{IcebergFileIoError, UnexpectedStorageType},
         tabular_idents::TabularId,
     },
     WarehouseId, CONFIG,
@@ -146,7 +146,7 @@ impl StorageProfile {
     pub async fn file_io(
         &self,
         secret: Option<&StorageCredential>,
-    ) -> Result<StorageBackend, IOCreationError> {
+    ) -> Result<StorageBackend, CredentialsError> {
         match self {
             StorageProfile::S3(profile) => profile
                 .lakekeeper_io(
@@ -156,7 +156,6 @@ impl StorageProfile {
                         .map_err(CredentialsError::from)?,
                 )
                 .await
-                .map_err(Into::into)
                 .map(Into::into),
             StorageProfile::Adls(profile) => profile
                 .lakekeeper_io(
@@ -165,11 +164,16 @@ impl StorageProfile {
                         .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
                         .map_err(CredentialsError::from)?,
                 )
-                .map_err(Into::into)
                 .map(Into::into),
-            StorageProfile::Gcs(_prof) => {
-                unimplemented!()
-            }
+            StorageProfile::Gcs(prof) => prof
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_gcs())
+                        .ok_or_else(|| CredentialsError::MissingCredential("gcs".to_string()))?
+                        .map_err(CredentialsError::from)?,
+                )
+                .await
+                .map(Into::into),
             #[cfg(test)]
             StorageProfile::Memory(_) => Ok(StorageBackend::Memory(
                 lakekeeper_io::memory::MemoryStorage::new(),
@@ -211,9 +215,11 @@ impl StorageProfile {
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
-            StorageProfile::Memory(profile) => {
-                Ok(Location::from_str(&profile.base_location).unwrap())
-            }
+            StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
+                .map_err(|_| InvalidLocationError {
+                    reason: "Invalid base location for memory profile".to_string(),
+                    location: profile.base_location.clone(),
+                })?),
         }
     }
 
@@ -293,7 +299,7 @@ impl StorageProfile {
                     .generate_table_config(
                         data_access,
                         secret
-                            .map(|s| s.try_into_gcs())
+                            .map(|s| s.try_to_gcs())
                             .transpose()
                             .map_err(CredentialsError::from)?
                             .ok_or_else(|| {
@@ -868,7 +874,7 @@ impl StorageCredential {
     ///
     ///  # Errors
     /// Fails if the credential is not an Gcs credential.
-    pub fn try_into_gcs(&self) -> Result<&GcsCredential, UnexpectedStorageType> {
+    pub fn try_to_gcs(&self) -> Result<&GcsCredential, UnexpectedStorageType> {
         match self {
             Self::Gcs(profile) => Ok(profile),
             _ => Err(UnexpectedStorageType {
@@ -1168,14 +1174,14 @@ mod tests {
     #[needs_env_var::needs_env_var(TEST_GCS = 1)]
     async fn test_vended_gcs() {
         let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
-        let cred: StorageCredential = std::env::var("GCS_CREDENTIAL")
+        let cred: StorageCredential = std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL")
             .map(|s| GcsCredential::ServiceAccountKey {
                 key: serde_json::from_str::<GcsServiceKey>(&s).unwrap(),
             })
             .map_err(|_| ())
             .expect("Missing cred")
             .into();
-        let bucket = std::env::var("GCS_BUCKET").expect("Missing bucket");
+        let bucket = std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").expect("Missing bucket");
         let mut profile: StorageProfile = GcsProfile {
             bucket,
             key_prefix: key_prefix.clone(),

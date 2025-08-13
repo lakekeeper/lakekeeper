@@ -1,10 +1,5 @@
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{Arc, LazyLock},
-};
+use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
-use azure_identity::DefaultAzureCredential;
 use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
@@ -23,7 +18,6 @@ use lakekeeper_io::{
     },
     InvalidLocationError, Location,
 };
-use lazy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use url::Url;
@@ -217,6 +211,11 @@ impl AdlsProfile {
             .map_err(Into::into)
     }
 
+    /// Get the Lakekeeper IO for this storage profile.
+    ///
+    /// # Errors
+    /// - If system identity is requested but not enabled in the configuration.
+    /// - If the client could not be initialized.
     pub fn lakekeeper_io(
         &self,
         credential: &AzCredential,
@@ -549,8 +548,6 @@ impl TryFrom<AzCredential> for AzureAuth {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use std::str::FromStr;
-
     use needs_env_var::needs_env_var;
 
     use super::*;

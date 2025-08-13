@@ -271,9 +271,9 @@ jobs:
 
           TEST_GCS: ${{ secrets.TEST_GCS }}
           TEST_GCS_HNS: ${{ secrets.TEST_GCS_HNS }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
-          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+          LAKEKEEPER_TEST__GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
+          LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
       - name: Upload junit
         uses: actions/upload-artifact@v4
         with:

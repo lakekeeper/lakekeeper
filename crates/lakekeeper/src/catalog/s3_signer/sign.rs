@@ -746,7 +746,7 @@ pub(super) mod s3_utils {
         Ok(ParsedSignRequest {
             url: uri.clone(),
             locations: vec![S3Location::new(
-                &bucket,
+                bucket,
                 &path_segments.iter().map(String::as_str).collect::<Vec<_>>(),
                 None,
             )

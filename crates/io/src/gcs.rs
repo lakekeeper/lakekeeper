@@ -6,12 +6,12 @@ use std::sync::LazyLock;
 
 pub use gcs_location::{validate_bucket_name, GcsLocation, InvalidGCSBucketName};
 pub use gcs_storage::GcsStorage;
+pub use google_cloud_storage::client::google_cloud_auth::credentials::CredentialsFile;
 use google_cloud_storage::client::{Client, ClientConfig};
 use reqwest_middleware::ClientBuilder;
 use reqwest_retry::{policies::ExponentialBackoff, Jitter, RetryTransientMiddleware};
 
 use crate::InitializeClientError;
-pub use google_cloud_storage::client::google_cloud_auth::credentials::CredentialsFile;
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 

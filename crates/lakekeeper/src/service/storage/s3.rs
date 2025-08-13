@@ -259,6 +259,11 @@ impl S3Profile {
         }
     }
 
+    /// Create a new S3 client with the provided authentication method.
+    ///
+    /// # Errors
+    /// - If system identity is requested but disabled in the configuration
+    /// - If the client cannot be initialized
     pub async fn lakekeeper_io(
         &self,
         credential: Option<&S3Credential>,

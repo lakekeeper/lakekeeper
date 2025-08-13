@@ -11,7 +11,10 @@ use google_cloud_auth::{
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
 use iceberg_ext::configs::table::{gcs, TableProperties};
-use lakekeeper_io::{InvalidLocationError, Location};
+use lakekeeper_io::{
+    gcs::{validate_bucket_name, CredentialsFile, GCSSettings, GcsAuth, GcsStorage},
+    InvalidLocationError, Location,
+};
 use serde::{Deserialize, Serialize};
 use url::Url;
 use veil::Redact;
@@ -87,7 +90,7 @@ pub enum GcsCredential {
     GcpSystemIdentity {},
 }
 
-#[derive(Redact, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GcsServiceKey {
     pub r#type: String,
     pub project_id: String,
@@ -114,9 +117,9 @@ impl From<GcsServiceKey> for CredentialsFile {
             client_id,
             auth_uri,
             token_uri,
-            auth_provider_x509_cert_url,
-            client_x509_cert_url,
-            universe_domain,
+            auth_provider_x509_cert_url: _,
+            client_x509_cert_url: _,
+            universe_domain: _,
         } = key;
 
         CredentialsFile {
@@ -124,22 +127,22 @@ impl From<GcsServiceKey> for CredentialsFile {
             client_email: Some(client_email),
             private_key_id: Some(private_key_id),
             private_key: Some(private_key),
-            auth_uri: (),
-            token_uri: (),
-            project_id: (),
-            client_secret: (),
-            client_id: (),
-            refresh_token: (),
-            audience: (),
-            subject_token_type: (),
-            token_url_external: (),
-            token_info_url: (),
-            service_account_impersonation_url: (),
-            service_account_impersonation: (),
-            delegates: (),
-            credential_source: (),
-            quota_project_id: (),
-            workforce_pool_user_project: (),
+            auth_uri: Some(auth_uri),
+            token_uri: Some(token_uri),
+            project_id: Some(project_id),
+            client_secret: None,
+            client_id: Some(client_id),
+            refresh_token: None,
+            audience: None,
+            subject_token_type: None,
+            token_url_external: None,
+            token_info_url: None,
+            service_account_impersonation_url: None,
+            service_account_impersonation: None,
+            delegates: None,
+            credential_source: None,
+            quota_project_id: None,
+            workforce_pool_user_project: None,
         }
     }
 }
@@ -164,43 +167,21 @@ impl TokenSource {
 }
 
 impl GcsProfile {
-    // /// Create a new `FileIO` instance for GCS.
-    // ///
-    // /// # Errors
-    // /// Fails if the `FileIO` instance cannot be created.
-    // #[allow(clippy::unused_self)]
-    // pub fn file_io(&self, credential: &GcsCredential) -> Result<iceberg::io::FileIO, FileIoError> {
-    //     let mut builder = iceberg::io::FileIOBuilder::new("gcs").with_client(HTTP_CLIENT.clone());
-
-    //     match credential {
-    //         GcsCredential::ServiceAccountKey { key } => {
-    //             builder = builder
-    //                 .with_prop(
-    //                     iceberg::io::GCS_CREDENTIALS_JSON,
-    //                     base64::prelude::BASE64_STANDARD.encode(
-    //                         serde_json::to_string(key)
-    //                             .map_err(CredentialsError::from)?
-    //                             .as_bytes(),
-    //                     ),
-    //                 )
-    //                 .with_prop(GCS_DISABLE_VM_METADATA, "true")
-    //                 .with_prop(GCS_DISABLE_CONFIG_LOAD, "true");
-    //         }
-    //         GcsCredential::GcpSystemIdentity {} => {
-    //             if !CONFIG.enable_gcp_system_credentials {
-    //                 return Err(CredentialsError::Misconfiguration(
-    //                     "GCP System identity credentials are disabled in this Lakekeeper deployment."
-    //                         .to_string(),
-    //                 ).into());
-    //             }
-    //             builder = builder
-    //                 .with_prop(GCS_DISABLE_VM_METADATA, "false")
-    //                 .with_prop(GCS_DISABLE_CONFIG_LOAD, "false");
-    //         }
-    //     }
-
-    //     Ok(builder.build()?)
-    // }
+    /// Create a new GCS storage client.
+    ///
+    /// # Errors
+    /// Fails if the client cannot be initialized
+    pub async fn lakekeeper_io(
+        &self,
+        credential: &GcsCredential,
+    ) -> Result<GcsStorage, CredentialsError> {
+        let gcs_auth = GcsAuth::try_from(credential.clone())?;
+        let settings = GCSSettings {};
+        settings
+            .get_storage_client(&gcs_auth)
+            .await
+            .map_err(Into::into)
+    }
 
     /// Validate the GCS profile.
     ///
@@ -439,6 +420,28 @@ pub(super) fn get_file_io_from_table_config(
         .build()?)
 }
 
+impl TryFrom<GcsCredential> for GcsAuth {
+    type Error = CredentialsError;
+
+    fn try_from(credential: GcsCredential) -> Result<Self, Self::Error> {
+        if !CONFIG.enable_gcp_system_credentials
+            && matches!(credential, GcsCredential::GcpSystemIdentity {})
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "GCP System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
+        }
+
+        Ok(match credential {
+            GcsCredential::ServiceAccountKey { key } => {
+                GcsAuth::CredentialsFile { file: key.into() }
+            }
+            GcsCredential::GcpSystemIdentity {} => GcsAuth::GcpSystemIdentity {},
+        })
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use needs_env_var::needs_env_var;
@@ -454,8 +457,9 @@ pub(crate) mod test {
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
-            let bucket = std::env::var("GCS_BUCKET").expect("Missing GCS_BUCKET");
-            let key = std::env::var("GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
+            let bucket = std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").expect("Missing GCS_BUCKET");
+            let key =
+                std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
             let key: GcsServiceKey = serde_json::from_str(&key).unwrap();
             let cred = GcsCredential::ServiceAccountKey { key };
             let profile = GcsProfile {
@@ -513,8 +517,10 @@ pub(crate) mod test {
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
-            let bucket = std::env::var("GCS_HNS_BUCKET").expect("Missing GCS_HNS_BUCKET");
-            let key = std::env::var("GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
+            let bucket =
+                std::env::var("LAKEKEEPER_TEST__GCS_HNS_BUCKET").expect("Missing GCS_HNS_BUCKET");
+            let key =
+                std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
             let key: GcsServiceKey = serde_json::from_str(&key).unwrap();
             let cred = GcsCredential::ServiceAccountKey { key };
             let profile = GcsProfile {

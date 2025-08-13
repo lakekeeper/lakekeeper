@@ -681,9 +681,9 @@ mod tests {
     #[test]
     fn test_s3_key_to_str() {
         // Keys should not start with a slash!
-        assert_eq!(s3_key_to_str(&vec![]), "");
-        assert_eq!(s3_key_to_str(&vec!["a"]), "a");
-        assert_eq!(s3_key_to_str(&vec!["a", "b"]), "a/b");
-        assert_eq!(s3_key_to_str(&vec!["a", ""]), "a/");
+        assert_eq!(s3_key_to_str(&[]), "");
+        assert_eq!(s3_key_to_str(&["a"]), "a");
+        assert_eq!(s3_key_to_str(&["a", "b"]), "a/b");
+        assert_eq!(s3_key_to_str(&["a", ""]), "a/");
     }
 }

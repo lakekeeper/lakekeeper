@@ -1,5 +1,6 @@
-use crate::{error::ErrorKind, IOError};
 use google_cloud_storage::http::Error;
+
+use crate::{error::ErrorKind, IOError};
 
 pub(crate) fn parse_error(err: Error, location: &str) -> IOError {
     let err = Box::new(err);
