@@ -130,7 +130,7 @@ impl S3Settings {
 
         let sdk_config = loader.load().await;
 
-        let sdk_config = if let Some(assume_role_arn) = assume_role_arn {
+        if let Some(assume_role_arn) = assume_role_arn {
             let mut assume_role_provider = AssumeRoleProvider::builder(assume_role_arn)
                 .configure(&sdk_config)
                 .session_name("lakekeeper-assume-role");
@@ -146,9 +146,7 @@ impl S3Settings {
                 .build()
         } else {
             sdk_config
-        };
-
-        sdk_config
+        }
     }
 }
 
