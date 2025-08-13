@@ -1,0 +1,53 @@
+module lakekeeper-project 
+
+type project
+  relations
+    # Relation Hierarchies
+    define warehouse: [warehouse]
+    define server: [server]
+
+    # ------------------ Built-in Roles ------------------
+    # Project Admin has two purposes:
+    # 1. Lock-out protection: Checked to never be empty
+    # 2. Granting new privileges, such as billing, which might require separate permissions / admin roles
+    define project_admin: [user, role#assignee] or operator from server
+    # Security Admins can manage all security aspects (grants, ownership) but not modify, create or access objects
+    define security_admin: [user, role#assignee] or project_admin
+    # Data Admins can manage all warehouse aspects but not grant privileges
+    define data_admin: [user, role#assignee] or project_admin
+    # Can create new roles - cannot add assignees to existing roles
+    define role_creator: [user, role#assignee] or security_admin
+
+    # ------------------ Assignable Privileges ------------------
+    # Privileges relevant for the warehouse and sub-objects
+    define describe: [user, role#assignee] or select or create or data_admin or security_admin
+    define select: [user, role#assignee] or modify
+    define create: [user, role#assignee] or data_admin
+    define modify: [user, role#assignee] or project_admin
+
+    # ------------------ Actions ------------------
+    # Create stuff inside the project / create new warehouses
+    define can_create_warehouse: create
+    # Drop this project
+    define can_delete: modify
+    define can_rename: modify
+    define can_get_metadata: describe or can_get_metadata from warehouse or admin from server
+    # Can list elements in this projects - will be filtered subsequently
+    define can_list_warehouses: can_get_metadata
+    define can_include_in_list: can_get_metadata
+    # Roles
+    define can_create_role: role_creator
+    define can_list_roles: can_get_metadata or admin from server
+    define can_search_roles: can_list_roles or admin from server
+    # Only if we can GRANT a privilege, we can LIST them for now
+    define can_read_assignments: security_admin or project_admin or admin from server
+
+    # GRANT Permissions
+    define can_grant_role_creator: security_admin or admin from server
+    define can_grant_create: security_admin or admin from server
+    define can_grant_describe: security_admin or admin from server
+    define can_grant_modify: security_admin or admin from server
+    define can_grant_select: security_admin or admin from server
+    define can_grant_project_admin: project_admin or admin from server
+    define can_grant_security_admin: security_admin or admin from server
+    define can_grant_data_admin: data_admin or admin from server
