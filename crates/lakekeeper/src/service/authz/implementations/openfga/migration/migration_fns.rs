@@ -11,7 +11,7 @@ use tokio::sync::Semaphore;
 
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
-use crate::service::authz::implementations::openfga::ProjectRelation;
+use crate::service::authz::implementations::openfga::{ProjectRelation, WarehouseRelation};
 use crate::service::{
     catalog::{ListFlags, Transaction},
     TableId,
@@ -102,7 +102,8 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         .await
         .map_err(|e| e.error)?;
 
-    let _projects = get_all_projects(&c, state.server_id).await?;
+    let projects = get_all_projects(&c, state.server_id).await?;
+    let warehouses = get_all_warehouses(&c, &projects).await?;
 
     let _res = add_warehouse_id_to_tables(c.clone(), &HashMap::new()).await?;
     Ok(())
@@ -275,13 +276,11 @@ async fn add_warehouse_id_to_tables<T>(
     Ok(())
 }
 
-//
-
+// TODO concurrency, read with smaller page size
 async fn get_all_projects(
     client: &BasicOpenFgaClient,
     server_id: uuid::Uuid,
 ) -> anyhow::Result<Vec<String>> {
-    // let client = client.into_client(&store_id, &auth_model_id);
     let tuples = client
         .read_all_pages(
             ReadRequestTupleKey {
@@ -301,6 +300,34 @@ async fn get_all_projects(
         })
         .collect();
     Ok(projects)
+}
+
+// TODO concurrency, read with smaller page size
+async fn get_all_warehouses(
+    client: &BasicOpenFgaClient,
+    projects: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let mut warehouses = vec![];
+    for p in projects.iter() {
+        let tuples = client
+            .read_all_pages(
+                ReadRequestTupleKey {
+                    user: p.to_string(),
+                    relation: WarehouseRelation::Project.to_string(),
+                    object: "warehouse:".to_string(),
+                },
+                OPENFGA_PAGE_SIZE,
+                u32::MAX,
+            )
+            .await?;
+        for t in tuples.into_iter() {
+            match t.key {
+                None => {}
+                Some(k) => warehouses.push(k.object),
+            }
+        }
+    }
+    Ok(warehouses)
 }
 
 #[cfg(test)]
@@ -359,6 +386,56 @@ mod tests {
             assert_eq!(
                 projects,
                 vec!["project:p1".to_string(), "project:p2".to_string()]
+            );
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_warehouses(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:actor".to_string(),
+                            relation: WarehouseRelation::Ownership.to_string(),
+                            object: "warehouse:wh1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "project:p1".to_string(),
+                            relation: WarehouseRelation::Project.to_string(),
+                            object: "warehouse:w1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "project:p1".to_string(),
+                            relation: WarehouseRelation::Project.to_string(),
+                            object: "warehouse:w2".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "project:p2".to_string(),
+                            relation: WarehouseRelation::Project.to_string(),
+                            object: "warehouse:w3".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let projects = vec!["project:p1".to_string(), "project:p2".to_string()];
+            let mut warehouses = get_all_warehouses(&authorizer.client, &projects).await?;
+            warehouses.sort();
+            assert_eq!(
+                warehouses,
+                vec![
+                    "warehouse:w1".to_string(),
+                    "warehouse:w2".to_string(),
+                    "warehouse:w3".to_string()
+                ]
             );
             Ok(())
         }
