@@ -31,7 +31,10 @@ use crate::{
     api::{
         iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
         management::v1::{
-            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
+            project::{
+                EndpointStatisticsResponse, ListProjectsResponse, TimeWindowSelector,
+                WarehouseFilter,
+            },
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{
@@ -427,14 +430,20 @@ impl Catalog for super::PostgresCatalog {
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<GetProjectResponse>> {
-        get_project(project_id, transaction).await
+        get_project(project_id, transaction).await.map(|opt| {
+            opt.map(|response| GetProjectResponse {
+                project_id: response.project_id,
+                name: response.project_name,
+            })
+        })
     }
 
     async fn list_projects(
         project_ids: Option<HashSet<ProjectId>>,
+        pagination: PaginationQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<GetProjectResponse>> {
-        list_projects(project_ids, &mut **transaction).await
+    ) -> Result<ListProjectsResponse> {
+        list_projects(project_ids, pagination, &mut **transaction).await
     }
 
     async fn get_endpoint_statistics(
