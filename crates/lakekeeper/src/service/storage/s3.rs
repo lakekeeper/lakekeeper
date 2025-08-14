@@ -275,62 +275,6 @@ impl S3Profile {
         Ok(s3_settings.get_storage_client(auth.as_ref()).await)
     }
 
-    // /// Create a new `FileIO` instance for S3.
-    // ///
-    // /// # Errors
-    // /// Fails if the `FileIO` instance cannot be created.
-    // pub async fn file_io(
-    //     &self,
-    //     credential: Option<&S3Credential>,
-    // ) -> Result<iceberg::io::FileIO, FileIoError> {
-    //     let mut builder =
-    //         iceberg::io::FileIOBuilder::new("s3").with_client((*S3_HTTP_CLIENT).clone());
-
-    //     builder = builder.with_prop(iceberg::io::S3_REGION, self.region.clone());
-
-    //     if let Some(endpoint) = &self.endpoint {
-    //         builder = builder.with_prop(iceberg::io::S3_ENDPOINT, endpoint);
-    //     }
-    //     if let Some(path_style_access) = &self.path_style_access {
-    //         builder = builder.with_prop(
-    //             iceberg::io::S3_PATH_STYLE_ACCESS,
-    //             path_style_access.to_string(),
-    //         );
-    //     }
-
-    //     builder = builder.with_prop(
-    //         iceberg::io::S3_PATH_STYLE_ACCESS,
-    //         self.path_style_access.unwrap_or_default(),
-    //     );
-
-    //     let credentials = self
-    //         .get_aws_credentials_with_assumed_role(credential)
-    //         .await?;
-    //     let builder = if let Some(credentials) = credentials {
-    //         let builder = builder
-    //             .with_prop(iceberg::io::S3_ACCESS_KEY_ID, credentials.access_key_id())
-    //             .with_prop(
-    //                 iceberg::io::S3_SECRET_ACCESS_KEY,
-    //                 credentials.secret_access_key(),
-    //             )
-    //             .with_prop(iceberg::io::S3_DISABLE_CONFIG_LOAD, "true")
-    //             .with_prop(iceberg::io::S3_DISABLE_EC2_METADATA, "true");
-
-    //         if let Some(session_token) = credentials.session_token() {
-    //             builder.with_prop(iceberg::io::S3_SESSION_TOKEN, session_token)
-    //         } else {
-    //             builder
-    //         }
-    //     } else {
-    //         builder
-    //             .with_prop(iceberg::io::S3_ALLOW_ANONYMOUS, "true")
-    //             .with_prop(iceberg::io::S3_DISABLE_CONFIG_LOAD, "true")
-    //             .with_prop(iceberg::io::S3_DISABLE_EC2_METADATA, "true")
-    //     };
-
-    //     Ok(builder.build()?)
-    // }
-
     /// Validate the S3 profile.
     ///
     /// # Errors
