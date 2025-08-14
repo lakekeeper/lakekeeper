@@ -189,23 +189,19 @@ impl From<ValidationError> for ErrorModel {
                 .append_details(e.context().iter().map(ToString::to_string))
             }
             ValidationError::Credentials(e) => {
-                if let CredentialsError::UnexpectedStorageType(_) = *e {
-                    ErrorModel::bad_request(
-                        e.to_string(),
-                        "UnexpectedStorageProfileType",
-                        Some(Box::new(e)),
-                    )
+                if matches!(e.as_ref(), CredentialsError::UnexpectedStorageType(_)) {
+                    ErrorModel::bad_request(e.to_string(), "UnexpectedStorageProfileType", Some(e))
                 } else {
                     (*e).into()
                 }
             }
             ValidationError::InvalidProfile(profile_err) => {
-                let source = profile_err.source;
-                ErrorModel::bad_request(
-                    profile_err.reason.clone(),
-                    format!("Invalid{}", profile_err.entity),
+                let InvalidProfileError {
                     source,
-                )
+                    reason,
+                    entity,
+                } = *profile_err;
+                ErrorModel::bad_request(reason, format!("Invalid{entity}"), source)
             }
             ValidationError::UnsupportedCompressionCodec(e) => ErrorModel::bad_request(
                 e.to_string(),

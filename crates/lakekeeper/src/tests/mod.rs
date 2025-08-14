@@ -46,7 +46,7 @@ use crate::{
     WarehouseId, CONFIG,
 };
 
-pub(crate) fn local_io_profile() -> StorageProfile {
+pub(crate) fn memory_io_profile() -> StorageProfile {
     MemoryProfile::default().into()
 }
 
@@ -244,7 +244,7 @@ pub(crate) async fn setup<T: Authorizer>(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
                 project_id: None,
-                storage_profile: local_io_profile(),
+                storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,
             },

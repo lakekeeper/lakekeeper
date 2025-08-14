@@ -326,8 +326,9 @@ impl AdlsProfile {
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
         let path = reduce_scheme_string(path.as_ref());
-        let rootless_path = path.trim_start_matches('/');
+        let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
         let depth = rootless_path.split('/').count();
+
         let canonical_resource = format!(
             "/blob/{}/{}/{}",
             self.account_name.as_str(),

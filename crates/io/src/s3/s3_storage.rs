@@ -166,10 +166,10 @@ impl LakekeeperStorage for S3Storage {
                 let upload_id = upload_id.to_string();
 
                 let future = async move {
-                    let _permit = semaphore.acquire().await.map_err(|_| {
+                    let _permit = semaphore.acquire().await.map_err(|e| {
                         WriteError::IOError(IOError::new(
                             ErrorKind::Unexpected,
-                            format!("Failed to acquire semaphore permit for part {part_number}"),
+                            format!("Semaphore closed unexpectedly for GCS upload part {part_number}: {e}"),
                             s3_location.as_str().to_string(),
                         ))
                     })?;
@@ -284,10 +284,10 @@ impl LakekeeperStorage for S3Storage {
             let path = path.to_string();
 
             let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|_| {
+                let _permit = semaphore.acquire().await.map_err(|e| {
                     ReadError::IOError(IOError::new(
                         ErrorKind::Unexpected,
-                        format!("Failed to acquire semaphore permit for S3 download chunk {chunk_index}"),
+                        format!("Semaphore closed unexpectedly for S3 download chunk {chunk_index}: {e}"),
                         path.clone(),
                     ))
                 })?;

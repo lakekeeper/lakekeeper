@@ -64,7 +64,7 @@ impl RetryableError for DeleteError {
 pub enum ReadError {
     #[error("Invalid Location during read - {0}")]
     InvalidLocation(#[from] InvalidLocationError),
-    #[error("Failed to delete object: {0}")]
+    #[error("Failed to read object: {0}")]
     IOError(#[from] IOError),
 }
 

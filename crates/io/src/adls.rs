@@ -173,9 +173,10 @@ impl AzureSettings {
             DEFAULT_AUTHORITY_HOST.clone().to_string(),
             std::string::ToString::to_string,
         );
+        let cache_key = format!("{}::{}", authority_host_str, self.cloud_location.account());
 
         SYSTEM_IDENTITY_CACHE
-            .try_get_with(authority_host_str.clone(), || {
+            .try_get_with(cache_key.clone(), || {
                 let mut options = TokenCredentialOptions::default();
                 options.set_authority_host(authority_host_str);
                 DefaultAzureCredentialBuilder::new()

@@ -65,7 +65,7 @@ impl AdlsLocation {
 
         if !ADLS_CUSTOM_SCHEMES.contains(&scheme.as_str()) && scheme != "abfss" {
             return Err(InvalidLocationError {
-                reason: format!("S3 location must use abfss, or wasbs protocol. Found: {scheme}"),
+                reason: format!("ADLS location must use abfss, or wasbs protocol. Found: {scheme}"),
                 location: location_dbg.clone(),
             });
         }
@@ -180,7 +180,7 @@ impl AdlsLocation {
             });
         }
 
-        let filesystem = location.username().to_string();
+        let filesystem = location.username().unwrap_or_default().to_string();
         let host = location
             .host_str()
             .ok_or_else(|| InvalidLocationError {

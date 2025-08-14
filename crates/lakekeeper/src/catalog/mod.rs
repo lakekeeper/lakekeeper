@@ -244,6 +244,7 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    pub(crate) use crate::tests::memory_io_profile;
     use crate::{
         api::{
             iceberg::{types::Prefix, v1::namespace::NamespaceService},
@@ -256,16 +257,12 @@ pub(crate) mod test {
         service::{
             authz::{AllowAllAuthorizer, Authorizer},
             storage::{
-                s3::S3AccessKeyCredential, MemoryProfile, S3Credential, S3Flavor, S3Profile,
-                StorageCredential, StorageProfile,
+                s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
+                StorageProfile,
             },
             State, UserId,
         },
     };
-
-    pub(crate) fn memory_io_profile() -> StorageProfile {
-        MemoryProfile::default().into()
-    }
 
     pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
         let key_prefix = format!("test_prefix-{}", Uuid::now_v7());

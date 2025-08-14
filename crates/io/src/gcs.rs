@@ -97,7 +97,7 @@ impl GCSSettings {
                 .with_credentials(file.clone())
                 .await
                 .map_err(|e| InitializeClientError {
-                    reason: format!("Failed to initialize GCS client with system identity: {e}"),
+                    reason: format!("Failed to initialize GCS client with credentials file: {e}"),
                     source: Some(e.into()),
                 })?,
         };

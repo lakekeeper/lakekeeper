@@ -82,7 +82,7 @@ impl LakekeeperStorage for GcsStorage {
         Ok(())
     }
 
-    // ToDo: Switch to BlobBatch delete once supported by rust SDK
+    // ToDo: Switch to BlobBatch delete once supported by rust SDK.
     async fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
@@ -234,32 +234,33 @@ impl LakekeeperStorage for GcsStorage {
                 let upload_client_cloned = upload_client.clone();
                 let len_bytes = bytes.len() as u64;
 
-                let future =
-                    async move {
-                        let _permit = semaphore.acquire().await.map_err(|_| {
+                let future = async move {
+                    let _permit = semaphore.acquire().await.map_err(|e| {
                             WriteError::IOError(IOError::new(
                                 ErrorKind::Unexpected,
                                 format!(
-                                "Failed to acquire semaphore permit for chunk at offset {offset}",
+                                "Semaphore closed unexpectedly for GCS download chunk at offset {offset}: {e}",
                             ),
                                 path.clone(),
                             ))
                         })?;
 
-                        let chunk_size = ChunkSize::new(
-                            offset as u64,
-                            offset as u64 + chunk.len() as u64 - 1,
-                            Some(len_bytes),
-                        );
-                        upload_client_cloned
-                            .upload_multiple_chunk(chunk, &chunk_size)
-                            .await
-                            .map_err(|e| {
-                                WriteError::IOError(parse_error(e, &path).with_context(format!(
+                    let chunk_size = ChunkSize::new(
+                        offset as u64,
+                        offset as u64 + chunk.len() as u64 - 1,
+                        Some(len_bytes),
+                    );
+                    upload_client_cloned
+                        .upload_multiple_chunk(chunk, &chunk_size)
+                        .await
+                        .map_err(|e| {
+                            WriteError::IOError(
+                                parse_error(e, &path).with_context(format!(
                                     "Failed to upload chunk at offset {offset}"
-                                )))
-                            })
-                    };
+                                )),
+                            )
+                        })
+                };
 
                 upload_futures.push(future);
             }
@@ -380,10 +381,10 @@ impl LakekeeperStorage for GcsStorage {
             let path = path.to_string();
 
             let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|_| {
+                let _permit = semaphore.acquire().await.map_err(|e| {
                     ReadError::IOError(IOError::new(
                         ErrorKind::Unexpected,
-                        format!("Failed to acquire semaphore permit for GCS download chunk {chunk_index}"),
+                        format!("Semaphore closed unexpectedly for GCS download chunk {chunk_index}: {e}"),
                         path.clone(),
                     ))
                 })?;

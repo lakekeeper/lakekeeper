@@ -716,7 +716,6 @@ pub(super) mod s3_utils {
         let host = uri.host().ok_or_else(|| {
             ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
         })?;
-        println!("Host: {host:?}");
         let path_segments = get_path_segments(uri, allow_no_key)?;
         let port = uri.port_or_known_default().unwrap_or(443);
 

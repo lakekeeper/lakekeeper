@@ -116,7 +116,6 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    // ToDo: Switch to BlobBatch delete once supported by rust SDK
     async fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
@@ -344,10 +343,10 @@ impl LakekeeperStorage for AdlsStorage {
             let path = path.to_string();
 
             let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|_| {
+                let _permit = semaphore.acquire().await.map_err(|e| {
                     ReadError::IOError(IOError::new(
                         ErrorKind::Unexpected,
-                        format!("Failed to acquire semaphore permit for ADLS download chunk {chunk_index}"),
+                        format!("Semaphore closed unexpectedly for ADLS download chunk {chunk_index}: {e}"),
                         path.clone(),
                     ))
                 })?;

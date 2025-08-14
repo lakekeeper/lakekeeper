@@ -68,10 +68,8 @@ impl GcsLocation {
 
     /// Create a new [`GcsLocation`] location from a [`Location`].
     ///
-    /// If `allow_variants` is set to true, `s3a://` and `s3n://` schemes are allowed.
-    ///
     /// # Errors
-    /// - Fails if the location is not a valid S3 location
+    /// - Fails if the location is not a valid GCS location (must use `gs` scheme).
     pub fn try_from_location(location: &Location) -> Result<Self, InvalidLocationError> {
         // Protocol must be s3
         if location.scheme() != "gs" {

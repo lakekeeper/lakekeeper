@@ -345,7 +345,7 @@ impl S3Profile {
     ) -> Result<(), ValidationError> {
         validate_bucket_name(&self.bucket).map_err(|e| InvalidProfileError {
             source: None,
-            reason: e.reason,
+            reason: e.to_string(),
             entity: "bucket".to_string(),
         })?;
         validate_region(&self.region)?;

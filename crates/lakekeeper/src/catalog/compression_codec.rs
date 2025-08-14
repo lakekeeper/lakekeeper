@@ -58,7 +58,7 @@ impl CompressionCodec {
                 let mut decoder = flate2::read::GzDecoder::new(payload.as_slice());
                 decoder
                     .read_to_end(&mut decompressed_metadata)
-                    .map_err(|e| IOErrorExt::FileCompression(Box::new(e)))?;
+                    .map_err(|e| IOErrorExt::FileDecompression(Box::new(e)))?;
 
                 Ok(decompressed_metadata)
             })

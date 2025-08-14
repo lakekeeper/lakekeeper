@@ -69,18 +69,10 @@ impl Location {
     }
 
     #[must_use]
-    pub fn username(&self) -> &str {
-        if self.authority_and_path.contains('@') {
-            self.authority_and_path.split('@').next().map_or("", |s| {
-                if let Some(u) = s.split(':').next() {
-                    u
-                } else {
-                    s
-                }
-            })
-        } else {
-            ""
-        }
+    pub fn username(&self) -> Option<&str> {
+        self.authority_and_path
+            .split_once('@')
+            .and_then(|(auth, _)| auth.split_once(':').map(|(user, _)| user).or(Some(auth)))
     }
 
     pub fn with_trailing_slash(&mut self) -> &mut Self {
@@ -122,11 +114,20 @@ impl Location {
             .join("/");
         // Remove duplicate slashes if any
         let extension = {
-            let mut ext = extension;
-            while ext.contains("//") {
-                ext = ext.replace("//", "/");
+            let mut result = String::with_capacity(extension.len());
+            let mut prev_slash = false;
+            for ch in extension.chars() {
+                if ch == '/' {
+                    if !prev_slash {
+                        result.push(ch);
+                    }
+                    prev_slash = true;
+                } else {
+                    result.push(ch);
+                    prev_slash = false;
+                }
             }
-            ext
+            result
         };
 
         if !self.authority_and_path.ends_with('/')
@@ -470,13 +471,13 @@ mod tests {
     #[test]
     fn test_username() {
         let location = Location::from_str("s3://user:pass@bucket/foo/bar").unwrap();
-        assert_eq!(location.username(), "user");
+        assert_eq!(location.username(), Some("user"));
 
         let location = Location::from_str("s3://bucket/foo/bar").unwrap();
-        assert_eq!(location.username(), "");
+        assert_eq!(location.username(), None);
 
         let location = Location::from_str("s3://user@bucket/foo/bar").unwrap();
-        assert_eq!(location.username(), "user");
+        assert_eq!(location.username(), Some("user"));
     }
 
     #[test]

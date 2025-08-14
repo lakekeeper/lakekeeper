@@ -160,8 +160,8 @@ pub(crate) fn parse_head_object_error(
         .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
 
     let msg = e.meta().message().map_or_else(
-        || format!("Unknown S3 error during read: {e}"),
-        |m| format!("S3 get failed: {m}"),
+        || format!("Unknown S3 error during head operation: {e}"),
+        |m| format!("S3 head failed: {m}"),
     );
 
     IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
