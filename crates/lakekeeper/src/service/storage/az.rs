@@ -423,7 +423,7 @@ impl AdlsProfile {
 #[must_use]
 pub(crate) fn reduce_scheme_string(path: &str) -> String {
     AdlsLocation::try_from_str(path, true)
-        .map(|l| l.blob_name().to_string())
+        .map(|l| format!("/{}", l.blob_name().to_string().trim_start_matches('/')))
         .unwrap_or(path.to_string())
 }
 
