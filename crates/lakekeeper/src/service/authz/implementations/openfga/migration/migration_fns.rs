@@ -85,8 +85,14 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         .into_iter()
         .map(|response| response.project_id)
         .collect();
-    // currently all active
     let warehouse_ids = all_warehouse_ids::<C>(state.catalog_state.clone(), &project_ids)
+        .await
+        .map_err(|e| e.error)?;
+    let tabular_query_params =
+        all_tabular_query_params::<C>(state.catalog_state.clone(), warehouse_ids)
+            .await
+            .map_err(|e| e.error)?;
+    let tables = all_tables::<C>(state.catalog_state.clone(), tabular_query_params)
         .await
         .map_err(|e| e.error)?;
 
@@ -141,6 +147,8 @@ struct TabularQueryParams {
     namespace_ident: NamespaceIdent,
 }
 
+// TODO check if can be more efficient by storing whid only once and mapping all ns to it
+// same for table_id
 struct TableParams {
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
@@ -203,7 +211,7 @@ async fn all_tabular_query_params<C: Catalog>(
 
 async fn all_tables<C: Catalog>(
     catalog_state: C::State,
-    params: &[TabularQueryParams],
+    params: Vec<TabularQueryParams>,
 ) -> crate::api::Result<Vec<TableParams>> {
     let mut jobs = FuturesUnordered::new();
 

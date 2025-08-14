@@ -1061,7 +1061,9 @@ pub(crate) mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use http::StatusCode;
-        use openfga_client::client::ConsistencyPreference;
+        use openfga_client::client::{
+            ConsistencyPreference, ListUsersRequest, Object, UserTypeFilter,
+        };
         use tower_http::ServiceExt;
 
         use super::super::*;
@@ -1208,6 +1210,65 @@ pub(crate) mod tests {
         }
 
         #[sqlx::test]
+        async fn test_list_users(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let authorizer = new_authorizer_in_empty_store(pool).await;
+
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:actor".to_string(),
+                            relation: TableRelation::Ownership.to_string(),
+                            object: "table:t1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t2".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t3".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let store_id = authorizer.client.store_id().to_string();
+            let authorization_model_id = authorizer.client.authorization_model_id().to_string();
+
+            let response = authorizer
+                .client
+                .client()
+                .list_users(ListUsersRequest {
+                    store_id,
+                    authorization_model_id,
+                    object: Some(Object {
+                        r#type: "table".to_string(),
+                        id: "t3".to_string(),
+                    }),
+                    relation: TableRelation::Parent.to_string(),
+                    user_filters: vec![UserTypeFilter {
+                        r#type: "namespace".to_string(),
+                        relation: "".to_string(),
+                    }],
+                    contextual_tuples: vec![],
+                    context: None,
+                    consistency: 0,
+                })
+                .await?;
+
+            println!("relation name: {}", TableRelation::Parent.to_string());
+            println!("{:?}", response.get_ref().users);
+            Ok(())
+        }
+
+        #[sqlx::test]
         async fn test_read_users_per_object(pool: sqlx::PgPool) -> anyhow::Result<()> {
             let authorizer = new_authorizer_in_empty_store(pool).await;
 
@@ -1237,6 +1298,7 @@ pub(crate) mod tests {
                 )
                 .await?;
 
+            // this does not work
             let tuples = authorizer
                 .read_all(ReadRequestTupleKey {
                     user: "user:".to_string(),
