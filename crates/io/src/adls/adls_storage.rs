@@ -413,30 +413,36 @@ impl LakekeeperStorage for AdlsStorage {
 
         let stream = list_stream.map(move |result| {
             let base_location = base_location.clone();
-            result
-                .map_err(|e| parse_error(e, path.as_str()))
-                .map(|page| {
-                    let locations = page
-                        .paths
-                        .iter()
-                        .filter_map(|path| {
-                            // Create a location from account, filesystem and blob name
-                            let path_name = if path.is_directory {
-                                format!("{}/", path.name.trim_end_matches('/'))
-                            } else {
-                                path.name.clone()
-                            };
-                            let full_path = format!(
-                                "{}://{}/{}",
-                                base_location.scheme(),
-                                base_location.authority_with_host(),
-                                path_name
-                            );
-                            Location::from_str(&full_path).ok()
-                        })
-                        .collect::<Vec<_>>();
-                    locations
-                })
+            let result = result.map_err(|e| {
+                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
+            });
+            if let Err(err) = &result {
+                if err.kind() == ErrorKind::NotFound {
+                    return Ok(vec![]); // Return empty list if path does not exist
+                }
+            }
+            result.map(|page| {
+                let locations = page
+                    .paths
+                    .iter()
+                    .filter_map(|path| {
+                        // Create a location from account, filesystem and blob name
+                        let path_name = if path.is_directory {
+                            format!("{}/", path.name.trim_end_matches('/'))
+                        } else {
+                            path.name.clone()
+                        };
+                        let full_path = format!(
+                            "{}://{}/{}",
+                            base_location.scheme(),
+                            base_location.authority_with_host(),
+                            path_name
+                        );
+                        Location::from_str(&full_path).ok()
+                    })
+                    .collect::<Vec<_>>();
+                locations
+            })
         });
 
         Ok(stream.boxed())

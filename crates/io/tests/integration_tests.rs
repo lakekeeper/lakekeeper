@@ -1,3 +1,4 @@
+use core::panic;
 use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
@@ -93,8 +94,8 @@ macro_rules! test_all_storages {
 
                     let account = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME")
                         .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME not set"))?;
-                    let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM_NAME")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM_NAME not set"))?;
+                    let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM")
+                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM not set"))?;
 
                     let settings = lakekeeper_io::adls::AzureSettings {
                         authority_host: None,
@@ -196,6 +197,10 @@ test_all_storages!(test_delete, test_delete_impl);
 test_all_storages!(test_batch_delete, test_batch_delete_impl);
 test_all_storages!(test_list, test_list_impl);
 test_all_storages!(test_list_with_page_size, test_list_with_page_size_impl);
+test_all_storages!(
+    test_list_prefix_boundaries,
+    test_list_prefix_boundaries_impl
+);
 test_all_storages!(test_remove_all, test_remove_all_impl);
 test_all_storages!(
     test_remove_all_treats_input_as_dir,
@@ -212,6 +217,10 @@ test_all_storages!(
 test_all_storages!(
     test_remove_all_deletes_directory,
     test_remove_all_deletes_directory_impl
+);
+test_all_storages!(
+    test_list_non_existent_directory,
+    test_list_non_existent_directory_impl
 );
 
 /// Basic write and read test implementation
@@ -880,6 +889,28 @@ async fn test_delete_non_existent_files_impl(
     Ok(())
 }
 
+/// Test list non-existent directory implementation
+async fn test_list_non_existent_directory_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let non_existent_dir = config.test_dir_path("non-existent-directory/");
+    let mut list_stream = storage.list(&non_existent_dir, None).await?;
+    let mut all_locations = Vec::new();
+    while let Some(result) = list_stream.next().await {
+        let locations = result?;
+        all_locations.extend(locations);
+    }
+
+    // If the directory does not exist, we should get an empty list
+    assert!(
+        all_locations.is_empty(),
+        "Listing non-existent directory should return no items"
+    );
+
+    Ok(())
+}
+
 /// Test that remove_all deletes the directory itself implementation
 async fn test_remove_all_deletes_directory_impl(
     storage: &StorageBackend,
@@ -999,6 +1030,109 @@ async fn test_remove_all_deletes_directory_impl(
 
     // Clean up sibling file
     storage.delete(&sibling_file).await?;
+
+    Ok(())
+}
+
+/// Test that list operations correctly handle directory prefix boundaries
+/// Ensures that when listing 'a/b/' the results contain 'a/b/c' but not 'a/b-c' or 'a/b-c/d'
+async fn test_list_prefix_boundaries_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    // Create a test directory structure with specific paths to test boundary conditions
+    let base_dir = config.test_dir_path("list-prefix-boundaries");
+
+    // Define the test directory structure:
+    // - base/dir/ (the directory we'll list)
+    // - base/dir/file.txt (should be included in listing)
+    // - base/dir/subdir/nested.txt (should be included in listing)
+    // - base/dir-similar/file.txt (should NOT be included - different directory)
+    // - base/dir-similar/subdir/file.txt (should NOT be included - different directory path)
+
+    let files_to_create = vec![
+        // Files that should be included when listing base/dir/
+        "dir/file.txt",
+        "dir/subdir/nested.txt",
+        // Files that should NOT be included when listing base/dir/
+        "dir-similar/file.txt",
+        "dir-similar/subdir/file.txt",
+    ];
+
+    let mut all_paths = Vec::new();
+
+    // Create all the test files
+    for file in &files_to_create {
+        let path = format!("{base_dir}{file}");
+        storage
+            .write(&path, Bytes::from(format!("Content of {file}")))
+            .await?;
+        all_paths.push(path);
+    }
+
+    for list_dir in &[format!("{base_dir}dir"), format!("{base_dir}dir/")] {
+        // List contents of the specific directory
+        let mut list_stream = storage.list(&list_dir, None).await?;
+        let mut listed_locations = Vec::new();
+
+        while let Some(result) = list_stream.next().await {
+            let locations = result?;
+            listed_locations.extend(locations);
+        }
+
+        // Debug output
+        println!("Listed {} items in {}", listed_locations.len(), list_dir);
+        for loc in &listed_locations {
+            println!("  Found: {loc}");
+        }
+
+        // Convert locations to strings for easier comparison
+        let location_strings: Vec<String> =
+            listed_locations.iter().map(ToString::to_string).collect();
+
+        // Verify that only the correct files are included in the results
+        // Should include: base/dir/file.txt and base/dir/subdir/nested.txt
+        let expected_in_dir = vec![
+            format!("{base_dir}dir/file.txt"),
+            format!("{base_dir}dir/subdir/nested.txt"),
+            format!("{base_dir}dir/subdir/"), // The subdirectory itself might be listed
+        ];
+
+        // Check that expected files are included
+        for expected_path in &expected_in_dir {
+            // Skip directory entries that might not be consistently returned by all storage backends
+            if expected_path.ends_with('/') {
+                continue;
+            }
+
+            assert!(
+                location_strings.iter().any(|loc| loc == expected_path),
+                "Expected path {expected_path} should be included in list results"
+            );
+        }
+
+        for listed_location in location_strings.iter() {
+            if listed_location.contains("dir-similar") {
+                panic!(
+                    "Listed location {listed_location} should NOT be included in results for {list_dir}"
+                );
+            }
+        }
+
+        // Also verify that all returned paths start with the requested directory prefix
+        for location in &location_strings {
+            let list_dir_with_slash = format!("{}/", list_dir.trim_end_matches('/'));
+            assert!(
+                location.starts_with(&list_dir_with_slash),
+                "Listed path {location} should start with {list_dir}"
+            );
+        }
+    }
+
+    // Clean up
+    for path in all_paths {
+        let _ = storage.delete(&path).await; // Ignore errors during cleanup
+    }
 
     Ok(())
 }

@@ -583,9 +583,10 @@ pub(crate) mod test {
         };
 
         pub(crate) fn azure_profile() -> AdlsProfile {
-            let account_name =
-                std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME").unwrap();
-            let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM").unwrap();
+            let account_name = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME")
+                .expect("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME to be set");
+            let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM")
+                .expect("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM to be set");
 
             let key_prefix = format!("test-{}", uuid::Uuid::now_v7());
             AdlsProfile {
@@ -600,9 +601,12 @@ pub(crate) mod test {
         }
 
         pub(crate) fn client_creds() -> AzCredential {
-            let client_id = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_ID").unwrap();
-            let client_secret = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET").unwrap();
-            let tenant_id = std::env::var("LAKEKEEPER_TEST__AZURE_TENANT_ID").unwrap();
+            let client_id = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_ID")
+                .expect("LAKEKEEPER_TEST__AZURE_CLIENT_ID to be set");
+            let client_secret = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET")
+                .expect("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET to be set");
+            let tenant_id = std::env::var("LAKEKEEPER_TEST__AZURE_TENANT_ID")
+                .expect("LAKEKEEPER_TEST__AZURE_TENANT_ID to be set");
 
             AzCredential::ClientCredentials {
                 client_id,
@@ -612,12 +616,13 @@ pub(crate) mod test {
         }
 
         pub(crate) fn shared_key() -> AzCredential {
-            let key = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY").unwrap();
+            let key = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY")
+                .expect("LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY to be set");
             AzCredential::SharedAccessKey { key }
         }
 
         #[tokio::test]
-        async fn test_can_validate() {
+        async fn test_can_validate_adls() {
             for (cred, typ) in [
                 (client_creds(), "client-creds"),
                 (shared_key(), "shared-key"),
