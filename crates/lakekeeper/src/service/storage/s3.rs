@@ -3,7 +3,7 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use aws_config::SdkConfig;
-use aws_credential_types::provider::token::ProvideToken as _;
+use aws_sdk_sts::config::ProvideCredentials;
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
@@ -775,16 +775,16 @@ impl S3Profile {
         let sdk = self
             .get_aws_sdk_config(s3_auth.as_ref(), self.assume_role_arn.as_deref())
             .await?;
-        let identity = sdk
-            .token_provider()
-            .ok_or_else(|| {
-                ErrorModel::precondition_failed(
-                    "Cannot sign requests for Warehouses without S3 credentials",
-                    "SignWithoutCredentials",
-                    None,
-                )
-            })?
-            .provide_token()
+        let token_provider = sdk.credentials_provider().ok_or_else(|| {
+            ErrorModel::precondition_failed(
+                "Cannot sign requests for Warehouses without S3 credentials",
+                "SignWithoutCredentials",
+                None,
+            )
+        })?;
+
+        let identity = token_provider
+            .provide_credentials()
             .await
             .map_err(|e| {
                 ErrorModel::precondition_failed(
@@ -1412,7 +1412,7 @@ pub(crate) mod test {
         }
     }
 
-    #[needs_env_var(TEST_AWS = 1)]
+    // #[needs_env_var(TEST_AWS = 1)]
     pub(crate) mod aws {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
@@ -1442,6 +1442,43 @@ pub(crate) mod test {
             });
 
             (profile, cred)
+        }
+
+        #[test]
+        #[tracing_test::traced_test]
+        fn test_signing_identity() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+                    let _identity = profile.get_signing_identity(Some(&cred)).await.unwrap();
+                },
+                true,
+            );
+        }
+
+        #[test]
+        #[tracing_test::traced_test]
+        fn test_signing_identity_with_assumed_role() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+                    profile.assume_role_arn = profile.sts_role_arn.clone();
+                    let _identity = profile.get_signing_identity(Some(&cred)).await.unwrap();
+                },
+                true,
+            );
         }
 
         #[test]

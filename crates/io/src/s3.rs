@@ -1,8 +1,16 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
-use aws_config::{sts::AssumeRoleProvider, BehaviorVersion, SdkConfig};
+use aws_config::{
+    retry::RetryConfig, sts::AssumeRoleProvider, timeout::TimeoutConfig, AppName, BehaviorVersion,
+    SdkConfig,
+};
 use aws_sdk_s3::config::{
-    IdentityCache, SharedCredentialsProvider, SharedHttpClient, SharedIdentityCache,
+    IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
+    SharedIdentityCache,
+};
+use aws_smithy_async::{
+    rt::sleep::{self, TokioSleep},
+    time::SharedTimeSource,
 };
 use veil::Redact;
 
@@ -22,7 +30,31 @@ static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
         .build_https()
 });
 
+static RETRY_CONFIG: LazyLock<RetryConfig> = LazyLock::new(RetryConfig::adaptive);
+static TIMEOUT_CONFIG: LazyLock<TimeoutConfig> = LazyLock::new(|| TimeoutConfig::builder().build());
+static TIME_SOURCE: LazyLock<SharedTimeSource> = LazyLock::new(SharedTimeSource::default);
+static TOKIO_SLEEP: LazyLock<Arc<dyn sleep::AsyncSleep>> =
+    LazyLock::new(|| Arc::new(TokioSleep::new()) as Arc<dyn sleep::AsyncSleep>);
+static SLEEP_IMPL: LazyLock<SharedAsyncSleep> =
+    LazyLock::new(|| SharedAsyncSleep::from(TOKIO_SLEEP.clone()));
+
 const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
+
+/// Macro to apply common AWS configuration to any builder that supports these methods
+macro_rules! apply_aws_config {
+    ($builder:expr, $region:expr) => {
+        $builder
+            .region($region)
+            .retry_config(RETRY_CONFIG.clone())
+            .timeout_config(TIMEOUT_CONFIG.clone())
+            .time_source(TIME_SOURCE.clone())
+            .sleep_impl(SLEEP_IMPL.clone())
+            .behavior_version(BehaviorVersion::latest())
+            .http_client((*SMITHY_HTTP_CLIENT).clone())
+            .identity_cache(IDENTITY_CACHE.clone())
+            .app_name(AppName::new("lakekeeper").unwrap())
+    };
+}
 
 #[derive(Debug, Clone, PartialEq, derive_more::From)]
 pub enum S3Auth {
@@ -97,7 +129,9 @@ impl S3Settings {
             aws_kms_key_arn: _,
         } = self;
 
-        let loader = match s3_credential {
+        let region = aws_config::Region::new(region.clone());
+
+        let sdk_config = match s3_credential {
             Some(S3Auth::AccessKey(S3AccessKeyAuth {
                 aws_access_key_id,
                 aws_secret_access_key,
@@ -110,25 +144,32 @@ impl S3Settings {
                     None,
                     "lakekeeper-secret-storage",
                 );
-                aws_config::ConfigLoader::default().credentials_provider(aws_credentials)
+                let credential_provider = SharedCredentialsProvider::new(aws_credentials);
+
+                let mut builder = apply_aws_config!(SdkConfig::builder(), region)
+                    .credentials_provider(credential_provider);
+                if let Some(endpoint) = endpoint {
+                    builder = builder.endpoint_url(endpoint.to_string());
+                }
+                builder.build()
             }
             Some(S3Auth::AwsSystemIdentity(S3AwsSystemIdentityAuth {
                 external_id: _, // External ID handled below in this function in the assume role path
-            })) => aws_config::from_env(),
-            None => aws_config::from_env().no_credentials(),
-        }
-        .region(Some(aws_config::Region::new(region.to_string())))
-        .behavior_version(BehaviorVersion::latest())
-        .http_client((*SMITHY_HTTP_CLIENT).clone())
-        .identity_cache(IDENTITY_CACHE.clone());
-
-        let loader = if let Some(endpoint) = endpoint {
-            loader.endpoint_url(endpoint.to_string())
-        } else {
-            loader
+            })) => {
+                let mut builder = apply_aws_config!(aws_config::from_env(), region);
+                if let Some(endpoint) = endpoint {
+                    builder = builder.endpoint_url(endpoint.to_string());
+                }
+                builder.load().await
+            }
+            None => {
+                let mut builder = apply_aws_config!(SdkConfig::builder(), region);
+                if let Some(endpoint) = endpoint {
+                    builder.set_endpoint_url(Some(endpoint.to_string()));
+                }
+                builder.build()
+            }
         };
-
-        let sdk_config = loader.load().await;
 
         if let Some(assume_role_arn) = assume_role_arn {
             let mut assume_role_provider = AssumeRoleProvider::builder(assume_role_arn)

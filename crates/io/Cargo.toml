@@ -13,7 +13,13 @@ Lakekeeper IO
 
 [features]
 all = ["storage-s3", "storage-adls", "storage-gcs", "storage-in-memory"]
-storage-s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types"]
+storage-s3 = [
+    "dep:aws-sdk-s3",
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:aws-smithy-async",
+    "dep:aws-smithy-http-client",
+]
 storage-adls = [
     "dep:azure_storage_blobs",
     "dep:azure_core",
@@ -23,11 +29,9 @@ storage-adls = [
     "dep:moka",
 ]
 storage-gcs = [
-    # "dep:google-cloud-auth",
     "dep:google-cloud-storage",
     "dep:reqwest-middleware",
     "dep:reqwest-retry",
-    # "dep:google-cloud-token",
 ]
 storage-in-memory = []
 default = ["storage-s3", "storage-adls", "storage-gcs"]
@@ -39,7 +43,8 @@ aws-config = { workspace = true, features = [
 ], optional = true }
 aws-credential-types = { version = "^1.2", optional = true }
 aws-sdk-s3 = { version = "^1.65", optional = true }
-aws-smithy-http-client = { workspace = true }
+aws-smithy-async = { workspace = true, optional = true }
+aws-smithy-http-client = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
 azure_storage = { workspace = true, optional = true }
