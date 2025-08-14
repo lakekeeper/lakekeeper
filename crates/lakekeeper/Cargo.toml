@@ -1,7 +1,7 @@
 [package]
 name = "lakekeeper"
 resolver = "2"
-version = "0.9.4"
+version = "0.9.5"
 edition = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
