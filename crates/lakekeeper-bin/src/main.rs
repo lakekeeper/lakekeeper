@@ -10,10 +10,7 @@
 use clap::{Parser, Subcommand};
 use lakekeeper::{
     api::management::v1::api_doc as v1_api_doc,
-    implementations::{
-        get_default_catalog_from_config,
-        postgres::{self, PostgresCatalog},
-    },
+    implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
     service::{
         authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
         task_queue::BUILT_IN_API_CONFIGS,

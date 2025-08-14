@@ -3,12 +3,15 @@ use std::sync::{Arc, LazyLock};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use openfga_client::client::{BasicOpenFgaServiceClient, OpenFgaClient};
+use openfga_client::client::{
+    BasicOpenFgaClient, BasicOpenFgaServiceClient, OpenFgaClient, ReadRequestTupleKey,
+};
 use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
 
 use crate::api::iceberg::v1::PageToken;
-pub use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
+use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
+use crate::service::authz::implementations::openfga::ProjectRelation;
 use crate::service::{
     catalog::{ListFlags, Transaction},
     TableId,
@@ -21,10 +24,13 @@ pub(crate) struct MigrationState<C: Catalog> {
     pub store_name: String,
     pub catalog: C,
     pub catalog_state: C::State,
+    pub server_id: uuid::Uuid,
 }
 
-// TODO(mooori): use tokio semaphore to limit the number of concurrent db txs,
-// then can use something like futures unordered
+// TODO add v4 to module name as everything here is version specific
+
+// TODO: get from config in case someone runs openfga server with lower max page size?
+const OPENFGA_PAGE_SIZE: i32 = 100;
 
 /// Limits the number of concurrent transactions. It should be throttled as the catalog's db
 /// may still be in use during the migration.
@@ -92,9 +98,11 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         all_tabular_query_params::<C>(state.catalog_state.clone(), warehouse_ids)
             .await
             .map_err(|e| e.error)?;
-    let tables = all_tables::<C>(state.catalog_state.clone(), tabular_query_params)
+    let _tables = all_tables::<C>(state.catalog_state.clone(), tabular_query_params)
         .await
         .map_err(|e| e.error)?;
+
+    let _projects = get_all_projects(&c, state.server_id).await?;
 
     let _res = add_warehouse_id_to_tables(c.clone(), &HashMap::new()).await?;
     Ok(())
@@ -265,4 +273,94 @@ async fn add_warehouse_id_to_tables<T>(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // let tables_
     Ok(())
+}
+
+//
+
+async fn get_all_projects(
+    client: &BasicOpenFgaClient,
+    server_id: uuid::Uuid,
+) -> anyhow::Result<Vec<String>> {
+    // let client = client.into_client(&store_id, &auth_model_id);
+    let tuples = client
+        .read_all_pages(
+            ReadRequestTupleKey {
+                user: format!("server:{server_id}"),
+                relation: ProjectRelation::Server.to_string(),
+                object: "project:".to_string(),
+            },
+            OPENFGA_PAGE_SIZE,
+            u32::MAX,
+        )
+        .await?;
+    let projects = tuples
+        .into_iter()
+        .filter_map(|t| match t.key {
+            None => None,
+            Some(k) => Some(k.object),
+        })
+        .collect();
+    Ok(projects)
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+    use needs_env_var::needs_env_var;
+
+    #[needs_env_var(TEST_OPENFGA = 1)]
+    mod openfga {
+        use openfga_client::client::TupleKey;
+
+        use super::super::*;
+        use crate::{
+            service::authz::implementations::openfga::{
+                migration::tests::authorizer_for_empty_store, OPENFGA_SERVER,
+            },
+            CONFIG,
+        };
+
+        // Tests must write tuples according to v4 model manually.
+        // Writing through methods like `authorizer.create_*` may create tuples different from
+        // what v4 migration is designed to handle.
+
+        #[sqlx::test]
+        async fn test_get_all_projects(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:actor".to_string(),
+                            relation: ProjectRelation::ProjectAdmin.to_string(),
+                            object: "project:p1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: OPENFGA_SERVER.clone(),
+                            relation: ProjectRelation::Server.to_string(),
+                            object: "project:p1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: OPENFGA_SERVER.clone(),
+                            relation: ProjectRelation::Server.to_string(),
+                            object: "project:p2".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let mut projects = get_all_projects(&authorizer.client, CONFIG.server_id).await?;
+            projects.sort();
+            assert_eq!(
+                projects,
+                vec!["project:p1".to_string(), "project:p2".to_string()]
+            );
+            Ok(())
+        }
+    }
 }

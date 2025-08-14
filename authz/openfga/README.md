@@ -11,6 +11,8 @@ MODIFIES_TUPLES: FALSE
 ADDS_TUPLSE:     TRUE
 ```
 
+**If your catalog is not using the default server id, set env var `LAKEKEEPER__SERVER_ID=<server_id>` for the migration.**
+
 - Adds types `lakekeeper_table` and `lakekeeper_view`. Their definitions are copied from `table` and `view`, however the way these objects are represented changes.
   - For `table` it is `table_id`, for `lakekeeper_table` it is `warehouse_id/table_id`.
   - For `view` it is `view_id`, for `lakekeeper_view` it is `warehouse_id/view_id`.

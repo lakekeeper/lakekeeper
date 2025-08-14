@@ -5,7 +5,7 @@ use openfga_client::{
     migration::{AuthorizationModelVersion, MigrationFn, TupleModelManager},
 };
 
-use crate::service::Catalog;
+use crate::{service::Catalog, CONFIG};
 
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 
@@ -126,6 +126,8 @@ pub(crate) async fn migrate<C: Catalog>(
         store_name,
         catalog,
         catalog_state,
+        // TODO confirm env var LAKEKEEPER__SERVER_ID overrides this config value
+        server_id: CONFIG.server_id,
     };
     manager.migrate(state).await?;
     tracing::info!("OpenFGA Migration finished");
