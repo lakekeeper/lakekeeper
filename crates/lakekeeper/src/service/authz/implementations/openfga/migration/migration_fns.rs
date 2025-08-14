@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock};
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -11,7 +11,9 @@ use tokio::sync::Semaphore;
 
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
-use crate::service::authz::implementations::openfga::{ProjectRelation, WarehouseRelation};
+use crate::service::authz::implementations::openfga::{
+    NamespaceRelation, ProjectRelation, WarehouseRelation,
+};
 use crate::service::{
     catalog::{ListFlags, Transaction},
     TableId,
@@ -330,6 +332,42 @@ async fn get_all_warehouses(
     Ok(warehouses)
 }
 
+// TODO concurrency, read with smaller page size
+async fn get_all_namespaces(
+    client: &BasicOpenFgaClient,
+    warehouse: String,
+) -> anyhow::Result<Vec<String>> {
+    let mut namespaces = vec![];
+    let mut to_process = VecDeque::from([warehouse.clone()]);
+
+    // Breadth-first search to query namespaces at a given level in parallel.
+    while let Some(parent) = to_process.pop_front() {
+        // Get all namespaces that have this parent (warehouse or namespace).
+        let tuples = client
+            .read_all_pages(
+                ReadRequestTupleKey {
+                    user: parent.clone(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: "namespace:".to_string(),
+                },
+                OPENFGA_PAGE_SIZE,
+                u32::MAX,
+            )
+            .await?;
+
+        for tuple in tuples.into_iter() {
+            if let Some(key) = tuple.key {
+                let namespace = key.object;
+                namespaces.push(namespace.clone());
+                // Add this namespace to the processing queue to find its children
+                to_process.push_back(namespace);
+            }
+        }
+    }
+
+    Ok(namespaces)
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
@@ -437,6 +475,75 @@ mod tests {
                     "warehouse:w3".to_string()
                 ]
             );
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_namespaces(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // warehouse:w1 -> ns1 -> ns2 -> ns3
+            //            |--> ns4
+            authorizer
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: "user:actor".to_string(),
+                            relation: NamespaceRelation::Ownership.to_string(),
+                            object: "namespace:ns1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "warehouse:w1".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:ns1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:ns2".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns2".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:ns3".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "warehouse:w1".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:ns4".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let mut namespaces =
+                get_all_namespaces(&authorizer.client, "warehouse:w1".to_string()).await?;
+            namespaces.sort();
+            assert_eq!(
+                namespaces,
+                vec![
+                    "namespace:ns1".to_string(),
+                    "namespace:ns2".to_string(),
+                    "namespace:ns3".to_string(),
+                    "namespace:ns4".to_string()
+                ]
+            );
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_namespaces_empty_warehouse(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            let namespaces =
+                get_all_namespaces(&authorizer.client, "warehouse:empty".to_string()).await?;
+            assert!(namespaces.is_empty());
             Ok(())
         }
     }
