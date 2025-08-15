@@ -448,12 +448,6 @@ mod tests {
                 .write(
                     Some(vec![
                         TupleKey {
-                            user: "user:actor".to_string(),
-                            relation: ProjectRelation::ProjectAdmin.to_string(),
-                            object: "project:p1".to_string(),
-                            condition: None,
-                        },
-                        TupleKey {
                             user: OPENFGA_SERVER.clone(),
                             relation: ProjectRelation::Server.to_string(),
                             object: "project:p1".to_string(),
@@ -463,6 +457,21 @@ mod tests {
                             user: OPENFGA_SERVER.clone(),
                             relation: ProjectRelation::Server.to_string(),
                             object: "project:p2".to_string(),
+                            condition: None,
+                        },
+                        // Projects that must *not* be in the result.
+                        // These are on a different server so they should not be returned
+                        // when querying for projects on the current server.
+                        TupleKey {
+                            user: "server:other-server-id".to_string(),
+                            relation: ProjectRelation::Server.to_string(),
+                            object: "project:p-other-server".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "server:another-server-id".to_string(),
+                            relation: ProjectRelation::Server.to_string(),
+                            object: "project:p-another-server".to_string(),
                             condition: None,
                         },
                     ]),
@@ -480,18 +489,22 @@ mod tests {
         }
 
         #[sqlx::test]
+        async fn test_get_all_projects_empty_server(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Test with a server that has no projects
+            let projects = get_all_projects(&authorizer.client, CONFIG.server_id).await?;
+            assert!(projects.is_empty());
+            Ok(())
+        }
+
+        #[sqlx::test]
         async fn test_get_all_warehouses(pool: sqlx::PgPool) -> anyhow::Result<()> {
             let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
 
             authorizer
                 .write(
                     Some(vec![
-                        TupleKey {
-                            user: "user:actor".to_string(),
-                            relation: WarehouseRelation::Ownership.to_string(),
-                            object: "warehouse:wh1".to_string(),
-                            condition: None,
-                        },
                         TupleKey {
                             user: "project:p1".to_string(),
                             relation: WarehouseRelation::Project.to_string(),
@@ -508,6 +521,21 @@ mod tests {
                             user: "project:p2".to_string(),
                             relation: WarehouseRelation::Project.to_string(),
                             object: "warehouse:w3".to_string(),
+                            condition: None,
+                        },
+                        // Warehouses that must *not* be in the result.
+                        // These are in projects on a different server so they should not be
+                        // returned when querying for warehouses in projects p1 and p2.
+                        TupleKey {
+                            user: "project:p-other-server".to_string(),
+                            relation: WarehouseRelation::Project.to_string(),
+                            object: "warehouse:w-other-server".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "project:p-other-server-2".to_string(),
+                            relation: WarehouseRelation::Project.to_string(),
+                            object: "warehouse:w-other-server-2".to_string(),
                             condition: None,
                         },
                     ]),
@@ -530,11 +558,23 @@ mod tests {
         }
 
         #[sqlx::test]
+        async fn test_get_all_warehouses_empty_project(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Test with a project that has no warehouses
+            let projects = vec!["project:empty".to_string()];
+            let warehouses = get_all_warehouses(&authorizer.client, &projects).await?;
+            assert!(warehouses.is_empty());
+            Ok(())
+        }
+
+        #[sqlx::test]
         async fn test_get_all_namespaces(pool: sqlx::PgPool) -> anyhow::Result<()> {
             let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
 
             // warehouse:w1 -> ns1 -> ns2 -> ns3
             //            |--> ns4
+            // warehouse:w2 -> ns-other-wh -> ns-other-wh-child
             authorizer
                 .write(
                     Some(vec![
@@ -566,6 +606,21 @@ mod tests {
                             user: "warehouse:w1".to_string(),
                             relation: NamespaceRelation::Parent.to_string(),
                             object: "namespace:ns4".to_string(),
+                            condition: None,
+                        },
+                        // Namespaces that must *not* be in the result.
+                        // These are in a different warehouse (w2) so they should not be returned
+                        // when querying for namespaces in warehouse:w1.
+                        TupleKey {
+                            user: "warehouse:w2".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:ns-other-wh".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns-other-wh".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:ns-other-wh-child".to_string(),
                             condition: None,
                         },
                     ]),
