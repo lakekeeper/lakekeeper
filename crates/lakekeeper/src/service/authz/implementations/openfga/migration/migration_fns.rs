@@ -597,5 +597,98 @@ mod tests {
             assert!(namespaces.is_empty());
             Ok(())
         }
+
+        #[sqlx::test]
+        async fn test_get_all_tabulars(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Create structure:
+            // namespace:ns1 -> table:t1, view:v1
+            // namespace:ns2 -> table:t2, table:t3, view:v2
+            // namespace:ns-other-wh -> table:table-other-wh, view:view-other-wh
+            authorizer
+                .write(
+                    Some(vec![
+                        // Tables
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns2".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t2".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns2".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:t3".to_string(),
+                            condition: None,
+                        },
+                        // Views
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: "view:v1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns2".to_string(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: "view:v2".to_string(),
+                            condition: None,
+                        },
+                        // Tabulars that must *not* be in the result.
+                        // For example because they are in a different warehouse so their namespace
+                        // is not included in the list of namespaces to query.
+                        TupleKey {
+                            user: "namespace:ns-other-wh".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:table-other-wh".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns-other-wh".to_string(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: "view:view-other-wh".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let namespaces = vec!["namespace:ns1".to_string(), "namespace:ns2".to_string()];
+            let mut tabulars = get_all_tabulars(&authorizer.client, &namespaces).await?;
+            tabulars.sort();
+            assert_eq!(
+                tabulars,
+                vec![
+                    "table:t1".to_string(),
+                    "table:t2".to_string(),
+                    "table:t3".to_string(),
+                    "view:v1".to_string(),
+                    "view:v2".to_string()
+                ]
+            );
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_tabulars_empty_namespaces(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Test with namespaces that have no tables or views
+            let namespaces = vec![
+                "namespace:empty1".to_string(),
+                "namespace:empty2".to_string(),
+            ];
+            let tabulars = get_all_tabulars(&authorizer.client, &namespaces).await?;
+            assert!(tabulars.is_empty());
+            Ok(())
+        }
     }
 }
