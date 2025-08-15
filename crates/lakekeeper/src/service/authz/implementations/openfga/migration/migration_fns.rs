@@ -4,7 +4,7 @@ use std::sync::{Arc, LazyLock};
 use futures::stream::{FuturesUnordered, StreamExt};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use openfga_client::client::{
-    BasicOpenFgaClient, BasicOpenFgaServiceClient, OpenFgaClient, ReadRequestTupleKey,
+    BasicOpenFgaClient, BasicOpenFgaServiceClient, OpenFgaClient, ReadRequestTupleKey, TupleKey,
 };
 use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
@@ -419,6 +419,29 @@ async fn get_all_tabulars(
     Ok(tabulars)
 }
 
+// TODO read with smaller page size
+/// The `object` must specify both type and id (`type:id`).
+///
+/// The returned result contains all tuples that have the provided `object` from all relations
+/// and all user types.
+async fn get_all_tuples_with_object(
+    client: &BasicOpenFgaClient,
+    object: String,
+) -> anyhow::Result<Vec<TupleKey>> {
+    let tuples = client
+        .read_all_pages(
+            ReadRequestTupleKey {
+                user: "".to_string(),
+                relation: "".to_string(),
+                object,
+            },
+            OPENFGA_PAGE_SIZE,
+            u32::MAX,
+        )
+        .await?;
+    Ok(tuples.into_iter().filter_map(|t| t.key).collect())
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
@@ -743,6 +766,88 @@ mod tests {
             ];
             let tabulars = get_all_tabulars(&authorizer.client, &namespaces).await?;
             assert!(tabulars.is_empty());
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_tuples_with_object(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            authorizer
+                .write(
+                    Some(vec![
+                        // Tuples with the target object "table:target-table"
+                        TupleKey {
+                            user: "user:user1".to_string(),
+                            relation: TableRelation::PassGrants.to_string(),
+                            object: "table:target-table".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns1".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:target-table".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "user:user2".to_string(),
+                            relation: TableRelation::Ownership.to_string(),
+                            object: "table:target-table".to_string(),
+                            condition: None,
+                        },
+                        // Tuples with different objects that should *not* be returned
+                        TupleKey {
+                            user: "user:user1".to_string(),
+                            relation: TableRelation::Select.to_string(),
+                            object: "table:other-table".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:ns2".to_string(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: "view:some-view".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let mut tuples =
+                get_all_tuples_with_object(&authorizer.client, "table:target-table".to_string())
+                    .await?;
+            // Sort by user and relation for consistent comparison
+            tuples.sort_by(|a, b| {
+                a.user
+                    .cmp(&b.user)
+                    .then_with(|| a.relation.cmp(&b.relation))
+            });
+
+            assert_eq!(tuples.len(), 3);
+            assert_eq!(tuples[0].user, "namespace:ns1".to_string());
+            assert_eq!(tuples[0].relation, TableRelation::Parent.to_string());
+            assert_eq!(tuples[0].object, "table:target-table".to_string());
+
+            assert_eq!(tuples[1].user, "user:user1".to_string());
+            assert_eq!(tuples[1].relation, TableRelation::PassGrants.to_string());
+            assert_eq!(tuples[1].object, "table:target-table".to_string());
+
+            assert_eq!(tuples[2].user, "user:user2".to_string());
+            assert_eq!(tuples[2].relation, TableRelation::Ownership.to_string());
+            assert_eq!(tuples[2].object, "table:target-table".to_string());
+
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_tuples_with_object_empty(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Test with an object that doesn't exist
+            let tuples =
+                get_all_tuples_with_object(&authorizer.client, "table:nonexistent".to_string())
+                    .await?;
+            assert!(tuples.is_empty());
             Ok(())
         }
     }
