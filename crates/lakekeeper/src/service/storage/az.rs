@@ -65,8 +65,6 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
 
@@ -512,7 +510,6 @@ pub(super) fn get_file_io_from_table_config(
         );
     }
     Ok(iceberg::io::FileIOBuilder::new("abfss")
-        .with_client(HTTP_CLIENT.clone())
         .with_props(config)
         .build()?)
 }

@@ -415,7 +415,6 @@ pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
 ) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
     Ok(iceberg::io::FileIOBuilder::new("gcs")
-        .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .build()?)
 }
