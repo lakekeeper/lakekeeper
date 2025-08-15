@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use axum::Router;
+use iceberg_ext::catalog::rest::ErrorModel;
 use utoipa::OpenApi;
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
         authz::{
             Authorizer, CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction,
             CatalogServerAction, CatalogTableAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
+            CatalogWarehouseAction, ListProjectsResponse, NamespaceParent, TableUuid,
         },
         health::{Health, HealthExt},
         Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId,
@@ -236,5 +237,46 @@ impl Authorizer for AllowAllAuthorizer {
 
     async fn delete_view(&self, _view_id: ViewId) -> Result<()> {
         Ok(())
+    }
+
+    async fn require_namespace_action(
+        &self,
+        _metadata: &RequestMetadata,
+        namespace_id: Result<Option<NamespaceId>>,
+        _action: impl From<CatalogNamespaceAction> + std::fmt::Display + Send,
+    ) -> Result<NamespaceId> {
+        match namespace_id {
+            Ok(None) => {
+                Err(
+                    ErrorModel::not_found("Namespace not found", "NoSuchNamespaceException", None)
+                        .into(),
+                )
+            }
+            Ok(Some(namespace_id)) => Ok(namespace_id),
+            Err(e) => Err(
+                ErrorModel::internal(e.error.message, e.error.r#type, e.error.source)
+                    .append_details(e.error.stack)
+                    .into(),
+            ),
+        }
+    }
+
+    async fn require_table_action<T: TableUuid + Send>(
+        &self,
+        _metadata: &RequestMetadata,
+        table_id: Result<Option<T>>,
+        _action: impl From<CatalogTableAction> + std::fmt::Display + Send,
+    ) -> Result<T> {
+        match table_id {
+            Ok(None) => {
+                Err(ErrorModel::not_found("Table not found", "NoSuchTableException", None).into())
+            }
+            Ok(Some(table_id)) => Ok(table_id),
+            Err(e) => Err(
+                ErrorModel::internal(e.error.message, e.error.r#type, e.error.source)
+                    .append_details(e.error.stack)
+                    .into(),
+            ),
+        }
     }
 }
