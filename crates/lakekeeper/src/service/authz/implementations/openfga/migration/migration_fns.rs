@@ -12,7 +12,7 @@ use tokio::sync::Semaphore;
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
 use crate::service::authz::implementations::openfga::{
-    NamespaceRelation, ProjectRelation, WarehouseRelation,
+    NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
 };
 use crate::service::{
     catalog::{ListFlags, Transaction},
@@ -366,6 +366,57 @@ async fn get_all_namespaces(
     }
 
     Ok(namespaces)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+enum TabularType {
+    Table,
+    View,
+}
+
+impl TabularType {
+    fn object_type(&self) -> String {
+        match self {
+            Self::Table => "table:".to_string(),
+            Self::View => "view:".to_string(),
+        }
+    }
+
+    fn parent_relation_string(&self) -> String {
+        match self {
+            Self::Table => TableRelation::Parent.to_string(),
+            Self::View => ViewRelation::Parent.to_string(),
+        }
+    }
+}
+
+// TODO concurrency, read with smaller page size
+async fn get_all_tabulars(
+    client: &BasicOpenFgaClient,
+    namespaces: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let mut tabulars = vec![];
+    for ns in namespaces.iter() {
+        for tab in TabularType::iter() {
+            let tuples = client
+                .read_all_pages(
+                    ReadRequestTupleKey {
+                        user: ns.to_string(),
+                        relation: tab.parent_relation_string(),
+                        object: tab.object_type(),
+                    },
+                    OPENFGA_PAGE_SIZE,
+                    u32::MAX,
+                )
+                .await?;
+            for t in tuples.into_iter() {
+                if let Some(k) = t.key {
+                    tabulars.push(k.object)
+                }
+            }
+        }
+    }
+    Ok(tabulars)
 }
 
 #[cfg(test)]
