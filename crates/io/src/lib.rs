@@ -523,14 +523,14 @@ pub(crate) fn delete_not_found_is_ok(result: Result<(), IOError>) -> Result<(), 
     }
 }
 
-/// Executes futures in parallel with a specified parallelism limit using `JoinSet``.
+/// Executes futures in parallel with a specified parallelism limit using `JoinSet`.
 ///
 /// # Arguments
 /// * `futures` - An iterator of futures to execute
 /// * `parallelism` - Maximum number of futures to execute concurrently
 ///
 /// # Returns
-/// A stream of results from futures as they complete, or ends with a `JoinError``
+/// A stream of results from futures as they complete, or ends with a `JoinError`
 pub fn execute_with_parallelism<I, F, T>(
     futures: I,
     parallelism: usize,
