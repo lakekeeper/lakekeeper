@@ -6,7 +6,7 @@ use futures::StreamExt;
 use lakekeeper_io::{execute_with_parallelism, LakekeeperStorage, StorageBackend};
 use tokio::{
     runtime::Runtime,
-    time::{sleep, Duration},
+    time::{sleep, Duration, Instant},
 };
 
 // we need to use a shared runtime since the static client is shared between tests here
@@ -27,6 +27,124 @@ pub(crate) fn execute_in_common_runtime<F: Future>(f: F) -> F::Output {
     }
 }
 
+#[cfg(feature = "storage-in-memory")]
+/// Storage backend initialization functions
+async fn create_memory_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
+    let storage = StorageBackend::Memory(lakekeeper_io::memory::MemoryStorage::new());
+    let config = TestConfig {
+        base_path: format!("memory://test-{}", uuid::Uuid::new_v4()),
+    };
+    Ok((storage, config))
+}
+
+#[cfg(feature = "storage-s3")]
+async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
+    let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_BUCKET not set"))?;
+    let region = std::env::var("LAKEKEEPER_TEST__S3_REGION")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_REGION not set"))?;
+    let access_key = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_ACCESS_KEY not set"))?;
+    let secret_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_SECRET_KEY not set"))?;
+    let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").ok();
+
+    let s3_settings = lakekeeper_io::s3::S3Settings {
+        assume_role_arn: None,
+        endpoint: endpoint.map(|e| e.parse().unwrap()),
+        region,
+        path_style_access: Some(true),
+        aws_kms_key_arn: None,
+    };
+    let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(lakekeeper_io::s3::S3AccessKeyAuth {
+        aws_access_key_id: access_key,
+        aws_secret_access_key: secret_key,
+        external_id: None,
+    });
+
+    let storage = StorageBackend::S3(s3_settings.get_storage_client(Some(&s3_auth)).await);
+    let base_path = format!(
+        "s3://{}/lakekeeper-io-integration-tests/{}",
+        bucket,
+        uuid::Uuid::new_v4()
+    );
+    let config = TestConfig { base_path };
+
+    Ok((storage, config))
+}
+
+#[cfg(feature = "storage-adls")]
+async fn create_adls_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
+    let client_id = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_ID")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_CLIENT_ID not set"))?;
+    let tenant_id = std::env::var("LAKEKEEPER_TEST__AZURE_TENANT_ID")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_TENANT_ID not set"))?;
+    let client_secret = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET not set"))?;
+
+    let account = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME not set"))?;
+    let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM not set"))?;
+
+    let settings = lakekeeper_io::adls::AzureSettings {
+        authority_host: None,
+        cloud_location: lakekeeper_io::adls::CloudLocation::Public {
+            account: account.clone(),
+        },
+    };
+    let auth = lakekeeper_io::adls::AzureAuth::ClientCredentials(
+        lakekeeper_io::adls::AzureClientCredentialsAuth {
+            client_id,
+            client_secret,
+            tenant_id,
+        },
+    );
+
+    let storage = StorageBackend::Adls(
+        settings
+            .get_storage_client(&auth)
+            .map_err(|e| anyhow::anyhow!(e))?,
+    );
+    let base_path = format!(
+        "abfss://{filesystem}@{account}.dfs.core.windows.net/lakekeeper-io-integration-tests/{}",
+        uuid::Uuid::new_v4()
+    );
+    let config = TestConfig { base_path };
+
+    Ok((storage, config))
+}
+
+#[cfg(feature = "storage-gcs")]
+async fn create_gcs_storage(bucket_env_var: &str) -> anyhow::Result<(StorageBackend, TestConfig)> {
+    let credential = std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL")
+        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__GCS_CREDENTIAL not set"))?;
+    let bucket =
+        std::env::var(bucket_env_var).map_err(|_| anyhow::anyhow!("{} not set", bucket_env_var))?;
+
+    let credential_file: lakekeeper_io::gcs::CredentialsFile = serde_json::from_str(&credential)
+        .map_err(|e| anyhow::anyhow!("Failed to parse GCS credential file: {e}"))?;
+
+    let settings = lakekeeper_io::gcs::GCSSettings {};
+    let auth = lakekeeper_io::gcs::GcsAuth::CredentialsFile {
+        file: credential_file,
+    };
+
+    let storage = StorageBackend::Gcs(
+        settings
+            .get_storage_client(&auth)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?,
+    );
+    let base_path = format!(
+        "gs://{bucket}/lakekeeper-io-integration-tests/{}",
+        uuid::Uuid::new_v4()
+    );
+    let config = TestConfig { base_path };
+
+    Ok((storage, config))
+}
+
 /// Macro to generate parameterized tests for all available storage backends
 macro_rules! test_all_storages {
     ($test_name:ident, $test_fn:ident) => {
@@ -35,10 +153,7 @@ macro_rules! test_all_storages {
             #[test]
             fn [<$test_name _memory>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
-                    let storage = StorageBackend::Memory(lakekeeper_io::memory::MemoryStorage::new());
-                    let config = TestConfig {
-                        base_path: format!("memory://test-{}", uuid::Uuid::new_v4()),
-                    };
+                    let (storage, config) = create_memory_storage().await?;
                     $test_fn(&storage, &config).await
                 })
             }
@@ -47,36 +162,7 @@ macro_rules! test_all_storages {
             #[test]
             fn [<$test_name _s3>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
-                    let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_BUCKET not set"))?;
-                    let region = std::env::var("LAKEKEEPER_TEST__S3_REGION")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_REGION not set"))?;
-                    let access_key = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_ACCESS_KEY not set"))?;
-                    let secret_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__S3_SECRET_KEY not set"))?;
-                    let endpoint = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT").ok();
-
-                    let s3_settings = lakekeeper_io::s3::S3Settings {
-                        assume_role_arn: None,
-                        endpoint: endpoint.map(|e| e.parse().unwrap()),
-                        region,
-                        path_style_access: Some(true),
-                        aws_kms_key_arn: None,
-                    };
-                    let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(
-                        lakekeeper_io::s3::S3AccessKeyAuth {
-                            aws_access_key_id: access_key,
-                            aws_secret_access_key: secret_key,
-                            external_id: None,
-                        },
-                    );
-
-                    let storage = StorageBackend::S3(s3_settings.get_storage_client(Some(&s3_auth)).await);
-
-                    let base_path = format!("s3://{}/lakekeeper-io-integration-tests/{}", bucket, uuid::Uuid::new_v4());
-                    let config = TestConfig { base_path };
-
+                    let (storage, config) = create_s3_storage().await?;
                     $test_fn(&storage, &config).await
                 })
             }
@@ -85,35 +171,7 @@ macro_rules! test_all_storages {
             #[test]
             fn [<$test_name _adls>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
-                    let client_id = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_ID")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_CLIENT_ID not set"))?;
-                    let tenant_id = std::env::var("LAKEKEEPER_TEST__AZURE_TENANT_ID")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_TENANT_ID not set"))?;
-                    let client_secret = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET not set"))?;
-
-                    let account = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME not set"))?;
-                    let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM not set"))?;
-
-                    let settings = lakekeeper_io::adls::AzureSettings {
-                        authority_host: None,
-                        cloud_location: lakekeeper_io::adls::CloudLocation::Public { account: account.clone() },
-                    };
-                    let auth = lakekeeper_io::adls::AzureAuth::ClientCredentials(
-                        lakekeeper_io::adls::AzureClientCredentialsAuth {
-                            client_id,
-                            client_secret,
-                            tenant_id,
-                        },
-                    );
-
-                    let storage = StorageBackend::Adls(settings.get_storage_client(&auth).map_err(|e| anyhow::anyhow!(e))?);
-
-                    let base_path = format!("abfss://{filesystem}@{account}.dfs.core.windows.net/lakekeeper-io-integration-tests/{}", uuid::Uuid::new_v4());
-                    let config = TestConfig { base_path };
-
+                    let (storage, config) = create_adls_storage().await?;
                     $test_fn(&storage, &config).await
                 })
             }
@@ -122,22 +180,7 @@ macro_rules! test_all_storages {
             #[test]
             fn [<$test_name _gcs_regular>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
-                    let credential = std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__GCS_CREDENTIAL not set"))?;
-                    let bucket = std::env::var("LAKEKEEPER_TEST__GCS_BUCKET")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__GCS_BUCKET not set"))?;
-
-                    let credential_file: lakekeeper_io::gcs::CredentialsFile = serde_json::from_str(&credential)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse GCS credential file: {e}"))?;
-
-                    let settings = lakekeeper_io::gcs::GCSSettings {};
-                    let auth = lakekeeper_io::gcs::GcsAuth::CredentialsFile { file: credential_file};
-
-                    let storage = StorageBackend::Gcs(settings.get_storage_client(&auth).await.map_err(|e| anyhow::anyhow!(e))?);
-
-                    let base_path = format!("gs://{bucket}/lakekeeper-io-integration-tests/{}", uuid::Uuid::new_v4());
-                    let config = TestConfig { base_path };
-
+                    let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_BUCKET").await?;
                     $test_fn(&storage, &config).await
                 })
             }
@@ -146,22 +189,7 @@ macro_rules! test_all_storages {
             #[test]
             fn [<$test_name _gcs_hns>]() -> anyhow::Result<()> {
                 execute_in_common_runtime(async {
-                    let credential = std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__GCS_CREDENTIAL not set"))?;
-                    let bucket = std::env::var("LAKEKEEPER_TEST__GCS_HNS_BUCKET")
-                        .map_err(|_| anyhow::anyhow!("LAKEKEEPER_TEST__GCS_HNS_BUCKET not set"))?;
-
-                    let credential_file: lakekeeper_io::gcs::CredentialsFile = serde_json::from_str(&credential)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse GCS credential file: {e}"))?;
-
-                    let settings = lakekeeper_io::gcs::GCSSettings {};
-                    let auth = lakekeeper_io::gcs::GcsAuth::CredentialsFile { file: credential_file};
-
-                    let storage = StorageBackend::Gcs(settings.get_storage_client(&auth).await.map_err(|e| anyhow::anyhow!(e))?);
-
-                    let base_path = format!("gs://{bucket}/lakekeeper-io-integration-tests/{}", uuid::Uuid::new_v4());
-                    let config = TestConfig { base_path };
-
+                    let (storage, config) = create_gcs_storage("LAKEKEEPER_TEST__GCS_HNS_BUCKET").await?;
                     $test_fn(&storage, &config).await
                 })
             }
@@ -226,6 +254,135 @@ test_all_storages!(
     test_list_non_existent_directory,
     test_list_non_existent_directory_impl
 );
+
+// // Performance tests for storage backend initialization
+// #[cfg(feature = "storage-in-memory")]
+// #[test]
+// fn test_initialization_performance_memory() -> anyhow::Result<()> {
+//     execute_in_common_runtime(async {
+//         test_initialization_performance_impl(|| Box::pin(create_memory_storage())).await
+//     })
+// }
+
+// #[cfg(feature = "storage-s3")]
+// #[test]
+// fn test_initialization_performance_s3() -> anyhow::Result<()> {
+//     execute_in_common_runtime(async {
+//         test_initialization_performance_impl(|| Box::pin(create_s3_storage())).await
+//     })
+// }
+
+// #[cfg(feature = "storage-adls")]
+// #[test]
+// fn test_initialization_performance_adls() -> anyhow::Result<()> {
+//     execute_in_common_runtime(async {
+//         test_initialization_performance_impl(|| Box::pin(create_adls_storage())).await
+//     })
+// }
+
+// #[cfg(feature = "storage-gcs")]
+// #[test]
+// fn test_initialization_performance_gcs_regular() -> anyhow::Result<()> {
+//     execute_in_common_runtime(async {
+//         test_initialization_performance_impl(|| {
+//             Box::pin(create_gcs_storage("LAKEKEEPER_TEST__GCS_BUCKET"))
+//         })
+//         .await
+//     })
+// }
+
+// #[cfg(feature = "storage-gcs")]
+// #[test]
+// fn test_initialization_performance_gcs_hns() -> anyhow::Result<()> {
+//     execute_in_common_runtime(async {
+//         test_initialization_performance_impl(|| {
+//             Box::pin(create_gcs_storage("LAKEKEEPER_TEST__GCS_HNS_BUCKET"))
+//         })
+//         .await
+//     })
+// }
+
+#[allow(dead_code)]
+/// Performance test implementation for storage backend initialization
+async fn test_initialization_performance_impl<F, Fut>(create_storage: F) -> anyhow::Result<()>
+where
+    F: Fn() -> Fut + Clone,
+    Fut: std::future::Future<Output = anyhow::Result<(StorageBackend, TestConfig)>>,
+{
+    println!("Testing storage backend initialization and write performance...");
+
+    // First initialization (cold start)
+    let start_first = Instant::now();
+    let (storage1, config1) = create_storage().await?;
+    let first_init_duration = start_first.elapsed();
+
+    // Measure first write operation
+    let test_path = config1.test_path("perf-test.txt");
+    let test_data = Bytes::from("Performance test data");
+
+    let start_first_write = Instant::now();
+    storage1.write(&test_path, test_data.clone()).await?;
+    let first_write_duration = start_first_write.elapsed();
+
+    // Verify the write worked
+    let read_data = storage1.read(&test_path).await?;
+    assert_eq!(test_data, read_data);
+    storage1.delete(&test_path).await?;
+
+    // Second initialization (potential caching effects)
+    let start_second = Instant::now();
+    let (storage2, config2) = create_storage().await?;
+    let second_init_duration = start_second.elapsed();
+
+    // Measure second write operation
+    let test_path2 = config2.test_path("perf-test-2.txt");
+
+    let start_second_write = Instant::now();
+    storage2.write(&test_path2, test_data.clone()).await?;
+    let second_write_duration = start_second_write.elapsed();
+
+    // Verify the write worked
+    let read_data2 = storage2.read(&test_path2).await?;
+    assert_eq!(test_data, read_data2);
+    storage2.delete(&test_path2).await?;
+
+    // Log initialization times
+    println!("First initialization took: {:?}", first_init_duration);
+    println!("Second initialization took: {:?}", second_init_duration);
+
+    // Log write times
+    println!("First write operation took: {:?}", first_write_duration);
+    println!("Second write operation took: {:?}", second_write_duration);
+
+    // Log the ratios to see if there's significant difference
+    let init_ratio =
+        first_init_duration.as_secs_f64() / second_init_duration.as_secs_f64().max(0.001);
+    let write_ratio =
+        first_write_duration.as_secs_f64() / second_write_duration.as_secs_f64().max(0.001);
+
+    println!("First/Second initialization time ratio: {:.2}x", init_ratio);
+    println!("First/Second write time ratio: {:.2}x", write_ratio);
+
+    // Log total time for first vs second complete operation
+    let total_first = first_init_duration + first_write_duration;
+    let total_second = second_init_duration + second_write_duration;
+    let total_ratio = total_first.as_secs_f64() / total_second.as_secs_f64().max(0.001);
+
+    println!("Total first operation (init + write): {:?}", total_first);
+    println!("Total second operation (init + write): {:?}", total_second);
+    println!("First/Second total time ratio: {:.2}x", total_ratio);
+
+    // Basic validation that both operations succeeded
+    assert!(
+        first_init_duration.as_millis() > 0,
+        "First initialization should take some time"
+    );
+    assert!(
+        second_init_duration.as_millis() > 0,
+        "Second initialization should take some time"
+    );
+    Ok(())
+}
 
 /// Basic write and read test implementation
 async fn test_write_read_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow::Result<()> {

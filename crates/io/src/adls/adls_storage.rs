@@ -214,8 +214,16 @@ impl LakekeeperStorage for AdlsStorage {
 
         // If the data is small enough, upload in a single request
         if bytes.len() <= MAX_BYTES_PER_REQUEST {
+            // ToDo: Use a single request: https://github.com/Azure/azure-sdk-for-rust/issues/2911
+            let append = client.append(0, bytes);
+
+            append
+                .await
+                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
+
             client
-                .append(0, bytes)
+                .flush(file_length)
+                .close(true)
                 .await
                 .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
         } else {
@@ -260,13 +268,13 @@ impl LakekeeperStorage for AdlsStorage {
             while let Some(result) = upload_stream.next().await {
                 let _ = result?;
             }
-        }
 
-        client
-            .flush(file_length)
-            .close(true)
-            .await
-            .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
+            client
+                .flush(file_length)
+                .close(true)
+                .await
+                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
+        }
 
         Ok(())
     }
