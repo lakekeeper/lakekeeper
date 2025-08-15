@@ -410,7 +410,7 @@ mod test {
 
         let rq: CommitViewRequest = spark_commit_update_request(Some(view.metadata.uuid()));
 
-        let res = super::commit_view(
+        let res = Box::pin(super::commit_view(
             views::ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(
@@ -425,7 +425,7 @@ mod test {
                 remote_signing: false,
             },
             crate::request_metadata::RequestMetadata::new_unauthenticated(),
-        )
+        ))
         .await
         .unwrap();
 
@@ -463,7 +463,7 @@ mod test {
 
         let rq: CommitViewRequest = spark_commit_update_request(Some(Uuid::now_v7()));
 
-        let err = super::commit_view(
+        let err = Box::pin(super::commit_view(
             ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(
@@ -478,7 +478,7 @@ mod test {
                 remote_signing: false,
             },
             crate::request_metadata::RequestMetadata::new_unauthenticated(),
-        )
+        ))
         .await
         .expect_err("This unexpectedly didn't fail the uuid assertion.");
         assert_eq!(err.error.code, 400);

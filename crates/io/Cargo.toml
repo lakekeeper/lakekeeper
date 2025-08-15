@@ -38,6 +38,7 @@ default = ["storage-s3", "storage-adls", "storage-gcs"]
 
 [dependencies]
 anyhow = { workspace = true }
+async-stream = { workspace = true }
 aws-config = { workspace = true, features = [
     "behavior-version-latest",
 ], optional = true }
@@ -71,7 +72,6 @@ url = { workspace = true }
 utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 veil = { workspace = true }
-async-stream = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

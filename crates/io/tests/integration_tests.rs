@@ -347,12 +347,12 @@ where
     storage2.delete(&test_path2).await?;
 
     // Log initialization times
-    println!("First initialization took: {:?}", first_init_duration);
-    println!("Second initialization took: {:?}", second_init_duration);
+    println!("First initialization took: {first_init_duration:?}");
+    println!("Second initialization took: {second_init_duration:?}");
 
     // Log write times
-    println!("First write operation took: {:?}", first_write_duration);
-    println!("Second write operation took: {:?}", second_write_duration);
+    println!("First write operation took: {first_write_duration:?}");
+    println!("Second write operation took: {second_write_duration:?}");
 
     // Log the ratios to see if there's significant difference
     let init_ratio =
@@ -360,17 +360,17 @@ where
     let write_ratio =
         first_write_duration.as_secs_f64() / second_write_duration.as_secs_f64().max(0.001);
 
-    println!("First/Second initialization time ratio: {:.2}x", init_ratio);
-    println!("First/Second write time ratio: {:.2}x", write_ratio);
+    println!("First/Second initialization time ratio: {init_ratio:.2}x");
+    println!("First/Second write time ratio: {write_ratio:.2}x");
 
     // Log total time for first vs second complete operation
     let total_first = first_init_duration + first_write_duration;
     let total_second = second_init_duration + second_write_duration;
     let total_ratio = total_first.as_secs_f64() / total_second.as_secs_f64().max(0.001);
 
-    println!("Total first operation (init + write): {:?}", total_first);
-    println!("Total second operation (init + write): {:?}", total_second);
-    println!("First/Second total time ratio: {:.2}x", total_ratio);
+    println!("Total first operation (init + write): {total_first:?}");
+    println!("Total second operation (init + write): {total_second:?}");
+    println!("First/Second total time ratio: {total_ratio:.2}x");
 
     // Basic validation that both operations succeeded
     assert!(
