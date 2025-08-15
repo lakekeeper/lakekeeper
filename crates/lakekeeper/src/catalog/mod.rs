@@ -244,6 +244,7 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    pub(crate) use crate::tests::memory_io_profile;
     use crate::{
         api::{
             iceberg::{types::Prefix, v1::namespace::NamespaceService},
@@ -254,18 +255,14 @@ pub(crate) mod test {
         implementations::postgres::{PostgresCatalog, SecretsState},
         request_metadata::RequestMetadata,
         service::{
-            authz::Authorizer,
+            authz::{AllowAllAuthorizer, Authorizer},
             storage::{
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-                StorageProfile, TestProfile,
+                StorageProfile,
             },
             State, UserId,
         },
     };
-
-    pub(crate) fn test_io_profile() -> StorageProfile {
-        TestProfile::default().into()
-    }
 
     pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
         let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
@@ -340,6 +337,20 @@ pub(crate) mod test {
             1,
         )
         .await
+    }
+
+    #[sqlx::test]
+    async fn test_setup(pool: PgPool) {
+        let prof = memory_io_profile();
+        setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
     }
 
     macro_rules! impl_pagination_tests {

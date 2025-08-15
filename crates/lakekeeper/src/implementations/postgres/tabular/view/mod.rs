@@ -8,7 +8,7 @@ use iceberg::{
     spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef},
     NamespaceIdent,
 };
-use iceberg_ext::configs::Location;
+use lakekeeper_io::Location;
 pub(crate) use load::load_view;
 use serde::Deserialize;
 use sqlx::{FromRow, Postgres, Transaction};
@@ -542,7 +542,8 @@ pub(crate) mod tests {
         spec::{ViewMetadata, ViewMetadataBuilder},
         NamespaceIdent, TableIdent,
     };
-    use iceberg_ext::configs::{Location, ParseFromStr};
+    use iceberg_ext::configs::ParseFromStr;
+    use lakekeeper_io::Location;
     use serde_json::json;
     use sqlx::PgPool;
     use uuid::Uuid;

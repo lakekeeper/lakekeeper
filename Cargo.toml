@@ -1,12 +1,17 @@
 [workspace]
-members = ["crates/iceberg-ext", "crates/lakekeeper", "crates/lakekeeper-bin"]
+members = [
+    "crates/iceberg-ext",
+    "crates/io",
+    "crates/lakekeeper",
+    "crates/lakekeeper-bin",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 homepage = "https://github.com/lakekeeper/lakekeeper"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
-rust-version = "1.82.0"
+rust-version = "1.86.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -35,10 +40,15 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
 azure_identity = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
-aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
-aws-sdk-sts = "1.65.0"
-aws-smithy-http = "0.62.0"
-aws-smithy-http-client = { version = "1.0.1" }
+azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
+aws-config = { version = "1.8.5", features = ["behavior-version-latest"] }
+aws-sdk-sts = "1.82.0"
+aws-smithy-http = "0.62.3"
+aws-smithy-http-client = { version = "1.0.6" }
+aws-smithy-runtime-api = { version = "1.8.7" }
+aws-smithy-async = { version = "1.2.5" }
 base64 = "0.22.1"
 cloudevents-sdk = { version = "0.8.0" }
 fxhash = "0.2.1"
@@ -63,12 +73,13 @@ reqwest = { version = "^0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "fbc7adca9e72ddee6ccf5d10614dfddc11b1cbd8", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "f4e1f87a42c75851000041a30db7a0096ae51f0b", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",
 ] }
 iso8601 = "0.6.2"
+bytes = "1.10"
 openfga-client = { version = "0.3", features = ["auth-middle"] }
 typed-builder = "^0.21.0"
 async-trait = "0.1.83"
@@ -148,3 +159,4 @@ assert-json-diff = "2.0.2"
 maplit = "1.0.2"
 limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }
+rand = "0.9.2"

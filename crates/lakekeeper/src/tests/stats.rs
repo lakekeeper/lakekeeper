@@ -152,7 +152,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
         .try_init()
         .ok();
     configure_trigger(&pool).await;
-    let prof = crate::tests::test_io_profile();
+    let prof = crate::tests::memory_io_profile();
     let (ctx, warehouse) = crate::tests::setup(
         pool.clone(),
         prof,

@@ -5,7 +5,6 @@ mod primitives;
 pub mod table;
 
 pub use custom::CustomConfig;
-pub use primitives::Location;
 
 pub trait NotCustomProp {}
 

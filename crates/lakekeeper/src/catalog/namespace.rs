@@ -3,8 +3,9 @@ use std::{collections::HashMap, ops::Deref};
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _, Location};
+use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _};
 use itertools::Itertools;
+use lakekeeper_io::Location;
 
 use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
 use crate::{
@@ -762,7 +763,7 @@ mod tests {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         Option<Prefix>,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden namespaces from becoming visible through `can_list_everything`.
@@ -821,7 +822,7 @@ mod tests {
 
     #[sqlx::test]
     async fn cannot_drop_protected_namespace(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
@@ -919,7 +920,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_list_namespaces(pool: PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
@@ -1003,7 +1004,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden namespaces from becoming visible through `can_list_everything`.

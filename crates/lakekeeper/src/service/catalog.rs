@@ -7,11 +7,9 @@ use iceberg::{
     spec::{TableMetadata, ViewMetadata},
     TableUpdate,
 };
+use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
-use iceberg_ext::{
-    catalog::rest::{CatalogConfig, ErrorModel},
-    configs::Location,
-};
+use lakekeeper_io::Location;
 
 use super::{
     authz::TableUuid, storage::StorageProfile, NamespaceId, ProjectId, RoleId, TableId,
@@ -159,7 +157,7 @@ pub struct TableCommit {
     pub new_metadata_location: Location,
     pub previous_metadata_location: Option<Location>,
     pub updates: Vec<TableUpdate>,
-    pub(crate) diffs: TableMetadataDiffs,
+    pub diffs: TableMetadataDiffs,
 }
 
 #[derive(Debug, Clone)]
@@ -175,10 +173,10 @@ pub struct ViewCommit<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
-    pub(crate) namespace_id: NamespaceId,
-    pub(crate) table_ident: &'c TableIdent,
-    pub(crate) metadata_location: Option<&'c Location>,
-    pub(crate) table_metadata: TableMetadata,
+    pub namespace_id: NamespaceId,
+    pub table_ident: &'c TableIdent,
+    pub metadata_location: Option<&'c Location>,
+    pub table_metadata: TableMetadata,
 }
 
 #[derive(Debug, Clone)]

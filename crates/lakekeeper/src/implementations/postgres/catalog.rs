@@ -2,11 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
-use iceberg_ext::{
-    catalog::rest::{CatalogConfig, ErrorModel},
-    configs::Location,
-};
+use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 use itertools::Itertools;
+use lakekeeper_io::Location;
 
 use super::{
     bootstrap::{bootstrap, get_validation_data},

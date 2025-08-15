@@ -124,7 +124,8 @@ where
 }
 
 impl TabularDeleteProfile {
-    pub(crate) fn expiration_seconds(&self) -> Option<chrono::Duration> {
+    #[must_use]
+    pub fn expiration_seconds(&self) -> Option<chrono::Duration> {
         match self {
             Self::Soft { expiration_seconds } => Some(*expiration_seconds),
             Self::Hard {} => None,
@@ -663,9 +664,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         } = request;
 
         storage_profile.normalize(storage_credential.as_ref())?;
-        storage_profile
-            .validate_access(storage_credential.as_ref(), None, &request_metadata)
-            .await?;
+        Box::pin(storage_profile.validate_access(
+            storage_credential.as_ref(),
+            None,
+            &request_metadata,
+        ))
+        .await?;
 
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let warehouse = C::require_warehouse(warehouse_id, transaction.transaction()).await?;
@@ -736,9 +740,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let old_secret_id = warehouse.storage_secret_id;
         let storage_profile = warehouse.storage_profile;
 
-        storage_profile
-            .validate_access(new_storage_credential.as_ref(), None, &request_metadata)
-            .await?;
+        Box::pin(storage_profile.validate_access(
+            new_storage_credential.as_ref(),
+            None,
+            &request_metadata,
+        ))
+        .await?;
 
         let secret_id = if let Some(new_storage_credential) = new_storage_credential {
             Some(
@@ -1185,7 +1192,7 @@ mod test {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         WarehouseId,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
@@ -1267,7 +1274,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 

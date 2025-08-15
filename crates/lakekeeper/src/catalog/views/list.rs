@@ -107,7 +107,7 @@ mod test {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         NamespaceParameters,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let authz = HidingAuthorizer::new();
         // Prevent hidden views from becoming visible through `can_list_everything`.
         authz.block_can_list_everything();
@@ -168,7 +168,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_view_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
         // Prevent hidden views from becoming visible through `can_list_everything`.
@@ -380,7 +380,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_list_views(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz: HidingAuthorizer = HidingAuthorizer::new();
 

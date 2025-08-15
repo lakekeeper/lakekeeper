@@ -126,11 +126,11 @@ Currently, we're not aware of a good way of testing cloud storage integration ag
 # TEST_AZURE=<some-value> controls a proc macro which either includes or excludes the azure tests
 # if you compiled without TEST_AZURE, you'll have to change a file or do a cargo clean before rerunning tests. The same applies for the TEST_AWS and TEST_MINIO env vars.
 export TEST_AZURE=1
-export AZURE_TENANT_ID=<your tenant id>
-export AZURE_CLIENT_ID=<your entra id app registration client id>
-export AZURE_CLIENT_SECRET=<your entra id app registration client secret>
-export AZURE_STORAGE_ACCOUNT_NAME=<your azure storage account name>
-export AZURE_STORAGE_FILESYSTEM=<your azure adls filesystem name>
+export LAKEKEEPER_TEST__AZURE_TENANT_ID=<your tenant id>
+export LAKEKEEPER_TEST__AZURE_CLIENT_ID=<your entra id app registration client id>
+export LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=<your entra id app registration client secret>
+export LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=<your azure storage account name>
+export LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=<your azure adls filesystem name>
 
 export TEST_AWS=1
 export AWS_S3_BUCKET=<your aws s3 bucket>

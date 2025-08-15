@@ -22,6 +22,7 @@ chrono = { workspace = true }
 heck = { workspace = true }
 http = { workspace = true }
 iceberg = { workspace = true }
+lakekeeper-io = { path = "../io", default-features = false }
 paste = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

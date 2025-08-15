@@ -44,9 +44,11 @@ macro_rules! generate_endpoints {
         )*
 
         paste::paste! {
-            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, sqlx::Type, strum::Display)]
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, strum::Display)]
+            #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
             #[strum(serialize_all = "kebab-case")]
-            #[sqlx(type_name = "api_endpoints", rename_all = "kebab-case")]
+            // Only apply the sqlx attribute if the feature is enabled
+            #[cfg_attr(feature = "sqlx", sqlx(type_name = "api_endpoints", rename_all = "kebab-case"))]
             pub enum EndpointFlat {
                 $(
                     $(

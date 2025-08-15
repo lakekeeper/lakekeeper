@@ -87,7 +87,11 @@ pub mod v1 {
         T: std::hash::Hash + Eq + Debug + Clone + 'static,
         V: Debug + 'static,
     {
-        pub(crate) fn map<
+        /// Creates a new `PaginatedMapping` with the specified capacity.
+        ///
+        /// # Errors
+        /// If the provided `key_map` or `value_map` functions return an error
+        pub fn map<
             NewKey: std::hash::Hash + Eq + Debug + Clone + 'static,
             NewVal: Debug + 'static,
         >(
@@ -104,7 +108,7 @@ pub mod v1 {
         }
 
         #[must_use]
-        pub(crate) fn with_capacity(capacity: usize) -> Self {
+        pub fn with_capacity(capacity: usize) -> Self {
             Self {
                 entities: HashMap::with_capacity(capacity),
                 next_page_tokens: Vec::with_capacity(capacity),
@@ -112,7 +116,7 @@ pub mod v1 {
             }
         }
 
-        pub(crate) fn insert(&mut self, key: T, value: V, next_page_token: String) {
+        pub fn insert(&mut self, key: T, value: V, next_page_token: String) {
             if self.entities.insert(key.clone(), value).is_some() {
                 let position = self
                     .ordering

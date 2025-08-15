@@ -4,7 +4,8 @@ use iceberg::{
     spec::{FormatVersion, TableMetadata},
     TableIdent,
 };
-use iceberg_ext::{catalog::rest::ErrorModel, configs::Location};
+use iceberg_ext::catalog::rest::ErrorModel;
+use lakekeeper_io::Location;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 

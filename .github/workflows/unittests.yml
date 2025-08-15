@@ -10,7 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.85
+  RUST_TOOLCHAIN: 1.86
 
 permissions:
   contents: read  # Needed to checkout code
@@ -244,12 +244,12 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcs.json
 
           TEST_AZURE: ${{ secrets.TEST_AZURE }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
-          AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
-          AZURE_STORAGE_SHARED_KEY: ${{ secrets.AZURE_STORAGE_SHARED_KEY }}
+          LAKEKEEPER_TEST__AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          LAKEKEEPER_TEST__AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          LAKEKEEPER_TEST__AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME: ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}
+          LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
+          LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY: ${{ secrets.AZURE_STORAGE_SHARED_KEY }}
 
           TEST_AWS: ${{ secrets.TEST_AWS }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
@@ -271,9 +271,9 @@ jobs:
 
           TEST_GCS: ${{ secrets.TEST_GCS }}
           TEST_GCS_HNS: ${{ secrets.TEST_GCS_HNS }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
-          GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
+          LAKEKEEPER_TEST__GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
+          LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
       - name: Upload junit
         uses: actions/upload-artifact@v4
         with:

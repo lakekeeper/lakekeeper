@@ -20,7 +20,8 @@ use iceberg::{
     },
     TableUpdate,
 };
-use iceberg_ext::{configs::Location, spec::TableMetadata, NamespaceIdent};
+use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
+use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -725,7 +726,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
     list_flags: crate::service::ListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
-    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let (fs_protocol, fs_location) = split_location(location.as_str())?;
     let partial_locations = get_partial_fs_locations(location)?;
 
     // Location might also be a subpath of the table location.
@@ -865,7 +866,8 @@ pub(crate) mod tests {
         },
         NamespaceIdent,
     };
-    use iceberg_ext::{catalog::rest::CreateTableRequest, configs::Location};
+    use iceberg_ext::catalog::rest::CreateTableRequest;
+    use lakekeeper_io::Location;
     use uuid::Uuid;
 
     use super::*;

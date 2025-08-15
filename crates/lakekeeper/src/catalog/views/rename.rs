@@ -118,12 +118,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = Prefix(whi.to_string());
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.clone().into_string()),
-        )
+        ))
         .await
         .unwrap();
         let destination = TableIdent {
@@ -185,12 +185,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = Prefix(whi.to_string());
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.clone().into_string()),
-        )
+        ))
         .await
         .unwrap();
         let destination = TableIdent {

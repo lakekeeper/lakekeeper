@@ -1,18 +1,28 @@
 #![allow(clippy::module_name_repetitions)]
 
-use std::{collections::HashMap, str::FromStr, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock};
 
-use aws_config::{identity::IdentityCache, BehaviorVersion, SdkConfig};
-use aws_sdk_sts::config::{ProvideCredentials as _, SharedIdentityCache};
-use iceberg_ext::configs::{
-    table::{client, custom, s3, TableProperties},
-    ConfigProperty, Location,
+use aws_config::SdkConfig;
+use aws_sdk_sts::config::ProvideCredentials;
+use aws_smithy_runtime_api::client::identity::Identity;
+use iceberg_ext::{
+    catalog::rest::ErrorModel,
+    configs::{
+        table::{client, custom, s3, TableProperties},
+        ConfigProperty,
+    },
+};
+use lakekeeper_io::{
+    s3::{
+        validate_bucket_name, S3AccessKeyAuth, S3Auth, S3AwsSystemIdentityAuth, S3Location,
+        S3Settings, S3Storage,
+    },
+    InvalidLocationError, Location,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use veil::Redact;
 
-use super::StorageType;
 use crate::{
     api::{
         iceberg::{supported_endpoints, v1::DataAccess},
@@ -23,7 +33,8 @@ use crate::{
     service::{
         storage::{
             error::{
-                CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError,
+                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+                UpdateError, ValidationError,
             },
             StoragePermissions, TableConfig,
         },
@@ -33,15 +44,6 @@ use crate::{
 };
 
 static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-static STS_HTTP_CLIENT: LazyLock<aws_sdk_sts::config::SharedHttpClient> = LazyLock::new(|| {
-    aws_smithy_http_client::Builder::new()
-        .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
-            aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
-        ))
-        .build_https()
-});
-static AWS_IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
-    LazyLock::new(|| IdentityCache::lazy().build());
 
 #[derive(
     Debug,
@@ -212,28 +214,6 @@ pub struct S3CloudflareR2Credential {
     pub account_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-enum STSCapableCredential {
-    /// Access key credentials
-    AccessKey(S3AccessKeyCredential),
-    /// System identity credentials
-    AwsSystemIdentity(S3AwsSystemIdentityCredential),
-}
-
-impl STSCapableCredential {
-    /// Get the external ID for the credential.
-    /// Returns `None` if the credential is not an access key.
-    #[must_use]
-    fn external_id(&self) -> Option<&str> {
-        match self {
-            STSCapableCredential::AccessKey(S3AccessKeyCredential { external_id, .. })
-            | STSCapableCredential::AwsSystemIdentity(S3AwsSystemIdentityCredential {
-                external_id,
-            }) => external_id.as_deref(),
-        }
-    }
-}
-
 impl S3Profile {
     /// Allow alternate schemes for S3 locations.
     /// This is disabled by default.
@@ -279,60 +259,20 @@ impl S3Profile {
         }
     }
 
-    /// Create a new `FileIO` instance for S3.
+    /// Create a new S3 client with the provided authentication method.
     ///
     /// # Errors
-    /// Fails if the `FileIO` instance cannot be created.
-    pub async fn file_io(
+    /// - If system identity is requested but disabled in the configuration
+    /// - If the client cannot be initialized
+    pub async fn lakekeeper_io(
         &self,
         credential: Option<&S3Credential>,
-    ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder =
-            iceberg::io::FileIOBuilder::new("s3").with_client((*S3_HTTP_CLIENT).clone());
-
-        builder = builder.with_prop(iceberg::io::S3_REGION, self.region.clone());
-
-        if let Some(endpoint) = &self.endpoint {
-            builder = builder.with_prop(iceberg::io::S3_ENDPOINT, endpoint);
-        }
-        if let Some(path_style_access) = &self.path_style_access {
-            builder = builder.with_prop(
-                iceberg::io::S3_PATH_STYLE_ACCESS,
-                path_style_access.to_string(),
-            );
-        }
-
-        builder = builder.with_prop(
-            iceberg::io::S3_PATH_STYLE_ACCESS,
-            self.path_style_access.unwrap_or_default(),
-        );
-
-        let credentials = self
-            .get_aws_credentials_with_assumed_role(credential)
-            .await?;
-        let builder = if let Some(credentials) = credentials {
-            let builder = builder
-                .with_prop(iceberg::io::S3_ACCESS_KEY_ID, credentials.access_key_id())
-                .with_prop(
-                    iceberg::io::S3_SECRET_ACCESS_KEY,
-                    credentials.secret_access_key(),
-                )
-                .with_prop(iceberg::io::S3_DISABLE_CONFIG_LOAD, "true")
-                .with_prop(iceberg::io::S3_DISABLE_EC2_METADATA, "true");
-
-            if let Some(session_token) = credentials.session_token() {
-                builder.with_prop(iceberg::io::S3_SESSION_TOKEN, session_token)
-            } else {
-                builder
-            }
-        } else {
-            builder
-                .with_prop(iceberg::io::S3_ALLOW_ANONYMOUS, "true")
-                .with_prop(iceberg::io::S3_DISABLE_CONFIG_LOAD, "true")
-                .with_prop(iceberg::io::S3_DISABLE_EC2_METADATA, "true")
-        };
-
-        Ok(builder.build()?)
+    ) -> Result<S3Storage, CredentialsError> {
+        let s3_settings = storage_profile_to_s3_settings(self);
+        let auth = credential
+            .map(|c| S3Auth::try_from(c.clone()))
+            .transpose()?;
+        Ok(s3_settings.get_storage_client(auth.as_ref()).await)
     }
 
     /// Validate the S3 profile.
@@ -347,7 +287,11 @@ impl S3Profile {
         &mut self,
         s3_credential: Option<&S3Credential>,
     ) -> Result<(), ValidationError> {
-        validate_bucket_name(&self.bucket)?;
+        validate_bucket_name(&self.bucket).map_err(|e| InvalidProfileError {
+            source: None,
+            reason: e.to_string(),
+            entity: "bucket".to_string(),
+        })?;
         validate_region(&self.region)?;
         self.normalize_key_prefix()?;
         self.normalize_endpoint()?;
@@ -363,11 +307,11 @@ impl S3Profile {
             && self.sts_role_arn.is_none()
             && self.assume_role_arn.is_none()
         {
-            return Err(ValidationError::InvalidProfile {
+            return Err(InvalidProfileError {
                 source: None,
                 reason: "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
                 entity: "sts-role-arn".to_string(),
-            });
+            }.into());
         }
 
         Ok(())
@@ -411,7 +355,6 @@ impl S3Profile {
     ) -> CatalogConfig {
         let mut defaults = HashMap::new();
 
-        // Only push s3.delete-enabled=false if flag is set
         if self.push_s3_delete_disabled
             && matches!(delete_profile, TabularDeleteProfile::Soft { .. })
         {
@@ -429,13 +372,13 @@ impl S3Profile {
     ///
     /// # Errors
     /// Can fail for un-normalized profiles
-    pub fn base_location(&self) -> Result<S3Location, ValidationError> {
+    pub fn base_location(&self) -> Result<S3Location, InvalidLocationError> {
         let prefix = self
             .key_prefix
             .as_ref()
-            .map(|s| s.split('/').map(std::borrow::ToOwned::to_owned).collect())
+            .map(|s| s.split('/').collect::<Vec<_>>())
             .unwrap_or_default();
-        S3Location::new(self.bucket.clone(), prefix, None)
+        S3Location::new(&self.bucket, &prefix, None)
     }
 
     /// Generate the table configuration for S3.
@@ -457,7 +400,8 @@ impl S3Profile {
         tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
         // If vended_credentials is False and remote_signing is False,
-        // use remote_signing.
+        // use remote_signing. This avoids generating costly STS credentials
+        // for clients that don't need them.
         let mut remote_signing = !vended_credentials || remote_signing;
 
         let mut config = TableProperties::default();
@@ -500,30 +444,26 @@ impl S3Profile {
                         S3Credential::AccessKey(..) | S3Credential::AwsSystemIdentity(..),
                     )
                     | None) => {
-                        let c_sts = match c {
-                            None => None,
-                            Some(S3Credential::AccessKey(k)) => {
-                                Some(STSCapableCredential::AccessKey(k))
-                            }
-                            Some(S3Credential::AwsSystemIdentity(k)) => {
-                                Some(STSCapableCredential::AwsSystemIdentity(k))
-                            }
-                            Some(S3Credential::CloudflareR2(..)) => unreachable!(),
-                        };
+                        let auth = c.map(S3Auth::try_from).transpose()?;
+                        let sts_arn = self
+                            .sts_role_arn
+                            .as_ref()
+                            .or(self.assume_role_arn.as_ref())
+                            .map(String::as_str);
 
-                        if let Some(arn) =
-                            self.sts_role_arn.as_ref().or(self.assume_role_arn.as_ref())
-                        {
-                            self.get_aws_sts_token(table_location, c_sts, arn, storage_permissions)
-                                .await?
-                        } else if S3Flavor::S3Compat == self.flavor {
-                            self.get_s3_compat_sts_token(table_location, c_sts, storage_permissions)
-                                .await?
-                        } else {
+                        if sts_arn.is_none() && S3Flavor::Aws == self.flavor {
                             return Err(TableConfigError::Misconfiguration(
                                 "Either `sts-role-arn` or `assume-role-arn` is required for Storage Profiles with AWS flavor if STS is enabled.".to_string(),
                             ));
                         }
+
+                        self.get_sts_token(
+                            table_location,
+                            auth.as_ref(),
+                            sts_arn,
+                            storage_permissions,
+                        )
+                        .await?
                     }
                 };
 
@@ -650,31 +590,10 @@ impl S3Profile {
             .unwrap())
     }
 
-    async fn get_aws_sts_token(
-        &self,
-        table_location: &Location,
-        cred: Option<STSCapableCredential>,
-        arn: &str,
-        storage_permissions: StoragePermissions,
-    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        self.get_sts_token(table_location, cred, Some(arn), storage_permissions)
-            .await
-    }
-
-    async fn get_s3_compat_sts_token(
-        &self,
-        table_location: &Location,
-        cred: Option<STSCapableCredential>,
-        storage_permissions: StoragePermissions,
-    ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
-        self.get_sts_token(table_location, cred, None, storage_permissions)
-            .await
-    }
-
     async fn get_sts_token(
         &self,
         table_location: &Location,
-        s3_credential: Option<STSCapableCredential>,
+        s3_credential: Option<&S3Auth>,
         role_arn: Option<&str>,
         storage_permissions: StoragePermissions,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
@@ -685,7 +604,7 @@ impl S3Profile {
 
     async fn assume_role_with_sts(
         &self,
-        s3_credentials: Option<STSCapableCredential>,
+        s3_credentials: Option<&S3Auth>,
         role_arn: Option<&str>,
         policy: Option<String>,
     ) -> Result<aws_sdk_sts::types::Credentials, CredentialsError> {
@@ -694,10 +613,7 @@ impl S3Profile {
             .and_then(|c| c.external_id().map(ToString::to_string));
 
         if role_arn.is_none()
-            && matches!(
-                s3_credentials,
-                Some(STSCapableCredential::AwsSystemIdentity { .. })
-            )
+            && matches!(s3_credentials, Some(S3Auth::AwsSystemIdentity { .. }))
             && !CONFIG.s3_enable_direct_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
@@ -709,17 +625,16 @@ impl S3Profile {
         if external_id.is_none()
             && role_arn.is_some()
             && CONFIG.s3_require_external_id_for_system_credentials
-            && matches!(
-                s3_credentials,
-                Some(STSCapableCredential::AwsSystemIdentity { .. })
-            )
+            && matches!(s3_credentials, Some(S3Auth::AwsSystemIdentity { .. }))
         {
             return Err(CredentialsError::Misconfiguration(
                 "An `external-id` is required when using `assume-role-arn`.".to_string(),
             ));
         }
 
-        let sdk_config = self.get_aws_sdk_config(s3_credentials).await?;
+        // We expect that we are able to assume the STS role directly, without needing to assume
+        // the `assume-role-arn` role first.
+        let sdk_config = self.get_aws_sdk_config(s3_credentials, None).await?;
 
         let assume_role_builder = aws_sdk_sts::Client::new(&sdk_config)
             .assume_role()
@@ -765,15 +680,18 @@ impl S3Profile {
         })
     }
 
-    /// Load the native AWS SDK config without assuming any role.
-    async fn get_aws_sdk_config(
+    /// Load the native AWS SDK config, optionally assuming a role if provided.
+    /// `self.assume_role_arn` / `self.sts_role_arn` are not used directly.
+    ///
+    /// # Errors
+    /// Returns an error if the credentials are misconfigured or if the SDK config cannot be loaded
+    pub async fn get_aws_sdk_config(
         &self,
-        s3_credential: Option<STSCapableCredential>,
+        s3_credential: Option<&S3Auth>,
+        assume_role_arn: Option<&str>,
     ) -> Result<SdkConfig, CredentialsError> {
-        if matches!(
-            &s3_credential,
-            Some(STSCapableCredential::AwsSystemIdentity(..))
-        ) && !CONFIG.enable_aws_system_credentials
+        if matches!(&s3_credential, Some(S3Auth::AwsSystemIdentity(..)))
+            && !CONFIG.enable_aws_system_credentials
         {
             return Err(CredentialsError::Misconfiguration(
                 "System identity credentials are disabled in this Lakekeeper deployment."
@@ -781,121 +699,47 @@ impl S3Profile {
             ));
         }
 
-        let loader = match s3_credential {
-            Some(STSCapableCredential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id,
-                aws_secret_access_key,
-                external_id: _,
-            })) => {
-                let aws_credentials = aws_credential_types::Credentials::new(
-                    aws_access_key_id,
-                    aws_secret_access_key,
-                    None,
-                    None,
-                    "lakekeeper-secret-storage",
-                );
-                aws_config::ConfigLoader::default().credentials_provider(aws_credentials)
-            }
-            Some(STSCapableCredential::AwsSystemIdentity(S3AwsSystemIdentityCredential {
-                external_id: _,
-            })) => aws_config::from_env(),
-            None => aws_config::from_env().no_credentials(),
-        }
-        .region(Some(aws_config::Region::new(
-            self.region.as_str().to_string(),
-        )))
-        .behavior_version(BehaviorVersion::latest())
-        .http_client((*STS_HTTP_CLIENT).clone())
-        .identity_cache(AWS_IDENTITY_CACHE.clone());
+        let mut s3_settings = storage_profile_to_s3_settings(self);
+        s3_settings.assume_role_arn = assume_role_arn.map(String::from);
 
-        let loader = if let Some(endpoint) = &self.endpoint {
-            loader.endpoint_url(endpoint.to_string())
-        } else {
-            loader
-        };
-
-        Ok(loader.load().await)
+        Ok(s3_settings.get_sdk_config(s3_credential).await)
     }
 
-    pub(crate) async fn get_aws_credentials_with_assumed_role(
+    /// Get the signing identity for the S3 credentials.
+    ///
+    /// # Errors
+    /// - Returns an error if the credentials are misconfigured or if the signing identity cannot be obtained.
+    pub async fn get_signing_identity(
         &self,
         s3_credential: Option<&S3Credential>,
-    ) -> Result<Option<aws_credential_types::Credentials>, CredentialsError> {
-        let s3_credentials_owned = s3_credential.cloned();
+    ) -> Result<Identity, ErrorModel> {
+        let s3_auth = s3_credential
+            .map(|e| S3Auth::try_from(e.clone()))
+            .transpose()?;
+        let sdk = self
+            .get_aws_sdk_config(s3_auth.as_ref(), self.assume_role_arn.as_deref())
+            .await?;
+        let token_provider = sdk.credentials_provider().ok_or_else(|| {
+            ErrorModel::precondition_failed(
+                "Cannot sign requests for Warehouses without S3 credentials",
+                "SignWithoutCredentials",
+                None,
+            )
+        })?;
 
-        if let Some(assume_role_arn) = &self.assume_role_arn {
-            let s3_credentials_owned: Option<STSCapableCredential> = match s3_credentials_owned {
-                Some(S3Credential::AccessKey(c)) => Some(STSCapableCredential::AccessKey(c)),
-                Some(S3Credential::AwsSystemIdentity(c)) => {
-                    Some(STSCapableCredential::AwsSystemIdentity(c))
-                }
-                Some(S3Credential::CloudflareR2(..)) => {
-                    return Err(CredentialsError::Misconfiguration(
-                        "Cloudflare R2 credentials are not supported for assume role.".to_string(),
-                    ))
-                }
-                None => None,
-            };
-            let aws_sts_credential = self
-                .assume_role_with_sts(s3_credentials_owned, Some(assume_role_arn), None)
-                .await?;
-            let aws_credential = aws_credential_types::Credentials::new(
-                aws_sts_credential.access_key_id(),
-                aws_sts_credential.secret_access_key(),
-                Some(aws_sts_credential.session_token().to_string()),
-                std::time::SystemTime::try_from(*aws_sts_credential.expiration())
-                    .inspect_err(|e| tracing::warn!("Failed to convert AWS smithy expiration for credentials to SystemTime: {e:?}"))
-                    .ok(),
-                "lakekeeper-secret-storage-assume-role",
-            );
-            Ok(Some(aws_credential))
-        } else {
-            match s3_credentials_owned {
-                Some(
-                    S3Credential::AccessKey(S3AccessKeyCredential {
-                        aws_access_key_id,
-                        aws_secret_access_key,
-                        external_id: _,
-                    })
-                    | S3Credential::CloudflareR2(S3CloudflareR2Credential {
-                        access_key_id: aws_access_key_id,
-                        secret_access_key: aws_secret_access_key,
-                        account_id: _,
-                        token: _,
-                    }),
-                ) => {
-                    let aws_credential = aws_credential_types::Credentials::new(
-                        aws_access_key_id,
-                        aws_secret_access_key,
-                        None,
-                        None,
-                        "lakekeeper-secret-storage-native",
-                    );
-                    Ok(Some(aws_credential))
-                }
-                c @ (Some(S3Credential::AwsSystemIdentity(..)) | None) => {
-                    // Should never fail, as AwsSystemIdentityCredentials are STS capable
-                    let sts_credential = c.map(STSCapableCredential::try_from).transpose()?;
+        let identity = token_provider
+            .provide_credentials()
+            .await
+            .map_err(|e| {
+                ErrorModel::precondition_failed(
+                    "Failed to obtain signing identity from S3 credentials",
+                    "SigningIdentityError",
+                    Some(Box::new(e)),
+                )
+            })?
+            .into();
 
-                    let sdk_config = self.get_aws_sdk_config(sts_credential).await?;
-                    let Some(provider) = sdk_config.credentials_provider() else {
-                        return Ok(None);
-                    };
-
-                    let aws_credential = provider
-                        .provide_credentials()
-                        .await
-                        .map_err(|e| {
-                            tracing::error!("Failed to obtain credentials from environment (S3Credential: {s3_credential:?}): {e:?}");
-                            CredentialsError::ShortTermCredential {
-                                source: Some(Box::new(e)),
-                                reason: "Failed to obtain S3 credentials from environment".to_string(),
-                            }
-                        })?;
-                    Ok(Some(aws_credential))
-                }
-            }
-        }
+        Ok(identity)
     }
 
     fn permission_to_actions(storage_permissions: StoragePermissions) -> &'static str {
@@ -997,12 +841,13 @@ impl S3Profile {
         // Aws supports a max of 1024 chars and we need some buffer for tables.
         if let Some(key_prefix) = self.key_prefix.as_ref() {
             if key_prefix.len() > 896 {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
                     reason: "Storage Profile `key_prefix` must be less than 896 characters."
                         .to_string(),
                     entity: "key_prefix".to_string(),
-                });
+                }
+                .into());
             }
         }
         Ok(())
@@ -1011,12 +856,13 @@ impl S3Profile {
     fn normalize_endpoint(&mut self) -> Result<(), ValidationError> {
         if let Some(endpoint) = self.endpoint.as_mut() {
             if endpoint.scheme() != "http" && endpoint.scheme() != "https" {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
                     reason: "Storage Profile `endpoint` must have http or https protocol."
                         .to_string(),
                     entity: "S3Endpoint".to_string(),
-                });
+                }
+                .into());
             }
 
             // If the storage endpoint path is equal to the bucket name, remove it.
@@ -1035,11 +881,12 @@ impl S3Profile {
             // If a non-empty path is provided, it must be a single slash which we remove.
             if !endpoint.path().is_empty() {
                 if endpoint.path() != "/" {
-                    return Err(ValidationError::InvalidProfile {
+                    return Err(InvalidProfileError {
                         source: None,
                         reason: "Storage Profile `endpoint` must not have a path.".to_string(),
                         entity: "S3Endpoint".to_string(),
-                    });
+                    }
+                    .into());
                 }
 
                 endpoint.set_path("/");
@@ -1068,7 +915,7 @@ impl S3Profile {
     fn normalize_r2(
         &mut self,
         _credentials: &S3CloudflareR2Credential,
-    ) -> Result<(), ValidationError> {
+    ) -> Result<(), InvalidProfileError> {
         // No assume role ARNs are supported, set them to None
         self.assume_role_arn = None;
         self.sts_role_arn = None;
@@ -1078,7 +925,7 @@ impl S3Profile {
         // If an endpoint is specified and ends with the bucket, remove the bucket from the endpoint.
         // This is common as in the UI, cloudflare shows the S3 API with the bucket name at the end.
         if self.endpoint.is_none() {
-            return Err(ValidationError::InvalidProfile {
+            return Err(InvalidProfileError {
                 source: None,
                 reason: "Parameter `endpoint` is required for Cloudflare R2.".to_string(),
                 entity: "endpoint".to_string(),
@@ -1086,6 +933,16 @@ impl S3Profile {
         }
 
         Ok(())
+    }
+}
+
+fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
+    S3Settings {
+        region: profile.region.clone(),
+        endpoint: profile.endpoint.clone(),
+        path_style_access: profile.path_style_access,
+        assume_role_arn: profile.assume_role_arn.clone(),
+        aws_kms_key_arn: profile.aws_kms_key_arn.clone(),
     }
 }
 
@@ -1105,8 +962,8 @@ struct R2TemporaryCredentialsResult {
 
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, FileIoError> {
-    let mut builder = iceberg::io::FileIOBuilder::new("s3").with_client((*S3_HTTP_CLIENT).clone());
+) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
+    let mut builder = iceberg::io::FileIOBuilder::new("s3").clone();
 
     for key in [
         s3::Region::KEY,
@@ -1124,64 +981,12 @@ pub(super) fn get_file_io_from_table_config(
     Ok(builder.build()?)
 }
 
-fn validate_region(region: &str) -> Result<(), ValidationError> {
-    if region.len() > 128 {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`region` must be less than 128 characters.".to_string(),
-            entity: "region".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
-    // Bucket names must be between 3 (min) and 63 (max) characters long.
-    if bucket.len() < 3 || bucket.len() > 63 {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`bucket` must be between 3 and 63 characters long.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    // Bucket names can consist only of lowercase letters, numbers, dots (.), and hyphens (-).
-    if !bucket
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
-    {
-        return Err(
-            ValidationError::InvalidProfile {
-                source: None,
-                reason: "Bucket name can consist only of lowercase letters, numbers, dots (.), and hyphens (-).".to_string(),
-                entity: "BucketName".to_string(),
-            }
-        );
-    }
-
-    // Bucket names must begin and end with a letter or number.
-    // Unwrap will not fail as the length is already checked.
-    if !bucket.chars().next().unwrap().is_ascii_alphanumeric()
-        || !bucket.chars().last().unwrap().is_ascii_alphanumeric()
-    {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Bucket name must begin and end with a letter or number.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    // Bucket names must not contain two adjacent periods.
-    if bucket.contains("..") {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Bucket name must not contain two adjacent periods.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    Ok(())
+fn validate_region(region: &str) -> Result<(), InvalidProfileError> {
+    lakekeeper_io::s3::validate_region(region).map_err(|e| InvalidProfileError {
+        source: None,
+        reason: e,
+        entity: "region".to_string(),
+    })
 }
 
 fn push_fsspec_fileio_with_s3v4restsigner(config: &mut TableProperties) {
@@ -1200,194 +1005,64 @@ fn fn_3600() -> u64 {
     3600
 }
 
-// S3Location exists as part of aws_sdk_s3::types, however we don't depend on it yet
-// and there is no parse() function available. The prefix is also represented as a
-// String, which makes it harder to work with.
-#[derive(Debug, Clone, PartialEq)]
-pub struct S3Location {
-    bucket_name: String,
-    key: Vec<String>,
-    // Location is redundant but useful for type-safe access.
-    location: Location,
-    custom_prefix: Option<String>,
-}
-
-impl S3Location {
-    /// Create a new S3 location.
-    ///
-    /// # Errors
-    /// Fails if the bucket name is invalid or the key contains unescaped slashes.
-    pub fn new(
-        bucket_name: String,
-        key: Vec<String>,
-        custom_prefix: Option<String>,
-    ) -> Result<Self, ValidationError> {
-        validate_bucket_name(&bucket_name)?;
-        // Keys may not contain slashes
-        if key.iter().any(|k| k.contains('/')) {
-            return Err(ValidationError::InvalidLocation {
-                source: None,
-                reason: "S3 key contains unescaped slashes (/)".to_string(),
-                location: format!("{key:?}"),
-                storage_type: StorageType::S3,
-            });
-        }
-
-        let location = format!("s3://{bucket_name}");
-        let mut location =
-            Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
-                reason: "Invalid S3 location.".to_string(),
-                location: location.clone(),
-                source: Some(e.into()),
-                storage_type: StorageType::S3,
-            })?;
-        if !key.is_empty() {
-            location.without_trailing_slash().extend(key.iter());
-        }
-
-        Ok(S3Location {
-            bucket_name,
-            key,
-            location,
-            custom_prefix,
-        })
-    }
-
-    #[must_use]
-    pub fn bucket_name(&self) -> &str {
-        &self.bucket_name
-    }
-
-    #[must_use]
-    pub fn key(&self) -> &Vec<String> {
-        &self.key
-    }
-
-    #[must_use]
-    pub fn location(&self) -> &Location {
-        &self.location
-    }
-
-    /// Create a new S3 location from a `Location`.
-    ///
-    /// If `allow_variants` is set to true, `s3a://` and `s3n://` schemes are allowed.
-    ///
-    /// # Errors
-    /// - Fails if the location is not a valid S3 location
-    pub fn try_from_location(
-        location: &Location,
-        allow_variants: bool,
-    ) -> Result<Self, ValidationError> {
-        let is_custom_variant = ["s3a", "s3n"].contains(&location.url().scheme());
-        // Protocol must be s3
-        if (location.url().scheme() != "s3") && !(allow_variants && is_custom_variant) {
-            let reason = if allow_variants {
-                format!(
-                    "S3 location must use s3, s3a or s3n protocol. Found: {}",
-                    location.url().scheme()
-                )
-            } else {
-                format!(
-                    "S3 location must use s3 protocol. Found: {}",
-                    location.url().scheme()
-                )
-            };
-            return Err(ValidationError::InvalidLocation {
-                reason,
-                location: location.to_string(),
-                source: None,
-                storage_type: StorageType::S3,
-            });
-        }
-
-        let bucket_name =
-            location
-                .url()
-                .host_str()
-                .ok_or_else(|| ValidationError::InvalidLocation {
-                    reason: "S3 location does not have a bucket name.".to_string(),
-                    location: location.to_string(),
-                    source: None,
-                    storage_type: StorageType::S3,
-                })?;
-
-        let key: Vec<String> = location
-            .url()
-            .path_segments()
-            .map_or(Vec::new(), |segments| {
-                segments.map(std::string::ToString::to_string).collect()
-            });
-
-        if is_custom_variant {
-            S3Location::new(
-                bucket_name.to_string(),
-                key,
-                Some(location.url().scheme().to_string()),
-            )
-        } else {
-            S3Location::new(bucket_name.to_string(), key, None)
-        }
-    }
-
-    /// Create a new S3 location from a string.
-    ///
-    /// If `allow_s3a` is set to true, `s3a://` and `s3n://` schemes are allowed.
-    ///
-    /// # Errors
-    /// - Fails if the location is not a valid S3 location
-    pub fn try_from_str(s: &str, allow_s3a: bool) -> Result<Self, ValidationError> {
-        let location = Location::from_str(s).map_err(|e| ValidationError::InvalidLocation {
-            reason: "Invalid S3 location.".to_string(),
-            location: s.to_string(),
-            source: Some(e.into()),
-            storage_type: StorageType::S3,
-        })?;
-
-        Self::try_from_location(&location, allow_s3a)
-    }
-
-    /// Always returns `s3://` prefixed location.
-    pub(crate) fn into_normalized_location(self) -> Location {
-        self.location
-    }
-
-    /// Always returns `s3://` prefixed location.
-    pub(crate) fn as_normalized_location(&self) -> &Location {
-        &self.location
-    }
-}
-
-impl From<STSCapableCredential> for S3Credential {
-    fn from(sts_capable_credential: STSCapableCredential) -> Self {
-        match sts_capable_credential {
-            STSCapableCredential::AccessKey(k) => S3Credential::AccessKey(k),
-            STSCapableCredential::AwsSystemIdentity(k) => S3Credential::AwsSystemIdentity(k),
-        }
-    }
-}
-
 impl From<S3CloudflareR2Credential> for S3Credential {
     fn from(cloudflare_credential: S3CloudflareR2Credential) -> Self {
         S3Credential::CloudflareR2(cloudflare_credential)
     }
 }
 
-impl TryFrom<S3Credential> for STSCapableCredential {
+impl From<S3AccessKeyCredential> for S3AccessKeyAuth {
+    fn from(access_key_credential: S3AccessKeyCredential) -> Self {
+        S3AccessKeyAuth {
+            aws_access_key_id: access_key_credential.aws_access_key_id,
+            aws_secret_access_key: access_key_credential.aws_secret_access_key,
+            external_id: access_key_credential.external_id,
+        }
+    }
+}
+
+impl From<S3AwsSystemIdentityCredential> for S3AwsSystemIdentityAuth {
+    fn from(system_identity_credential: S3AwsSystemIdentityCredential) -> Self {
+        S3AwsSystemIdentityAuth {
+            external_id: system_identity_credential.external_id,
+        }
+    }
+}
+
+impl TryFrom<S3Credential> for S3Auth {
     type Error = CredentialsError;
 
     fn try_from(credential: S3Credential) -> Result<Self, Self::Error> {
-        match credential {
-            S3Credential::AccessKey(k) => Ok(STSCapableCredential::AccessKey(k)),
-            S3Credential::AwsSystemIdentity(k) => Ok(STSCapableCredential::AwsSystemIdentity(k)),
-            S3Credential::CloudflareR2(_) => Err(CredentialsError::Misconfiguration(
-                "Cloudflare R2 credentials do not support STS".to_string(),
-            )),
+        if matches!(&credential, S3Credential::AwsSystemIdentity(..))
+            && !CONFIG.enable_aws_system_credentials
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
         }
+
+        Ok(match credential {
+            S3Credential::AccessKey(c) => S3Auth::AccessKey(c.into()),
+            S3Credential::AwsSystemIdentity(c) => S3Auth::AwsSystemIdentity(c.into()),
+            S3Credential::CloudflareR2(S3CloudflareR2Credential {
+                access_key_id,
+                secret_access_key,
+                token: _,
+                account_id: _,
+            }) => S3Auth::AccessKey(S3AccessKeyAuth {
+                aws_access_key_id: access_key_id,
+                aws_secret_access_key: secret_access_key,
+                external_id: None, // Cloudflare R2 does not use external ID
+            }),
+        })
     }
 }
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::str::FromStr as _;
+
     use needs_env_var::needs_env_var;
 
     use super::*;
@@ -1524,38 +1199,6 @@ pub(crate) mod test {
             token: "qux".to_string(),
         });
         assert_eq!(credential, expected);
-    }
-
-    #[test]
-    fn test_is_valid_bucket_name() {
-        let cases = vec![
-            ("foo".to_string(), true),
-            ("my-bucket".to_string(), true),
-            ("my.bucket".to_string(), true),
-            ("my..bucket".to_string(), false),
-            // 64 characters
-            ("a".repeat(63), true),
-            ("a".repeat(64), false),
-            // 2 characters
-            ("a".repeat(2), false),
-            ("a".repeat(3), true),
-            // Special-chars
-            ("1bucket".to_string(), true),
-            ("my_bucket".to_string(), false),
-            ("my-ö-bucket".to_string(), false),
-            // Invalid start / end chars
-            (".my-bucket".to_string(), false),
-            ("my-bucket.".to_string(), false),
-        ];
-
-        for (bucket, expected) in cases {
-            let result = validate_bucket_name(&bucket);
-            if expected {
-                assert!(result.is_ok());
-            } else {
-                assert!(result.is_err());
-            }
-        }
     }
 
     #[test]
@@ -1700,17 +1343,20 @@ pub(crate) mod test {
                     let cred: StorageCredential = cred.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile
-                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                        .await
-                        .unwrap();
+                    Box::pin(profile.validate_access(
+                        Some(&cred),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await
+                    .unwrap();
                 },
                 true,
             );
         }
     }
 
-    #[needs_env_var(TEST_AWS = 1)]
+    // #[needs_env_var(TEST_AWS = 1)]
     pub(crate) mod aws {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
@@ -1743,6 +1389,43 @@ pub(crate) mod test {
         }
 
         #[test]
+        #[tracing_test::traced_test]
+        fn test_signing_identity() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+                    let _identity = profile.get_signing_identity(Some(&cred)).await.unwrap();
+                },
+                true,
+            );
+        }
+
+        #[test]
+        #[tracing_test::traced_test]
+        fn test_signing_identity_with_assumed_role() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            crate::test::test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+                    profile.assume_role_arn = profile.sts_role_arn.clone();
+                    let _identity = profile.get_signing_identity(Some(&cred)).await.unwrap();
+                },
+                true,
+            );
+        }
+
+        #[test]
         fn test_can_validate() {
             // we need to use a shared runtime since the static client is shared between tests here
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
@@ -1755,10 +1438,13 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile
-                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                        .await
-                        .unwrap();
+                    Box::pin(profile.validate_access(
+                        Some(&cred),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await
+                    .unwrap();
                 },
                 true,
             );
@@ -1810,10 +1496,13 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile
-                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                        .await
-                        .unwrap();
+                    Box::pin(profile.validate_access(
+                        Some(&cred),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await
+                    .unwrap();
                 },
                 true,
             );
@@ -1871,67 +1560,16 @@ pub(crate) mod test {
                     let mut profile: StorageProfile = profile.into();
 
                     profile.normalize(Some(&cred)).unwrap();
-                    profile
-                        .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                        .await
-                        .unwrap();
+                    Box::pin(profile.validate_access(
+                        Some(&cred),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await
+                    .unwrap();
                 },
                 true,
             );
-        }
-    }
-
-    #[test]
-    fn test_parse_s3_location() {
-        let cases = vec![
-            (
-                "s3://test-bucket/test_prefix/namespace/table",
-                "test-bucket",
-                vec!["test_prefix", "namespace", "table"],
-            ),
-            (
-                "s3://test-bucket/test_prefix/namespace/table/",
-                "test-bucket",
-                vec!["test_prefix", "namespace", "table", ""],
-            ),
-            (
-                "s3://test-bucket/test_prefix",
-                "test-bucket",
-                vec!["test_prefix"],
-            ),
-            (
-                "s3://test-bucket/test_prefix/",
-                "test-bucket",
-                vec!["test_prefix", ""],
-            ),
-            ("s3://test-bucket/", "test-bucket", vec![""]),
-            ("s3://test-bucket", "test-bucket", vec![]),
-        ];
-
-        for (location, bucket, prefix) in cases {
-            let result = S3Location::try_from_str(location, false).unwrap();
-            assert_eq!(result.bucket_name, bucket);
-            assert_eq!(result.key, prefix);
-            assert_eq!(result.into_normalized_location().to_string(), location);
-        }
-    }
-
-    #[test]
-    fn parse_invalid_s3_location() {
-        let cases = vec![
-            // wrong prefix
-            "abc://test-bucket/foo",
-            "test-bucket/foo",
-            "/test-bucket/foo",
-            // Invalid bucket name
-            "s3://test_bucket/foo",
-            // S3a is not allowed
-            "s3a://test-bucket/foo",
-        ];
-
-        for case in cases {
-            let result = S3Location::try_from_str(case, false);
-            assert!(result.is_err());
         }
     }
 
@@ -1953,34 +1591,6 @@ pub(crate) mod test {
             .unwrap();
         println!("Policy: {policy}");
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
-    }
-
-    #[test]
-    fn test_parse_s3_location_invalid_proto() {
-        S3Location::try_from_str("adls://test-bucket/foo/", false).unwrap_err();
-    }
-
-    #[test]
-    fn test_parse_s3a_location() {
-        let location = S3Location::try_from_str("s3a://test-bucket/foo/", true).unwrap();
-        assert_eq!(
-            location.into_normalized_location().to_string(),
-            "s3://test-bucket/foo/",
-        );
-    }
-
-    #[test]
-    fn test_s3_location_display() {
-        let cases = vec![
-            "s3://bucket/foo",
-            "s3://bucket/foo/bar",
-            "s3://bucket/foo/bar/",
-        ];
-        for case in cases {
-            let location = S3Location::try_from_str(case, false).unwrap();
-            let printed = location.into_normalized_location().to_string();
-            assert_eq!(printed, case);
-        }
     }
 }
 

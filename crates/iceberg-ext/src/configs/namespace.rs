@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt::Debug};
 
-use super::{
-    impl_properties, ConfigParseError, ConfigProperty, Location, NotCustomProp, ParseFromStr,
-};
+use lakekeeper_io::Location;
+
+use super::{impl_properties, ConfigParseError, ConfigProperty, NotCustomProp, ParseFromStr};
 
 impl_properties!(NamespaceProperties, NamespaceProperty);
 

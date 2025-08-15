@@ -7,7 +7,11 @@ check-format:
 	cargo +nightly fmt --all -- --check
 
 check-clippy:
-	cargo clippy --all-targets --all-features --workspace -- -D warnings
+    cargo clippy --no-default-features --all-targets --workspace -- -D warnings
+    cargo clippy --all-targets --all-features --workspace -- -D warnings
+    cargo clippy -p lakekeeper --no-default-features --workspace -- -D warnings
+    cargo clippy -p lakekeeper-io --no-default-features --workspace -- -D warnings
+    cargo clippy -p lakekeeper-io --all-features --workspace -- -D warnings
 
 check-cargo-sort:
 	cargo sort -c -w
@@ -19,6 +23,7 @@ fix-format:
     cargo sort -w
 
 fix:
+    cargo +nightly fmt --all
     cargo clippy --all-targets --all-features --workspace --fix --allow-staged
     cargo +nightly fmt --all
     cargo sort -w

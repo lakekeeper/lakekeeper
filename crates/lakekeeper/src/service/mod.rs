@@ -28,6 +28,7 @@ pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
 pub(crate) use tabular_idents::TabularIdentBorrowed;
 pub use tabular_idents::{TabularId, TabularIdentOwned};
 use task_queue::RegisteredTaskQueues;
@@ -200,6 +201,7 @@ impl ProjectId {
         &self.0
     }
 
+    #[cfg(feature = "sqlx")]
     pub(crate) fn from_db_unchecked(id: String) -> Self {
         Self(id)
     }

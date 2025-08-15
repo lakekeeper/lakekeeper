@@ -158,7 +158,7 @@ async fn setup_tasks_test(pool: PgPool) -> TasksSetup {
         )
         .try_init()
         .ok();
-    let prof = crate::tests::test_io_profile();
+    let prof = crate::tests::memory_io_profile();
     let (ctx, warehouse) = crate::tests::setup(
         pool.clone(),
         prof,

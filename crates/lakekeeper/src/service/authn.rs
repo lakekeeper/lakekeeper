@@ -1,25 +1,28 @@
-use std::{fmt::Debug, str::FromStr};
+use std::fmt::Debug;
+#[cfg(feature = "router")]
+use std::str::FromStr;
 
+#[cfg(feature = "router")]
 use axum::{
     extract::{Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+#[cfg(feature = "router")]
 use axum_extra::{
     headers::{authorization::Bearer, Authorization},
     TypedHeader,
 };
+#[cfg(feature = "router")]
 use http::{HeaderMap, StatusCode};
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use limes::{format_subject, parse_subject, Authenticator, AuthenticatorEnum, Subject};
+use iceberg_ext::catalog::rest::ErrorModel;
+use limes::{format_subject, parse_subject, AuthenticatorEnum, Subject};
 use serde::{Deserialize, Serialize};
 
-use super::{authz::Authorizer, RoleId};
-use crate::{
-    api::{self},
-    request_metadata::RequestMetadata,
-    CONFIG,
-};
+use super::RoleId;
+#[cfg(feature = "router")]
+use crate::request_metadata::RequestMetadata;
+use crate::{api, CONFIG};
 
 pub const IDP_SEPARATOR: char = '~';
 pub const ASSUME_ROLE_HEADER: &str = "x-assume-role";
@@ -41,8 +44,9 @@ pub enum Actor {
     },
 }
 
+#[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct AuthMiddlewareState<T: Authenticator, A: Authorizer> {
+pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authorizer> {
     pub authenticator: T,
     pub authorizer: A,
 }
@@ -178,10 +182,11 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
     }
 }
 
+#[cfg(feature = "router")]
 /// Use a limes [`Authenticator`] to Authenticate a request.
 ///
 /// This middleware needs to run after [`create_request_metadata_with_trace_and_project_fn`](crate::request_metadata::create_request_metadata_with_trace_and_project_fn).
-pub(crate) async fn auth_middleware_fn<T: Authenticator, A: Authorizer>(
+pub(crate) async fn auth_middleware_fn<T: limes::Authenticator, A: super::authz::Authorizer>(
     State(state): State<AuthMiddlewareState<T, A>>,
     authorization: Option<TypedHeader<Authorization<Bearer>>>,
     headers: HeaderMap,
@@ -240,7 +245,10 @@ pub(crate) async fn auth_middleware_fn<T: Authenticator, A: Authorizer>(
     next.run(request).await
 }
 
-fn extract_role_id(headers: &HeaderMap) -> Result<Option<RoleId>, IcebergErrorResponse> {
+#[cfg(feature = "router")]
+fn extract_role_id(
+    headers: &HeaderMap,
+) -> Result<Option<RoleId>, iceberg_ext::catalog::rest::IcebergErrorResponse> {
     if let Some(role_id) = headers.get(ASSUME_ROLE_HEADER) {
         let role_id = role_id.to_str().map_err(|e| {
             ErrorModel::bad_request(

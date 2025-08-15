@@ -59,14 +59,14 @@ impl Display for TabularId {
 // implementing these types via Cow makes them not sized, so we go for two... not ideal.
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum TabularIdentBorrowed<'a> {
+pub enum TabularIdentBorrowed<'a> {
     Table(&'a TableIdent),
     #[allow(dead_code)]
     View(&'a TableIdent),
 }
 
 impl TabularIdentBorrowed<'_> {
-    pub(crate) fn typ_str(&self) -> &'static str {
+    pub fn typ_str(&self) -> &'static str {
         match self {
             TabularIdentBorrowed::Table(_) => "Table",
             TabularIdentBorrowed::View(_) => "View",
@@ -122,7 +122,7 @@ impl<'a> From<TabularIdentBorrowed<'a>> for TabularIdentOwned {
 }
 
 impl TabularIdentBorrowed<'_> {
-    pub(crate) fn to_table_ident_tuple(&self) -> &TableIdent {
+    pub fn to_table_ident_tuple(&self) -> &TableIdent {
         match self {
             TabularIdentBorrowed::Table(ident) | TabularIdentBorrowed::View(ident) => ident,
         }

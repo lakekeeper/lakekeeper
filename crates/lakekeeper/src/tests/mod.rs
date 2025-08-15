@@ -37,8 +37,8 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         storage::{
-            s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-            StorageProfile, TestProfile,
+            s3::S3AccessKeyCredential, MemoryProfile, S3Credential, S3Flavor, S3Profile,
+            StorageCredential, StorageProfile,
         },
         task_queue::TaskQueueRegistry,
         Catalog, SecretStore, State, UserId,
@@ -46,8 +46,8 @@ use crate::{
     WarehouseId, CONFIG,
 };
 
-pub(crate) fn test_io_profile() -> StorageProfile {
-    TestProfile::default().into()
+pub(crate) fn memory_io_profile() -> StorageProfile {
+    MemoryProfile::default().into()
 }
 
 #[allow(dead_code)]
@@ -244,7 +244,7 @@ pub(crate) async fn setup<T: Authorizer>(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
                 project_id: None,
-                storage_profile: test_io_profile(),
+                storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,
             },

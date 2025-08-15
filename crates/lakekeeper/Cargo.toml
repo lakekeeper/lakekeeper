@@ -23,7 +23,7 @@ all = [
 ]
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
-s3-signer = ["dep:aws-sigv4", "dep:aws-credential-types"]
+s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http"]
 nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
@@ -39,11 +39,12 @@ async-nats = { workspace = true, optional = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
-aws-credential-types = { version = "^1.2", optional = true }
+aws-credential-types = { version = "^1.2" }
 aws-sdk-sts = { workspace = true }
 aws-sigv4 = { version = "^1.2", optional = true }
 aws-smithy-http = { workspace = true }
 aws-smithy-http-client = { workspace = true }
+aws-smithy-runtime-api = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true, features = ["typed-header"] }
 axum-prometheus = { workspace = true }
@@ -71,6 +72,11 @@ iso8601 = { workspace = true }
 itertools = { workspace = true }
 jsonwebtoken = "9.3.0"
 jwks_client_rs = { workspace = true }
+lakekeeper-io = { path = "../io", features = [
+    "storage-s3",
+    "storage-adls",
+    "storage-gcs",
+] }
 lazy-regex = { workspace = true }
 lazy_static = { workspace = true }
 limes = { workspace = true }
@@ -116,6 +122,7 @@ veil = { workspace = true }
 assert-json-diff = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
+lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
 needs_env_var = { workspace = true }

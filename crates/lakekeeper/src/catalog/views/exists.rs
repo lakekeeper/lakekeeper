@@ -78,12 +78,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = Prefix(whi.to_string());
-        let _ = create_view(
+        let _ = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.clone().into_string()),
-        )
+        ))
         .await
         .unwrap();
         view_exists(
