@@ -1,5 +1,5 @@
 {
-    "crates/lakekeeper": "0.9.4",
-    "crates/lakekeeper-bin": "0.9.4",
-    "crates/iceberg-ext": "0.9.4"
+    "crates/lakekeeper": "0.9.5",
+    "crates/lakekeeper-bin": "0.9.5",
+    "crates/iceberg-ext": "0.9.5"
 }
