@@ -4,10 +4,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{
-    stream::{self, FuturesUnordered},
-    StreamExt as _,
-};
+use futures::{stream, StreamExt as _};
 use google_cloud_storage::{
     client::Client,
     http::{
@@ -21,13 +18,13 @@ use google_cloud_storage::{
         resumable_upload_client::{ChunkSize, UploadStatus},
     },
 };
+use tokio;
 
 use crate::{
-    calculate_ranges, delete_not_found_is_ok,
+    calculate_ranges, delete_not_found_is_ok, execute_with_parallelism,
     gcs::{gcs_error::parse_error, GcsLocation},
-    safe_usize_to_i32, safe_usize_to_i64, validate_file_size, BatchDeleteError, BatchDeleteResult,
-    DeleteBatchFatalError, DeleteError, ErrorKind, IOError, InvalidLocationError,
-    LakekeeperStorage, Location, ReadError, WriteError,
+    safe_usize_to_i32, safe_usize_to_i64, validate_file_size, DeleteBatchError, DeleteError,
+    ErrorKind, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
@@ -86,94 +83,68 @@ impl LakekeeperStorage for GcsStorage {
     async fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<BatchDeleteResult, DeleteBatchFatalError> {
+    ) -> Result<(), DeleteBatchError> {
         // Create futures for parallel deletion
-        let mut delete_futures = FuturesUnordered::new();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1000));
+        let delete_futures: Vec<_> = paths
+            .into_iter()
+            .map(|path| {
+                let path = path.as_ref();
+                let location = GcsLocation::try_from_str(path)?;
+                let client = self.client.clone();
 
-        // Create delete operations for each path
-        for path in paths {
-            let path = path.as_ref();
-            let location = GcsLocation::try_from_str(path)?;
+                let future = async move {
+                    let delete_request = DeleteObjectRequest {
+                        bucket: location.bucket_name().to_string(),
+                        object: location.object_name(),
+                        ..Default::default()
+                    };
 
-            let semaphore = semaphore.clone();
-            let client = self.client.clone();
+                    let result = client
+                        .delete_object(&delete_request)
+                        .await
+                        .map_err(|e| parse_error(e, location.as_str()));
 
-            let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|e| {
-                    DeleteBatchFatalError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Failed to acquire semaphore permit for GCS deletion: {e}"),
-                        location.as_str().to_string(),
-                    ))
-                })?;
+                    // Convert 404 (not found) to success for idempotent behavior
+                    let result = delete_not_found_is_ok(result);
 
-                let delete_request = DeleteObjectRequest {
-                    bucket: location.bucket_name().to_string(),
-                    object: location.object_name(),
-                    ..Default::default()
+                    Ok::<(GcsLocation, Option<IOError>), DeleteBatchError>((location, result.err()))
                 };
 
-                let result = client
-                    .delete_object(&delete_request)
-                    .await
-                    .map_err(|e| parse_error(e, location.as_str()));
+                Ok::<_, DeleteBatchError>(future)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-                // Convert 404 (not found) to success for idempotent behavior
-                let result = delete_not_found_is_ok(result);
+        let completed_batches = AtomicU64::new(0);
+        let total_batches = delete_futures.len();
 
-                Ok::<(GcsLocation, Option<IOError>), DeleteBatchFatalError>((
-                    location,
-                    result.err(),
-                ))
-            };
+        let delete_stream = execute_with_parallelism(delete_futures, 100).map(|result| {
+            result
+                .map_err(|join_err| {
+                    DeleteBatchError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Task join error during batch delete: {join_err}"),
+                        "batch_operation".to_string(),
+                    ))
+                })
+                .and_then(|inner_result| inner_result)
+        });
+        tokio::pin!(delete_stream);
 
-            delete_futures.push(future);
-        }
-
-        // Process all futures as they complete
-        let counter = AtomicU64::new(0);
-        let mut successful_paths = Vec::new();
-        let mut errors = Vec::new();
-
-        while let Some(result) = delete_futures.next().await {
-            let (location, error_opt) = result?;
-
-            // Increment the counter for each processed operation
-            let batch_index = counter.fetch_add(1, Ordering::Relaxed);
+        while let Some(result) = delete_stream.next().await {
+            let completed_batch = completed_batches.fetch_add(1, Ordering::Relaxed);
+            let (_location, error_opt) = result?;
 
             match error_opt {
-                None => {
-                    // Successful deletion
-                    successful_paths.push(location.as_str().to_string());
-                }
+                None => {}
                 Some(error) => {
-                    // Individual deletion error
-                    if batch_index == 0 {
-                        // If this is the first batch and it failed, return early
-                        return Err(DeleteBatchFatalError::IOError(error));
-                    }
-
-                    // Otherwise, track the error but continue processing
-                    let batch_error = BatchDeleteError::new(
-                        location.as_str().to_string(),
-                        Some(error.kind().to_string()),
-                        error.to_string(),
-                    );
-                    errors.push(batch_error);
+                    return Err(DeleteBatchError::IOError(error.with_context(format!(
+                        "Delete batch {completed_batch} out of {total_batches} failed",
+                    ))));
                 }
             }
         }
 
-        // Return the result based on whether we had any errors
-        if errors.is_empty() {
-            Ok(BatchDeleteResult::AllSuccessful())
-        } else {
-            Ok(BatchDeleteResult::PartialFailure {
-                successful_paths,
-                errors,
-            })
-        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -225,48 +196,44 @@ impl LakekeeperStorage for GcsStorage {
                         .with_context("Failed to prepare resumable upload.")
                 })?;
 
-            let mut upload_futures = FuturesUnordered::new();
-            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+            let upload_futures: Vec<_> = chunks
+                .into_iter()
+                .map(|(offset, chunk)| {
+                    let path = path.to_string();
+                    let upload_client_cloned = upload_client.clone();
+                    let len_bytes = bytes.len() as u64;
 
-            for (offset, chunk) in chunks {
-                let semaphore = semaphore.clone();
-                let path = path.to_string();
-                let upload_client_cloned = upload_client.clone();
-                let len_bytes = bytes.len() as u64;
-
-                let future = async move {
-                    let _permit = semaphore.acquire().await.map_err(|e| {
-                            WriteError::IOError(IOError::new(
-                                ErrorKind::Unexpected,
-                                format!(
-                                "Semaphore closed unexpectedly for GCS download chunk at offset {offset}: {e}",
-                            ),
-                                path.clone(),
-                            ))
-                        })?;
-
-                    let chunk_size = ChunkSize::new(
-                        offset as u64,
-                        offset as u64 + chunk.len() as u64 - 1,
-                        Some(len_bytes),
-                    );
-                    upload_client_cloned
-                        .upload_multiple_chunk(chunk, &chunk_size)
-                        .await
-                        .map_err(|e| {
-                            WriteError::IOError(
-                                parse_error(e, &path).with_context(format!(
+                    async move {
+                        let chunk_size = ChunkSize::new(
+                            offset as u64,
+                            offset as u64 + chunk.len() as u64 - 1,
+                            Some(len_bytes),
+                        );
+                        upload_client_cloned
+                            .upload_multiple_chunk(chunk, &chunk_size)
+                            .await
+                            .map_err(|e| {
+                                WriteError::IOError(parse_error(e, &path).with_context(format!(
                                     "Failed to upload chunk at offset {offset}"
-                                )),
-                            )
-                        })
-                };
-
-                upload_futures.push(future);
-            }
+                                )))
+                            })
+                    }
+                })
+                .collect();
 
             // Wait for all uploads to complete
-            while let Some(result) = upload_futures.next().await {
+            let upload_stream = execute_with_parallelism(upload_futures, 1).map(|result| {
+                result.map_err(|join_err| {
+                    WriteError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Task join error during multipart upload: {join_err}"),
+                        "multipart_upload".to_string(),
+                    ))
+                })
+            });
+            tokio::pin!(upload_stream);
+
+            while let Some(result) = upload_stream.next().await {
                 let _status = result?;
             }
 
@@ -368,47 +335,52 @@ impl LakekeeperStorage for GcsStorage {
 
         request.generation = Some(status.generation);
 
-        let download_futures = FuturesUnordered::new();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
-
         // Calculate the chunks, starting from 0 up to the size of the object in DEFAULT_BYTES_PER_REQUEST chunks
         let file_size = validate_file_size(status.size, location.as_str())?;
         let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
-        for (chunk_index, (start, end)) in chunks.into_iter().enumerate() {
-            let semaphore = semaphore.clone();
-            let client = self.client.clone();
-            let request = request.clone();
-            let path = path.to_string();
 
-            let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|e| {
+        let download_futures: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(chunk_index, (start, end))| {
+                let client = self.client.clone();
+                let request = request.clone();
+                let path = path.to_string();
+
+                async move {
+                    let range = Range(Some(start as u64), Some(end as u64));
+
+                    let chunk_data =
+                        client
+                            .download_object(&request, &range)
+                            .await
+                            .map_err(|e| {
+                                ReadError::IOError(parse_error(e, &path).with_context(format!(
+                                    "Failed to download chunk {chunk_index} (bytes {start}-{end})"
+                                )))
+                            })?;
+
+                    Ok::<(usize, Bytes), ReadError>((chunk_index, Bytes::from(chunk_data)))
+                }
+            })
+            .collect();
+
+        let download_stream = execute_with_parallelism(download_futures, 10).map(|result| {
+            result
+                .map_err(|join_err| {
                     ReadError::IOError(IOError::new(
                         ErrorKind::Unexpected,
-                        format!("Semaphore closed unexpectedly for GCS download chunk {chunk_index}: {e}"),
-                        path.clone(),
+                        format!("Task join error during parallel download: {join_err}"),
+                        "parallel_download".to_string(),
                     ))
-                })?;
-
-                let range = Range(Some(start as u64), Some(end as u64));
-
-                let chunk_data = client
-                    .download_object(&request, &range)
-                    .await
-                    .map_err(|e| {
-                        ReadError::IOError(parse_error(e, &path).with_context(format!(
-                            "Failed to download chunk {chunk_index} (bytes {start}-{end})"
-                        )))
-                    })?;
-
-                Ok::<(usize, Bytes), ReadError>((chunk_index, Bytes::from(chunk_data)))
-            };
-
-            download_futures.push(future);
-        }
+                })
+                .and_then(|inner_result| inner_result)
+        });
+        tokio::pin!(download_stream);
 
         // Use the shared utility function to assemble chunks
         let bytes =
-            crate::assemble_chunks(download_futures, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
+            crate::assemble_chunks(download_stream, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
 
         Ok(bytes)
     }

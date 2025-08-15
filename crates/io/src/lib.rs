@@ -7,21 +7,17 @@
 #![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
 
-use std::{fmt::Display, future::Future, time::Duration};
+use std::{future::Future, time::Duration};
 
 mod error;
 use bytes::Bytes;
 pub use error::{
-    BatchDeleteError, DeleteBatchFatalError, DeleteError, ErrorKind, IOError,
-    InitializeClientError, InvalidLocationError, ReadError, RetryableError, RetryableErrorKind,
-    WriteError,
+    DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InvalidLocationError,
+    ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{
-    stream::{BoxStream, FuturesUnordered},
-    StreamExt as _,
-};
+use futures::{stream::BoxStream, StreamExt as _};
 pub use location::Location;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 pub use tryhard;
 use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
 
@@ -183,7 +179,7 @@ where
     fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<BatchDeleteResult, DeleteBatchFatalError>> + Send;
+    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send;
 
     /// Write the provided data to the specified path.
     fn write(
@@ -229,7 +225,7 @@ where
     ) -> impl Future<Output = Result<(), DeleteError>> + Send {
         async move {
             let path = path.as_ref();
-            let mut delete_futures = FuturesUnordered::new();
+            let mut join_set = JoinSet::new();
 
             // Use the existing list function to get all objects
             let mut list_stream = self.list(path, None).await?;
@@ -252,46 +248,32 @@ where
 
                 // Store the future but don't await yet - allows parallel execution
                 let storage = self.clone();
-                let delete_future =
-                    tokio::spawn(async move { storage.delete_batch(locations).await });
-                delete_futures.push(delete_future);
+                join_set.spawn(async move { storage.delete_batch(locations).await });
             }
 
             if let Err(e) = list_failed {
                 // Abort non-finished futures if listing failed
-                abort_unfinished_batch_delete_futures(delete_futures).await;
+                abort_unfinished_batch_delete_futures(&mut join_set).await;
                 // Return the error from listing
                 return Err(e.into());
             }
 
             // If no objects found, we're done
-            if delete_futures.is_empty() {
+            if join_set.is_empty() {
                 return Ok(());
             }
 
             // Wait for all deletion futures to complete, collecting errors
             let mut return_error = None;
 
-            while let Some(result) = delete_futures.next().await {
+            while let Some(result) = join_set.join_next().await {
                 match result {
-                    Ok(Ok(BatchDeleteResult::AllSuccessful())) => {}
-                    Ok(Ok(BatchDeleteResult::PartialFailure { errors, .. })) => {
-                        // Keep track of the first error we encounter
-                        if return_error.is_none() && !errors.is_empty() {
-                            if let Some(error) = errors.first() {
-                                return_error = Some(DeleteError::IOError(IOError::new(
-                                    ErrorKind::Unexpected,
-                                    format!("Batch delete failed: {error}"),
-                                    path.to_string(),
-                                )));
-                            }
-                        }
-                    }
+                    Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         // Fatal error supersedes PartialErrors
                         return_error = match e {
-                            DeleteBatchFatalError::InvalidLocation(e) => Some(e.into()),
-                            DeleteBatchFatalError::IOError(e) => Some(e.into()),
+                            DeleteBatchError::InvalidLocation(e) => Some(e.into()),
+                            DeleteBatchError::IOError(e) => Some(e.into()),
                         }
                     }
                     Err(e) => {
@@ -337,7 +319,7 @@ impl LakekeeperStorage for StorageBackend {
     fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<BatchDeleteResult, DeleteBatchFatalError>> + Send {
+    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
         let paths: Vec<String> = paths.into_iter().map(|p| p.as_ref().to_string()).collect();
         let storage = self.clone();
         async move {
@@ -459,67 +441,16 @@ impl LakekeeperStorage for StorageBackend {
     }
 }
 
-/// Result of a batch delete operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "this `BatchDeleteResult` may be an `PartialFailure` variant, which should be handled"]
-pub enum BatchDeleteResult {
-    /// All deletions were successful.
-    /// Contains the list of successfully deleted paths.
-    AllSuccessful(),
-    /// Some deletions failed, but some succeeded.
-    /// Contains both successful paths and detailed error information.
-    /// This variant forces callers to handle partial failures explicitly.
-    PartialFailure {
-        successful_paths: Vec<String>,
-        errors: Vec<BatchDeleteError>,
-    },
-}
-
-impl BatchDeleteResult {
-    /// Returns true if all deletions were successful.
-    #[must_use]
-    pub fn is_all_successful(&self) -> bool {
-        matches!(self, BatchDeleteResult::AllSuccessful())
-    }
-
-    /// Returns true if any deletions failed.
-    #[must_use]
-    pub fn has_failures(&self) -> bool {
-        matches!(self, BatchDeleteResult::PartialFailure { .. })
-    }
-
-    /// Returns the list of errors, if any.
-    #[must_use]
-    pub fn errors(&self) -> Option<&[BatchDeleteError]> {
-        match self {
-            BatchDeleteResult::AllSuccessful() => None,
-            BatchDeleteResult::PartialFailure { errors, .. } => Some(errors),
-        }
-    }
-
-    /// Returns the number of errors, if any.
-    #[must_use]
-    pub fn error_count(&self) -> usize {
-        self.errors().map_or(0, <[error::BatchDeleteError]>::len)
-    }
-}
-
-async fn abort_unfinished_batch_delete_futures<R, E>(
-    delete_futures: FuturesUnordered<JoinHandle<Result<R, E>>>,
-) where
-    R: Send,
-    E: Send + Display + std::error::Error,
-{
-    for future in &delete_futures {
-        if !future.is_finished() {
-            future.abort();
-        }
-    }
+async fn abort_unfinished_batch_delete_futures(
+    join_set: &mut JoinSet<Result<(), DeleteBatchError>>,
+) {
+    // Abort all running tasks
+    join_set.abort_all();
 
     // Await all futures, log any errors except Join Errors where `is_canceled` is true
-    for future in delete_futures {
-        match future.await {
-            Ok(Ok(_)) => {}
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
             Err(e) => {
                 if !e.is_cancelled() {
                     tracing::debug!("Unexpected error while awaiting batch deletion future of an aborted task: {e}");
@@ -592,6 +523,58 @@ pub(crate) fn delete_not_found_is_ok(result: Result<(), IOError>) -> Result<(), 
     }
 }
 
+/// Executes futures in parallel with a specified parallelism limit using `JoinSet``.
+///
+/// # Arguments
+/// * `futures` - An iterator of futures to execute
+/// * `parallelism` - Maximum number of futures to execute concurrently
+///
+/// # Returns
+/// A stream of results from futures as they complete, or ends with a `JoinError``
+pub fn execute_with_parallelism<I, F, T>(
+    futures: I,
+    parallelism: usize,
+) -> impl futures::Stream<Item = Result<T, tokio::task::JoinError>>
+where
+    I: IntoIterator<Item = F>,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    async_stream::stream! {
+        let mut join_set = JoinSet::new();
+        let mut futures_iter = futures.into_iter();
+
+        // Initial spawn up to parallelism limit
+        for _ in 0..parallelism {
+            if let Some(future) = futures_iter.next() {
+                join_set.spawn(future);
+            } else {
+                break;
+            }
+        }
+
+        // Process completed futures and spawn new ones
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(value) => {
+                    yield Ok(value);
+
+                    // Spawn the next future if available
+                    if let Some(future) = futures_iter.next() {
+                        join_set.spawn(future);
+                    }
+                }
+                Err(join_error) => {
+                    // Abort all remaining futures
+                    join_set.abort_all();
+                    yield Err(join_error);
+                    return;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,5 +609,74 @@ mod tests {
         // Very small chunk size
         let result = calculate_ranges(5, 1);
         assert_eq!(result, vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_parallelism() {
+        use std::{
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                Arc,
+            },
+            time::Duration,
+        };
+
+        // Test basic functionality
+        let futures = (0..5).map(|i| async move { i * 2 });
+        let results_stream = execute_with_parallelism(futures, 2);
+        tokio::pin!(results_stream);
+
+        let mut results = Vec::new();
+        while let Some(result) = results_stream.next().await {
+            results.push(result);
+        }
+
+        // All futures should complete successfully
+        assert_eq!(results.len(), 5);
+        let mut values: Vec<i32> = results.into_iter().map(|r| r.unwrap()).collect();
+        values.sort_unstable(); // Results may not be in order
+        assert_eq!(values, vec![0, 2, 4, 6, 8]);
+
+        // Test parallelism limit
+        let counter = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let futures = (0..10).map(|_| {
+            let counter = counter.clone();
+            let max_concurrent = max_concurrent.clone();
+            async move {
+                let current = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut max = max_concurrent.load(Ordering::SeqCst);
+                while max < current
+                    && max_concurrent
+                        .compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_err()
+                {
+                    max = max_concurrent.load(Ordering::SeqCst);
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                counter.fetch_sub(1, Ordering::SeqCst);
+                42
+            }
+        });
+
+        let results_stream = execute_with_parallelism(futures, 3);
+        tokio::pin!(results_stream);
+
+        let mut results = Vec::new();
+        while let Some(result) = results_stream.next().await {
+            results.push(result);
+        }
+
+        assert_eq!(results.len(), 10);
+        assert!(results.iter().all(|r| r.as_ref().unwrap() == &42));
+
+        // Verify parallelism was respected (allow some tolerance for timing)
+        let max_observed = max_concurrent.load(Ordering::SeqCst);
+        assert!(
+            max_observed <= 3,
+            "Expected max concurrency <= 3, got {max_observed}",
+        );
     }
 }

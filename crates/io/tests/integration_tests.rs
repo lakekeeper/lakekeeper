@@ -3,7 +3,7 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use lakekeeper_io::{BatchDeleteResult, LakekeeperStorage, StorageBackend};
+use lakekeeper_io::{execute_with_parallelism, LakekeeperStorage, StorageBackend};
 use tokio::{
     runtime::Runtime,
     time::{sleep, Duration},
@@ -219,6 +219,10 @@ test_all_storages!(
     test_remove_all_deletes_directory_impl
 );
 test_all_storages!(
+    test_batch_delete_many_items_some_nonexistant,
+    test_batch_delete_many_items_some_nonexistant_impl
+);
+test_all_storages!(
     test_list_non_existent_directory,
     test_list_non_existent_directory_impl
 );
@@ -334,31 +338,123 @@ async fn test_batch_delete_impl(
     }
 
     // Batch delete all files
-    let result = storage.delete_batch(&written_paths).await?;
-
-    match result {
-        BatchDeleteResult::AllSuccessful() => {}
-        BatchDeleteResult::PartialFailure {
-            successful_paths,
-            errors,
-        } => {
-            // Some storage implementations might have partial failures
-            println!(
-                "Partial failure: {} successful, {} errors",
-                successful_paths.len(),
-                errors.len()
-            );
-            for error in &errors {
-                println!("Batch delete error: {error}");
-            }
-        }
-    }
+    storage.delete_batch(&written_paths).await?;
 
     // Verify all files are deleted
     for path in &written_paths {
         let read_result = storage.read(path).await;
         assert!(read_result.is_err(), "File should be deleted: {path}");
     }
+
+    Ok(())
+}
+
+/// Test batch delete operations implementation
+/// This test verifies that batch delete works even if some files don't exist
+/// Uses parallelism for faster execution and minimal verification
+async fn test_batch_delete_many_items_some_nonexistant_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    // Create a base directory for this test
+    let base_dir = config.test_dir_path("batch-delete-mixed");
+
+    // Define the number of files to create and delete
+    const EXISTING_FILES_COUNT: usize = 1100; // Larger than single S3 batch
+    const NON_EXISTENT_FILES_COUNT: usize = 200;
+    const PARALLEL_BATCH_SIZE: usize = 50; // Number of files to create in parallel
+
+    let mut written_paths = Vec::with_capacity(EXISTING_FILES_COUNT);
+    let mut non_existent_paths = Vec::with_capacity(NON_EXISTENT_FILES_COUNT);
+
+    // Prepare all paths first
+    for i in 0..EXISTING_FILES_COUNT {
+        let filename = format!("file-{i:04}.txt");
+        let path = format!("{base_dir}{filename}");
+        written_paths.push(path);
+    }
+
+    // Generate paths for non-existent files
+    for i in 0..NON_EXISTENT_FILES_COUNT {
+        let filename = format!("non-existent-{i:04}.txt");
+        let path = format!("{base_dir}{filename}");
+        non_existent_paths.push(path);
+    }
+
+    let write_futures = written_paths.iter().map(|path| {
+        let path = path.clone();
+        let content = Bytes::from(format!("Content of {path}"));
+        let storage = storage.clone();
+        async move { storage.write(&path, content).await }
+    });
+    let write_execution = execute_with_parallelism(write_futures, PARALLEL_BATCH_SIZE);
+    tokio::pin!(write_execution);
+
+    // Wait for all write operations to complete
+    while let Some(result) = write_execution.next().await {
+        result??;
+    }
+    println!("Write complete.");
+
+    // Verify files exist by listing directory (much faster than reading each file)
+    let mut list_stream = storage.list(&base_dir, None).await?;
+    let mut listed_locations = Vec::new();
+
+    while let Some(result) = list_stream.next().await {
+        let locations = result?;
+        listed_locations.extend(locations);
+    }
+
+    // Filter out directory entries (ending with '/')
+    let listed_files: Vec<_> = listed_locations
+        .iter()
+        .filter(|loc| !loc.to_string().ends_with('/'))
+        .collect();
+
+    // Just verify we have at least as many files as we wrote
+    assert!(
+        listed_files.len() == EXISTING_FILES_COUNT,
+        "Should find {} files in directory, found {}",
+        EXISTING_FILES_COUNT,
+        listed_files.len()
+    );
+
+    // Combine both lists for batch deletion
+    let all_paths: Vec<String> = written_paths
+        .iter()
+        .chain(non_existent_paths.iter())
+        .cloned()
+        .collect();
+
+    // Batch delete all files (including non-existent ones)
+    let delete_result = storage.delete_batch(&all_paths).await;
+
+    // The operation should succeed even with non-existent files
+    assert!(
+        delete_result.is_ok(),
+        "Batch delete should succeed even with non-existent files"
+    );
+
+    // Verify deletion using list operation instead of individual reads
+    let mut list_stream = storage.list(&base_dir, None).await?;
+    let mut remaining_locations = Vec::new();
+
+    while let Some(result) = list_stream.next().await {
+        let locations = result?;
+        remaining_locations.extend(locations);
+    }
+
+    // Filter out directory entries (ending with '/')
+    let remaining_files: Vec<_> = remaining_locations
+        .iter()
+        .filter(|loc| !loc.to_string().ends_with('/'))
+        .collect();
+
+    assert!(
+        remaining_files.is_empty(),
+        "All files should be deleted, but found {} remaining files",
+        remaining_files.len()
+    );
 
     Ok(())
 }
@@ -857,20 +953,7 @@ async fn test_error_handling_impl(
         config.test_path("does/not/exist1.txt"),
         config.test_path("does/not/exist2.txt"),
     ];
-    let batch_result = storage.delete_batch(non_existent_paths).await?;
-
-    // Different storage backends handle non-existent files differently
-    // Memory and File storage typically succeed, S3 might have different behavior
-    match batch_result {
-        BatchDeleteResult::AllSuccessful() => {
-            // This is fine - some storage backends treat deleting non-existent files as success
-        }
-        BatchDeleteResult::PartialFailure { errors, .. } => {
-            return Err(anyhow::anyhow!(
-                "Batch delete should not have partial failures for non-existent files: {errors:?}"
-            ));
-        }
-    }
+    storage.delete_batch(non_existent_paths).await?;
 
     Ok(())
 }

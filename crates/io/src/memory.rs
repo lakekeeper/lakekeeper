@@ -5,8 +5,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    error::ErrorKind, BatchDeleteError, BatchDeleteResult, DeleteBatchFatalError, DeleteError,
-    IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
+    error::ErrorKind, DeleteBatchError, DeleteError, IOError, InvalidLocationError,
+    LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 /// In-memory storage implementation for testing and development purposes.
@@ -149,39 +149,19 @@ impl LakekeeperStorage for MemoryStorage {
     async fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> Result<BatchDeleteResult, DeleteBatchFatalError> {
+    ) -> Result<(), DeleteBatchError> {
         let paths: Vec<String> = paths.into_iter().map(|p| p.as_ref().to_string()).collect();
-        let mut successful_paths = Vec::new();
-        let mut errors = Vec::new();
 
         for path_str in paths {
             match self.delete(&path_str).await {
-                Ok(()) => successful_paths.push(path_str),
-                Err(DeleteError::InvalidLocation(e)) => {
-                    errors.push(BatchDeleteError::new(
-                        path_str,
-                        Some("InvalidLocation".to_string()),
-                        e.reason,
-                    ));
-                }
-                Err(DeleteError::IOError(e)) => {
-                    errors.push(BatchDeleteError::new(
-                        path_str,
-                        Some(e.kind().to_string()),
-                        e.reason().to_string(),
-                    ));
+                Ok(()) => {}
+                Err(e) => {
+                    return Err(DeleteBatchError::from(e));
                 }
             }
         }
 
-        if errors.is_empty() {
-            Ok(BatchDeleteResult::AllSuccessful())
-        } else {
-            Ok(BatchDeleteResult::PartialFailure {
-                successful_paths,
-                errors,
-            })
-        }
+        Ok(())
     }
 
     async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
@@ -351,8 +331,7 @@ mod tests {
         }
 
         // Batch delete
-        let result = storage.delete_batch(test_paths.clone()).await.unwrap();
-        assert!(result.is_all_successful());
+        storage.delete_batch(test_paths.clone()).await.unwrap();
 
         // Verify files are deleted
         for path in &test_paths {

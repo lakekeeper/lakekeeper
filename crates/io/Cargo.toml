@@ -71,6 +71,7 @@ url = { workspace = true }
 utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 veil = { workspace = true }
+async-stream = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

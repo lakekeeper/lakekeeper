@@ -1,26 +1,23 @@
-use std::{collections::HashMap, str::FromStr, sync::atomic::AtomicU64};
+use std::{collections::HashMap, str::FromStr};
 
 use aws_sdk_s3::types::{ObjectIdentifier, ServerSideEncryption};
 use bytes::Bytes;
-use futures::{
-    stream::{self, FuturesUnordered},
-    StreamExt,
-};
+use futures::{stream, StreamExt};
 
 use crate::{
     error::{ErrorKind, InvalidLocationError, RetryableError},
+    execute_with_parallelism,
     s3::{
         s3_error::{
-            parse_batch_delete_error, parse_complete_multipart_upload_error,
+            parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
             parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
             parse_upload_part_error,
         },
         S3Location,
     },
-    safe_usize_to_i32, validate_file_size, BatchDeleteError, BatchDeleteResult,
-    DeleteBatchFatalError, DeleteError, IOError, LakekeeperStorage, Location, ReadError,
-    WriteError,
+    safe_usize_to_i32, validate_file_size, DeleteBatchError, DeleteError, IOError,
+    LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 // Convert MB constants to bytes - these will always be safe conversions from u16
@@ -74,7 +71,7 @@ impl LakekeeperStorage for S3Storage {
     async fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<BatchDeleteResult, DeleteBatchFatalError> {
+    ) -> Result<(), DeleteBatchError> {
         let s3_locations: HashMap<String, HashMap<String, String>> = group_paths_by_bucket(paths)?;
         let key_to_path_mapping = build_key_to_path_mapping(&s3_locations);
         let delete_futures = create_delete_futures(&self.client, s3_locations)?;
@@ -156,24 +153,13 @@ impl LakekeeperStorage for S3Storage {
                 .map(|(i, chunk)| (i + 1, Bytes::copy_from_slice(chunk))) // S3 part numbers start at 1
                 .collect();
 
-            let mut upload_futures = FuturesUnordered::new();
-            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10)); // Limit concurrent uploads
-
-            for (part_number, chunk_data) in chunks {
-                let semaphore = semaphore.clone();
+            // Create upload futures
+            let upload_futures = chunks.into_iter().map(|(part_number, chunk_data)| {
                 let client = self.client.clone();
                 let s3_location = s3_location.clone();
                 let upload_id = upload_id.to_string();
 
-                let future = async move {
-                    let _permit = semaphore.acquire().await.map_err(|e| {
-                        WriteError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!("Semaphore closed unexpectedly for GCS upload part {part_number}: {e}"),
-                            s3_location.as_str().to_string(),
-                        ))
-                    })?;
-
+                async move {
                     let part_number_i32 = safe_usize_to_i32(part_number, s3_location.as_str())
                         .map_err(|e| e.with_context("Too many parts to write"))?;
                     let upload_part_response = client
@@ -209,15 +195,24 @@ impl LakekeeperStorage for S3Storage {
                         part_number_i32,
                         completed_part,
                     ))
-                };
+                }
+            });
 
-                upload_futures.push(future);
-            }
+            // Execute uploads with parallelism limit of 10
+            let upload_results = execute_with_parallelism(upload_futures, 10);
+            tokio::pin!(upload_results);
 
             // Collect all completed parts
             let mut completed_parts = Vec::new();
-            while let Some(result) = upload_futures.next().await {
-                let (part_number, completed_part) = result?;
+            while let Some(result) = upload_results.next().await {
+                let join_result = result.map_err(|e| {
+                    WriteError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Upload task panicked: {e}"),
+                        s3_location.as_str().to_string(),
+                    ))
+                })?;
+                let (part_number, completed_part) = join_result?;
                 completed_parts.push((part_number, completed_part));
             }
 
@@ -272,26 +267,14 @@ impl LakekeeperStorage for S3Storage {
         }
 
         // For large files, use parallel chunk downloads
-        let download_futures = FuturesUnordered::new();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
-
         let chunks = crate::calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
 
-        for (chunk_index, (start, end)) in chunks.into_iter().enumerate() {
-            let semaphore = semaphore.clone();
+        let download_futures = chunks.into_iter().enumerate().map(|(chunk_index, (start, end))| {
             let client = self.client.clone();
             let s3_location = s3_location.clone();
             let path = path.to_string();
 
-            let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|e| {
-                    ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Semaphore closed unexpectedly for S3 download chunk {chunk_index}: {e}"),
-                        path.clone(),
-                    ))
-                })?;
-
+            async move {
                 let range_header = format!("bytes={start}-{end}");
                 let response = client
                     .get_object()
@@ -311,14 +294,29 @@ impl LakekeeperStorage for S3Storage {
                 })?;
 
                 Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.into_bytes()))
-            };
+            }
+        });
 
-            download_futures.push(future);
-        }
+        // Execute downloads with parallelism limit of 10
+        let download_results = execute_with_parallelism(download_futures, 10);
+        tokio::pin!(download_results);
+
+        // Transform the stream to handle the nested Result and convert JoinError to ReadError
+        let flattened_results = download_results.map(|result| {
+            result
+                .map_err(|join_error| {
+                    ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Download task panicked: {join_error}"),
+                        path.to_string(),
+                    ))
+                })
+                .and_then(|inner| inner)
+        });
 
         // Use the shared utility function to assemble chunks
         let combined_data =
-            crate::assemble_chunks(download_futures, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
+            crate::assemble_chunks(flattened_results, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
 
         Ok(combined_data)
     }
@@ -499,18 +497,18 @@ fn create_delete_futures(
     client: &aws_sdk_s3::Client,
     s3_locations: HashMap<String, HashMap<String, String>>,
 ) -> Result<
-    FuturesUnordered<
-        impl std::future::Future<
-                Output = Result<
-                    aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
-                    AWSBatchDeleteError,
-                >,
-            > + '_,
+    impl Iterator<
+        Item = impl std::future::Future<
+            Output = Result<
+                aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
+                AWSBatchDeleteError,
+            >,
+        > + Send
+                   + 'static,
     >,
     InvalidLocationError,
 > {
-    let delete_futures = FuturesUnordered::new();
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(100));
+    let mut delete_futures = Vec::new();
 
     for (bucket, keys) in s3_locations {
         // Process keys in batches of MAX_DELETE_BATCH_SIZE
@@ -541,18 +539,9 @@ fn create_delete_futures(
                 })?;
 
             let bucket_clone = bucket.clone();
-            let semaphore = semaphore.clone();
+            let client_clone = client.clone();
             let delete_future = async move {
-                // Acquire a permit from the semaphore to limit concurrency
-                let _permit = semaphore.acquire().await.map_err(|e| {
-                    IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Failed to acquire semaphore permit for deletion: {e}"),
-                        format!("s3://{bucket_clone}"),
-                    )
-                })?;
-
-                client
+                client_clone
                     .delete_objects()
                     .bucket(&bucket_clone)
                     .delete(delete)
@@ -565,106 +554,79 @@ fn create_delete_futures(
         }
     }
 
-    Ok(delete_futures)
+    Ok(delete_futures.into_iter())
 }
 
 /// Processes delete results and handles errors as they complete.
 async fn process_delete_results(
-    mut delete_futures: FuturesUnordered<
-        impl std::future::Future<
+    delete_futures: impl Iterator<
+        Item = impl std::future::Future<
             Output = Result<
                 aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
                 AWSBatchDeleteError,
             >,
-        >,
+        > + Send
+                   + 'static,
     >,
     key_to_path_mapping: HashMap<String, String>,
-) -> Result<BatchDeleteResult, IOError> {
-    let mut delete_errors = Vec::new();
-    let mut sdk_errors = Vec::new();
-    let mut successfully_deleted_keys = std::collections::HashSet::new();
+) -> Result<(), IOError> {
+    // Execute delete operations with parallelism limit of 100
+    let delete_results = execute_with_parallelism(delete_futures, 100);
+    tokio::pin!(delete_results);
 
-    // Process all futures, collecting both individual delete errors and SDK-level errors
-    let counter = AtomicU64::new(0);
-    while let Some(result) = delete_futures.next().await {
+    let completed_batches = std::sync::atomic::AtomicU64::new(0);
+    let mut total_batches = 0;
+
+    while let Some(result) = delete_results.next().await {
+        let completed_batch = completed_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        total_batches += 1;
+
+        // Handle join error
+        let aws_result = result.map_err(|e| {
+            IOError::new(
+                ErrorKind::Unexpected,
+                format!("Delete task panicked: {e}"),
+                "S3 batch delete".to_string(),
+            )
+        })?;
+
         // Increment the counter for each processed batch
-        let batch_index = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match result {
+        match aws_result {
             Ok(output) => {
-                // Track successfully deleted objects
-                for deleted_object in output.deleted() {
-                    if let Some(key) = deleted_object.key() {
-                        successfully_deleted_keys.insert(key.to_string());
-                    }
-                }
-
                 // Check if there were any errors in the delete operation response
                 let errors = output.errors();
-                for error in errors {
+                let total_errors = errors.len();
+                if let Some(error) = errors.first() {
                     let error_key = error.key().map(String::from);
-                    let original_path = error_key
+                    let path = error_key
                         .as_ref()
                         .and_then(|key| key_to_path_mapping.get(key))
-                        .cloned();
+                        .cloned()
+                        .or(error_key)
+                        .unwrap_or_else(|| "Unknown".to_string());
 
-                    let batch_error = BatchDeleteError::new(
-                        original_path.or(error_key).unwrap_or("Unknown".to_string()),
-                        error.code().map(String::from),
-                        error
-                            .message()
-                            .map_or_else(|| format!("{error:?}"), String::from),
+                    return Err(
+                        parse_aws_sdk_error(error, path.as_str()).with_context(format!(
+                            "Delete batch {completed_batch} out of {total_batches} failed with {total_errors} errors"
+                        )),
                     );
-                    delete_errors.push(batch_error);
                 }
             }
             Err(e) => {
-                // Network or other SDK-level error - collect but don't return early.
-                // This allows other batches to continue processing. Exit only if this is the first batch.
-                if batch_index == 0 {
-                    match e {
-                        AWSBatchDeleteError::IOError(io_error) => return Err(io_error),
-                        AWSBatchDeleteError::SDKError(sdk_error) => {
-                            return Err(parse_batch_delete_error(sdk_error));
-                        }
+                // Network or other SDK-level error
+                match e {
+                    AWSBatchDeleteError::IOError(io_error) => return Err(io_error),
+                    AWSBatchDeleteError::SDKError(sdk_error) => {
+                        return Err(parse_batch_delete_error(sdk_error).with_context(format!(
+                            "Delete batch {completed_batch} out of {total_batches} failed"
+                        )));
                     }
                 }
-                sdk_errors.push(e);
             }
         }
     }
 
-    // If we had SDK-level errors, we need to decide how to handle them
-    // Since we can't determine which specific keys failed, we treat this as a fatal error
-    if !sdk_errors.is_empty() {
-        let error_messages: Vec<String> = sdk_errors
-            .iter()
-            .map(|e| match e {
-                AWSBatchDeleteError::SDKError(sdk_error) => {
-                    format!("SDK error: {sdk_error}")
-                }
-                AWSBatchDeleteError::IOError(io_error) => io_error.to_string(),
-            })
-            .collect();
-        return Err(IOError::new_without_location(
-            ErrorKind::Unexpected,
-            error_messages.join("; ").to_string(),
-        ));
-    }
-
-    // Convert successfully deleted keys back to original paths
-    let successful_paths: Vec<String> = successfully_deleted_keys
-        .into_iter()
-        .filter_map(|key| key_to_path_mapping.get(&key).cloned())
-        .collect();
-
-    if delete_errors.is_empty() {
-        Ok(BatchDeleteResult::AllSuccessful())
-    } else {
-        Ok(BatchDeleteResult::PartialFailure {
-            successful_paths,
-            errors: delete_errors,
-        })
-    }
+    Ok(())
 }
 
 fn s3_key_to_str(key: &[&str]) -> String {

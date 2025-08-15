@@ -78,46 +78,55 @@ impl RetryableError for ReadError {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum DeleteBatchFatalError {
+pub enum DeleteBatchError {
     #[error("Invalid Location during batch deletion - {0}")]
     InvalidLocation(#[from] InvalidLocationError),
     #[error("Failed to batch delete objects: {0}")]
     IOError(#[from] IOError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatchDeleteError {
-    /// The path that was failed for deletion, if available
-    pub path: String,
-    /// Error code from the storage service, if available
-    pub error_code: Option<String>,
-    /// Error message from the storage service
-    pub error_message: String,
-}
-
-impl BatchDeleteError {
-    #[must_use]
-    pub fn new(path: String, error_code: Option<String>, error_message: String) -> Self {
-        Self {
-            path,
-            error_code,
-            error_message,
+impl From<DeleteError> for DeleteBatchError {
+    fn from(err: DeleteError) -> Self {
+        match err {
+            DeleteError::InvalidLocation(e) => DeleteBatchError::InvalidLocation(e),
+            DeleteError::IOError(e) => DeleteBatchError::IOError(e),
         }
     }
 }
 
-impl std::fmt::Display for BatchDeleteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Failed to delete path '{}': ", self.path)?;
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub struct BatchDeleteError {
+//     /// The path that was failed for deletion, if available
+//     pub path: String,
+//     /// Error code from the storage service, if available
+//     pub error_code: Option<String>,
+//     /// Error message from the storage service
+//     pub error_message: String,
+// }
 
-        match (&self.error_code, &self.error_message) {
-            (Some(code), message) => write!(f, "{code} - {message}"),
-            (None, message) => write!(f, "{message}"),
-        }
-    }
-}
+// impl BatchDeleteError {
+//     #[must_use]
+//     pub fn new(path: String, error_code: Option<String>, error_message: String) -> Self {
+//         Self {
+//             path,
+//             error_code,
+//             error_message,
+//         }
+//     }
+// }
 
-impl std::error::Error for BatchDeleteError {}
+// impl std::fmt::Display for BatchDeleteError {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "Failed to delete path '{}': ", self.path)?;
+
+//         match (&self.error_code, &self.error_message) {
+//             (Some(code), message) => write!(f, "{code} - {message}"),
+//             (None, message) => write!(f, "{message}"),
+//         }
+//     }
+// }
+
+// impl std::error::Error for BatchDeleteError {}
 
 #[derive(thiserror::Error, Debug)]
 #[error("IO operation failed ({kind}): {message}{}. Source: {}", location.as_ref().map_or(String::new(), |l| format!(" at `{l}`")), source.as_ref().map_or(String::new(), |s| format!("{s:#}")))]

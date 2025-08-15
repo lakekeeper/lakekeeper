@@ -187,6 +187,20 @@ pub(crate) fn parse_list_objects_v2_error(
     IOError::new(lakekeeper_kind, msg, location.to_string()).set_source(e)
 }
 
+pub(crate) fn parse_aws_sdk_error(err: &aws_sdk_s3::types::Error, location: &str) -> IOError {
+    let lakekeeper_kind = err
+        .code()
+        .and_then(|s| S3ErrorCode::from_str(s).ok())
+        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+
+    let msg = err.message().map_or_else(
+        || format!("Unknown S3 SDK error: {err:?}"),
+        |m| format!("S3 SDK error: {m}"),
+    );
+
+    IOError::new(lakekeeper_kind, msg, location.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, strum_macros::EnumString, strum_macros::Display)]
 enum S3ErrorCode {
     SlowDown,

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, num::NonZeroU32, str::FromStr, sync::atomic::AtomicU64};
+use std::{
+    collections::HashMap,
+    num::NonZeroU32,
+    str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use azure_core::prelude::Range;
 use azure_storage::CloudLocation;
@@ -6,15 +11,15 @@ use azure_storage_datalake::prelude::{
     DataLakeClient, DirectoryClient, FileClient, FileSystemClient,
 };
 use bytes::Bytes;
-use futures::{stream::FuturesUnordered, StreamExt as _};
+use futures::StreamExt as _;
+use tokio;
 
 use crate::{
     adls::{adls_error::parse_error, AdlsLocation},
     calculate_ranges, delete_not_found_is_ok,
     error::ErrorKind,
-    safe_usize_to_i64, validate_file_size, BatchDeleteError, BatchDeleteResult,
-    DeleteBatchFatalError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
-    ReadError, WriteError,
+    execute_with_parallelism, safe_usize_to_i64, validate_file_size, DeleteBatchError, DeleteError,
+    IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 #[derive(Debug, Clone)]
@@ -119,16 +124,15 @@ impl LakekeeperStorage for AdlsStorage {
     async fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<BatchDeleteResult, DeleteBatchFatalError> {
+    ) -> Result<(), DeleteBatchError> {
         // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
         // Create futures for parallel deletion
-        let mut delete_futures = FuturesUnordered::new();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1000));
+        let mut delete_futures = Vec::new();
 
         // Create delete operations for each path
-        for ((_account, _filesystem), paths) in &grouped_paths {
+        for ((_account, _filesystem), paths) in grouped_paths {
             if paths.is_empty() {
                 continue; // Skip empty groups
             }
@@ -138,15 +142,7 @@ impl LakekeeperStorage for AdlsStorage {
                 let file_client = filesystem_client.get_file_client(path.blob_name());
                 let mut deletion_stream = file_client.delete().into_stream();
 
-                let _permit = semaphore.acquire().await.map_err(|e| {
-                    DeleteBatchFatalError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Failed to acquire semaphore permit for deletion: {e}"),
-                        path.location().to_string(),
-                    ))
-                })?;
-
-                delete_futures.push(async move {
+                let future = async move {
                     let mut last_err = None;
                     while let Some(result) = deletion_stream.next().await {
                         let result = result
@@ -159,59 +155,45 @@ impl LakekeeperStorage for AdlsStorage {
                     }
 
                     if let Some(e) = last_err {
-                        (path, Some(e))
+                        Ok::<(AdlsLocation, Option<IOError>), DeleteBatchError>((path, Some(e)))
                     } else {
-                        (path, None)
+                        Ok((path, None))
                     }
-                });
+                };
+
+                delete_futures.push(future);
             }
         }
 
-        // Process all futures as they complete
-        let counter = AtomicU64::new(0);
-        let mut successful_paths = Vec::new();
-        let mut errors = Vec::new();
+        let completed_batches = AtomicU64::new(0);
+        let total_batches = delete_futures.len();
 
-        while let Some(result) = delete_futures.next().await {
-            // Increment the counter for each processed operation
-            let batch_index = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let delete_stream = execute_with_parallelism(delete_futures, 100).map(|result| {
+            result
+                .map_err(|join_err| {
+                    DeleteBatchError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Task join error during batch delete: {join_err}"),
+                        "batch_operation".to_string(),
+                    ))
+                })
+                .and_then(|inner_result| inner_result)
+        });
+        tokio::pin!(delete_stream);
 
-            match result {
-                (path, None) => {
-                    // Successful deletion
-                    successful_paths.push(path);
-                }
-                (location, Some(error)) => {
-                    // Individual deletion error
-                    if batch_index == 0 {
-                        // If this is the first batch and it failed, return early
-                        return Err(DeleteBatchFatalError::IOError(error));
-                    }
-
-                    // Otherwise, track the error but continue processing
-                    let batch_error = BatchDeleteError::new(
-                        location.location().to_string(),
-                        Some(error.kind().to_string()),
-                        error.to_string(),
-                    );
-                    errors.push(batch_error);
+        while let Some(result) = delete_stream.next().await {
+            let completed_batch = completed_batches.fetch_add(1, Ordering::Relaxed);
+            match result? {
+                (_path, None) => {}
+                (_location, Some(error)) => {
+                    return Err(DeleteBatchError::IOError(error.with_context(format!(
+                        "Delete batch {completed_batch} out of {total_batches} failed",
+                    ))));
                 }
             }
         }
 
-        // Return the result based on whether we had any errors
-        if errors.is_empty() {
-            Ok(BatchDeleteResult::AllSuccessful())
-        } else {
-            let successful_paths: Vec<String> = successful_paths
-                .into_iter()
-                .map(|p| p.location().to_string())
-                .collect();
-            Ok(BatchDeleteResult::PartialFailure {
-                successful_paths,
-                errors,
-            })
-        }
+        Ok(())
     }
 
     async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
@@ -248,37 +230,35 @@ impl LakekeeperStorage for AdlsStorage {
                 .collect();
 
             // Create futures for concurrent uploads with a limit of 10 parallel requests
-            let mut upload_futures = FuturesUnordered::new();
-            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+            let upload_futures: Vec<_> = chunks
+                .into_iter()
+                .map(|(offset, chunk)| {
+                    let client = client.clone();
+                    let path = path.to_string();
 
-            for (offset, chunk) in chunks {
-                let client = client.clone();
-                let path = path.to_string();
-                let semaphore = semaphore.clone();
-
-                let future = async move {
-                    let _permit = semaphore.acquire().await.map_err(|e| {
-                        WriteError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!(
-                                "Failed to acquire semaphore permit for chunk at offset {offset}: {e}",
-                            ),
-                            path.clone(),
-                        ))
-                    })?;
-
-                    client
-                        .append(offset, chunk)
-                        .await
-                        .map_err(|e| WriteError::IOError(parse_error(e, &path)))
-                };
-
-                upload_futures.push(future);
-            }
+                    async move {
+                        client
+                            .append(offset, chunk)
+                            .await
+                            .map_err(|e| WriteError::IOError(parse_error(e, &path)))
+                    }
+                })
+                .collect();
 
             // Wait for all uploads to complete
-            while let Some(result) = upload_futures.next().await {
-                result?;
+            let upload_stream = execute_with_parallelism(upload_futures, 10).map(|result| {
+                result.map_err(|join_err| {
+                    WriteError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Task join error during multipart upload: {join_err}"),
+                        "multipart_upload".to_string(),
+                    ))
+                })
+            });
+            tokio::pin!(upload_stream);
+
+            while let Some(result) = upload_stream.next().await {
+                let _ = result?;
             }
         }
 
@@ -332,56 +312,59 @@ impl LakekeeperStorage for AdlsStorage {
             return self.read_single(path).await;
         }
 
-        let download_futures = FuturesUnordered::new();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
-
         let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
 
-        for (chunk_index, (start, end)) in chunks.into_iter().enumerate() {
-            let semaphore = semaphore.clone();
-            let client = client.clone();
-            let path = path.to_string();
+        let download_futures: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(chunk_index, (start, end))| {
+                let client = client.clone();
+                let path = path.to_string();
 
-            let future = async move {
-                let _permit = semaphore.acquire().await.map_err(|e| {
+                async move {
+                    let chunk_data = client
+                        .read()
+                        .range(Range::new(start as u64, (end + 1) as u64))
+                        .await
+                        .map_err(|e| {
+                            ReadError::IOError(parse_error(e, &path).with_context(format!(
+                                "Failed to download chunk {chunk_index} (bytes {start}-{end})"
+                            )))
+                        })?;
+
+                    if chunk_data.last_modified != status.last_modified {
+                        return Err(ReadError::IOError(IOError::new(
+                            ErrorKind::Unexpected,
+                            format!(
+                                "File was modified during multi-part download: expected last modified time {}, got {}",
+                                status.last_modified,
+                                chunk_data.last_modified
+                            ),
+                            path.clone(),
+                        )));
+                    }
+
+                    Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.data))
+                }
+            })
+            .collect();
+
+        let download_stream = execute_with_parallelism(download_futures, 10).map(|result| {
+            result
+                .map_err(|join_err| {
                     ReadError::IOError(IOError::new(
                         ErrorKind::Unexpected,
-                        format!("Semaphore closed unexpectedly for ADLS download chunk {chunk_index}: {e}"),
-                        path.clone(),
+                        format!("Task join error during parallel download: {join_err}"),
+                        "parallel_download".to_string(),
                     ))
-                })?;
-
-                let chunk_data = client
-                    .read()
-                    .range(Range::new(start as u64, (end + 1) as u64))
-                    .await
-                    .map_err(|e| {
-                        ReadError::IOError(parse_error(e, &path).with_context(format!(
-                            "Failed to download chunk {chunk_index} (bytes {start}-{end})"
-                        )))
-                    })?;
-
-                if chunk_data.last_modified != status.last_modified {
-                    return Err(ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!(
-                            "File was modified during multi-part download: expected last modified time {}, got {}",
-                            status.last_modified,
-                            chunk_data.last_modified
-                        ),
-                        path.clone(),
-                    )));
-                }
-
-                Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.data))
-            };
-
-            download_futures.push(future);
-        }
+                })
+                .and_then(|inner_result| inner_result)
+        });
+        tokio::pin!(download_stream);
 
         // Use the shared utility function to assemble chunks
         let bytes =
-            crate::assemble_chunks(download_futures, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
+            crate::assemble_chunks(download_stream, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
 
         Ok(bytes)
     }
