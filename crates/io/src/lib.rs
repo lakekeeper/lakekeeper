@@ -79,16 +79,6 @@ pub enum OperationType {
     List,
 }
 
-// #[derive(Debug, Clone)]
-// pub struct RefreshingLakekeeperIo<C: StorageCredentialProvider, I: LakekeeperStorage> {
-//     credential_provider: Arc<C>,
-//     lakekeeper_io: Arc<RwLock<(Arc<I>, std::time::Instant)>>,
-//     inner: Arc<RefreshingIo>,
-// }
-
-// #[derive(Debug, Clone)]
-// struct RefreshingIo {}
-
 #[derive(Debug, Clone, derive_more::From)]
 pub enum StorageBackend {
     #[cfg(feature = "storage-s3")]
