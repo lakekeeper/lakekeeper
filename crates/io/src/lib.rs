@@ -12,8 +12,8 @@ use std::{future::Future, time::Duration};
 mod error;
 use bytes::Bytes;
 pub use error::{
-    DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InvalidLocationError,
-    ReadError, RetryableError, RetryableErrorKind, WriteError,
+    DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
+    InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
 use futures::{stream::BoxStream, StreamExt as _};
 pub use location::Location;

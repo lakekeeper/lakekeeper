@@ -254,9 +254,11 @@ impl GcsProfile {
                 l.extend(prefix.iter());
                 l
             })
-            .map_err(|e| InvalidLocationError {
-                reason: format!("Invalid GCS location. {e}"),
-                location: format!("gs://{}/", self.bucket),
+            .map_err(|e| {
+                InvalidLocationError::new(
+                    format!("gs://{}/", self.bucket),
+                    format!("Failed to create base location for GCS profile: {e}"),
+                )
             })
     }
 

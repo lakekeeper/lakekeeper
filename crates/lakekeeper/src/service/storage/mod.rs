@@ -179,30 +179,6 @@ impl StorageProfile {
                 lakekeeper_io::memory::MemoryStorage::new(),
             )),
         }
-        // match self {
-        //     StorageProfile::S3(profile) => {
-        //         profile
-        //             .file_io(secret.map(|s| s.try_to_s3()).transpose()?)
-        //             .await
-        //     }
-        //     StorageProfile::Adls(prof) => {
-        //         prof.file_io(
-        //             secret
-        //                 .map(|s| s.try_to_az())
-        //                 .transpose()?
-        //                 .ok_or_else(|| CredentialsError::MissingCredential(self.storage_type()))?,
-        //         )
-        //         .await
-        //     }
-        //     #[cfg(test)]
-        //     StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
-        //     StorageProfile::Gcs(prof) => Ok(prof.file_io(
-        //         secret
-        //             .map(|s| s.try_into_gcs())
-        //             .transpose()?
-        //             .ok_or_else(|| CredentialsError::MissingCredential(self.storage_type()))?,
-        //     )?),
-        // }
     }
 
     /// Get the base location of this Storage Profiles
@@ -216,9 +192,11 @@ impl StorageProfile {
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
             StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
-                .map_err(|_| InvalidLocationError {
-                    reason: "Invalid base location for memory profile".to_string(),
-                    location: profile.base_location.clone(),
+                .map_err(|_| {
+                    InvalidLocationError::new(
+                        profile.base_location.clone(),
+                        "Invalid base location for memory profile".to_string(),
+                    )
                 })?),
         }
     }
@@ -416,10 +394,10 @@ impl StorageProfile {
                 );
                 Err(ValidationError::IoOperationFailed(io_error))
             }
-            Ok(false) => Err(InvalidLocationError {
-                reason: "Files are left after remove_all on test location".to_string(),
-                location: test_location.to_string(),
-            }
+            Ok(false) => Err(InvalidLocationError::new(
+                test_location.to_string(),
+                "Files are left after remove_all on test location".to_string(),
+            )
             .into()),
             Ok(true) => {
                 tracing::debug!("Location is empty");

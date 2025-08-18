@@ -523,9 +523,11 @@ fn create_delete_futures(
                     ObjectIdentifier::builder()
                         .key(&key.0)
                         .build()
-                        .map_err(|e| InvalidLocationError {
-                            reason: format!("Could not build S3 ObjectIdentifier: {e}"),
-                            location: key.0.clone(),
+                        .map_err(|e| {
+                            InvalidLocationError::new(
+                                key.0.clone(),
+                                format!("Could not build S3 ObjectIdentifier: {e}"),
+                            )
                         })
                 })
                 .collect::<Result<_, _>>()?;
@@ -533,9 +535,11 @@ fn create_delete_futures(
             let delete = aws_sdk_s3::types::Delete::builder()
                 .set_objects(Some(objects))
                 .build()
-                .map_err(|e| InvalidLocationError {
-                    reason: format!("Could not build S3 Delete: {e}"),
-                    location: format!("s3://{bucket}"),
+                .map_err(|e| {
+                    InvalidLocationError::new(
+                        format!("s3://{bucket}"),
+                        format!("Could not build S3 Delete: {e}"),
+                    )
                 })?;
 
             let bucket_clone = bucket.clone();

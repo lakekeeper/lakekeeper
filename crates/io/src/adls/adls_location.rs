@@ -64,41 +64,36 @@ impl AdlsLocation {
         );
 
         if !ADLS_CUSTOM_SCHEMES.contains(&scheme.as_str()) && scheme != "abfss" {
-            return Err(InvalidLocationError {
-                reason: format!("ADLS location must use abfss, or wasbs protocol. Found: {scheme}"),
-                location: location_dbg.clone(),
-            });
+            return Err(InvalidLocationError::new(
+                location_dbg.clone(),
+                format!("ADLS location must use abfss, or wasbs protocol. Found: {scheme}"),
+            ));
         }
 
-        validate_filesystem_name(&filesystem).map_err(|e| InvalidLocationError {
-            reason: e.to_string(),
-            location: location_dbg.clone(),
-        })?;
-        validate_account_name(&account_name).map_err(|e| InvalidLocationError {
-            reason: e.to_string(),
-            location: location_dbg.clone(),
-        })?;
+        validate_filesystem_name(&filesystem)
+            .map_err(|e| InvalidLocationError::new(location_dbg.clone(), e.to_string()))?;
+        validate_account_name(&account_name)
+            .map_err(|e| InvalidLocationError::new(location_dbg.clone(), e.to_string()))?;
 
         for path_segment in key {
             if path_segment.contains('/') {
-                return Err(InvalidLocationError {
-                    reason: format!("ADLS path segment `{path_segment}` must not contain slashes."),
-                    location: location_dbg.clone(),
-                });
+                return Err(InvalidLocationError::new(
+                    location_dbg.clone(),
+                    format!("ADLS path segment `{path_segment}` must not contain slashes."),
+                ));
             }
         }
 
         let endpoint_suffix = normalize_host(host)
-            .map_err(|e| InvalidLocationError {
-                reason: e.to_string(),
-                location: location_dbg,
-            })?
+            .map_err(|e| InvalidLocationError::new(location_dbg.clone(), e.to_string()))?
             .unwrap_or(DEFAULT_HOST.to_string());
 
         let location = format!("{scheme}://{filesystem}@{account_name}.{endpoint_suffix}");
-        let mut location = Location::from_str(&location).map_err(|e| InvalidLocationError {
-            reason: format!("Failed to parse as Location - {}", e.reason),
-            location,
+        let mut location = Location::from_str(&location).map_err(|e| {
+            InvalidLocationError::new(
+                location,
+                format!("Failed to parse as Location - {}", e.reason),
+            )
         })?;
 
         if !key.is_empty() {
@@ -174,28 +169,26 @@ impl AdlsLocation {
                 )
             };
 
-            return Err(InvalidLocationError {
-                reason,
-                location: location.to_string(),
-            });
+            return Err(InvalidLocationError::new(location.to_string(), reason));
         }
 
         let filesystem = location.username().unwrap_or_default().to_string();
         let host = location
             .host_str()
-            .ok_or_else(|| InvalidLocationError {
-                reason: "ADLS location has no host specified".to_string(),
-                location: location.to_string(),
+            .ok_or_else(|| {
+                InvalidLocationError::new(
+                    location.to_string(),
+                    "ADLS location has no host specified".to_string(),
+                )
             })?
             .to_string();
         // Host: account_name.endpoint_suffix
         let (account_name, endpoint_suffix) =
             host.split_once('.')
-                .ok_or_else(|| InvalidLocationError {
-                    reason: "ADLS location host must be in the format <account_name>.<endpoint>. Specified location has no point (.)"
-                        .to_string(),
-                    location: location.to_string(),
-                })?;
+                .ok_or_else(|| InvalidLocationError::new(
+                    location.to_string(),
+                    "ADLS location host must be in the format <account_name>.<endpoint_suffix>. Specified location has no point (.)".to_string(),
+                ))?;
 
         let custom_prefix = if is_custom_variant {
             Some(schema.to_string())
@@ -219,9 +212,11 @@ impl AdlsLocation {
     /// # Errors
     /// - Fails if the location is not a valid ADLS location
     pub fn try_from_str(s: &str, allow_variants: bool) -> Result<Self, InvalidLocationError> {
-        let location = Location::from_str(s).map_err(|e| InvalidLocationError {
-            reason: format!("Could not parse ADLS location from string: {e}"),
-            location: s.to_string(),
+        let location = Location::from_str(s).map_err(|e| {
+            InvalidLocationError::new(
+                s.to_string(),
+                format!("Could not parse ADLS location from string: {e}"),
+            )
         })?;
 
         Self::try_from_location(&location, allow_variants)

@@ -24,31 +24,31 @@ impl S3Location {
         key: &[&str],
         scheme: Option<String>,
     ) -> Result<Self, InvalidLocationError> {
-        validate_bucket_name(bucket_name).map_err(|e| InvalidLocationError {
-            reason: e.to_string(),
-            location: format!("s3://{bucket_name}"),
-        })?;
+        validate_bucket_name(bucket_name)
+            .map_err(|e| InvalidLocationError::new(format!("s3://{bucket_name}"), e.to_string()))?;
         // Keys may not contain slashes
         if key.iter().any(|k| k.contains('/')) {
-            return Err(InvalidLocationError {
-                reason: "S3 key contains unescaped slashes (/)".to_string(),
-                location: format!("{key:?}"),
-            });
+            return Err(InvalidLocationError::new(
+                format!("{key:?}"),
+                "S3 key contains unescaped slashes (/)".to_string(),
+            ));
         }
 
         let scheme = scheme.unwrap_or("s3".to_string());
 
         if !S3_CUSTOM_SCHEMES.contains(&scheme.as_str()) && scheme != "s3" {
-            return Err(InvalidLocationError {
-                reason: format!("S3 location must use s3, s3a or s3n protocol. Found: {scheme}"),
-                location: format!("s3://{bucket_name}"),
-            });
+            return Err(InvalidLocationError::new(
+                format!("s3://{bucket_name}"),
+                format!("S3 location must use s3, s3a or s3n protocol. Found: {scheme}"),
+            ));
         }
 
         let location = format!("{scheme}://{bucket_name}");
-        let mut location = Location::from_str(&location).map_err(|e| InvalidLocationError {
-            reason: format!("Failed to parse as Location - {}", e.reason),
-            location: location.clone(),
+        let mut location = Location::from_str(&location).map_err(|e| {
+            InvalidLocationError::new(
+                location.clone(),
+                format!("Failed to parse as Location - {}", e.reason),
+            )
         })?;
         if !key.is_empty() {
             location.without_trailing_slash().extend(key.iter());
@@ -100,15 +100,14 @@ impl S3Location {
                     location.scheme()
                 )
             };
-            return Err(InvalidLocationError {
-                reason,
-                location: location.to_string(),
-            });
+            return Err(InvalidLocationError::new(location.to_string(), reason));
         }
 
-        let bucket_name = location.host_str().ok_or_else(|| InvalidLocationError {
-            reason: "S3 location does not have a bucket name.".to_string(),
-            location: location.to_string(),
+        let bucket_name = location.host_str().ok_or_else(|| {
+            InvalidLocationError::new(
+                location.to_string(),
+                "S3 location does not have a bucket name.".to_string(),
+            )
         })?;
 
         if is_custom_variant {
@@ -129,9 +128,11 @@ impl S3Location {
     /// # Errors
     /// - Fails if the location is not a valid S3 location
     pub fn try_from_str(s: &str, allow_s3a: bool) -> Result<Self, InvalidLocationError> {
-        let location = Location::from_str(s).map_err(|e| InvalidLocationError {
-            reason: format!("Could not parse S3 location from string: {e}"),
-            location: s.to_string(),
+        let location = Location::from_str(s).map_err(|e| {
+            InvalidLocationError::new(
+                s.to_string(),
+                format!("Could not parse S3 location from string: {e}"),
+            )
         })?;
 
         Self::try_from_location(&location, allow_s3a)

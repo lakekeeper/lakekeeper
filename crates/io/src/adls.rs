@@ -1,4 +1,7 @@
-use std::sync::{Arc, LazyLock};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
 use azure_identity::{
@@ -36,7 +39,12 @@ static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
 pub(crate) const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
 
 static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
-    LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
+    LazyLock::new(|| {
+        moka::sync::Cache::builder()
+            .max_capacity(1000)
+            .time_to_live(Duration::from_secs(30 * 60))
+            .build()
+    });
 
 #[derive(Debug, Clone, PartialEq, derive_more::From)]
 pub enum AzureAuth {

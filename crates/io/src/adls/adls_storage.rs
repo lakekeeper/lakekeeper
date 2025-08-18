@@ -41,14 +41,14 @@ impl AdlsStorage {
         location: &AdlsLocation,
     ) -> Result<FileSystemClient, InvalidLocationError> {
         if self.cloud_location.account() != location.account_name() {
-            return Err(InvalidLocationError {
-                reason: format!(
+            return Err(InvalidLocationError::new(
+                location.to_string(),
+                format!(
                     "Location account name `{}` does not match storage account `{}`",
                     location.account_name(),
                     self.cloud_location.account()
                 ),
-                location: location.to_string(),
-            });
+            ));
         }
 
         // Get the container client for the filesystem
@@ -384,7 +384,8 @@ impl LakekeeperStorage for AdlsStorage {
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>
     {
         let path = format!("{}/", path.as_ref().trim_end_matches('/'));
-        let adls_location = AdlsLocation::try_from_str(&path, true)?;
+        let adls_location = AdlsLocation::try_from_str(&path, true)
+            .map_err(|e| e.with_context("List Operation failed"))?;
         let base_location = adls_location.location().clone();
 
         let client = self.get_filesystem_client(&adls_location)?;
@@ -461,10 +462,10 @@ impl LakekeeperStorage for AdlsStorage {
 
 fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
     if adls_location.blob_name().is_empty() || adls_location.blob_name() == "/" {
-        return Err(InvalidLocationError {
-            reason: "Operation requires a path inside the ADLS Filesystem".to_string(),
-            location: adls_location.to_string(),
-        });
+        return Err(InvalidLocationError::new(
+            adls_location.to_string(),
+            "Operation requires a path inside the ADLS Filesystem".to_string(),
+        ));
     }
     Ok(())
 }

@@ -20,23 +20,23 @@ impl GcsLocation {
     /// # Errors
     /// Fails if the bucket name is invalid or the key contains unescaped slashes.
     pub fn new(bucket_name: &str, key: &[&str]) -> Result<Self, InvalidLocationError> {
-        validate_bucket_name(bucket_name).map_err(|e| InvalidLocationError {
-            reason: e.to_string(),
-            location: format!("gs://{bucket_name}"),
-        })?;
+        validate_bucket_name(bucket_name)
+            .map_err(|e| InvalidLocationError::new(format!("gs://{bucket_name}"), e.to_string()))?;
 
         // Keys may not contain slashes
         if key.iter().any(|k| k.contains('/')) {
-            return Err(InvalidLocationError {
-                reason: "GCS key contains unescaped slashes (/)".to_string(),
-                location: format!("{key:?}"),
-            });
+            return Err(InvalidLocationError::new(
+                format!("{key:?}"),
+                "GCS key contains unescaped slashes (/)".to_string(),
+            ));
         }
 
         let location = format!("gs://{bucket_name}");
-        let mut location = Location::from_str(&location).map_err(|e| InvalidLocationError {
-            reason: format!("Failed to parse as Location - {}", e.reason),
-            location: location.clone(),
+        let mut location = Location::from_str(&location).map_err(|e| {
+            InvalidLocationError::new(
+                location.clone(),
+                format!("Failed to parse as Location - {}", e.reason),
+            )
         })?;
         if !key.is_empty() {
             location.without_trailing_slash().extend(key.iter());
@@ -77,15 +77,14 @@ impl GcsLocation {
                 "GCS location must use gs protocol. Found: {}",
                 location.scheme()
             );
-            return Err(InvalidLocationError {
-                reason,
-                location: location.to_string(),
-            });
+            return Err(InvalidLocationError::new(location.to_string(), reason));
         }
 
-        let bucket_name = location.host_str().ok_or_else(|| InvalidLocationError {
-            reason: "GCS location does not have a bucket name.".to_string(),
-            location: location.to_string(),
+        let bucket_name = location.host_str().ok_or_else(|| {
+            InvalidLocationError::new(
+                location.to_string(),
+                "GCS location does not have a bucket name.".to_string(),
+            )
         })?;
 
         GcsLocation::new(bucket_name, &location.path_segments())
@@ -96,9 +95,11 @@ impl GcsLocation {
     /// # Errors
     /// - Fails if the location is not a valid GCS location
     pub fn try_from_str(s: &str) -> Result<Self, InvalidLocationError> {
-        let location = Location::from_str(s).map_err(|e| InvalidLocationError {
-            reason: format!("Could not parse GCS location from string: {e}"),
-            location: s.to_string(),
+        let location = Location::from_str(s).map_err(|e| {
+            InvalidLocationError::new(
+                s.to_string(),
+                format!("Could not parse GCS location from string: {e}"),
+            )
         })?;
 
         Self::try_from_location(&location)

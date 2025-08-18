@@ -3,10 +3,28 @@
 // use crate::OperationType;
 
 #[derive(Debug, thiserror::Error)]
-#[error("Invalid location `{location}`: {reason}")]
+#[error("Invalid location `{location}`. Context: {context:?}. Source: {reason}")]
 pub struct InvalidLocationError {
     pub reason: String,
     pub location: String,
+    pub context: Vec<String>,
+}
+
+impl InvalidLocationError {
+    pub fn new(location: String, reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            location,
+            context: Vec::new(),
+        }
+    }
+
+    /// Add context to the error
+    #[must_use]
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context.push(context.into());
+        self
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -26,12 +44,30 @@ pub trait RetryableError {
     }
 }
 
+impl RetryableError for InvalidLocationError {
+    fn retryable_error_kind(&self) -> RetryableErrorKind {
+        RetryableErrorKind::Permanent
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum WriteError {
-    #[error("Invalid Location during write - {0}")]
-    InvalidLocation(#[from] InvalidLocationError),
-    #[error("Failed to write object: {0}")]
-    IOError(#[from] IOError),
+    #[error("{0}")]
+    InvalidLocation(InvalidLocationError),
+    #[error("{0}")]
+    IOError(IOError),
+}
+
+impl From<InvalidLocationError> for WriteError {
+    fn from(err: InvalidLocationError) -> Self {
+        WriteError::InvalidLocation(err.with_context("Write operation failed"))
+    }
+}
+
+impl From<IOError> for WriteError {
+    fn from(err: IOError) -> Self {
+        WriteError::IOError(err.with_context("Write operation failed"))
+    }
 }
 
 impl RetryableError for WriteError {
@@ -45,10 +81,22 @@ impl RetryableError for WriteError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum DeleteError {
-    #[error("Invalid Location during delete - {0}")]
-    InvalidLocation(#[from] InvalidLocationError),
-    #[error("Failed to delete object: {0}")]
-    IOError(#[from] IOError),
+    #[error("{0}")]
+    InvalidLocation(InvalidLocationError),
+    #[error("{0}")]
+    IOError(IOError),
+}
+
+impl From<InvalidLocationError> for DeleteError {
+    fn from(err: InvalidLocationError) -> Self {
+        DeleteError::InvalidLocation(err.with_context("Delete operation failed"))
+    }
+}
+
+impl From<IOError> for DeleteError {
+    fn from(err: IOError) -> Self {
+        DeleteError::IOError(err.with_context("Delete operation failed"))
+    }
 }
 
 impl RetryableError for DeleteError {
@@ -62,10 +110,22 @@ impl RetryableError for DeleteError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ReadError {
-    #[error("Invalid Location during read - {0}")]
-    InvalidLocation(#[from] InvalidLocationError),
-    #[error("Failed to read object: {0}")]
-    IOError(#[from] IOError),
+    #[error("{0}")]
+    InvalidLocation(InvalidLocationError),
+    #[error("{0}")]
+    IOError(IOError),
+}
+
+impl From<InvalidLocationError> for ReadError {
+    fn from(err: InvalidLocationError) -> Self {
+        ReadError::InvalidLocation(err.with_context("Read operation failed"))
+    }
+}
+
+impl From<IOError> for ReadError {
+    fn from(err: IOError) -> Self {
+        ReadError::IOError(err.with_context("Read operation failed"))
+    }
 }
 
 impl RetryableError for ReadError {
@@ -79,10 +139,22 @@ impl RetryableError for ReadError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum DeleteBatchError {
-    #[error("Invalid Location during batch deletion - {0}")]
-    InvalidLocation(#[from] InvalidLocationError),
-    #[error("Failed to batch delete objects: {0}")]
-    IOError(#[from] IOError),
+    #[error("{0}")]
+    InvalidLocation(InvalidLocationError),
+    #[error("{0}")]
+    IOError(IOError),
+}
+
+impl From<InvalidLocationError> for DeleteBatchError {
+    fn from(err: InvalidLocationError) -> Self {
+        DeleteBatchError::InvalidLocation(err.with_context("Batch delete operation failed"))
+    }
+}
+
+impl From<IOError> for DeleteBatchError {
+    fn from(err: IOError) -> Self {
+        DeleteBatchError::IOError(err.with_context("Batch delete operation failed"))
+    }
 }
 
 impl From<DeleteError> for DeleteBatchError {
@@ -129,7 +201,7 @@ impl From<DeleteError> for DeleteBatchError {
 // impl std::error::Error for BatchDeleteError {}
 
 #[derive(thiserror::Error, Debug)]
-#[error("IO operation failed ({kind}): {message}{}. Source: {}", location.as_ref().map_or(String::new(), |l| format!(" at `{l}`")), source.as_ref().map_or(String::new(), |s| format!("{s:#}")))]
+#[error("IO operation failed ({kind}): {message}{}. Context: {context:?} Source: {}", location.as_ref().map_or(String::new(), |l| format!(" at `{l}`")), source.as_ref().map_or(String::new(), |s| format!("{s:#}")))]
 pub struct IOError {
     kind: ErrorKind,
     message: String,
@@ -253,5 +325,41 @@ impl ErrorKind {
             | ErrorKind::CredentialsExpired => RetryableErrorKind::Temporary,
             _ => RetryableErrorKind::Permanent,
         }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error("Internal Error (retryable: {retryable}). Context: {context:?}. Reason: {reason}")]
+pub struct InternalError {
+    pub reason: String,
+    pub retryable: RetryableErrorKind,
+    pub context: Vec<String>,
+    pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+impl InternalError {
+    #[must_use]
+    pub fn new(reason: String, retryable: RetryableErrorKind) -> Self {
+        Self {
+            reason,
+            retryable,
+            context: Vec::new(),
+            source: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_source<E>(mut self, source: E) -> Self
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        self.source = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context.push(context.into());
+        self
     }
 }

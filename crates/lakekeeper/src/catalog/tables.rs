@@ -230,11 +230,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let file_io = storage_profile.file_io(storage_secret.as_ref()).await?;
         if !crate::service::storage::is_empty(&file_io, &table_location).await? {
-            return Err(ValidationError::from(InvalidLocationError {
-                reason: "Unexpected files in location, tabular locations have to be empty"
-                    .to_string(),
-                location: table_location.to_string(),
-            })
+            return Err(ValidationError::from(InvalidLocationError::new(
+                table_location.to_string(),
+                "Unexpected files in location, tabular locations have to be empty",
+            ))
             .into());
         }
 

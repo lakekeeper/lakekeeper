@@ -126,10 +126,10 @@ fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
     };
 
     if key.is_empty() {
-        return Err(InvalidLocationError {
-            reason: "Empty path is not valid".to_string(),
-            location: path.to_string(),
-        });
+        return Err(InvalidLocationError::new(
+            path.to_string(),
+            "Empty path is not valid".to_string(),
+        ));
     }
 
     Ok(key.to_string())

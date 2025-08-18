@@ -4,7 +4,8 @@ use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::{
     adls::{InvalidADLSAccountName, InvalidADLSFilesystemName, InvalidADLSHost},
     gcs::InvalidGCSBucketName,
-    DeleteError, IOError, InitializeClientError, InvalidLocationError,
+    DeleteError, IOError, InitializeClientError, InternalError, InvalidLocationError,
+    RetryableErrorKind,
 };
 
 use crate::catalog::{compression_codec::UnsupportedCompressionCodec, io::IOErrorExt};
@@ -37,13 +38,6 @@ pub struct InvalidProfileError {
     pub source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
     pub reason: String,
     pub entity: String,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{reason}")]
-pub struct InternalError {
-    pub reason: String,
-    pub source: Option<Box<dyn std::error::Error + 'static + Send + Sync>>,
 }
 
 impl From<InvalidADLSAccountName> for ValidationError {
@@ -104,26 +98,26 @@ impl From<InvalidProfileError> for ValidationError {
     }
 }
 
-impl From<InternalError> for ValidationError {
-    fn from(value: InternalError) -> Self {
-        ValidationError::Internal(Box::new(value))
-    }
-}
-
 impl From<IOErrorExt> for ValidationError {
     fn from(value: IOErrorExt) -> Self {
         match value {
             IOErrorExt::InvalidLocation(e) => Box::new(e).into(),
             IOErrorExt::IOError(e) => Box::new(e).into(),
-            IOErrorExt::Serialization(e) => ValidationError::Internal(Box::new(InternalError {
-                reason: format!("Serialization failed: {e}"),
-                source: Some(Box::new(e)),
-            })),
+            IOErrorExt::Serialization(e) => ValidationError::Internal(Box::new(
+                InternalError::new(
+                    format!("Serialization failed: {e}"),
+                    RetryableErrorKind::Permanent,
+                )
+                .with_source(e),
+            )),
             IOErrorExt::Deserialization(e) => ValidationError::Deserialization(Box::new(e)),
-            IOErrorExt::FileCompression(e) => ValidationError::Internal(Box::new(InternalError {
-                reason: format!("File compression failed: {e}"),
-                source: Some(e),
-            })),
+            IOErrorExt::FileCompression(e) => ValidationError::Internal(Box::new(
+                InternalError::new(
+                    format!("File compression failed: {e}"),
+                    RetryableErrorKind::Permanent,
+                )
+                .with_source(e),
+            )),
             IOErrorExt::FileDecompression(e) => ValidationError::FileDecompression(e),
         }
     }
@@ -153,12 +147,10 @@ impl From<TableConfigError> for ValidationError {
                     entity: "TableConfig".to_string(),
                 }))
             }
-            TableConfigError::Internal(_, _) => {
-                ValidationError::Internal(Box::new(InternalError {
-                    reason: value.to_string(),
-                    source: Some(Box::new(value)),
-                }))
-            }
+            TableConfigError::Internal(_, _) => ValidationError::Internal(Box::new(
+                InternalError::new(value.to_string(), RetryableErrorKind::Permanent)
+                    .with_source(value),
+            )),
         }
     }
 }

@@ -170,9 +170,11 @@ impl AdlsProfile {
                     .trim_end_matches('/'),
             )
         };
-        let location = Location::from_str(&location).map_err(|e| InvalidLocationError {
-            reason: format!("Failed to create base location for storage profile: {e}"),
-            location,
+        let location = Location::from_str(&location).map_err(|e| {
+            InvalidLocationError::new(
+                location,
+                format!("Failed to create base location for storage profile: {e}"),
+            )
         })?;
 
         Ok(location)
