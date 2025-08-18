@@ -12,7 +12,8 @@ use tokio::sync::Semaphore;
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
 use crate::service::authz::implementations::openfga::{
-    NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
+    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
+    WarehouseRelation,
 };
 use crate::service::{
     catalog::{ListFlags, Transaction},
@@ -27,6 +28,10 @@ pub(crate) struct MigrationState<C: Catalog> {
     pub catalog: C,
     pub catalog_state: C::State,
     pub server_id: uuid::Uuid,
+}
+
+fn openfga_user_type(inp: &str) -> Option<String> {
+    inp.split(":").next().map(|user| user.to_string())
 }
 
 // TODO add v4 to module name as everything here is version specific
@@ -419,7 +424,6 @@ async fn get_all_tabulars(
     Ok(tabulars)
 }
 
-// TODO read with smaller page size
 /// The `object` must specify both type and id (`type:id`).
 ///
 /// The returned result contains all tuples that have the provided `object` from all relations
@@ -442,6 +446,69 @@ async fn get_all_tuples_with_object(
     Ok(tuples.into_iter().filter_map(|t| t.key).collect())
 }
 
+// TODO concurrency
+/// The `user` must specify both type and id (`type:id`)
+///
+/// The returned result contains all tuples that have the provided `user` from all all relations
+/// and all object types.
+async fn get_all_tuples_with_user(
+    client: &BasicOpenFgaClient,
+    user: String,
+) -> anyhow::Result<Vec<TupleKey>> {
+    // Querying OpenFGA's `/read` endpoint with a `TupleKey` requires at least an object type.
+    // A query with `object: "user:"` is accepted while `object: ""` is not accepted.
+    // So we must iterate over types than can be `object` when user is `view` or `table`.
+    // These types are hardcoded as strings since we need their identifiers as of v3.4.
+    // TODO can table be user of view object and vice versa? if yes, need to handle that
+    let user_type =
+        openfga_user_type(&user).ok_or(anyhow::anyhow!("A user type must be specified"))?;
+    let object_types = match user_type.as_ref() {
+        "server" => vec!["project:".to_string()],
+        "user" | "role" => vec![
+            "role:".to_string(),
+            "server:".to_string(),
+            "project:".to_string(),
+            "warehouse:".to_string(),
+            "namespace:".to_string(),
+            "table:".to_string(),
+            "view:".to_string(),
+        ],
+        "project" => vec!["server:".to_string(), "warehouse:".to_string()],
+        "warehouse" => vec!["project:".to_string(), "namespace:".to_string()],
+        "namespace" => vec![
+            "warehouse:".to_string(),
+            "namespace:".to_string(),
+            "table:".to_string(),
+            "view:".to_string(),
+        ],
+        "view" | "table" => vec!["namespace:".to_string()],
+        "modelversion" => vec![],
+        "authmodelid" => vec!["modelversion:".to_string()],
+        _ => anyhow::bail!("Unexpected user type: {user_type}"),
+    };
+
+    let mut tuples = vec![];
+    for ty in object_types.into_iter() {
+        let res = client
+            .read_all_pages(
+                ReadRequestTupleKey {
+                    user: user.clone(),
+                    relation: "".to_string(),
+                    object: ty,
+                },
+                OPENFGA_PAGE_SIZE,
+                u32::MAX,
+            )
+            .await?;
+        for tup in res.into_iter() {
+            if let Some(t) = tup.key {
+                tuples.push(t)
+            }
+        }
+    }
+    Ok(tuples)
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
@@ -454,7 +521,8 @@ mod tests {
         use super::super::*;
         use crate::{
             service::authz::implementations::openfga::{
-                migration::tests::authorizer_for_empty_store, OPENFGA_SERVER,
+                migration::tests::authorizer_for_empty_store, relations::ServerAssignment,
+                OPENFGA_SERVER,
             },
             CONFIG,
         };
@@ -846,6 +914,148 @@ mod tests {
             // Test with an object that doesn't exist
             let tuples =
                 get_all_tuples_with_object(&authorizer.client, "table:nonexistent".to_string())
+                    .await?;
+            assert!(tuples.is_empty());
+            Ok(())
+        }
+
+        /// Testing for user type `table` which can be the user in only one relation as of v3.
+        #[sqlx::test]
+        async fn test_get_all_tuples_with_user(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Write tuples with "table:target-table" as user and various objects
+            authorizer
+                .write(
+                    Some(vec![
+                        // Should be returned - table as user
+                        TupleKey {
+                            user: "table:target-table".to_string(),
+                            relation: NamespaceRelation::Child.to_string(),
+                            object: "namespace:parent-ns".to_string(),
+                            condition: None,
+                        },
+                        // Should NOT be returned (different user)
+                        TupleKey {
+                            user: "table:other-table".to_string(),
+                            relation: NamespaceRelation::Child.to_string(),
+                            object: "namespace:parent-ns".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "user:someone".to_string(),
+                            relation: TableRelation::Ownership.to_string(),
+                            object: "table:target-table".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let tuples =
+                get_all_tuples_with_user(&authorizer.client, "table:target-table".to_string())
+                    .await?;
+
+            // Only tuples with user == "table:target-table" should be returned
+            assert_eq!(tuples.len(), 1);
+            assert_eq!(tuples[0].user, "table:target-table");
+            assert_eq!(tuples[0].relation, NamespaceRelation::Child.to_string());
+            assert_eq!(tuples[0].object, "namespace:parent-ns");
+
+            Ok(())
+        }
+
+        /// Testing for user type `namespace` which can be the user in multiple relations.
+        #[sqlx::test]
+        async fn test_get_all_tuples_with_user_multiple_results(
+            pool: sqlx::PgPool,
+        ) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Write tuples with "namespace:target-ns" as user in multiple relations
+            authorizer
+                .write(
+                    Some(vec![
+                        // Should be returned - namespace as user in different relations
+                        TupleKey {
+                            user: "namespace:target-ns".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:child-table1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:target-ns".to_string(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: "view:child-view1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:target-ns".to_string(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:child-ns1".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "namespace:target-ns".to_string(),
+                            relation: WarehouseRelation::Namespace.to_string(),
+                            object: "warehouse:parent-wh".to_string(),
+                            condition: None,
+                        },
+                        // Should NOT be returned (different user)
+                        TupleKey {
+                            user: "namespace:other-ns".to_string(),
+                            relation: TableRelation::Parent.to_string(),
+                            object: "table:other-table".to_string(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: "user:someone".to_string(),
+                            relation: NamespaceRelation::Ownership.to_string(),
+                            object: "namespace:target-ns".to_string(),
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
+                .await?;
+
+            let mut tuples =
+                get_all_tuples_with_user(&authorizer.client, "namespace:target-ns".to_string())
+                    .await?;
+
+            // Sort by object for consistent comparison
+            tuples.sort_by(|a, b| a.object.cmp(&b.object));
+
+            // Only tuples with user == "namespace:target-ns" should be returned
+            assert_eq!(tuples.len(), 4);
+
+            assert_eq!(tuples[0].user, "namespace:target-ns");
+            assert_eq!(tuples[0].relation, NamespaceRelation::Parent.to_string());
+            assert_eq!(tuples[0].object, "namespace:child-ns1");
+
+            assert_eq!(tuples[1].user, "namespace:target-ns");
+            assert_eq!(tuples[1].relation, TableRelation::Parent.to_string());
+            assert_eq!(tuples[1].object, "table:child-table1");
+
+            assert_eq!(tuples[2].user, "namespace:target-ns");
+            assert_eq!(tuples[2].relation, ViewRelation::Parent.to_string());
+            assert_eq!(tuples[2].object, "view:child-view1");
+
+            assert_eq!(tuples[3].user, "namespace:target-ns");
+            assert_eq!(tuples[3].relation, WarehouseRelation::Namespace.to_string());
+            assert_eq!(tuples[3].object, "warehouse:parent-wh");
+
+            Ok(())
+        }
+
+        #[sqlx::test]
+        async fn test_get_all_tuples_with_user_empty(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+
+            // Test with a user that doesn't exist
+            let tuples =
+                get_all_tuples_with_user(&authorizer.client, "user:nonexistent".to_string())
                     .await?;
             assert!(tuples.is_empty());
             Ok(())
