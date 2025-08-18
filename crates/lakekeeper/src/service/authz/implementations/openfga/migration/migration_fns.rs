@@ -11,6 +11,7 @@ use tokio::sync::Semaphore;
 
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
+use crate::serve::ServeConfigurationBuilder_Error_Repeated_field_catalog_state;
 use crate::service::authz::implementations::openfga::{
     NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
     WarehouseRelation,
@@ -34,10 +35,30 @@ fn openfga_user_type(inp: &str) -> Option<String> {
     inp.split(":").next().map(|user| user.to_string())
 }
 
+/// Injects `prefix` into a full OpenFGA object.
+///
+/// ```rust
+/// let full_object = "table:t1";
+/// let extended_object = "table:wh1/t1";
+/// assert_eq!(inject_id_prefix(full_object, "wh1"), extended_object.to_string());
+/// ```
+fn inject_id_prefix(full_object: &str, prefix: &str) -> anyhow::Result<String> {
+    let parts: Vec<_> = full_object.split(":").collect();
+    anyhow::ensure!(
+        parts.len() == 2,
+        "Expected full object (type:id), got {}",
+        full_object
+    );
+    Ok(format!("{}:{}/{}", parts[0], prefix, parts[1]))
+}
+
 // TODO add v4 to module name as everything here is version specific
 
 // TODO: get from config in case someone runs openfga server with lower max page size?
 const OPENFGA_PAGE_SIZE: i32 = 100;
+
+// TODO get from config, check if config value is overwritten by user's env var
+const OPENFGA_WRITE_BATCH_SIZE: usize = 50;
 
 /// Limits the number of concurrent transactions. It should be throttled as the catalog's db
 /// may still be in use during the migration.
@@ -111,6 +132,41 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
 
     let projects = get_all_projects(&c, state.server_id).await?;
     let warehouses = get_all_warehouses(&c, &projects).await?;
+    let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
+    // TODO concurrency
+    for wh in warehouses.into_iter() {
+        let namespaces = get_all_namespaces(&c, wh.clone()).await?;
+        namespaces_per_wh.push((wh, namespaces));
+    }
+    let mut tabulars_per_wh: Vec<(String, Vec<String>)> = vec![];
+    for (wh, nss) in namespaces_per_wh.into_iter() {
+        let tabulars = get_all_tabulars(&c, &nss).await.unwrap();
+        tabulars_per_wh.push((wh, tabulars));
+    }
+
+    // TODO concurrency
+    // TODO extract into separat function and test in isolation
+    let mut new_tuples_to_write = vec![];
+    for (wh, tabs) in tabulars_per_wh.into_iter() {
+        for tab in tabs.into_iter() {
+            let tab_as_object = get_all_tuples_with_object(&c, tab.clone()).await?;
+            for mut tuple in tab_as_object.into_iter() {
+                tuple.object = inject_id_prefix(&tuple.object, &wh)?;
+                new_tuples_to_write.push(tuple);
+            }
+
+            let tab_as_user = get_all_tuples_with_user(&c, tab).await?;
+            for mut tuple in tab_as_user.into_iter() {
+                tuple.user = inject_id_prefix(&tuple.user, &wh)?;
+                new_tuples_to_write.push(tuple);
+            }
+        }
+    }
+
+    // TODO concurrency
+    for chunk in new_tuples_to_write.chunks(OPENFGA_WRITE_BATCH_SIZE) {
+        c.write(Some(chunk.to_vec()), None).await?;
+    }
 
     let _res = add_warehouse_id_to_tables(c.clone(), &HashMap::new()).await?;
     Ok(())
