@@ -161,7 +161,7 @@ services:
       exit 0;
       "
     networks:
-      iceberg_net:
+      - iceberg_rest_tests
 
   nats:
     image: nats:latest
