@@ -122,13 +122,13 @@ services:
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -p 2345 -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 20s
     ports:
-      - "31102:2345"
+      - "31102:5432"
     networks:
       - iceberg_rest_tests
 
