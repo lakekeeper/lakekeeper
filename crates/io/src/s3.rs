@@ -81,11 +81,12 @@ pub struct S3AwsSystemIdentityAuth {
     pub external_id: Option<String>,
 }
 
-#[derive(Redact, Clone, PartialEq)]
+#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
 pub struct S3AccessKeyAuth {
     pub aws_access_key_id: String,
     #[redact(partial)]
     pub aws_secret_access_key: String,
+    #[builder(default)]
     #[redact(partial)]
     pub external_id: Option<String>,
 }
@@ -93,15 +94,15 @@ pub struct S3AccessKeyAuth {
 #[derive(Debug, Eq, Clone, PartialEq, typed_builder::TypedBuilder)]
 pub struct S3Settings {
     // -------- AWS Settings for multiple services --------
-    #[builder(default, setter(strip_option))]
+    #[builder(default)]
     pub assume_role_arn: Option<String>,
-    #[builder(default, setter(strip_option))]
+    #[builder(default)]
     pub endpoint: Option<url::Url>,
     pub region: String,
     // -------- S3 specific settings --------
-    #[builder(default, setter(strip_option))]
+    #[builder(default)]
     pub path_style_access: Option<bool>,
-    #[builder(default, setter(strip_option))]
+    #[builder(default)]
     pub aws_kms_key_arn: Option<String>,
 }
 

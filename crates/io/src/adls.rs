@@ -53,13 +53,13 @@ pub enum AzureAuth {
     AzureSystemIdentity {},
 }
 
-#[derive(Redact, Clone, PartialEq)]
+#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
 pub struct AzureSharedAccessKeyAuth {
     #[redact(partial)]
     pub key: String,
 }
 
-#[derive(Redact, Clone, PartialEq)]
+#[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
 pub struct AzureClientCredentialsAuth {
     pub client_id: String,
     pub tenant_id: String,
@@ -71,7 +71,7 @@ pub struct AzureClientCredentialsAuth {
 pub struct AzureSettings {
     // -------- Azure Settings for multiple services --------
     /// The authority host to use for authentication. Example: `https://login.microsoftonline.com`.
-    #[builder(default, setter(strip_option))]
+    #[builder(default)]
     pub authority_host: Option<Url>,
     // Contains the account name and possible a custom URI
     pub cloud_location: CloudLocation,
