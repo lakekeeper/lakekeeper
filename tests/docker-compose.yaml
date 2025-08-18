@@ -63,8 +63,8 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
     environment:
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
-      - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
-      - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
+      - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - RUST_LOG=trace,axum=trace
     restart: "no"
     command: ["migrate"]
@@ -78,8 +78,8 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE}
     environment:
       - ICEBERG_REST__PG_ENCRYPTION_KEY=abc
-      - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:2345/postgres
-      - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:2345/postgres
+      - ICEBERG_REST__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - ICEBERG_REST__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - ICEBERG_REST__NATS_ADDRESS=nats://nats:4222
       - ICEBERG_REST__NATS_TOPIC=changes
       - ICEBERG_REST__NATS_USER=test
@@ -165,7 +165,7 @@ services:
 
   nats:
     image: nats:latest
-    command: [ "nats-server",  "-m=8222", "--user=test", "--pass=test" ]
+    command: [ "-m=8222", "--user=test", "--pass=test" ]
     ports:
       - "31105:4222"
     healthcheck:
