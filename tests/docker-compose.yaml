@@ -160,6 +160,8 @@ services:
       /usr/bin/mc mb dockerminio/tests;
       exit 0;
       "
+    networks:
+      iceberg_net:
 
   nats:
     image: nats:latest

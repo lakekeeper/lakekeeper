@@ -118,6 +118,8 @@ services:
       /usr/bin/mc mb dockerminio/examples;
       exit 0;
       "
+    networks:
+      iceberg_net:
 
   bootstrap:
     image: curlimages/curl
@@ -148,6 +150,8 @@ services:
       lakekeeper_initial:
         condition: service_healthy
       bootstrap:
+        condition: service_completed_successfully
+      createbuckets:
         condition: service_completed_successfully
     restart: "no"
     command:
