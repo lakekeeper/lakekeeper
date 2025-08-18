@@ -41,11 +41,10 @@ services:
       iceberg_net:
 
   db:
-    image: bitnami/postgresql:16.6.0
+    image: postgres:16
     environment:
-      - POSTGRESQL_USERNAME=postgres
-      - POSTGRESQL_PASSWORD=postgres
-      - POSTGRESQL_DATABASE=postgres
+      - POSTGRES_PASSWORD=postgres
+      - PGDATA=/var/lib/postgresql/data/pgdata
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
       interval: 2s
@@ -53,7 +52,7 @@ services:
       retries: 2
       start_period: 10s
     volumes:
-      - volume-lakekeeper:/bitnami/postgresql
+      - volume-lakekeeper:/var/lib/postgresql/data
     networks:
       iceberg_net:
 
