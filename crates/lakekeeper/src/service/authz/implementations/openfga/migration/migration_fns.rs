@@ -53,6 +53,16 @@ fn inject_id_prefix(full_object: &str, prefix: &str) -> anyhow::Result<String> {
     Ok(format!("{}:{}/{}", parts[0], prefix, parts[1]))
 }
 
+fn extract_id_from_full_object(full_object: &str) -> anyhow::Result<String> {
+    let parts: Vec<_> = full_object.split(":").collect();
+    anyhow::ensure!(
+        parts.len() == 2,
+        "Expected full object (type:id), got {}",
+        full_object
+    );
+    Ok(parts[1].to_string())
+}
+
 // TODO add v4 to module name as everything here is version specific
 
 // TODO: get from config in case someone runs openfga server with lower max page size?
@@ -128,18 +138,19 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
     // TODO extract into separat function and test in isolation
     let mut new_tuples_to_write = vec![];
     for (wh, tabs) in tabulars_per_wh.into_iter() {
+        let wh_id = extract_id_from_full_object(&wh)?;
         for tab in tabs.into_iter() {
             let tab_as_object = get_all_tuples_with_object(&c, tab.clone()).await?;
             for mut tuple in tab_as_object.into_iter() {
                 // TODO also view/table -> lakekeeper_view/table
-                tuple.object = inject_id_prefix(&tuple.object, &wh)?;
+                tuple.object = inject_id_prefix(&tuple.object, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
 
             let tab_as_user = get_all_tuples_with_user(&c, tab).await?;
             for mut tuple in tab_as_user.into_iter() {
                 // TODO also view/table -> lakekeeper_view/table
-                tuple.user = inject_id_prefix(&tuple.user, &wh)?;
+                tuple.user = inject_id_prefix(&tuple.user, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
         }
@@ -554,7 +565,7 @@ mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
-        use openfga_client::client::TupleKey;
+        use openfga_client::{client::TupleKey, migration::TupleModelManager};
 
         use super::super::*;
         use crate::{
@@ -563,11 +574,11 @@ mod tests {
                 client::new_authorizer,
                 migration::{
                     add_model_v3, add_model_v4, get_model_manager,
-                    tests::authorizer_for_empty_store,
+                    tests::authorizer_for_empty_store, V3_MODEL_VERSION,
                 },
                 new_client_from_config,
                 relations::ServerAssignment,
-                OpenFGAAuthorizer, OPENFGA_SERVER,
+                OpenFGAAuthorizer, AUTH_CONFIG, OPENFGA_SERVER,
             },
             CONFIG,
         };
@@ -1106,20 +1117,24 @@ mod tests {
             Ok(())
         }
 
-        /// Constructs an authorizer that has been initialized and migrated to v3.
-        /// Returns the authorizer and the name of its store.
+        /// Constructs a client for a store that has been initialized and migrated to v3.
+        /// Returns the client and the name of the store.
         // TODO all of the above must use this instead of authorizer_for_empty_store
-        async fn v3_authorizer_for_empty_store(
+        async fn v3_client_for_empty_store(
             pool: sqlx::PgPool,
-        ) -> anyhow::Result<(OpenFGAAuthorizer, String)> {
+        ) -> anyhow::Result<(BasicOpenFgaClient, String)> {
             // TODO refactor openfga::migration::migrate s.t. no need to replicate it here
-            let client = new_client_from_config().await?;
+            let mut client = new_client_from_config().await?;
             let test_uuid = uuid::Uuid::now_v7();
             let store_name = format!("test_store_{test_uuid}");
             let catalog = PostgresCatalog {};
             let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
 
-            let model_manager = get_model_manager(&client, Some(store_name.clone()));
+            let model_manager = TupleModelManager::new(
+                client.clone(),
+                &store_name,
+                &AUTH_CONFIG.authorization_model_prefix,
+            );
             let mut model_manager = add_model_v3(model_manager);
             let migration_state = MigrationState {
                 store_name: store_name.clone(),
@@ -1127,15 +1142,28 @@ mod tests {
                 catalog_state,
                 server_id: CONFIG.server_id,
             };
+            println!("migrating to model v3");
             model_manager.migrate(migration_state).await?;
 
-            let authorizer = new_authorizer::<PostgresCatalog>(
-                client,
-                Some(store_name.clone()),
-                openfga_client::client::ConsistencyPreference::HigherConsistency,
-            )
-            .await?;
-            Ok((authorizer, store_name))
+            // TODO untangle new_authorizer from get_active_auth_model_id to use it here
+            // instead of manually constructing authorizer
+            // let authorizer = new_authorizer::<PostgresCatalog>(
+            //     client,
+            //     Some(store_name.clone()),
+            //     openfga_client::client::ConsistencyPreference::HigherConsistency,
+            // )
+            // .await?;
+            let store = client
+                .get_store_by_name(&store_name)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Store should exist after initialization"))?;
+            let auth_model_id = model_manager
+                .get_authorization_model_id(*V3_MODEL_VERSION)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Auth model should be set after migration"))?;
+            let client = BasicOpenFgaClient::new(client, &store.id, &auth_model_id)
+                .set_consistency(ConsistencyPreference::HigherConsistency);
+            Ok((client, store_name))
         }
 
         // Migrates the OpenFGA store to v4, which will also execute the migration function.
@@ -1145,7 +1173,11 @@ mod tests {
             catalog: C,
             catalog_state: C::State,
         ) -> anyhow::Result<()> {
-            let model_manager = get_model_manager(&client, Some(store_name.clone()));
+            let model_manager = TupleModelManager::new(
+                client.clone(),
+                &store_name,
+                &AUTH_CONFIG.authorization_model_prefix,
+            );
             let mut model_manager = add_model_v4(model_manager);
             let migration_state = MigrationState {
                 store_name: store_name.clone(),
@@ -1153,6 +1185,7 @@ mod tests {
                 catalog_state,
                 server_id: CONFIG.server_id,
             };
+            println!("migrating to model v4");
             model_manager
                 .migrate(migration_state)
                 .await
@@ -1161,7 +1194,7 @@ mod tests {
 
         #[sqlx::test]
         async fn test_v4_push_down_warehouse_id(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (authorizer, store_name) = v3_authorizer_for_empty_store(pool.clone()).await?;
+            let (client, store_name) = v3_client_for_empty_store(pool.clone()).await?;
 
             // Create the initial tuple structure:
             //
@@ -1288,20 +1321,17 @@ mod tests {
             ];
 
             // Write initial tuples
-            authorizer.write(Some(initial_tuples.clone()), None).await?;
+            client.write(Some(initial_tuples.clone()), None).await?;
 
             println!(
                 "projects queried from test pre v4: {:#?}",
-                get_all_projects(&authorizer.client, CONFIG.server_id).await?
+                get_all_projects(&client, CONFIG.server_id).await?
             );
 
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
             // Migrate to v4, which will call the migration fn.
-            // TODO construct new authorizer via authorizer for empty store?
-            // Or make sure auth model id of authorizer's client is updated
+            // TODO use migrate_to_v4, which will resolve stuff mentioned there first
             migrate_to_v4(
-                &authorizer.client.client(),
+                &client.client(),
                 store_name.clone(),
                 PostgresCatalog {},
                 postgres::CatalogState::from_pools(pool.clone(), pool.clone()),
@@ -1310,17 +1340,16 @@ mod tests {
             println!("authorizer is using store: {store_name}");
             println!(
                 "authorizer is using auth_model_id: {}",
-                authorizer.client.authorization_model_id()
+                client.authorization_model_id()
             );
 
             println!(
                 "projects queried from test post v4: {:#?}",
-                get_all_projects(&authorizer.client, CONFIG.server_id).await?
+                get_all_projects(&client, CONFIG.server_id).await?
             );
 
             // Read all tuples from store
-            let all_tuples = authorizer
-                .client
+            let all_tuples = client
                 .read_all_pages(
                     ReadRequestTupleKey {
                         user: "".to_string(),
@@ -1332,15 +1361,19 @@ mod tests {
                 )
                 .await?;
 
-            println!("all tuples: {:#?}", all_tuples);
+            // println!("all tuples: {:#?}", all_tuples);
             let all_tuple_keys: Vec<TupleKey> =
                 all_tuples.into_iter().filter_map(|t| t.key).collect();
-            println!("all tuple keys: {:#?}", all_tuple_keys);
+            // println!("all tuple keys: {:#?}", all_tuple_keys);
 
-            // Separate initial tuples from new tuples added by migration
+            // Separate initial tuples from new tuples added by migration and filter out
+            // tuples belonging to the store's admin relations.
             let mut new_tuples = vec![];
             for tuple in all_tuple_keys {
-                if !initial_tuples.contains(&tuple) {
+                if tuple.relation != "exists"
+                    && tuple.relation != "openfga_id"
+                    && !initial_tuples.contains(&tuple)
+                {
                     new_tuples.push(tuple);
                 }
             }

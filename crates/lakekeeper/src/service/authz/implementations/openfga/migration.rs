@@ -66,7 +66,7 @@ pub(crate) fn add_model_v4<C: Catalog>(
         ))
         // Change also the model version in this string:
         .expect("Model v4.0 is a valid AuthorizationModel in JSON format."),
-        AuthorizationModelVersion::new(4, 0),
+        *V4_MODEL_VERSION,
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_, _>>,
         Some(v4_push_down_warehouse_id),
