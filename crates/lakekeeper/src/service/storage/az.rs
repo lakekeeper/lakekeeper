@@ -541,7 +541,7 @@ impl TryFrom<AzCredential> for AzureAuth {
             }
             .into(),
             AzCredential::SharedAccessKey { key } => AzureSharedAccessKeyAuth { key }.into(),
-            AzCredential::AzureSystemIdentity {} => AzureAuth::AzureSystemIdentity {},
+            AzCredential::AzureSystemIdentity {} => AzureAuth::AzureSystemIdentity,
         })
     }
 }

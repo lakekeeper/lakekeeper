@@ -51,7 +51,10 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
 
     let s3_settings = lakekeeper_io::s3::S3Settings {
         assume_role_arn: None,
-        endpoint: endpoint.map(|e| e.parse().unwrap()),
+        endpoint: endpoint
+            .map(|e| e.parse())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Invalid S3 endpoint URL: {}", e))?,
         region,
         path_style_access: Some(true),
         aws_kms_key_arn: None,

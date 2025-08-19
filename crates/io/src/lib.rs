@@ -160,12 +160,8 @@ where
     ///
     /// # Returns
     /// * A future that resolves to a result containing either:
-    ///   - `Ok(BatchDeleteResult::AllSuccessful(paths))` if all deletions were successful.
-    ///   - `Ok(BatchDeleteResult::PartialFailure { successful_paths, errors })` if some deletions failed.
-    ///   - `Err(error)` if the entire batch operation failed (e.g., network error, invalid configuration).
-    ///
-    /// The `BatchDeleteResult` type forces callers to explicitly handle partial failures,
-    /// making it impossible to accidentally ignore errors.
+    ///   - `Ok(())` if all deletions were successful.
+    ///   - `Err(DeleteBatchError)` if any deletion failed.
     fn delete_batch(
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>> + Send,

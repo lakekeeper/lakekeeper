@@ -71,7 +71,7 @@ impl GcsLocation {
     /// # Errors
     /// - Fails if the location is not a valid GCS location (must use `gs` scheme).
     pub fn try_from_location(location: &Location) -> Result<Self, InvalidLocationError> {
-        // Protocol must be s3
+        // Protocol must be gs
         if location.scheme() != "gs" {
             let reason = format!(
                 "GCS location must use gs protocol. Found: {}",

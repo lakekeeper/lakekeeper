@@ -30,9 +30,16 @@ const DEFAULT_HOST: &str = "dfs.core.windows.net";
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
+static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
+    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
+        FixedRetryOptions::default()
+            .max_retries(3u32)
+            .max_total_elapsed(std::time::Duration::from_secs(5)),
+    ))
+});
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-// Reqwest client is already cheep to clone. We need this `HTTP_CLIENT_ARC` for the Azure SDK which requires an `Arc<dyn HttpClient>`.
+// Reqwest client is already cheap to clone. We keep this `HTTP_CLIENT_ARC` because the Azure SDK requires an `Arc<dyn HttpClient>`.
 static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
     LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
 
@@ -50,7 +57,7 @@ static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzur
 pub enum AzureAuth {
     ClientCredentials(AzureClientCredentialsAuth),
     SharedAccessKey(AzureSharedAccessKeyAuth),
-    AzureSystemIdentity {},
+    AzureSystemIdentity,
 }
 
 #[derive(Redact, Clone, PartialEq, typed_builder::TypedBuilder)]
@@ -73,7 +80,7 @@ pub struct AzureSettings {
     /// The authority host to use for authentication. Example: `https://login.microsoftonline.com`.
     #[builder(default)]
     pub authority_host: Option<Url>,
-    // Contains the account name and possible a custom URI
+    // Contains the account name and possibly a custom URI
     pub cloud_location: CloudLocation,
 }
 
@@ -121,7 +128,7 @@ impl AzureSettings {
             AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth { key }) => {
                 StorageCredentials::access_key(account_name, key.clone())
             }
-            AzureAuth::AzureSystemIdentity {} => {
+            AzureAuth::AzureSystemIdentity => {
                 let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
                 StorageCredentials::token_credential(identity)
             }
@@ -141,13 +148,7 @@ impl AzureSettings {
         Ok(
             DataLakeClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
                 .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-                .client_options(
-                    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-                        FixedRetryOptions::default()
-                            .max_retries(3u32)
-                            .max_total_elapsed(std::time::Duration::from_secs(5)),
-                    )),
-                )
+                .client_options(DEFAULT_CLIENT_OPTIONS.clone())
                 .build(),
         )
     }
@@ -165,21 +166,15 @@ impl AzureSettings {
         Ok(
             ClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
                 .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-                .client_options(
-                    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-                        FixedRetryOptions::default()
-                            .max_retries(3u32)
-                            .max_total_elapsed(std::time::Duration::from_secs(5)),
-                    )),
-                )
+                .client_options(DEFAULT_CLIENT_OPTIONS.clone())
                 .blob_service_client(),
         )
     }
 
     fn get_system_identity(&self) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
-        let authority_host_str = (self.authority_host.as_ref()).map_or(
-            DEFAULT_AUTHORITY_HOST.clone().to_string(),
-            std::string::ToString::to_string,
+        let authority_host_str = self.authority_host.as_ref().map_or(
+            DEFAULT_AUTHORITY_HOST.as_str().to_string(),
+            ToString::to_string,
         );
         let cache_key = format!("{}::{}", authority_host_str, self.cloud_location.account());
 
