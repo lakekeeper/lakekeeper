@@ -10,7 +10,13 @@ use crate::{service::Catalog, CONFIG};
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| AuthorizationModelVersion::new(4, 0)); // <- Change this for every change in the model
+    LazyLock::new(|| *V4_MODEL_VERSION); // <- Change this for every change in the model
+
+pub(super) static V4_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+    LazyLock::new(|| AuthorizationModelVersion::new(4, 0));
+
+pub(super) static V3_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
+    LazyLock::new(|| AuthorizationModelVersion::new(3, 4));
 
 mod migration_fns;
 use migration_fns::{v4_push_down_warehouse_id, MigrationState};
@@ -41,7 +47,7 @@ pub(crate) fn add_model_v3<C: Catalog>(
         ))
         // Change also the model version in this string:
         .expect("Model v3.4 is a valid AuthorizationModel in JSON format."),
-        AuthorizationModelVersion::new(3, 4),
+        *V3_MODEL_VERSION,
         // For major version upgrades, this is where tuple migrations go.
         None::<MigrationFn<_, _>>,
         None::<MigrationFn<_, _>>,

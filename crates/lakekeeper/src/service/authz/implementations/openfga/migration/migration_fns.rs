@@ -4,7 +4,8 @@ use std::sync::{Arc, LazyLock};
 use futures::stream::{FuturesUnordered, StreamExt};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use openfga_client::client::{
-    BasicOpenFgaClient, BasicOpenFgaServiceClient, OpenFgaClient, ReadRequestTupleKey, TupleKey,
+    BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, OpenFgaClient,
+    ReadRequestTupleKey, TupleKey,
 };
 use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
@@ -82,56 +83,34 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         .expect("default store should exist");
     let curr_auth_model_id =
         curr_auth_model_id.expect("Migration hook needs current auth model's id");
-    let c = client.into_client(&store.id, &curr_auth_model_id);
+    let c = client
+        .into_client(&store.id, &curr_auth_model_id)
+        .set_consistency(ConsistencyPreference::HigherConsistency);
+    println!("migration fn is using store.id: {}", store.id);
+    println!("migration fn is using auth_model_id: {curr_auth_model_id}");
     // TODO error conversion instead of unwrap
     let mut tx = C::Transaction::begin_read(state.catalog_state.clone())
         .await
         .map_err(|e| e.error)?;
 
-    // - Get all table ids
-    //
-    // - Get map of (TableId, WarehouseId)
-    //   - Via OpenFGA or retrieve from db and inject into this fn?
-    //   - try via db!
-    // - need to assert no table written during migration
-    // - check if there's a way to lock openfga during migration
-    //
-    // think: how to avoid creating tables from old binary why migration is running
-    //
-    // - For every table id
-    //   - get all tuples that have this id as user or object
-    //     - propaply only for NamespaceRelation::Child table id is on user side
-    //     - user: table id, object: nur `namespace:`
-    //   - copy these tuples and replace table_id with warehouse_id/table_id
-    //     - alte tuple erst spaeter loeschen
-    //   - write the new tuples, delete the old ones only after community is off 0.9
-    //
-    // - Do the same for views
-    //
-    // All new writes must then be wareho,use_id/table_id and warehouse_id/view_id
-    // checks
-
-    // Get data required for both table and view migrations.
-    // *All* table and view related tuples need to be updated, regardless of their status.
-    let project_ids: Vec<_> = C::list_projects(None, tx.transaction())
-        .await
-        .map_err(|e| e.error)?
-        .into_iter()
-        .map(|response| response.project_id)
-        .collect();
-    let warehouse_ids = all_warehouse_ids::<C>(state.catalog_state.clone(), &project_ids)
-        .await
-        .map_err(|e| e.error)?;
-    let tabular_query_params =
-        all_tabular_query_params::<C>(state.catalog_state.clone(), warehouse_ids)
-            .await
-            .map_err(|e| e.error)?;
-    let _tables = all_tables::<C>(state.catalog_state.clone(), tabular_query_params)
-        .await
-        .map_err(|e| e.error)?;
+    println!(
+        "in migration fn it can retrieve in total these tuples: {:#?}",
+        c.read_all_pages(
+            ReadRequestTupleKey {
+                user: "".to_string(),
+                relation: "".to_string(),
+                object: "".to_string()
+            },
+            100,
+            u32::MAX
+        )
+        .await?
+    );
 
     let projects = get_all_projects(&c, state.server_id).await?;
+    println!("projects: {:?}", projects);
     let warehouses = get_all_warehouses(&c, &projects).await?;
+    println!("warehouses: {:?}", warehouses);
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
     // TODO concurrency
     for wh in warehouses.into_iter() {
@@ -143,6 +122,7 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         let tabulars = get_all_tabulars(&c, &nss).await.unwrap();
         tabulars_per_wh.push((wh, tabulars));
     }
+    println!("tabulars per wh: {:#?}", tabulars_per_wh);
 
     // TODO concurrency
     // TODO extract into separat function and test in isolation
@@ -151,17 +131,20 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         for tab in tabs.into_iter() {
             let tab_as_object = get_all_tuples_with_object(&c, tab.clone()).await?;
             for mut tuple in tab_as_object.into_iter() {
+                // TODO also view/table -> lakekeeper_view/table
                 tuple.object = inject_id_prefix(&tuple.object, &wh)?;
                 new_tuples_to_write.push(tuple);
             }
 
             let tab_as_user = get_all_tuples_with_user(&c, tab).await?;
             for mut tuple in tab_as_user.into_iter() {
+                // TODO also view/table -> lakekeeper_view/table
                 tuple.user = inject_id_prefix(&tuple.user, &wh)?;
                 new_tuples_to_write.push(tuple);
             }
         }
     }
+    println!("tuples to write: {:#?}", new_tuples_to_write);
 
     // TODO concurrency
     for chunk in new_tuples_to_write.chunks(OPENFGA_WRITE_BATCH_SIZE) {
@@ -344,16 +327,15 @@ async fn get_all_projects(
     client: &BasicOpenFgaClient,
     server_id: uuid::Uuid,
 ) -> anyhow::Result<Vec<String>> {
+    let request_key = ReadRequestTupleKey {
+        user: format!("server:{server_id}"),
+        relation: ProjectRelation::Server.to_string(),
+        object: "project:".to_string(),
+    };
+    println!("get_all_projects_req_key: {:#?}", request_key);
+    println!("store_id: {}", client.store_id());
     let tuples = client
-        .read_all_pages(
-            ReadRequestTupleKey {
-                user: format!("server:{server_id}"),
-                relation: ProjectRelation::Server.to_string(),
-                object: "project:".to_string(),
-            },
-            OPENFGA_PAGE_SIZE,
-            u32::MAX,
-        )
+        .read_all_pages(request_key, OPENFGA_PAGE_SIZE, u32::MAX)
         .await?;
     let projects = tuples
         .into_iter()
@@ -576,9 +558,16 @@ mod tests {
 
         use super::super::*;
         use crate::{
+            implementations::postgres::{self, PostgresCatalog, PostgresTransaction},
             service::authz::implementations::openfga::{
-                migration::tests::authorizer_for_empty_store, relations::ServerAssignment,
-                OPENFGA_SERVER,
+                client::new_authorizer,
+                migration::{
+                    add_model_v3, add_model_v4, get_model_manager,
+                    tests::authorizer_for_empty_store,
+                },
+                new_client_from_config,
+                relations::ServerAssignment,
+                OpenFGAAuthorizer, OPENFGA_SERVER,
             },
             CONFIG,
         };
@@ -1114,6 +1103,351 @@ mod tests {
                 get_all_tuples_with_user(&authorizer.client, "user:nonexistent".to_string())
                     .await?;
             assert!(tuples.is_empty());
+            Ok(())
+        }
+
+        /// Constructs an authorizer that has been initialized and migrated to v3.
+        /// Returns the authorizer and the name of its store.
+        // TODO all of the above must use this instead of authorizer_for_empty_store
+        async fn v3_authorizer_for_empty_store(
+            pool: sqlx::PgPool,
+        ) -> anyhow::Result<(OpenFGAAuthorizer, String)> {
+            // TODO refactor openfga::migration::migrate s.t. no need to replicate it here
+            let client = new_client_from_config().await?;
+            let test_uuid = uuid::Uuid::now_v7();
+            let store_name = format!("test_store_{test_uuid}");
+            let catalog = PostgresCatalog {};
+            let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
+
+            let model_manager = get_model_manager(&client, Some(store_name.clone()));
+            let mut model_manager = add_model_v3(model_manager);
+            let migration_state = MigrationState {
+                store_name: store_name.clone(),
+                catalog,
+                catalog_state,
+                server_id: CONFIG.server_id,
+            };
+            model_manager.migrate(migration_state).await?;
+
+            let authorizer = new_authorizer::<PostgresCatalog>(
+                client,
+                Some(store_name.clone()),
+                openfga_client::client::ConsistencyPreference::HigherConsistency,
+            )
+            .await?;
+            Ok((authorizer, store_name))
+        }
+
+        // Migrates the OpenFGA store to v4, which will also execute the migration function.
+        async fn migrate_to_v4<C: Catalog>(
+            client: &BasicOpenFgaServiceClient,
+            store_name: String,
+            catalog: C,
+            catalog_state: C::State,
+        ) -> anyhow::Result<()> {
+            let model_manager = get_model_manager(&client, Some(store_name.clone()));
+            let mut model_manager = add_model_v4(model_manager);
+            let migration_state = MigrationState {
+                store_name: store_name.clone(),
+                catalog,
+                catalog_state,
+                server_id: CONFIG.server_id,
+            };
+            model_manager
+                .migrate(migration_state)
+                .await
+                .map_err(|e| e.into())
+        }
+
+        #[sqlx::test]
+        async fn test_v4_push_down_warehouse_id(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            let (authorizer, store_name) = v3_authorizer_for_empty_store(pool.clone()).await?;
+
+            // Create the initial tuple structure:
+            //
+            // Project p1 has two warehouses.
+            // warehouse:wh1 -> namespace:ns1 -> table:t1, table:t2
+            //                            |--> namespace:ns1_child -> view:v1, table:t3
+            // warehouse:wh2 -> namespace:ns2 -> table:t4
+            let initial_tuples = vec![
+                // Project structure
+                TupleKey {
+                    user: OPENFGA_SERVER.clone(),
+                    relation: ProjectRelation::Server.to_string(),
+                    object: "project:p1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "project:p1".to_string(),
+                    relation: WarehouseRelation::Project.to_string(),
+                    object: "warehouse:wh1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "project:p1".to_string(),
+                    relation: WarehouseRelation::Project.to_string(),
+                    object: "warehouse:wh2".to_string(),
+                    condition: None,
+                },
+                // Namespace structure for warehouse 1
+                TupleKey {
+                    user: "warehouse:wh1".to_string(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: "namespace:ns1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns1".to_string(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: "namespace:ns1_child".to_string(),
+                    condition: None,
+                },
+                // Namespace structure for warehouse 2
+                TupleKey {
+                    user: "warehouse:wh2".to_string(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: "namespace:ns2".to_string(),
+                    condition: None,
+                },
+                // Tables in ns1 (two tables)
+                TupleKey {
+                    user: "namespace:ns1".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:t1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:t1".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns1".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:t2".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:t2".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1".to_string(),
+                    condition: None,
+                },
+                // Tables and Views in ns1_child (one view and one table)
+                TupleKey {
+                    user: "namespace:ns1_child".to_string(),
+                    relation: ViewRelation::Parent.to_string(),
+                    object: "view:v1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "view:v1".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1_child".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns1_child".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:t3".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:t3".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1_child".to_string(),
+                    condition: None,
+                },
+                // Table in ns2
+                TupleKey {
+                    user: "namespace:ns2".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:t4".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:t4".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns2".to_string(),
+                    condition: None,
+                },
+                // Some additional relations for tables/views (ownership, etc.)
+                TupleKey {
+                    user: "user:owner1".to_string(),
+                    relation: TableRelation::Ownership.to_string(),
+                    object: "table:t1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "user:owner2".to_string(),
+                    relation: ViewRelation::Ownership.to_string(),
+                    object: "view:v1".to_string(),
+                    condition: None,
+                },
+            ];
+
+            // Write initial tuples
+            authorizer.write(Some(initial_tuples.clone()), None).await?;
+
+            println!(
+                "projects queried from test pre v4: {:#?}",
+                get_all_projects(&authorizer.client, CONFIG.server_id).await?
+            );
+
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            // Migrate to v4, which will call the migration fn.
+            // TODO construct new authorizer via authorizer for empty store?
+            // Or make sure auth model id of authorizer's client is updated
+            migrate_to_v4(
+                &authorizer.client.client(),
+                store_name.clone(),
+                PostgresCatalog {},
+                postgres::CatalogState::from_pools(pool.clone(), pool.clone()),
+            )
+            .await?;
+            println!("authorizer is using store: {store_name}");
+            println!(
+                "authorizer is using auth_model_id: {}",
+                authorizer.client.authorization_model_id()
+            );
+
+            println!(
+                "projects queried from test post v4: {:#?}",
+                get_all_projects(&authorizer.client, CONFIG.server_id).await?
+            );
+
+            // Read all tuples from store
+            let all_tuples = authorizer
+                .client
+                .read_all_pages(
+                    ReadRequestTupleKey {
+                        user: "".to_string(),
+                        relation: "".to_string(),
+                        object: "".to_string(),
+                    },
+                    100,
+                    1000,
+                )
+                .await?;
+
+            println!("all tuples: {:#?}", all_tuples);
+            let all_tuple_keys: Vec<TupleKey> =
+                all_tuples.into_iter().filter_map(|t| t.key).collect();
+            println!("all tuple keys: {:#?}", all_tuple_keys);
+
+            // Separate initial tuples from new tuples added by migration
+            let mut new_tuples = vec![];
+            for tuple in all_tuple_keys {
+                if !initial_tuples.contains(&tuple) {
+                    new_tuples.push(tuple);
+                }
+            }
+
+            // Expected new tuples should have warehouse ID prefixed to table/view IDs
+            let expected_new_tuples = vec![
+                // Updated object references (table/view objects with warehouse prefix)
+                TupleKey {
+                    user: "namespace:ns1".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:wh1/t1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns1".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:wh1/t2".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns1_child".to_string(),
+                    relation: ViewRelation::Parent.to_string(),
+                    object: "view:wh1/v1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns1_child".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:wh1/t3".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "namespace:ns2".to_string(),
+                    relation: TableRelation::Parent.to_string(),
+                    object: "table:wh2/t4".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "user:owner1".to_string(),
+                    relation: TableRelation::Ownership.to_string(),
+                    object: "table:wh1/t1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "user:owner2".to_string(),
+                    relation: ViewRelation::Ownership.to_string(),
+                    object: "view:wh1/v1".to_string(),
+                    condition: None,
+                },
+                // Updated user references (table/view users with warehouse prefix)
+                TupleKey {
+                    user: "table:wh1/t1".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:wh1/t2".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "view:wh1/v1".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1_child".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:wh1/t3".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns1_child".to_string(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: "table:wh2/t4".to_string(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: "namespace:ns2".to_string(),
+                    condition: None,
+                },
+            ];
+
+            // Sort both for comparison
+            new_tuples.sort_by(|a, b| {
+                a.user
+                    .cmp(&b.user)
+                    .then_with(|| a.relation.cmp(&b.relation))
+                    .then_with(|| a.object.cmp(&b.object))
+            });
+
+            let mut expected_sorted = expected_new_tuples.clone();
+            expected_sorted.sort_by(|a, b| {
+                a.user
+                    .cmp(&b.user)
+                    .then_with(|| a.relation.cmp(&b.relation))
+                    .then_with(|| a.object.cmp(&b.object))
+            });
+
+            // Verify the new tuples match expected
+            println!("new tuples: {:#?}", new_tuples);
+            assert_eq!(new_tuples.len(), expected_sorted.len());
+            for (actual, expected) in new_tuples.iter().zip(expected_sorted.iter()) {
+                assert_eq!(actual.user, expected.user);
+                assert_eq!(actual.relation, expected.relation);
+                assert_eq!(actual.object, expected.object);
+            }
+
             Ok(())
         }
     }
