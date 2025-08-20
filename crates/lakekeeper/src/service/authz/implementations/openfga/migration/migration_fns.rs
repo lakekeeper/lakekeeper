@@ -398,7 +398,7 @@ async fn get_all_warehouses(
     }
 
     while let Some(whs) = jobs.join_next().await {
-        all_warehouses.extend(whs??.into_iter());
+        all_warehouses.extend(whs??);
     }
     Ok(all_warehouses)
 }
@@ -473,33 +473,61 @@ impl TabularType {
     }
 }
 
-// TODO concurrency, read with smaller page size
 async fn get_all_tabulars(
     client: &BasicOpenFgaClient,
     namespaces: &[String],
 ) -> anyhow::Result<Vec<String>> {
-    let mut tabulars = vec![];
+    let mut all_tabulars = vec![];
+    let mut jobs = tokio::task::JoinSet::new();
+
+    // Spawn one task per namespace. It will spawn nested tasks to get all tabular types.
     for ns in namespaces.iter() {
-        for tab in TabularType::iter() {
-            let tuples = client
-                .read_all_pages(
-                    ReadRequestTupleKey {
-                        user: ns.to_string(),
-                        relation: tab.parent_relation_string(),
-                        object: tab.object_type(),
-                    },
-                    OPENFGA_PAGE_SIZE,
-                    u32::MAX,
-                )
-                .await?;
-            for t in tuples.into_iter() {
-                if let Some(k) = t.key {
-                    tabulars.push(k.object)
-                }
+        let client = client.clone();
+        let ns = ns.clone();
+        jobs.spawn(async move {
+            let mut tabular_jobs = tokio::task::JoinSet::new();
+
+            for tab in TabularType::iter() {
+                let client = client.clone();
+                let ns = ns.clone();
+                let relation = tab.parent_relation_string();
+                let object_type = tab.object_type();
+                let semaphore = OPENFGA_REQ_PERMITS.clone();
+                tabular_jobs.spawn(async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+                    let tuples = client
+                        .read_all_pages(
+                            ReadRequestTupleKey {
+                                user: ns,
+                                relation,
+                                object: object_type,
+                            },
+                            OPENFGA_PAGE_SIZE,
+                            u32::MAX,
+                        )
+                        .await?;
+                    drop(_permit);
+                    let tabulars: Vec<String> = tuples
+                        .into_iter()
+                        .filter_map(|t| t.key.map(|k| k.object))
+                        .collect();
+                    Ok::<_, anyhow::Error>(tabulars)
+                });
             }
-        }
+
+            let mut namespace_tabulars = vec![];
+            while let Some(res) = tabular_jobs.join_next().await {
+                namespace_tabulars.extend(res??);
+            }
+
+            Ok::<_, anyhow::Error>(namespace_tabulars)
+        });
     }
-    Ok(tabulars)
+
+    while let Some(res) = jobs.join_next().await {
+        all_tabulars.extend(res??);
+    }
+    Ok(all_tabulars)
 }
 
 /// The `object` must specify both type and id (`type:id`).
