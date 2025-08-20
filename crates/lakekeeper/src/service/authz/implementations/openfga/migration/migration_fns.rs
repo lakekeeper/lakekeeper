@@ -403,7 +403,6 @@ async fn get_all_warehouses(
     Ok(all_warehouses)
 }
 
-// TODO concurrency
 async fn get_all_namespaces(
     client: &BasicOpenFgaClient,
     warehouse: String,
@@ -412,30 +411,43 @@ async fn get_all_namespaces(
     let mut to_process = VecDeque::from([warehouse.clone()]);
 
     // Breadth-first search to query namespaces at a given level in parallel.
-    while let Some(parent) = to_process.pop_front() {
-        // Get all namespaces that have this parent (warehouse or namespace).
-        let tuples = client
-            .read_all_pages(
-                ReadRequestTupleKey {
-                    user: parent.clone(),
-                    relation: NamespaceRelation::Parent.to_string(),
-                    object: "namespace:".to_string(),
-                },
-                OPENFGA_PAGE_SIZE,
-                u32::MAX,
-            )
-            .await?;
+    while !to_process.is_empty() {
+        let mut jobs = tokio::task::JoinSet::new();
+        let parents: Vec<String> = to_process.drain(..).collect();
+        for parent in parents.iter() {
+            let client = client.clone();
+            let parent = parent.clone();
+            let semaphore = OPENFGA_REQ_PERMITS.clone();
 
-        for tuple in tuples.into_iter() {
-            if let Some(key) = tuple.key {
-                let namespace = key.object;
-                namespaces.push(namespace.clone());
-                // Add this namespace to the processing queue to find its children
-                to_process.push_back(namespace);
+            jobs.spawn(async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                let tuples = client
+                    .read_all_pages(
+                        ReadRequestTupleKey {
+                            user: parent.clone(),
+                            relation: NamespaceRelation::Parent.to_string(),
+                            object: "namespace:".to_string(),
+                        },
+                        OPENFGA_PAGE_SIZE,
+                        u32::MAX,
+                    )
+                    .await?;
+                drop(_permit);
+                let children: Vec<String> = tuples
+                    .into_iter()
+                    .filter_map(|t| t.key.map(|k| k.object))
+                    .collect();
+                Ok::<_, anyhow::Error>(children)
+            });
+        }
+        while let Some(res) = jobs.join_next().await {
+            let children = res??;
+            for ns in children {
+                namespaces.push(ns.clone());
+                to_process.push_back(ns);
             }
         }
     }
-
     Ok(namespaces)
 }
 
