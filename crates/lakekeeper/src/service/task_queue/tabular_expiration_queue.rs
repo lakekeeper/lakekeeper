@@ -56,7 +56,7 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
         {
             Ok(expiration) => expiration,
             Err(err) => {
-                tracing::error!("Failed to fetch expiration: {:?}", err);
+                tracing::error!("Failed to fetch `{QUEUE_NAME}` task. {err}");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
@@ -69,14 +69,14 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
         let state = match expiration.task_state::<TabularExpirationPayload>() {
             Ok(state) => state,
             Err(err) => {
-                tracing::error!("Failed to deserialize tabular expiration task state: {err:?}",);
+                tracing::error!("Failed to deserialize `{QUEUE_NAME}` task state. {err}");
                 continue;
             }
         };
         let _config = match expiration.task_config::<ExpirationQueueConfig>() {
             Ok(config) => config,
             Err(err) => {
-                tracing::error!("Failed to deserialize task config: {err:?}");
+                tracing::error!("Failed to deserialize `{QUEUE_NAME}` task config. {err}");
                 continue;
             }
         }
@@ -122,13 +122,13 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     .await
     {
         Ok(()) => {
-            tracing::debug!("Successful {expiration:?}");
+            tracing::debug!("Successfully expired  {expiration:?}");
         }
         Err(err) => {
             tracing::error!("Failed to handle {expiration:?}: {err:?}");
             super::record_error_with_catalog::<C>(
                 catalog_state.clone(),
-                &format!("Failed to expire tabular: '{:?}'", err.error),
+                &format!("Failed to expire tabular. {}", err.error),
                 5,
                 task.task_id,
             )
@@ -151,7 +151,7 @@ where
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to start transaction: {:?}", e);
+            tracing::error!("Failed to start transaction for `{QUEUE_NAME}` Queue. {e}",);
             e
         })?;
 
@@ -161,7 +161,7 @@ where
             let location = C::drop_table(table_id, true, trx.transaction())
                 .await
                 .map_err(|e| {
-                    tracing::error!(?e, "Failed to drop table: {}", e.error);
+                    tracing::error!("Failed to drop table in `{QUEUE_NAME}` task. {}", e.error);
                     e.error
                 })?;
 
@@ -169,7 +169,10 @@ where
                 .delete_table(table_id)
                 .await
                 .inspect_err(|e| {
-                    tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
+                    tracing::error!(
+                        "Failed to delete table from authorizer in `{QUEUE_NAME}` task. {}",
+                        e.error
+                    );
                 })
                 .ok();
             location
@@ -178,15 +181,17 @@ where
             let view_id = ViewId::from(tabular_id);
             let location = C::drop_view(view_id, true, trx.transaction())
                 .await
-                .map_err(|e| {
-                    tracing::error!(?e, "Failed to drop view: {}", e.error);
-                    e
+                .inspect_err(|e| {
+                    tracing::error!("Failed to drop view in `{QUEUE_NAME}` task. {}", e.error);
                 })?;
             authorizer
                 .delete_view(view_id)
                 .await
                 .inspect_err(|e| {
-                    tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
+                    tracing::error!(
+                        "Failed to delete view from authorizer in `{QUEUE_NAME}` task. {}",
+                        e.error
+                    );
                 })
                 .ok();
             location
@@ -212,7 +217,7 @@ where
     C::retrying_record_task_success(task.task_id, None, trx.transaction()).await;
 
     trx.commit().await.map_err(|e| {
-        tracing::error!("Failed to commit transaction: {:?}", e);
+        tracing::error!("Failed to commit transaction in `{QUEUE_NAME}` task. {e}");
         e
     })?;
 

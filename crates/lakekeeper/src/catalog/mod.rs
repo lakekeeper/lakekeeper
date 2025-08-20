@@ -17,6 +17,7 @@ use iceberg::spec::{TableMetadata, ViewMetadata};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use itertools::{FoldWhile, Itertools};
 pub use namespace::{MAX_NAMESPACE_DEPTH, NAMESPACE_ID_PROPERTY, UNSUPPORTED_NAMESPACE_PROPERTIES};
+pub use tables::{commit_tables_inner, commit_tables_validate, load_table_inner};
 
 use crate::{
     api::{

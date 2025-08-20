@@ -47,7 +47,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
         {
             Ok(expiration) => expiration,
             Err(err) => {
-                tracing::error!("Failed to fetch purge: {:?}", err);
+                tracing::error!("Failed to fetch Tabular Purge task. {err}");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
             }
@@ -61,14 +61,14 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
         let state = match task.task_state::<TabularPurgePayload>() {
             Ok(state) => state,
             Err(err) => {
-                tracing::error!("Failed to deserialize task state: {:?}", err);
+                tracing::error!("Failed to deserialize Tabular Purge task state. {err}");
                 continue;
             }
         };
         let config = match task.task_config::<PurgeQueueConfig>() {
             Ok(config) => config,
             Err(err) => {
-                tracing::error!("Failed to deserialize task config: {:?}", err);
+                tracing::error!("Failed to deserialize Tabular Purge task config. {err}");
                 continue;
             }
         }
@@ -111,7 +111,10 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
             );
             super::record_error_with_catalog::<C>(
                 catalog_state.clone(),
-                &format!("Failed to purge tabular: '{:?}'", err.error),
+                &format!(
+                    "Failed to purge tabular at {}. {}",
+                    purge_task.tabular_location, err.error
+                ),
                 config.max_retries(),
                 task.task_id,
             )
@@ -151,26 +154,30 @@ where
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to start transaction: {:?}", e);
+            tracing::error!("Failed to start DB transaction for Tabular Purge Queue. {e}");
             e
         })?;
 
     let warehouse = C::require_warehouse(*warehouse_id, trx.transaction())
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get warehouse: {:?}", e);
+            tracing::error!("Failed to get warehouse {warehouse_id} for Tabular Purge task. {e}");
             e
         })?;
-    C::retrying_record_task_success(*task_id, None, trx.transaction()).await;
-    trx.commit().await.map_err(|e| {
-        tracing::error!("Failed to commit transaction: {:?}", e);
-        e
+
+    let tabular_location = Location::from_str(tabular_location).map_err(|e| {
+        tracing::error!("Failed to parse tabular location `{tabular_location}` for purging. {e}",);
+        ErrorModel::internal(
+            format!("Failed to parse table location `{tabular_location}` of deleted tabular."),
+            "ParseError",
+            Some(Box::new(e)),
+        )
     })?;
 
     let secret = maybe_get_secret(warehouse.storage_secret_id, secret_state)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get secret: {:?}", e);
+            tracing::error!("Failed to get secret for Tabular Purge. {e}");
             e
         })?;
 
@@ -179,22 +186,16 @@ where
         .file_io(secret.as_ref())
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get storage profile: {:?}", e);
+            tracing::error!("Failed to get FileIO for Tabular Purge: {e}");
             e
         })?;
 
-    let tabular_location = Location::from_str(tabular_location).map_err(|e| {
-        tracing::error!(
-            "Failed delete tabular - to parse location {}: {:?}",
-            tabular_location,
-            e
-        );
-        ErrorModel::internal(
-            "Failed to parse table location of deleted tabular.",
-            "ParseError",
-            Some(Box::new(e)),
-        )
+    C::retrying_record_task_success(*task_id, None, trx.transaction()).await;
+    trx.commit().await.map_err(|e| {
+        tracing::error!("Failed to commit Tabular Purge transaction. {e}");
+        e
     })?;
+
     remove_all(&file_io, &tabular_location).await.map_err(|e| {
         tracing::error!(
             ?e,

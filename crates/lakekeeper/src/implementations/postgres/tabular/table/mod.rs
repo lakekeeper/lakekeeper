@@ -64,7 +64,7 @@ where
     .await?
     .map(|(id, location)| match id {
         TabularId::Table(tab) => Ok(TabularDetails {
-            ident: tab.into(),
+            table_id: tab.into(),
             location,
         }),
         TabularId::View(_) => Err(ErrorModel::builder()
@@ -1274,7 +1274,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1417,7 +1417,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         // Table id should be the same
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1465,7 +1465,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]

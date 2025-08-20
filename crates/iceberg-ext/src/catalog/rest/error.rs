@@ -30,6 +30,12 @@ impl From<IcebergErrorResponse> for iceberg::Error {
     }
 }
 
+impl std::fmt::Display for IcebergErrorResponse {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
 impl From<ErrorModel> for iceberg::Error {
     fn from(value: ErrorModel) -> Self {
         let mut error = iceberg::Error::new(iceberg::ErrorKind::DataInvalid, &value.message)
@@ -54,6 +60,12 @@ fn error_chain_fmt(e: impl std::error::Error, f: &mut std::fmt::Formatter<'_>) -
 impl From<ErrorModel> for IcebergErrorResponse {
     fn from(value: ErrorModel) -> Self {
         IcebergErrorResponse { error: value }
+    }
+}
+
+impl From<IcebergErrorResponse> for ErrorModel {
+    fn from(value: IcebergErrorResponse) -> Self {
+        value.error
     }
 }
 
@@ -92,13 +104,21 @@ impl StdError for ErrorModel {
 
 impl Display for ErrorModel {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} ({}): {}", self.r#type, self.code, self.message)?;
+
+        if !self.stack.is_empty() {
+            writeln!(f, "Stack:")?;
+            for detail in &self.stack {
+                writeln!(f, "  {detail}")?;
+            }
+        }
+
         if let Some(source) = self.source.as_ref() {
-            writeln!(f, "{}", self.message)?;
+            writeln!(f, "Caused by:")?;
             // Dereference `source` to get `dyn StdError` and then take a reference to pass
             error_chain_fmt(&**source, f)?;
-        } else {
-            write!(f, "{}", self.message)?;
         }
+
         Ok(())
     }
 }
@@ -311,5 +331,66 @@ mod tests {
 
         let resp: IcebergErrorResponse = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(resp).unwrap(), json);
+    }
+
+    #[test]
+    fn test_error_model_display() {
+        // Test basic error without source or stack
+        let error = ErrorModel {
+            message: "Something went wrong".to_string(),
+            r#type: "TestError".to_string(),
+            code: 500,
+            source: None,
+            stack: vec![],
+        };
+
+        let display_output = format!("{error}");
+        assert!(display_output.contains("Something went wrong"));
+        assert!(display_output.contains("TestError"));
+        assert!(display_output.contains("500"));
+        // Should not contain "Stack:" since it's empty
+        assert!(!display_output.contains("Stack:"));
+        // Should not contain "Caused by:" since there's no source
+        assert!(!display_output.contains("Caused by:"));
+
+        // Test error with stack details
+        let error_with_stack = ErrorModel {
+            message: "Another error".to_string(),
+            r#type: "StackError".to_string(),
+            code: 400,
+            source: None,
+            stack: vec!["detail1".to_string(), "detail2".to_string()],
+        };
+
+        let display_output = format!("{error_with_stack}");
+        assert!(display_output.contains("Another error"));
+        assert!(display_output.contains("StackError"));
+        assert!(display_output.contains("400"));
+        assert!(display_output.contains("Stack:"));
+        assert!(display_output.contains("  detail1"));
+        assert!(display_output.contains("  detail2"));
+
+        // Test error with source
+        let source_error = Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "File not found",
+        )) as Box<dyn std::error::Error + Send + Sync + 'static>;
+
+        let error_with_source = ErrorModel {
+            message: "IO operation failed".to_string(),
+            r#type: "IOError".to_string(),
+            code: 404,
+            source: Some(source_error),
+            stack: vec!["io_stack".to_string()],
+        };
+
+        let display_output = format!("{error_with_source}");
+        assert!(display_output.contains("IO operation failed"));
+        assert!(display_output.contains("IOError"));
+        assert!(display_output.contains("404"));
+        assert!(display_output.contains("Stack:"));
+        assert!(display_output.contains("  io_stack"));
+        assert!(display_output.contains("Caused by:"));
+        assert!(display_output.contains("File not found"));
     }
 }

@@ -492,6 +492,6 @@ impl TryFrom<Prefix> for WarehouseId {
 
 #[derive(Debug, Clone)]
 pub struct TabularDetails {
-    pub ident: TableId,
+    pub table_id: TableId,
     pub location: String,
 }

@@ -510,7 +510,7 @@ impl Task {
     ///
     /// # Errors
     /// Returns an error if the task configuration cannot be deserialized into the specified type.
-    pub fn task_config<T: DeserializeOwned>(&self) -> crate::api::Result<Option<T>> {
+    pub fn task_config<T: DeserializeOwned + QueueConfig>(&self) -> crate::api::Result<Option<T>> {
         Ok(self
             .config
             .as_ref()
@@ -566,29 +566,30 @@ impl std::fmt::Display for Status<'_> {
     }
 }
 
-pub(crate) async fn record_error_with_catalog<C: Catalog>(
+pub async fn record_error_with_catalog<C: Catalog>(
     catalog_state: C::State,
     error: &str,
     max_retries: i32,
     task_id: TaskId,
 ) {
     let mut trx: C::Transaction = match Transaction::begin_write(catalog_state).await.map_err(|e| {
-        tracing::error!("Failed to start transaction: {:?}", e);
+        tracing::error!("Failed to start transaction while recording task error. {e}");
         e
     }) {
         Ok(trx) => trx,
         Err(e) => {
-            tracing::error!("Failed to start transaction: {:?}", e);
+            tracing::error!("Failed to start transaction while recording task error. {e}");
             return;
         }
     };
     C::retrying_record_task_failure(task_id, error, max_retries, trx.transaction()).await;
     let _ = trx.commit().await.inspect_err(|e| {
-        tracing::error!("Failed to commit transaction: {:?}", e);
+        tracing::error!("Failed to commit transaction while recording task error. {e}");
     });
 }
 
-const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
+#[must_use]
+pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
     assert!(
         num > 0,
         "max_seconds_since_last_heartbeat must be greater than 0"

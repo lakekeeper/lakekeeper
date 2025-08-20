@@ -7,7 +7,7 @@
 #![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 mod error;
 use bytes::Bytes;
@@ -427,117 +427,73 @@ impl LakekeeperStorage for StorageBackend {
     }
 }
 
-// Implementation for Arc<StorageBackend>
-impl LakekeeperStorage for std::sync::Arc<StorageBackend> {
-    fn delete(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).delete(path)
-    }
+// Macro to generate LakekeeperStorage implementations for smart pointer types
+macro_rules! impl_lakekeeper_storage_for_smart_pointer {
+    ($($wrapper:ty),+ $(,)?) => {
+        $(
+            impl<T> LakekeeperStorage for $wrapper
+            where
+                T: LakekeeperStorage,
+            {
+                fn delete(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<(), DeleteError>> + Send {
+                    self.as_ref().delete(path)
+                }
 
-    fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
-        (**self).delete_batch(paths)
-    }
+                fn delete_batch(
+                    &self,
+                    paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
+                ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
+                    self.as_ref().delete_batch(paths)
+                }
 
-    fn write(
-        &self,
-        path: impl AsRef<str> + Send,
-        bytes: Bytes,
-    ) -> impl Future<Output = Result<(), WriteError>> + Send {
-        (**self).write(path, bytes)
-    }
+                fn write(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                    bytes: Bytes,
+                ) -> impl Future<Output = Result<(), WriteError>> + Send {
+                    self.as_ref().write(path, bytes)
+                }
 
-    fn read(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read(path)
-    }
+                fn read(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
+                    self.as_ref().read(path)
+                }
 
-    fn read_single(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read_single(path)
-    }
+                fn read_single(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
+                    self.as_ref().read_single(path)
+                }
 
-    fn list(
-        &self,
-        path: impl AsRef<str> + Send,
-        page_size: Option<usize>,
-    ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
-    > + Send {
-        (**self).list(path, page_size)
-    }
+                fn list(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                    page_size: Option<usize>,
+                ) -> impl Future<
+                    Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
+                > + Send {
+                    self.as_ref().list(path, page_size)
+                }
 
-    fn remove_all(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).remove_all(path)
-    }
+                fn remove_all(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<(), DeleteError>> + Send {
+                    self.as_ref().remove_all(path)
+                }
+            }
+        )+
+    };
 }
 
-// Implementation for Box<StorageBackend>
-impl LakekeeperStorage for Box<StorageBackend> {
-    fn delete(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).delete(path)
-    }
-
-    fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
-        (**self).delete_batch(paths)
-    }
-
-    fn write(
-        &self,
-        path: impl AsRef<str> + Send,
-        bytes: Bytes,
-    ) -> impl Future<Output = Result<(), WriteError>> + Send {
-        (**self).write(path, bytes)
-    }
-
-    fn read(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read(path)
-    }
-
-    fn read_single(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read_single(path)
-    }
-
-    fn list(
-        &self,
-        path: impl AsRef<str> + Send,
-        page_size: Option<usize>,
-    ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
-    > + Send {
-        (**self).list(path, page_size)
-    }
-
-    fn remove_all(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).remove_all(path)
-    }
-}
+// Generate implementations for Arc<T> and Box<T>
+impl_lakekeeper_storage_for_smart_pointer!(Arc<T>, Box<T>);
 
 async fn abort_unfinished_batch_delete_futures(
     join_set: &mut JoinSet<Result<(), DeleteBatchError>>,

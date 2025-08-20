@@ -523,14 +523,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        let mut metadatas = C::load_tables(
-            warehouse_id,
-            vec![tabular_details.ident],
-            list_flags.include_deleted,
-            t.transaction(),
-        )
-        .await?;
-        t.commit().await?;
         let CatalogLoadTableResult {
             table_id,
             namespace_id: _,
@@ -538,8 +530,15 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             metadata_location,
             storage_secret_ident,
             storage_profile,
-        } = take_table_metadata(&tabular_details.ident, &table, &mut metadatas)?;
-        require_not_staged(metadata_location.as_ref())?;
+        } = load_table_inner::<C>(
+            warehouse_id,
+            tabular_details.table_id,
+            &table,
+            list_flags.include_deleted,
+            &mut t,
+        )
+        .await?;
+        t.commit().await?;
 
         let table_location =
             parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -616,7 +615,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         ))?;
 
         let (storage_secret_ident, storage_profile) =
-            C::load_storage_profile(warehouse_id, tabular_details.ident, t.transaction()).await?;
+            C::load_storage_profile(warehouse_id, tabular_details.table_id, t.transaction())
+                .await?;
         let storage_secret =
             maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
         let storage_config = storage_profile
@@ -660,7 +660,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             &parameters.table,
             request.identifier.as_ref(),
         )?);
-        let t = commit_tables_internal(
+        let t = commit_tables_with_authz(
             parameters.prefix,
             CommitTransactionRequest {
                 table_changes: vec![request],
@@ -947,7 +947,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let _ = commit_tables_internal(prefix, request, state, request_metadata).await?;
+        let _ = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
         Ok(())
     }
 }
@@ -984,12 +984,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
-                table_id.ident,
+                table_id.table_id,
                 CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
-                table_id.ident,
+                table_id.table_id,
                 CatalogTableAction::CanWriteData,
             ),
         )?;
@@ -1005,15 +1005,34 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
-    prefix: Option<Prefix>,
-    request: CommitTransactionRequest,
-    state: ApiContext<State<A, C, S>>,
-    request_metadata: RequestMetadata,
-) -> Result<Vec<CommitContext>> {
-    // ------------------- VALIDATIONS -------------------
-    let warehouse_id = require_warehouse_id(prefix.clone())?;
+/// Load a table from the catalog, ensuring that it is not staged
+///
+/// # Errors
+/// Returns an error if the table is staged, if it cannot be found, or if a DB error occurs.
+pub async fn load_table_inner<C: Catalog>(
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+    table_ident: &TableIdent,
+    include_deleted: bool,
+    t: &mut C::Transaction,
+) -> Result<CatalogLoadTableResult> {
+    let mut metadatas = C::load_tables(
+        warehouse_id,
+        vec![table_id],
+        include_deleted,
+        t.transaction(),
+    )
+    .await?;
+    let result = take_table_metadata(&table_id, table_ident, &mut metadatas)?;
+    require_not_staged(result.metadata_location.as_ref())?;
+    Ok(result)
+}
+
+/// Validate commit table requests
+///
+/// # Errors
+/// Returns an error if any validation fails.
+pub fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
     for change in &request.table_changes {
         validate_table_updates(&change.updates)?;
         change
@@ -1032,64 +1051,13 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         }
     }
 
-    // ------------------- AUTHZ -------------------
-    let authorizer = state.v1_state.authz.clone();
-    authorizer
-        .require_warehouse_action(
-            &request_metadata,
-            warehouse_id,
-            CatalogWarehouseAction::CanUse,
-        )
-        .await?;
-
-    let include_staged = true;
-    let include_deleted = false;
-    let include_active = true;
-
+    // Check table identifier uniqueness
     let identifiers = request
         .table_changes
         .iter()
         .filter_map(|change| change.identifier.as_ref())
         .collect::<HashSet<_>>();
     let n_identifiers = identifiers.len();
-    let table_ids = C::table_idents_to_ids(
-        warehouse_id,
-        identifiers,
-        ListFlags {
-            include_active,
-            include_staged,
-            include_deleted,
-        },
-        state.v1_state.catalog.clone(),
-    )
-    .await
-    .map_err(|e| {
-        ErrorModel::internal("Error fetching table ids", "TableIdsFetchError", None)
-            .append_details(vec![e.error.message, e.error.r#type])
-            .append_details(e.error.stack)
-    })?;
-
-    let authz_checks = table_ids
-        .values()
-        .map(|table_id| {
-            authorizer.require_table_action(
-                &request_metadata,
-                Ok(*table_id),
-                CatalogTableAction::CanCommit,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let table_uuids = futures::future::try_join_all(authz_checks).await?;
-    let table_ids = Arc::new(
-        table_ids
-            .into_iter()
-            .zip(table_uuids)
-            .map(|((table_ident, _), table_uuid)| (table_ident, table_uuid))
-            .collect::<HashMap<_, _>>(),
-    );
-
-    // ------------------- BUSINESS LOGIC -------------------
 
     if n_identifiers != request.table_changes.len() {
         return Err(ErrorModel::bad_request(
@@ -1100,23 +1068,33 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
         .into());
     }
 
-    let mut events = vec![];
-    let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
-    let mut updates = vec![];
-    for commit_table_request in &request.table_changes {
-        if let Some(id) = &commit_table_request.identifier {
-            if let Some(uuid) = table_ids.get(id) {
-                events.push(maybe_body_to_json(commit_table_request));
-                event_table_ids.push((id.clone(), *uuid));
-                updates.push(commit_table_request.updates.clone());
-            }
-        }
-    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+/// Commit updates to multiple tables without authorization checks
+///
+/// # Errors
+/// Returns an error if the commit fails or if a DB error occurs.
+/// This function will retry on concurrent update errors up to a maximum number of retries.
+pub async fn commit_tables_inner<
+    C: Catalog,
+    A: Authorizer,
+    S: SecretStore,
+    H: ::std::hash::BuildHasher + 'static + Send + Sync,
+>(
+    warehouse_id: WarehouseId,
+    request: CommitTransactionRequest,
+    table_ids: Arc<HashMap<TableIdent, TableId, H>>,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+) -> Result<Vec<CommitContext>> {
+    let include_deleted = false;
 
     // Start the retry loop
     let mut attempt = 0;
     loop {
-        let result = try_commit_tables::<C, A, S>(
+        let result = try_commit_tables::<C, A, S, _>(
             &request,
             warehouse_id,
             table_ids.clone(),
@@ -1159,12 +1137,94 @@ async fn commit_tables_internal<C: Catalog, A: Authorizer + Clone, S: SecretStor
     }
 }
 
+#[allow(clippy::too_many_lines)]
+/// Commit updates to multiple tables in an atomic operation
+///
+/// # Errors
+/// Returns an error if the commit fails, if the table identifiers are not unique,
+/// or if the table identifiers are not provided for each change.
+/// This function will retry on concurrent update errors up to a maximum number of retries.
+async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+    prefix: Option<Prefix>,
+    request: CommitTransactionRequest,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+) -> Result<Vec<CommitContext>> {
+    // ------------------- VALIDATIONS -------------------
+    let warehouse_id = require_warehouse_id(prefix.clone())?;
+    commit_tables_validate(&request)?;
+
+    // ------------------- AUTHZ -------------------
+    let authorizer = state.v1_state.authz.clone();
+    authorizer
+        .require_warehouse_action(
+            &request_metadata,
+            warehouse_id,
+            CatalogWarehouseAction::CanUse,
+        )
+        .await?;
+
+    let include_staged = true;
+    let include_deleted = false;
+    let include_active = true;
+
+    let identifiers = request
+        .table_changes
+        .iter()
+        .filter_map(|change| change.identifier.as_ref())
+        .collect::<HashSet<_>>();
+    let table_ids = C::table_idents_to_ids(
+        warehouse_id,
+        identifiers,
+        ListFlags {
+            include_active,
+            include_staged,
+            include_deleted,
+        },
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .map_err(|e| {
+        ErrorModel::internal("Error fetching table ids", "TableIdsFetchError", None)
+            .append_details(vec![e.error.message, e.error.r#type])
+            .append_details(e.error.stack)
+    })?;
+
+    let authz_checks = table_ids
+        .values()
+        .map(|table_id| {
+            authorizer.require_table_action(
+                &request_metadata,
+                Ok(*table_id),
+                CatalogTableAction::CanCommit,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let table_uuids = futures::future::try_join_all(authz_checks).await?;
+    let table_ids = Arc::new(
+        table_ids
+            .into_iter()
+            .zip(table_uuids)
+            .map(|((table_ident, _), table_uuid)| (table_ident, table_uuid))
+            .collect::<HashMap<_, _>>(),
+    );
+
+    // ------------------- BUSINESS LOGIC -------------------
+    commit_tables_inner(warehouse_id, request, table_ids, state, request_metadata).await
+}
+
 // Extract the core commit logic to a separate function for retry purposes
 #[allow(clippy::too_many_lines)]
-async fn try_commit_tables<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+async fn try_commit_tables<
+    C: Catalog,
+    A: Authorizer + Clone,
+    S: SecretStore,
+    H: ::std::hash::BuildHasher,
+>(
     request: &CommitTransactionRequest,
     warehouse_id: WarehouseId,
-    table_ids: Arc<HashMap<TableIdent, TableId>>,
+    table_ids: Arc<HashMap<TableIdent, TableId, H>>,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
 ) -> Result<Vec<CommitContext>> {
@@ -2011,7 +2071,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
         let updates = table_metadata.changes;
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2170,7 +2230,7 @@ pub(crate) mod test {
             .unwrap();
 
         let updates = table_metadata.changes;
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2227,7 +2287,7 @@ pub(crate) mod test {
             .unwrap();
         let updates = table_metadata.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2311,7 +2371,7 @@ pub(crate) mod test {
             .unwrap();
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2363,7 +2423,7 @@ pub(crate) mod test {
             .unwrap()
             .build()
             .unwrap();
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2402,7 +2462,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let committed = super::commit_tables_internal(
+        let committed = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2445,7 +2505,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2526,7 +2586,7 @@ pub(crate) mod test {
             .build()
             .unwrap();
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2588,7 +2648,7 @@ pub(crate) mod test {
 
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2645,7 +2705,7 @@ pub(crate) mod test {
 
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {
@@ -2683,7 +2743,7 @@ pub(crate) mod test {
 
         let updates = builder.changes;
 
-        let _ = super::commit_tables_internal(
+        let _ = super::commit_tables_with_authz(
             ns_params.prefix.clone(),
             super::CommitTransactionRequest {
                 table_changes: vec![CommitTableRequest {

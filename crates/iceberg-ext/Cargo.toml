@@ -40,5 +40,6 @@ uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 futures-util = { version = "^0.3" }
+lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 lazy_static = { workspace = true }
 tokio = { workspace = true }

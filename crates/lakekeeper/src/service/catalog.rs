@@ -262,10 +262,10 @@ impl TabularInfo {
 #[async_trait::async_trait]
 pub trait Catalog
 where
-    Self: Clone + Send + Sync + 'static,
+    Self: std::fmt::Debug + Clone + Send + Sync + 'static,
 {
     type Transaction: Transaction<Self::State>;
-    type State: Clone + Send + Sync + 'static + HealthExt;
+    type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
     /// Get data required for startup validations and server info endpoint
     async fn get_server_info(
