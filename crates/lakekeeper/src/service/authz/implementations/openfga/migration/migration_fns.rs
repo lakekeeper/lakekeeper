@@ -12,10 +12,8 @@ use tokio::sync::Semaphore;
 
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
-use crate::serve::ServeConfigurationBuilder_Error_Repeated_field_catalog_state;
 use crate::service::authz::implementations::openfga::{
-    NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
-    WarehouseRelation,
+    NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
 };
 use crate::service::{
     catalog::{ListFlags, Transaction},
@@ -36,21 +34,21 @@ fn openfga_user_type(inp: &str) -> Option<String> {
     inp.split(":").next().map(|user| user.to_string())
 }
 
-/// Injects `prefix` into a full OpenFGA object.
+/// Prepends `lakekeeper_` to the type and injects `prefix` into a full OpenFGA object.
 ///
 /// ```rust
 /// let full_object = "table:t1";
-/// let extended_object = "table:wh1/t1";
-/// assert_eq!(inject_id_prefix(full_object, "wh1"), extended_object.to_string());
+/// let extended_object = "lakekeeper_table:wh1/t1";
+/// assert_eq!(new_v4_tuple(full_object, "wh1"), extended_object.to_string());
 /// ```
-fn inject_id_prefix(full_object: &str, prefix: &str) -> anyhow::Result<String> {
+fn new_v4_tuple(full_object: &str, prefix: &str) -> anyhow::Result<String> {
     let parts: Vec<_> = full_object.split(":").collect();
     anyhow::ensure!(
         parts.len() == 2,
         "Expected full object (type:id), got {}",
         full_object
     );
-    Ok(format!("{}:{}/{}", parts[0], prefix, parts[1]))
+    Ok(format!("lakekeeper_{}:{}/{}", parts[0], prefix, parts[1]))
 }
 
 fn extract_id_from_full_object(full_object: &str) -> anyhow::Result<String> {
@@ -143,14 +141,14 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
             let tab_as_object = get_all_tuples_with_object(&c, tab.clone()).await?;
             for mut tuple in tab_as_object.into_iter() {
                 // TODO also view/table -> lakekeeper_view/table
-                tuple.object = inject_id_prefix(&tuple.object, &wh_id)?;
+                tuple.object = new_v4_tuple(&tuple.object, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
 
             let tab_as_user = get_all_tuples_with_user(&c, tab).await?;
             for mut tuple in tab_as_user.into_iter() {
                 // TODO also view/table -> lakekeeper_view/table
-                tuple.user = inject_id_prefix(&tuple.user, &wh_id)?;
+                tuple.user = new_v4_tuple(&tuple.user, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
         }
@@ -1384,72 +1382,72 @@ mod tests {
                 TupleKey {
                     user: "namespace:ns1".to_string(),
                     relation: TableRelation::Parent.to_string(),
-                    object: "table:wh1/t1".to_string(),
+                    object: "lakekeeper_table:wh1/t1".to_string(),
                     condition: None,
                 },
                 TupleKey {
                     user: "namespace:ns1".to_string(),
                     relation: TableRelation::Parent.to_string(),
-                    object: "table:wh1/t2".to_string(),
+                    object: "lakekeeper_table:wh1/t2".to_string(),
                     condition: None,
                 },
                 TupleKey {
                     user: "namespace:ns1_child".to_string(),
                     relation: ViewRelation::Parent.to_string(),
-                    object: "view:wh1/v1".to_string(),
+                    object: "lakekeeper_view:wh1/v1".to_string(),
                     condition: None,
                 },
                 TupleKey {
                     user: "namespace:ns1_child".to_string(),
                     relation: TableRelation::Parent.to_string(),
-                    object: "table:wh1/t3".to_string(),
+                    object: "lakekeeper_table:wh1/t3".to_string(),
                     condition: None,
                 },
                 TupleKey {
                     user: "namespace:ns2".to_string(),
                     relation: TableRelation::Parent.to_string(),
-                    object: "table:wh2/t4".to_string(),
+                    object: "lakekeeper_table:wh2/t4".to_string(),
                     condition: None,
                 },
                 TupleKey {
                     user: "user:owner1".to_string(),
                     relation: TableRelation::Ownership.to_string(),
-                    object: "table:wh1/t1".to_string(),
+                    object: "lakekeeper_table:wh1/t1".to_string(),
                     condition: None,
                 },
                 TupleKey {
                     user: "user:owner2".to_string(),
                     relation: ViewRelation::Ownership.to_string(),
-                    object: "view:wh1/v1".to_string(),
+                    object: "lakekeeper_view:wh1/v1".to_string(),
                     condition: None,
                 },
                 // Updated user references (table/view users with warehouse prefix)
                 TupleKey {
-                    user: "table:wh1/t1".to_string(),
+                    user: "lakekeeper_table:wh1/t1".to_string(),
                     relation: NamespaceRelation::Child.to_string(),
                     object: "namespace:ns1".to_string(),
                     condition: None,
                 },
                 TupleKey {
-                    user: "table:wh1/t2".to_string(),
+                    user: "lakekeeper_table:wh1/t2".to_string(),
                     relation: NamespaceRelation::Child.to_string(),
                     object: "namespace:ns1".to_string(),
                     condition: None,
                 },
                 TupleKey {
-                    user: "view:wh1/v1".to_string(),
+                    user: "lakekeeper_view:wh1/v1".to_string(),
                     relation: NamespaceRelation::Child.to_string(),
                     object: "namespace:ns1_child".to_string(),
                     condition: None,
                 },
                 TupleKey {
-                    user: "table:wh1/t3".to_string(),
+                    user: "lakekeeper_table:wh1/t3".to_string(),
                     relation: NamespaceRelation::Child.to_string(),
                     object: "namespace:ns1_child".to_string(),
                     condition: None,
                 },
                 TupleKey {
-                    user: "table:wh2/t4".to_string(),
+                    user: "lakekeeper_table:wh2/t4".to_string(),
                     relation: NamespaceRelation::Child.to_string(),
                     object: "namespace:ns2".to_string(),
                     condition: None,
@@ -1481,6 +1479,12 @@ mod tests {
                 assert_eq!(actual.object, expected.object);
             }
 
+            Ok(())
+        }
+
+        // TODO convert to bench once `pool` arg no longer needed
+        #[sqlx::test]
+        async fn test_v4_push_down_warehouse_bench(pool: sqlx::PgPool) -> anyhow::Result<()> {
             Ok(())
         }
     }
