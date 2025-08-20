@@ -101,70 +101,63 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
     let c = client
         .into_client(&store.id, &curr_auth_model_id)
         .set_consistency(ConsistencyPreference::HigherConsistency);
-    println!("migration fn is using store.id: {}", store.id);
-    println!("migration fn is using auth_model_id: {curr_auth_model_id}");
     // TODO error conversion instead of unwrap
     let mut tx = C::Transaction::begin_read(state.catalog_state.clone())
         .await
         .map_err(|e| e.error)?;
 
-    println!(
-        "in migration fn it can retrieve in total these tuples: {:#?}",
-        c.read_all_pages(
-            ReadRequestTupleKey {
-                user: "".to_string(),
-                relation: "".to_string(),
-                object: "".to_string()
-            },
-            100,
-            u32::MAX
-        )
-        .await?
-    );
-
     let projects = get_all_projects(&c, state.server_id).await?;
-    println!("projects: {:?}", projects);
     let warehouses = get_all_warehouses(&c, projects).await?;
-    println!("warehouses: {:?}", warehouses);
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
     // TODO concurrency
     for wh in warehouses.into_iter() {
         let namespaces = get_all_namespaces(&c, wh.clone()).await?;
         namespaces_per_wh.push((wh, namespaces));
     }
-    let mut tabulars_per_wh: Vec<(String, Vec<String>)> = vec![];
-    for (wh, nss) in namespaces_per_wh.into_iter() {
-        let tabulars = get_all_tabulars(&c, &nss).await.unwrap();
-        tabulars_per_wh.push((wh, tabulars));
-    }
-    println!("tabulars per wh: {:#?}", tabulars_per_wh);
 
-    // TODO concurrency
-    // TODO extract into separat function and test in isolation
-    let mut new_tuples_to_write = vec![];
-    for (wh, tabs) in tabulars_per_wh.into_iter() {
+    for (wh, nss) in namespaces_per_wh.into_iter() {
+        // Load tabulars only inside this loop (i.e. per warehouse) and drop them at the end of it.
+        // This is done to mitigate the risk of OOM during the migration of a huge catalog.
+        let tabulars = get_all_tabulars(&c, &nss).await.unwrap();
+        let mut new_tuples_to_write = vec![];
         let wh_id = extract_id_from_full_object(&wh)?;
-        for tab in tabs.into_iter() {
-            let tab_as_object = get_all_tuples_with_object(&c, tab.clone()).await?;
+
+        for tab in tabulars.into_iter() {
+            let c1 = c.clone();
+            let c2 = c.clone();
+            let tab1 = tab.clone();
+            let tab2 = tab.clone();
+            let (tab_as_object, tab_as_user) = tokio::try_join!(
+                // No need to get OPENFGA_REQ_PERMITS here as they will be acquired inside the
+                // spawned functions.
+                tokio::spawn(async move { get_all_tuples_with_object(&c1, tab1).await }),
+                tokio::spawn(async move { get_all_tuples_with_user(&c2, tab2).await })
+            )?;
+            let (tab_as_object, tab_as_user) = (tab_as_object?, tab_as_user?);
+
             for mut tuple in tab_as_object.into_iter() {
-                // TODO also view/table -> lakekeeper_view/table
                 tuple.object = new_v4_tuple(&tuple.object, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
-
-            let tab_as_user = get_all_tuples_with_user(&c, tab).await?;
             for mut tuple in tab_as_user.into_iter() {
-                // TODO also view/table -> lakekeeper_view/table
                 tuple.user = new_v4_tuple(&tuple.user, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
         }
-    }
-    println!("tuples to write: {:#?}", new_tuples_to_write);
 
-    // TODO concurrency
-    for chunk in new_tuples_to_write.chunks(OPENFGA_WRITE_BATCH_SIZE) {
-        c.write(Some(chunk.to_vec()), None).await?;
+        let mut write_jobs = JoinSet::new();
+        for chunk in new_tuples_to_write.chunks(OPENFGA_WRITE_BATCH_SIZE) {
+            let c = c.clone();
+            let semaphore = OPENFGA_REQ_PERMITS.clone();
+            let tuples = chunk.to_vec();
+            write_jobs.spawn(async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                c.write(Some(tuples), None).await
+            });
+        }
+        while let Some(res) = write_jobs.join_next().await {
+            let _ = res??;
+        }
     }
 
     let _res = add_warehouse_id_to_tables(c.clone(), &HashMap::new()).await?;
@@ -628,6 +621,8 @@ mod tests {
 
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
+        use std::time::Instant;
+
         use openfga_client::{client::TupleKey, migration::TupleModelManager};
         use tokio::task::JoinSet;
 
@@ -1573,8 +1568,9 @@ mod tests {
             };
             let req_meta_human =
                 RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
-            let req_meta = RequestMetadata::new_unauthenticated();
 
+            println!("Populating OpenFGA store");
+            let start_populating = Instant::now();
             let project_id = ProjectId::new_random();
             authorizer
                 .create_project(&req_meta_human, &project_id)
@@ -1646,7 +1642,13 @@ mod tests {
                 });
             }
             let _ = tab_jobs.join_all().await;
+            println!(
+                "Populated the OpenFGA store in {} seconds",
+                start_populating.elapsed().as_secs()
+            );
 
+            println!("Migrating the OpenFGA store");
+            let start_migrating = Instant::now();
             migrate_to_v4(
                 &client.client(),
                 store_name,
@@ -1654,6 +1656,10 @@ mod tests {
                 postgres::CatalogState::from_pools(pool.clone(), pool.clone()),
             )
             .await?;
+            println!(
+                "Migrated the OpenFGA store in {} seconds",
+                start_migrating.elapsed().as_secs()
+            );
 
             // Read a tuple generated by the migration to ensure it ran.
             let sentinel = client
