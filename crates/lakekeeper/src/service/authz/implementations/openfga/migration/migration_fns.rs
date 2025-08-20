@@ -9,6 +9,7 @@ use openfga_client::client::{
 };
 use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::api::iceberg::v1::PageToken;
 use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
@@ -123,7 +124,7 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
 
     let projects = get_all_projects(&c, state.server_id).await?;
     println!("projects: {:?}", projects);
-    let warehouses = get_all_warehouses(&c, &projects).await?;
+    let warehouses = get_all_warehouses(&c, projects).await?;
     println!("warehouses: {:?}", warehouses);
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
     // TODO concurrency
@@ -347,8 +348,6 @@ async fn get_all_projects(
         relation: ProjectRelation::Server.to_string(),
         object: "project:".to_string(),
     };
-    println!("get_all_projects_req_key: {:#?}", request_key);
-    println!("store_id: {}", client.store_id());
     let tuples = client
         .read_all_pages(request_key, OPENFGA_PAGE_SIZE, u32::MAX)
         .await?;
@@ -362,35 +361,49 @@ async fn get_all_projects(
     Ok(projects)
 }
 
-// TODO concurrency, read with smaller page size
 async fn get_all_warehouses(
     client: &BasicOpenFgaClient,
-    projects: &[String],
+    projects: Vec<String>,
 ) -> anyhow::Result<Vec<String>> {
-    let mut warehouses = vec![];
-    for p in projects.iter() {
-        let tuples = client
-            .read_all_pages(
-                ReadRequestTupleKey {
-                    user: p.to_string(),
-                    relation: WarehouseRelation::Project.to_string(),
-                    object: "warehouse:".to_string(),
-                },
-                OPENFGA_PAGE_SIZE,
-                u32::MAX,
-            )
-            .await?;
-        for t in tuples.into_iter() {
-            match t.key {
-                None => {}
-                Some(k) => warehouses.push(k.object),
+    let mut all_warehouses = vec![];
+    let mut jobs: JoinSet<anyhow::Result<Vec<String>>> = JoinSet::new();
+
+    for p in projects.into_iter() {
+        let client = client.clone();
+        let semaphore = OPENFGA_REQ_PERMITS.clone();
+
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let mut warehouses = vec![];
+            let tuples = client
+                .read_all_pages(
+                    ReadRequestTupleKey {
+                        user: p.to_string(),
+                        relation: WarehouseRelation::Project.to_string(),
+                        object: "warehouse:".to_string(),
+                    },
+                    OPENFGA_PAGE_SIZE,
+                    u32::MAX,
+                )
+                .await?;
+            drop(_permit);
+            for t in tuples.into_iter() {
+                match t.key {
+                    None => {}
+                    Some(k) => warehouses.push(k.object),
+                }
             }
-        }
+            Ok(warehouses)
+        });
     }
-    Ok(warehouses)
+
+    while let Some(whs) = jobs.join_next().await {
+        all_warehouses.extend(whs??.into_iter());
+    }
+    Ok(all_warehouses)
 }
 
-// TODO concurrency, read with smaller page size
+// TODO concurrency
 async fn get_all_namespaces(
     client: &BasicOpenFgaClient,
     warehouse: String,
@@ -703,7 +716,7 @@ mod tests {
                 .await?;
 
             let projects = vec!["project:p1".to_string(), "project:p2".to_string()];
-            let mut warehouses = get_all_warehouses(&authorizer.client, &projects).await?;
+            let mut warehouses = get_all_warehouses(&authorizer.client, projects).await?;
             warehouses.sort();
             assert_eq!(
                 warehouses,
@@ -722,7 +735,7 @@ mod tests {
 
             // Test with a project that has no warehouses
             let projects = vec!["project:empty".to_string()];
-            let warehouses = get_all_warehouses(&authorizer.client, &projects).await?;
+            let warehouses = get_all_warehouses(&authorizer.client, projects).await?;
             assert!(warehouses.is_empty());
             Ok(())
         }
