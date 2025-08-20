@@ -76,6 +76,12 @@ const OPENFGA_WRITE_BATCH_SIZE: usize = 50;
 static DB_TX_PERMITS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::const_new(10)));
 
+/// Limits the number of concurrent requests to the OpenFGA server, to avoid overloading it.
+///
+/// Ensure the permit is dropped as soon as it's not needed anymore, to unblock other threads.
+static OPENFGA_REQ_PERMITS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::const_new(10)));
+
 // catalog trait reingeben, nicht postgres db
 pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
     mut client: BasicOpenFgaServiceClient,
@@ -564,19 +570,27 @@ mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_client::{client::TupleKey, migration::TupleModelManager};
+        use tokio::task::JoinSet;
 
         use super::super::*;
         use crate::{
+            api::RequestMetadata,
             implementations::postgres::{self, PostgresCatalog, PostgresTransaction},
-            service::authz::implementations::openfga::{
-                client::new_authorizer,
-                migration::{
-                    add_model_v3, add_model_v4, get_model_manager,
-                    tests::authorizer_for_empty_store, V3_MODEL_VERSION,
+            service::{
+                authz::{
+                    implementations::openfga::{
+                        client::new_authorizer,
+                        migration::{
+                            add_model_v3, add_model_v4, get_model_manager,
+                            tests::authorizer_for_empty_store, V3_MODEL_VERSION,
+                        },
+                        new_client_from_config,
+                        relations::ServerAssignment,
+                        OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG, OPENFGA_SERVER,
+                    },
+                    Authorizer, NamespaceParent,
                 },
-                new_client_from_config,
-                relations::ServerAssignment,
-                OpenFGAAuthorizer, AUTH_CONFIG, OPENFGA_SERVER,
+                UserId, ViewId,
             },
             CONFIG,
         };
@@ -1483,8 +1497,123 @@ mod tests {
         }
 
         // TODO convert to bench once `pool` arg no longer needed
+        // TODO nest namespaces
         #[sqlx::test]
-        async fn test_v4_push_down_warehouse_bench(pool: sqlx::PgPool) -> anyhow::Result<()> {
+        #[ignore]
+        async fn test_v4_push_down_warehouse_id_bench(pool: sqlx::PgPool) -> anyhow::Result<()> {
+            const NUM_WAREHOUSES: usize = 10;
+            /// equally distributed among warehouses
+            const NUM_NAMESPACES: usize = 100;
+            /// half tables, half views, equally distributed among namespaces
+            const NUM_TABULARS: usize = 10_000;
+
+            let (client, store_name) = v3_client_for_empty_store(pool.clone()).await?;
+            let authorizer = OpenFGAAuthorizer {
+                client: client.clone(),
+                health: Default::default(),
+            };
+            let req_meta_human =
+                RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
+            let req_meta = RequestMetadata::new_unauthenticated();
+
+            let project_id = ProjectId::new_random();
+            authorizer
+                .create_project(&req_meta_human, &project_id)
+                .await
+                .unwrap();
+
+            let mut warehouse_ids = Vec::with_capacity(NUM_WAREHOUSES);
+            let mut wh_jobs = JoinSet::new();
+            for _ in 0..NUM_WAREHOUSES {
+                let wh_id = WarehouseId::new_random();
+                warehouse_ids.push(wh_id.clone());
+
+                let project_id = project_id.clone();
+                let req_meta_human = req_meta_human.clone();
+                let auth = authorizer.clone();
+                let semaphore = OPENFGA_REQ_PERMITS.clone();
+
+                wh_jobs.spawn(async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+                    auth.create_warehouse(&req_meta_human, wh_id, &project_id)
+                        .await
+                        .unwrap();
+                });
+            }
+            let _ = wh_jobs.join_all().await;
+
+            let mut namespace_ids = Vec::with_capacity(NUM_NAMESPACES);
+            let mut ns_jobs = JoinSet::new();
+            for i in 0..NUM_NAMESPACES {
+                let ns_id = NamespaceId::new_random();
+                namespace_ids.push(ns_id.clone());
+
+                let wh_id = warehouse_ids[i % warehouse_ids.len()].clone();
+                let req_meta_human = req_meta_human.clone();
+                let auth = authorizer.clone();
+                let semaphore = OPENFGA_REQ_PERMITS.clone();
+
+                ns_jobs.spawn(async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+                    auth.create_namespace(
+                        &req_meta_human,
+                        ns_id,
+                        NamespaceParent::Warehouse(wh_id),
+                    )
+                    .await
+                    .unwrap();
+                });
+            }
+            let _ = ns_jobs.join_all().await;
+
+            let mut tab_jobs = JoinSet::new();
+            for i in 0..NUM_TABULARS {
+                let ns_id = namespace_ids[i % namespace_ids.len()].clone();
+                let req_meta_human = req_meta_human.clone();
+                let auth = authorizer.clone();
+                let semaphore = OPENFGA_REQ_PERMITS.clone();
+
+                tab_jobs.spawn(async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+                    if i % 2 == 0 {
+                        auth.create_table(&req_meta_human, TableId::new_random(), ns_id)
+                            .await
+                            .unwrap();
+                    } else {
+                        auth.create_view(&req_meta_human, ViewId::new_random(), ns_id)
+                            .await
+                            .unwrap();
+                    }
+                });
+            }
+            let _ = tab_jobs.join_all().await;
+
+            migrate_to_v4(
+                &client.client(),
+                store_name,
+                PostgresCatalog {},
+                postgres::CatalogState::from_pools(pool.clone(), pool.clone()),
+            )
+            .await?;
+
+            // Read a tuple generated by the migration to ensure it ran.
+            let sentinel = client
+                .read(
+                    1,
+                    ReadRequestTupleKey {
+                        user: namespace_ids[0].to_openfga(),
+                        relation: TableRelation::Parent.to_string(),
+                        object: "lakekeeper_table:".to_string(),
+                    },
+                    None,
+                )
+                .await?
+                .get_ref()
+                .tuples
+                .clone();
+            assert!(sentinel.len() > 0, "There should be a sentinel tupel");
+            println!("{:?}", sentinel);
+
             Ok(())
         }
     }
