@@ -524,7 +524,6 @@ async fn get_all_tuples_with_object(
     Ok(tuples.into_iter().filter_map(|t| t.key).collect())
 }
 
-// TODO concurrency
 /// The `user` must specify both type and id (`type:id`)
 ///
 /// The returned result contains all tuples that have the provided `user` from all all relations
@@ -535,9 +534,7 @@ async fn get_all_tuples_with_user(
 ) -> anyhow::Result<Vec<TupleKey>> {
     // Querying OpenFGA's `/read` endpoint with a `TupleKey` requires at least an object type.
     // A query with `object: "user:"` is accepted while `object: ""` is not accepted.
-    // So we must iterate over types than can be `object` when user is `view` or `table`.
     // These types are hardcoded as strings since we need their identifiers as of v3.4.
-    // TODO can table be user of view object and vice versa? if yes, need to handle that
     let user_type =
         openfga_user_type(&user).ok_or(anyhow::anyhow!("A user type must be specified"))?;
     let object_types = match user_type.as_ref() {
@@ -565,24 +562,33 @@ async fn get_all_tuples_with_user(
         _ => anyhow::bail!("Unexpected user type: {user_type}"),
     };
 
-    let mut tuples = vec![];
+    let mut jobs = tokio::task::JoinSet::new();
     for ty in object_types.into_iter() {
-        let res = client
-            .read_all_pages(
-                ReadRequestTupleKey {
-                    user: user.clone(),
-                    relation: "".to_string(),
-                    object: ty,
-                },
-                OPENFGA_PAGE_SIZE,
-                u32::MAX,
-            )
-            .await?;
-        for tup in res.into_iter() {
-            if let Some(t) = tup.key {
-                tuples.push(t)
-            }
-        }
+        let client = client.clone();
+        let user = user.clone();
+        let semaphore = OPENFGA_REQ_PERMITS.clone();
+
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let res = client
+                .read_all_pages(
+                    ReadRequestTupleKey {
+                        user,
+                        relation: "".to_string(),
+                        object: ty,
+                    },
+                    OPENFGA_PAGE_SIZE,
+                    u32::MAX,
+                )
+                .await?;
+            let keys: Vec<TupleKey> = res.into_iter().filter_map(|t| t.key).collect();
+            Ok::<_, anyhow::Error>(keys)
+        });
+    }
+
+    let mut tuples = vec![];
+    while let Some(res) = jobs.join_next().await {
+        tuples.extend(res??);
     }
     Ok(tuples)
 }
