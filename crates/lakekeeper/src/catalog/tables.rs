@@ -1009,7 +1009,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
 ///
 /// # Errors
 /// Returns an error if the table is staged, if it cannot be found, or if a DB error occurs.
-pub async fn load_table_inner<C: Catalog>(
+async fn load_table_inner<C: Catalog>(
     warehouse_id: WarehouseId,
     table_id: TableId,
     table_ident: &TableIdent,
@@ -1032,7 +1032,7 @@ pub async fn load_table_inner<C: Catalog>(
 ///
 /// # Errors
 /// Returns an error if any validation fails.
-pub fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
+fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
     for change in &request.table_changes {
         validate_table_updates(&change.updates)?;
         change
@@ -1077,7 +1077,7 @@ pub fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> 
 /// # Errors
 /// Returns an error if the commit fails or if a DB error occurs.
 /// This function will retry on concurrent update errors up to a maximum number of retries.
-pub async fn commit_tables_inner<
+async fn commit_tables_inner<
     C: Catalog,
     A: Authorizer,
     S: SecretStore,
