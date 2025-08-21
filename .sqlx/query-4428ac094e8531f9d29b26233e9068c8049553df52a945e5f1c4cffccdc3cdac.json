@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO \"table\" (warehouse_id,\n                             table_id,\n                             table_format_version,\n                             last_column_id,\n                             last_sequence_number,\n                             last_updated_ms,\n                             last_partition_id\n                             )\n        (\n            SELECT $1, $2, $3, $4, $5, $6, $7\n            WHERE EXISTS (SELECT 1\n                FROM active_tables\n                WHERE active_tables.warehouse_id = $1\n                    AND active_tables.table_id = $2))\n        RETURNING \"table_id\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "table_format_version",
+            "kind": {
+              "Enum": [
+                "1",
+                "2"
+              ]
+            }
+          }
+        },
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4428ac094e8531f9d29b26233e9068c8049553df52a945e5f1c4cffccdc3cdac"
+}

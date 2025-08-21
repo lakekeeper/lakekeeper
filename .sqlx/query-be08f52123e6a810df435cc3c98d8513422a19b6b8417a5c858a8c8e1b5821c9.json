@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM table_statistics\n           WHERE warehouse_id = $1 AND table_id = $2 AND snapshot_id = ANY($3::BIGINT[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "be08f52123e6a810df435cc3c98d8513422a19b6b8417a5c858a8c8e1b5821c9"
+}

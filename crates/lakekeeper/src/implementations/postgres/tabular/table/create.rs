@@ -22,8 +22,10 @@ use crate::{
     service::{CreateTableResponse, NamespaceId, TableCreation, TableId},
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn create_table(
     TableCreation {
+        warehouse_id,
         namespace_id,
         table_ident,
         table_metadata,
@@ -47,6 +49,7 @@ pub(crate) async fn create_table(
             id: table_metadata.uuid(),
             name,
             namespace_id: *namespace_id,
+            warehouse_id: *warehouse_id,
             typ: TabularType::Table,
             metadata_location,
             location: &location,
@@ -55,39 +58,79 @@ pub(crate) async fn create_table(
     )
     .await?;
 
-    insert_table(&table_metadata, transaction, tabular_id).await?;
+    insert_table(&table_metadata, transaction, *warehouse_id, tabular_id).await?;
 
-    common::insert_schemas(table_metadata.schemas_iter(), transaction, tabular_id).await?;
-    common::set_current_schema(table_metadata.current_schema_id(), transaction, tabular_id).await?;
+    common::insert_schemas(
+        table_metadata.schemas_iter(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
+    common::set_current_schema(
+        table_metadata.current_schema_id(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
 
     common::insert_partition_specs(
         table_metadata.partition_specs_iter(),
         transaction,
+        warehouse_id,
         tabular_id,
     )
     .await?;
     common::set_default_partition_spec(
         transaction,
+        warehouse_id,
         tabular_id,
         table_metadata.default_partition_spec().spec_id(),
     )
     .await?;
 
-    common::insert_snapshots(tabular_id, table_metadata.snapshots(), transaction).await?;
-    common::insert_snapshot_refs(&table_metadata, transaction).await?;
-    common::insert_snapshot_log(table_metadata.history().iter(), transaction, tabular_id).await?;
-
-    common::insert_sort_orders(table_metadata.sort_orders_iter(), transaction, tabular_id).await?;
-    common::set_default_sort_order(
-        table_metadata.default_sort_order_id(),
+    common::insert_snapshots(
+        warehouse_id,
+        tabular_id,
+        table_metadata.snapshots(),
         transaction,
+    )
+    .await?;
+    common::insert_snapshot_refs(warehouse_id, &table_metadata, transaction).await?;
+    common::insert_snapshot_log(
+        table_metadata.history().iter(),
+        transaction,
+        warehouse_id,
         tabular_id,
     )
     .await?;
 
-    common::set_table_properties(tabular_id, table_metadata.properties(), transaction).await?;
+    common::insert_sort_orders(
+        table_metadata.sort_orders_iter(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
+    common::set_default_sort_order(
+        table_metadata.default_sort_order_id(),
+        transaction,
+        warehouse_id,
+        tabular_id,
+    )
+    .await?;
+
+    common::set_table_properties(
+        warehouse_id,
+        tabular_id,
+        table_metadata.properties(),
+        transaction,
+    )
+    .await?;
 
     common::insert_metadata_log(
+        warehouse_id,
         tabular_id,
         table_metadata.metadata_log().iter().cloned(),
         transaction,
@@ -95,13 +138,19 @@ pub(crate) async fn create_table(
     .await?;
 
     common::insert_partition_statistics(
+        warehouse_id,
         tabular_id,
         table_metadata.partition_statistics_iter(),
         transaction,
     )
     .await?;
-    common::insert_table_statistics(tabular_id, table_metadata.statistics_iter(), transaction)
-        .await?;
+    common::insert_table_statistics(
+        warehouse_id,
+        tabular_id,
+        table_metadata.statistics_iter(),
+        transaction,
+    )
+    .await?;
 
     Ok(CreateTableResponse {
         table_metadata,
@@ -151,11 +200,13 @@ async fn maybe_delete_staged_table(
 async fn insert_table(
     table_metadata: &TableMetadata,
     transaction: &mut Transaction<'_, Postgres>,
+    warehouse_id: Uuid,
     tabular_id: Uuid,
 ) -> Result<()> {
     let _ = sqlx::query!(
         r#"
-        INSERT INTO "table" (table_id,
+        INSERT INTO "table" (warehouse_id,
+                             table_id,
                              table_format_version,
                              last_column_id,
                              last_sequence_number,
@@ -163,12 +214,14 @@ async fn insert_table(
                              last_partition_id
                              )
         (
-            SELECT $1, $2, $3, $4, $5, $6
+            SELECT $1, $2, $3, $4, $5, $6, $7
             WHERE EXISTS (SELECT 1
                 FROM active_tables
-                WHERE active_tables.table_id = $1))
+                WHERE active_tables.warehouse_id = $1
+                    AND active_tables.table_id = $2))
         RETURNING "table_id"
         "#,
+        warehouse_id,
         tabular_id,
         match table_metadata.format_version() {
             FormatVersion::V1 => DbTableFormatVersion::V1,
