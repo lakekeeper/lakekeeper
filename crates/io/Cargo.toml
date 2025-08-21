@@ -82,8 +82,3 @@ serde_json = { workspace = true }
 tempfile = "3.0"
 tokio = { workspace = true }
 uuid = { workspace = true }
-
-[profile.dev]
-overflow-checks = true
-opt-level = 1
-panic = 'unwind'

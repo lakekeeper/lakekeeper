@@ -160,3 +160,8 @@ maplit = "1.0.2"
 limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }
 rand = "0.9.2"
+
+[profile.dev]
+overflow-checks = true
+opt-level = 1
+panic = 'unwind'
