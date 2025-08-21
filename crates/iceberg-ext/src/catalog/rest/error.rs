@@ -256,6 +256,20 @@ impl ErrorModel {
     }
 }
 
+impl IcebergErrorResponse {
+    #[must_use]
+    pub fn append_details(mut self, details: impl IntoIterator<Item = String>) -> Self {
+        self.error.stack.extend(details);
+        self
+    }
+
+    #[must_use]
+    pub fn append_detail(mut self, detail: impl Into<String>) -> Self {
+        self.error.stack.push(detail.into());
+        self
+    }
+}
+
 #[cfg(feature = "axum")]
 impl axum::response::IntoResponse for IcebergErrorResponse {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {

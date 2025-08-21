@@ -31,7 +31,9 @@ pub use request_metadata::{
     X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
 };
 pub use tokio;
+#[cfg(feature = "router")]
 pub use tower;
+#[cfg(feature = "router")]
 pub use tower_http;
 pub use utoipa;
 

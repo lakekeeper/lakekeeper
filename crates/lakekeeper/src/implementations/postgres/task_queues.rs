@@ -213,7 +213,7 @@ pub(crate) async fn pick_task(
             queue_name: task.queue_name,
             picked_up_at: task.picked_up_at,
             attempt: task.attempt,
-            state: task.task_data,
+            data: task.task_data,
         }));
     }
 
@@ -782,7 +782,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
-        assert_eq!(task.state, serde_json::json!({"a": "a"}));
+        assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
         record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
             .await
@@ -812,7 +812,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
-        assert_eq!(task.state, serde_json::json!({"b": "b"}));
+        assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
     #[sqlx::test]
@@ -863,7 +863,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
-        assert_eq!(task.state, serde_json::json!({"b": "b"}));
+        assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
     #[sqlx::test]
@@ -897,7 +897,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
-        assert_eq!(task.state, serde_json::json!({"a": "a"}));
+        assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
         record_failure(
             &mut pool.acquire().await.unwrap(),
@@ -932,7 +932,7 @@ mod test {
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, "test");
-        assert_eq!(task.state, serde_json::json!({"b": "b"}));
+        assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
     #[sqlx::test]
@@ -1370,7 +1370,7 @@ mod test {
 
         assert_eq!(task.queue_name, queue_name);
         assert_eq!(task.config, Some(serde_json::json!({"max_attempts": 5})));
-        assert_eq!(task.state, payload);
+        assert_eq!(task.data, payload);
 
         let other_queue = "other-queue";
         let other_payload = serde_json::json!("other-task");
@@ -1393,6 +1393,6 @@ mod test {
             .unwrap();
         assert_eq!(task.queue_name, other_queue);
         assert_eq!(task.config, None);
-        assert_eq!(task.state, other_payload);
+        assert_eq!(task.data, other_payload);
     }
 }

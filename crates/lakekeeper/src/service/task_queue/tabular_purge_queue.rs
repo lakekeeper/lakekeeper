@@ -1,24 +1,20 @@
 use std::{str::FromStr, sync::LazyLock, time::Duration};
 
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use lakekeeper_io::Location;
-use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{QueueApiConfig, QueueConfig, TaskMetadata, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT};
+use super::{QueueApiConfig, QueueConfig};
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
-    service::{task_queue::Task, Catalog, SecretStore, Transaction},
+    service::{
+        task_queue::{SpecializedTask, TaskData},
+        Catalog, SecretStore, Transaction,
+    },
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct TabularPurgePayload {
-    pub(crate) tabular_location: String,
-    pub(crate) tabular_type: TabularType,
-}
 
 pub(crate) const QUEUE_NAME: &str = "tabular_purge";
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
@@ -27,63 +23,47 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_schema: PurgeQueueConfig::schema(),
 });
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct TabularPurgePayload {
+    pub(crate) tabular_location: String,
+    pub(crate) tabular_type: TabularType,
+}
+
+impl TaskData for TabularPurgePayload {}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub(crate) struct PurgeQueueConfig {}
 
-impl QueueConfig for PurgeQueueConfig {}
+impl QueueConfig for PurgeQueueConfig {
+    fn queue_name() -> &'static str {
+        QUEUE_NAME
+    }
+}
 
 pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
-    poll_interval: std::time::Duration,
+    poll_interval: &Duration,
 ) {
     loop {
-        let task = match C::pick_new_task(
-            QUEUE_NAME,
-            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
-            catalog_state.clone(),
-        )
-        .await
-        {
-            Ok(expiration) => expiration,
-            Err(err) => {
-                tracing::error!("Failed to fetch Tabular Purge task. {err}");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-
-        let Some(task) = task else {
-            let jitter = { rand::rng().next_u64() % 500 };
-            tokio::time::sleep(poll_interval + Duration::from_millis(jitter)).await;
-            continue;
-        };
-        let state = match task.task_state::<TabularPurgePayload>() {
-            Ok(state) => state,
-            Err(err) => {
-                tracing::error!("Failed to deserialize Tabular Purge task state. {err}");
-                continue;
-            }
-        };
-        let config = match task.task_config::<PurgeQueueConfig>() {
-            Ok(config) => config,
-            Err(err) => {
-                tracing::error!("Failed to deserialize Tabular Purge task config. {err}");
-                continue;
-            }
-        }
-        .unwrap_or_default();
+        let task =
+            SpecializedTask::<PurgeQueueConfig, TabularPurgePayload>::poll_for_new_task::<C>(
+                catalog_state.clone(),
+                poll_interval,
+            )
+            .await;
 
         let span = tracing::debug_span!(
-            "tabular_purge",
-            location = %state.tabular_location,
+            QUEUE_NAME,
+            location = %task.data.tabular_location,
             warehouse_id = %task.task_metadata.warehouse_id,
-            tabular_type = %state.tabular_type,
-            queue_name = %task.queue_name,
-            task = ?task,
+            tabular_type = %task.data.tabular_type,
+            queue_name = %task.queue_name(),
+            task_data = ?task.data,
+            attempt = %task.attempt,
         );
 
-        instrumented_purge::<_, C>(catalog_state.clone(), &secret_state, &state, &task, &config)
+        instrumented_purge::<_, C>(catalog_state.clone(), &secret_state, &task)
             .instrument(span.or_current())
             .await;
     }
@@ -92,31 +72,27 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
 async fn instrumented_purge<S: SecretStore, C: Catalog>(
     catalog_state: C::State,
     secret_state: &S,
-    purge_task: &TabularPurgePayload,
-    task: &Task,
-    config: &PurgeQueueConfig,
+    task: &SpecializedTask<PurgeQueueConfig, TabularPurgePayload>,
 ) {
-    match purge::<C, S>(purge_task, task, secret_state, catalog_state.clone()).await {
+    match purge::<C, S>(task, secret_state, catalog_state.clone()).await {
         Ok(()) => {
             tracing::info!(
-                "Successfully cleaned up tabular at location {}",
-                purge_task.tabular_location
+                "Task of `{QUEUE_NAME}` worker exited successfully. Data at location `{}` deleted.",
+                task.data.tabular_location
             );
+            task.record_success::<C>(catalog_state, None).await;
         }
         Err(err) => {
             tracing::error!(
-                "Failed to expire tabular at location {} due to: {}",
-                purge_task.tabular_location,
-                err.error
+                "Error in `{QUEUE_NAME}` worker. Failed to purge location {}. {err}",
+                task.data.tabular_location,
             );
-            super::record_error_with_catalog::<C>(
-                catalog_state.clone(),
+            task.record_failure::<C>(
+                catalog_state,
                 &format!(
-                    "Failed to purge tabular at {}. {}",
-                    purge_task.tabular_location, err.error
+                    "Failed to purge tabular at location `{}`.\n{err}",
+                    task.data.tabular_location
                 ),
-                config.max_retries(),
-                task.task_id,
             )
             .await;
         }
@@ -124,26 +100,7 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
 }
 
 async fn purge<C, S>(
-    TabularPurgePayload {
-        tabular_location,
-        tabular_type: _,
-    }: &TabularPurgePayload,
-    Task {
-        task_metadata:
-            TaskMetadata {
-                entity_id: _,
-                warehouse_id,
-                parent_task_id: _,
-                schedule_for: _,
-            },
-        queue_name: _,
-        task_id,
-        status: _,
-        picked_up_at: _,
-        attempt: _,
-        config: _,
-        state: _,
-    }: &Task,
+    task: &SpecializedTask<PurgeQueueConfig, TabularPurgePayload>,
     secret_state: &S,
     catalog_state: C::State,
 ) -> Result<()>
@@ -151,24 +108,25 @@ where
     C: Catalog,
     S: SecretStore,
 {
-    let mut trx = C::Transaction::begin_write(catalog_state)
+    let tabular_location = &task.data.tabular_location;
+    let warehouse_id = task.task_metadata.warehouse_id;
+    let mut trx = C::Transaction::begin_read(catalog_state.clone())
+        .await
+        .map_err(|e| e.append_detail("Failed to start DB transaction for Tabular Purge Queue"))?;
+
+    let warehouse = C::require_warehouse(warehouse_id, trx.transaction())
         .await
         .map_err(|e| {
-            tracing::error!("Failed to start DB transaction for Tabular Purge Queue. {e}");
-            e
+            e.append_detail(format!(
+                "Failed to get warehouse {warehouse_id} for Tabular Purge task."
+            ))
         })?;
 
-    let warehouse = C::require_warehouse(*warehouse_id, trx.transaction())
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to get warehouse {warehouse_id} for Tabular Purge task. {e}");
-            e
-        })?;
+    trx.commit().await.ok();
 
     let tabular_location = Location::from_str(tabular_location).map_err(|e| {
-        tracing::error!("Failed to parse tabular location `{tabular_location}` for purging. {e}",);
         ErrorModel::internal(
-            format!("Failed to parse table location `{tabular_location}` of deleted tabular."),
+            format!("Failed to parse table location `{tabular_location}` to purge table data."),
             "ParseError",
             Some(Box::new(e)),
         )
@@ -177,8 +135,9 @@ where
     let secret = maybe_get_secret(warehouse.storage_secret_id, secret_state)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get secret for Tabular Purge. {e}");
-            e
+            e.append_detail(format!(
+                "Failed to get storage secret for warehouse {warehouse_id} for Tabular Purge task."
+            ))
         })?;
 
     let file_io = warehouse
@@ -186,26 +145,20 @@ where
         .file_io(secret.as_ref())
         .await
         .map_err(|e| {
-            tracing::error!("Failed to get FileIO for Tabular Purge: {e}");
-            e
+            IcebergErrorResponse::from(e).append_detail(format!(
+                "Failed to initialize IO for warehouse {warehouse_id} for Tabular Purge task."
+            ))
         })?;
 
-    C::retrying_record_task_success(*task_id, None, trx.transaction()).await;
-    trx.commit().await.map_err(|e| {
-        tracing::error!("Failed to commit Tabular Purge transaction. {e}");
-        e
-    })?;
-
     remove_all(&file_io, &tabular_location).await.map_err(|e| {
-        tracing::error!(
-            ?e,
-            "Failed to purge tabular at location: '{tabular_location}'",
-        );
-        ErrorModel::internal(
+        IcebergErrorResponse::from(ErrorModel::internal(
             "Failed to remove location.",
             "FileIOError",
             Some(Box::new(e)),
-        )
+        ))
+        .append_detail(format!(
+            "Failed to remove location `{tabular_location}` for Tabular Purge task."
+        ))
     })?;
 
     Ok(())

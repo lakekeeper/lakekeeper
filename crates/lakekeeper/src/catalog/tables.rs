@@ -970,12 +970,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
             .await?;
 
         // We can't fail before AuthZ.
-        let table_id = C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
+        let tabular_details =
+            C::resolve_table_ident(warehouse_id, table, list_flags, transaction).await;
 
-        let table_id = authorizer
+        let tabular_details = authorizer
             .require_table_action(
                 request_metadata,
-                table_id,
+                tabular_details,
                 CatalogTableAction::CanGetMetadata,
             )
             .await
@@ -984,12 +985,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
-                table_id.table_id,
+                tabular_details.table_id,
                 CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
-                table_id.table_id,
+                tabular_details.table_id,
                 CatalogTableAction::CanWriteData,
             ),
         )?;
@@ -1001,7 +1002,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         } else {
             None
         };
-        Ok((table_id, storage_permissions))
+        Ok((tabular_details, storage_permissions))
     }
 }
 
@@ -1016,13 +1017,8 @@ async fn load_table_inner<C: Catalog>(
     include_deleted: bool,
     t: &mut C::Transaction,
 ) -> Result<CatalogLoadTableResult> {
-    let mut metadatas = C::load_tables(
-        warehouse_id,
-        vec![table_id],
-        include_deleted,
-        t.transaction(),
-    )
-    .await?;
+    let mut metadatas =
+        C::load_tables(warehouse_id, [table_id], include_deleted, t.transaction()).await?;
     let result = take_table_metadata(&table_id, table_ident, &mut metadatas)?;
     require_not_staged(result.metadata_location.as_ref())?;
     Ok(result)
