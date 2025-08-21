@@ -87,13 +87,11 @@ impl EndpointHook for CloudEventsPublisher {
     ) -> anyhow::Result<()> {
         let mut events = vec![];
         let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
-        let mut updates = vec![];
         for commit_table_request in &request.table_changes {
             if let Some(id) = &commit_table_request.identifier {
                 if let Some(uuid) = table_ident_map(id) {
                     events.push(maybe_body_to_json(commit_table_request));
                     event_table_ids.push((id.clone(), uuid));
-                    updates.push(commit_table_request.updates.clone());
                 }
             }
         }

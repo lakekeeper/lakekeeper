@@ -1190,25 +1190,28 @@ async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretSt
             .append_details(e.error.stack)
     })?;
 
+    // Build futures alongside their idents to preserve pairing
     let authz_checks = table_ids
-        .values()
-        .map(|table_id| {
-            authorizer.require_table_action(
-                &request_metadata,
-                Ok(*table_id),
-                CatalogTableAction::CanCommit,
+        .iter()
+        .map(|(ident, table_id)| {
+            (
+                ident.clone(),
+                authorizer.require_table_action(
+                    &request_metadata,
+                    Ok(*table_id),
+                    CatalogTableAction::CanCommit,
+                ),
             )
         })
         .collect::<Vec<_>>();
-
-    let table_uuids = futures::future::try_join_all(authz_checks).await?;
-    let table_ids = Arc::new(
-        table_ids
+    // Resolve and re-associate
+    let resolved: Vec<(TableIdent, TableId)> = futures::future::try_join_all(
+        authz_checks
             .into_iter()
-            .zip(table_uuids)
-            .map(|((table_ident, _), table_uuid)| (table_ident, table_uuid))
-            .collect::<HashMap<_, _>>(),
-    );
+            .map(|(ident, fut)| async move { fut.await.map(|id| (ident, id)) }),
+    )
+    .await?;
+    let table_ids = Arc::new(resolved.into_iter().collect::<HashMap<_, _>>());
 
     // ------------------- BUSINESS LOGIC -------------------
     commit_tables_inner(warehouse_id, request, table_ids, state, request_metadata).await
