@@ -1,21 +1,24 @@
 #![allow(clippy::match_wildcard_for_single_variants)]
 
 pub(crate) mod az;
-mod error;
+pub mod error;
 pub(crate) mod gcs;
-pub(crate) mod s3;
+pub mod s3;
 
-pub use az::{AdlsLocation, AdlsProfile, AzCredential};
+#[cfg(test)]
+use std::{collections::HashMap, str::FromStr};
+
+pub use az::{AdlsProfile, AzCredential};
 pub(crate) use error::ValidationError;
-use error::{ConversionError, CredentialsError, FileIoError, TableConfigError, UpdateError};
+use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::io::FileIO;
-use iceberg_ext::{
-    catalog::rest::ErrorModel,
-    configs::{table::TableProperties, Location},
+use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
+use lakekeeper_io::{
+    s3::S3Location, InvalidLocationError, LakekeeperStorage, Location, StorageBackend,
 };
-pub use s3::{S3Credential, S3Flavor, S3Location, S3Profile};
+pub use s3::{S3Credential, S3Flavor, S3Profile};
 use serde::{Deserialize, Serialize};
 
 use super::{secrets::SecretInStorage, NamespaceId, TableId};
@@ -25,8 +28,10 @@ use crate::{
     },
     catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
-    retry::retry_fn,
-    service::tabular_idents::TabularId,
+    service::{
+        storage::error::{IcebergFileIoError, UnexpectedStorageType},
+        tabular_idents::TabularId,
+    },
     WarehouseId, CONFIG,
 };
 
@@ -47,25 +52,28 @@ pub enum StorageProfile {
     #[serde(rename = "s3")]
     #[schema(title = "StorageProfileS3")]
     S3(S3Profile),
-    #[cfg(test)]
-    #[serde(rename = "test")]
-    Test(TestProfile),
     #[serde(rename = "gcs")]
     #[schema(title = "StorageProfileGcs")]
     Gcs(GcsProfile),
+    #[cfg(test)]
+    Memory(MemoryProfile),
 }
 
-#[derive(Debug, Clone, strum_macros::Display)]
-pub enum StorageType {
-    #[strum(serialize = "s3")]
-    S3,
-    #[strum(serialize = "adls")]
-    Adls,
-    #[cfg(test)]
-    #[strum(serialize = "test")]
-    Test,
-    #[strum(serialize = "gcs")]
-    Gcs,
+#[cfg(test)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    utoipa::ToSchema,
+    typed_builder::TypedBuilder,
+)]
+#[serde(rename_all = "kebab-case")]
+pub struct MemoryProfile {
+    /// Base location for the local profile
+    base_location: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -93,19 +101,14 @@ impl StorageProfile {
             StorageProfile::S3(profile) => {
                 profile.generate_catalog_config(warehouse_id, request_metadata, delete_profile)
             }
-            #[cfg(test)]
-            StorageProfile::Test(_) => {
-                use std::collections::HashMap;
-
-                use crate::api;
-                CatalogConfig {
-                    overrides: HashMap::default(),
-                    defaults: HashMap::default(),
-                    endpoints: api::iceberg::supported_endpoints().to_vec(),
-                }
-            }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
+            #[cfg(test)]
+            StorageProfile::Memory(_) => CatalogConfig {
+                overrides: HashMap::new(),
+                defaults: HashMap::new(),
+                endpoints: crate::api::iceberg::supported_endpoints().to_vec(),
+            },
         }
     }
 
@@ -122,10 +125,13 @@ impl StorageProfile {
             (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
+            (StorageProfile::Gcs(this_profile), StorageProfile::Gcs(other_profile)) => {
+                this_profile.update_with(other_profile).map(Into::into)
+            }
             #[cfg(test)]
-            (StorageProfile::Test(_), other) => Ok(other),
-            #[cfg(test)]
-            (_, StorageProfile::Test(test_profile)) => Ok(test_profile.into()),
+            (StorageProfile::Memory(_this_profile), StorageProfile::Memory(_other_profile)) => {
+                unimplemented!("Local profile update not implemented")
+            }
             (this_profile, other_profile) => Err(UpdateError::IncompatibleProfiles(
                 this_profile.storage_type().to_string(),
                 other_profile.storage_type().to_string(),
@@ -140,30 +146,38 @@ impl StorageProfile {
     pub async fn file_io(
         &self,
         secret: Option<&StorageCredential>,
-    ) -> Result<iceberg::io::FileIO, FileIoError> {
+    ) -> Result<StorageBackend, CredentialsError> {
         match self {
-            StorageProfile::S3(profile) => {
-                profile
-                    .file_io(secret.map(|s| s.try_to_s3()).transpose()?)
-                    .await
-            }
-            StorageProfile::Adls(prof) => {
-                prof.file_io(
+            StorageProfile::S3(profile) => profile
+                .lakekeeper_io(
                     secret
-                        .map(|s| s.try_to_az())
-                        .transpose()?
-                        .ok_or_else(|| CredentialsError::MissingCredential(self.storage_type()))?,
+                        .map(|s| s.try_to_s3())
+                        .transpose()
+                        .map_err(CredentialsError::from)?,
                 )
                 .await
-            }
+                .map(Into::into),
+            StorageProfile::Adls(profile) => profile
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_az())
+                        .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
+                        .map_err(CredentialsError::from)?,
+                )
+                .map(Into::into),
+            StorageProfile::Gcs(prof) => prof
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_gcs())
+                        .ok_or_else(|| CredentialsError::MissingCredential("gcs".to_string()))?
+                        .map_err(CredentialsError::from)?,
+                )
+                .await
+                .map(Into::into),
             #[cfg(test)]
-            StorageProfile::Test(_) => Ok(iceberg::io::FileIOBuilder::new("file").build()?),
-            StorageProfile::Gcs(prof) => Ok(prof.file_io(
-                secret
-                    .map(|s| s.try_into_gcs())
-                    .transpose()?
-                    .ok_or_else(|| CredentialsError::MissingCredential(self.storage_type()))?,
-            )?),
+            StorageProfile::Memory(_) => Ok(StorageBackend::Memory(
+                lakekeeper_io::memory::MemoryStorage::new(),
+            )),
         }
     }
 
@@ -171,23 +185,19 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Can fail for un-normalized profiles.
-    pub fn base_location(&self) -> Result<Location, ValidationError> {
+    pub fn base_location(&self) -> Result<Location, InvalidLocationError> {
         match self {
-            StorageProfile::S3(profile) => profile
-                .base_location()
-                .map(s3::S3Location::into_normalized_location),
+            StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
             StorageProfile::Adls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(test)]
-            StorageProfile::Test(profile) => {
-                std::str::FromStr::from_str(&format!("file://tmp/{}", profile.base_location))
-                    .map_err(|_| ValidationError::InvalidLocation {
-                        reason: "Invalid namespace location".to_string(),
-                        location: "file://tmp/".to_string(),
-                        source: None,
-                        storage_type: self.storage_type(),
-                    })
-            }
+            StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
+                .map_err(|_| {
+                    InvalidLocationError::new(
+                        profile.base_location.clone(),
+                        "Invalid base location for memory profile".to_string(),
+                    )
+                })?),
         }
     }
 
@@ -207,13 +217,13 @@ impl StorageProfile {
     }
 
     #[must_use]
-    pub fn storage_type(&self) -> StorageType {
+    pub fn storage_type(&self) -> &'static str {
         match self {
-            StorageProfile::S3(_) => StorageType::S3,
+            StorageProfile::S3(_) => "s3",
+            StorageProfile::Adls(_) => "adls",
+            StorageProfile::Gcs(_) => "gcs",
             #[cfg(test)]
-            StorageProfile::Test(_) => StorageType::Test,
-            StorageProfile::Adls(_) => StorageType::Adls,
-            StorageProfile::Gcs(_) => StorageType::Gcs,
+            StorageProfile::Memory(_) => "memory",
         }
     }
 
@@ -237,7 +247,10 @@ impl StorageProfile {
                 profile
                     .generate_table_config(
                         data_access,
-                        secret.map(|s| s.try_to_s3()).transpose()?,
+                        secret
+                            .map(|s| s.try_to_s3())
+                            .transpose()
+                            .map_err(CredentialsError::from)?,
                         table_location,
                         storage_permissions,
                         request_metadata,
@@ -252,34 +265,34 @@ impl StorageProfile {
                         data_access,
                         table_location,
                         secret
-                            .ok_or_else(|| {
-                                CredentialsError::MissingCredential(self.storage_type())
-                            })?
-                            .try_to_az()?,
+                            .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
+                            .try_to_az()
+                            .map_err(CredentialsError::from)?,
                         storage_permissions,
                     )
                     .await
             }
-            #[cfg(test)]
-            StorageProfile::Test(_) => Ok(TableConfig {
-                creds: TableProperties::default(),
-                config: TableProperties::default(),
-            }),
             StorageProfile::Gcs(profile) => {
                 profile
                     .generate_table_config(
                         data_access,
                         secret
-                            .map(|s| s.try_into_gcs())
-                            .transpose()?
+                            .map(|s| s.try_to_gcs())
+                            .transpose()
+                            .map_err(CredentialsError::from)?
                             .ok_or_else(|| {
-                                CredentialsError::MissingCredential(self.storage_type())
+                                CredentialsError::MissingCredential("gcs".to_string())
                             })?,
                         table_location,
                         storage_permissions,
                     )
                     .await
             }
+            #[cfg(test)]
+            StorageProfile::Memory(_) => Ok(TableConfig {
+                creds: TableProperties::default(),
+                config: TableProperties::default(),
+            }),
         }
     }
 
@@ -299,13 +312,16 @@ impl StorageProfile {
 
         // ------------- Profile specific validations -------------
         match self {
-            StorageProfile::S3(profile) => {
-                profile.normalize(credential.map(|s| s.try_to_s3()).transpose()?)
-            }
+            StorageProfile::S3(profile) => profile.normalize(
+                credential
+                    .map(|s| s.try_to_s3())
+                    .transpose()
+                    .map_err(CredentialsError::from)?,
+            ),
             StorageProfile::Adls(prof) => prof.normalize(),
-            #[cfg(test)]
-            StorageProfile::Test(_) => Ok(()),
             StorageProfile::Gcs(profile) => profile.normalize(),
+            #[cfg(test)]
+            StorageProfile::Memory(_) => Ok(()),
         }
     }
 
@@ -327,7 +343,7 @@ impl StorageProfile {
             return Ok(());
         }
 
-        let file_io = self.file_io(credential).await?;
+        let io = self.file_io(credential).await?;
 
         let ns_id = NamespaceId::new_random();
         let table_id = TableId::new_random();
@@ -344,11 +360,11 @@ impl StorageProfile {
             StorageProfile::Adls(_) => true,
             StorageProfile::Gcs(_) => true,
             #[cfg(test)]
-            StorageProfile::Test(_) => false,
+            StorageProfile::Memory(_) => false,
         };
 
         // Run both validations in parallel
-        let direct_validation = self.validate_read_write(&file_io, &test_location, false);
+        let direct_validation = self.validate_read_write_lakekeeper(&io, &test_location);
         let vended_validation = async {
             if test_vended_credentials {
                 self.validate_vended_credentials_access(
@@ -367,41 +383,32 @@ impl StorageProfile {
         vended_result?;
 
         tracing::debug!("Cleanup started");
-        // Cleanup
-        crate::catalog::io::remove_all(&file_io, &test_location)
-            .await
-            .map_err(|e| ValidationError::IoOperationFailed(e, Box::new(self.clone())))?;
-
+        io.remove_all(&test_location).await?;
         tracing::debug!("Cleanup finished");
-        retry_fn(|| async {
-            match check_location_is_empty(&file_io, &test_location, self, || {
-                ValidationError::InvalidLocation {
-                    reason: "Files are left after remove_all on test location".to_string(),
-                    source: None,
-                    location: test_location.to_string(),
-                    storage_type: self.storage_type(),
-                }
-            })
-            .await
-            {
-                Err(e @ ValidationError::IoOperationFailed(_, _)) => {
-                    tracing::warn!(
-                        "Error while checking location is empty: {e}, retrying up to three times.."
-                    );
-                    Err(e)
-                }
-                Ok(()) => {
-                    tracing::debug!("Location is empty");
-                    Ok(Ok(()))
-                }
-                Err(other) => {
-                    tracing::error!("Unrecoverable error: {other:?}");
-                    Ok(Err(other))
-                }
+
+        match is_empty(&io, &test_location).await {
+            Err(ValidationError::IoOperationFailed(io_error)) => {
+                tracing::info!(
+                    ?io_error,
+                    "Error while checking location is empty: {io_error}"
+                );
+                Err(ValidationError::IoOperationFailed(io_error))
             }
-        })
-        .await??;
-        tracing::debug!("checked location is empty");
+            Ok(false) => Err(InvalidLocationError::new(
+                test_location.to_string(),
+                "Files are left after remove_all on test location".to_string(),
+            )
+            .into()),
+            Ok(true) => {
+                tracing::debug!("Location is empty");
+                Ok(Ok(()))
+            }
+            Err(other) => {
+                tracing::info!("Unrecoverable error: {other:?}");
+                Ok(Err(other))
+            }
+        }??;
+        tracing::debug!("Access validation finished");
         Ok(())
     }
 
@@ -441,32 +448,86 @@ impl StorageProfile {
                 tracing::debug!(
                     "Validating read/write access to: {test_location} using vended credentials"
                 );
-                self.validate_read_write(&sts_file_io, test_location, true)
+                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
                     .await?;
             }
             StorageProfile::Adls(_) => {
                 tracing::debug!("Validating adls vended credentials access to: {test_location}");
                 let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config)?;
-                self.validate_read_write(&sts_file_io, test_location, true)
+                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
                     .await?;
             }
-            #[cfg(test)]
-            StorageProfile::Test(_) => {}
             StorageProfile::Gcs(_) => {
                 tracing::debug!("Getting gcs file io from table config for vended credentials.");
                 let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
                 tracing::debug!("Validating gcs vended credentials access to: {test_location}");
-                self.validate_read_write(&sts_file_io, test_location, true)
+                self.validate_read_write_iceberg(&sts_file_io, test_location, true)
                     .await?;
+            }
+            #[cfg(test)]
+            StorageProfile::Memory(_) => {
+                unreachable!("Local profile does not support vended credentials access validation")
             }
         }
 
         Ok(())
     }
 
-    async fn validate_read_write(
+    async fn validate_read_write_lakekeeper(
         &self,
-        file_io: &iceberg::io::FileIO,
+        io: &impl LakekeeperStorage,
+        test_location: &Location,
+    ) -> Result<(), ValidationError> {
+        let compression_codec = CompressionCodec::Gzip;
+
+        let metadata_location = self.default_metadata_location(
+            test_location,
+            &compression_codec,
+            uuid::Uuid::now_v7(),
+            0,
+        );
+        let mut test_file_write = metadata_location.parent();
+        test_file_write.push("test");
+        println!("Test file write location: {test_file_write}");
+        let mut test_file_write = test_file_write.parent();
+        test_file_write.push("test");
+        tracing::debug!("Validating access to: {}", test_file_write);
+
+        // Test write
+        crate::catalog::io::write_file(io, &test_file_write, "test", compression_codec)
+            .await
+            .map_err(|e| {
+                tracing::info!("Error while writing file: {e:?}");
+                ValidationError::from(e)
+            })?;
+
+        // Test read
+        let _ = crate::catalog::io::read_file(io, &test_file_write, compression_codec)
+            .await
+            .map_err(|e| {
+                tracing::info!("Error while reading file: {e:?}");
+                ValidationError::from(e)
+            })?;
+
+        // Test delete
+        crate::catalog::io::delete_file(io, &test_file_write)
+            .await
+            .map_err(|e| {
+                tracing::info!("Error while deleting file: {e:?}");
+                ValidationError::from(e)
+            })?;
+
+        tracing::debug!(
+            "Successfully wrote, read and deleted file at: {}",
+            test_file_write
+        );
+
+        Ok(())
+    }
+
+    async fn validate_read_write_iceberg(
+        &self,
+        file_io: &FileIO,
         test_location: &Location,
         is_vended_credentials: bool,
     ) -> Result<(), ValidationError> {
@@ -480,10 +541,8 @@ impl StorageProfile {
         );
         if is_vended_credentials {
             let f = test_file_write
-                .url()
                 .path()
-                .split('/')
-                .next_back()
+                .and_then(|s| s.split('/').next_back())
                 .unwrap_or("missing")
                 .to_string();
             test_file_write.pop().push("vended").push(&f);
@@ -497,37 +556,29 @@ impl StorageProfile {
         }
 
         // Test write
-        crate::catalog::io::write_metadata_file(
-            &test_file_write,
-            "test",
-            compression_codec,
-            file_io,
-        )
-        .await
-        .map_err(|e| {
-            tracing::info!("Error while writing file: {e:?}");
-            ValidationError::IoOperationFailed(e, Box::new(self.clone()))
-        })?;
+        file_io
+            .new_output(&test_file_write)
+            .map_err(IcebergFileIoError::IcebergError)?
+            .write("test".into())
+            .await
+            .map_err(IcebergFileIoError::IcebergError)?;
 
         // Test read
-        let _ = crate::catalog::io::read_file(file_io, &test_file_write)
+        file_io
+            .new_input(&test_file_write)
+            .map_err(IcebergFileIoError::IcebergError)?
+            .read()
             .await
-            .map_err(|e| {
-                tracing::info!("Error while reading file: {e:?}");
-                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
-            })?;
+            .map_err(IcebergFileIoError::IcebergError)?;
 
         // Test delete
-        crate::catalog::io::delete_file(file_io, &test_file_write)
+        file_io
+            .delete(&test_file_write)
             .await
-            .map_err(|e| {
-                tracing::info!("Error while deleting file: {e:?}");
-                ValidationError::IoOperationFailed(e, Box::new(self.clone()))
-            })?;
+            .map_err(IcebergFileIoError::IcebergError)?;
 
         tracing::debug!(
-            "Successfully wrote, read and deleted file at: {}",
-            test_file_write
+            "Successfully wrote, read and deleted file at `{test_file_write}` with Iceberg FileIO and vended credentials."
         );
 
         Ok(())
@@ -537,12 +588,12 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the profile is not an S3 profile.
-    pub fn try_into_s3(self) -> Result<S3Profile, ConversionError> {
+    pub fn try_into_s3(self) -> Result<S3Profile, UnexpectedStorageType> {
         match self {
             Self::S3(profile) => Ok(profile),
-            _ => Err(ConversionError {
+            _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
-                to: StorageType::S3,
+                to: "s3",
             }),
         }
     }
@@ -551,12 +602,12 @@ impl StorageProfile {
     ///
     /// # Errors
     /// Fails if the profile is not an Az profile.
-    pub fn try_into_az(self) -> Result<AdlsProfile, ConversionError> {
+    pub fn try_into_az(self) -> Result<AdlsProfile, UnexpectedStorageType> {
         match self {
             Self::Adls(profile) => Ok(profile),
-            _ => Err(ConversionError {
+            _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
-                to: StorageType::Adls,
+                to: "adls",
             }),
         }
     }
@@ -576,8 +627,6 @@ impl StorageProfile {
             (StorageProfile::Gcs(profile), StorageProfile::Gcs(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
-            #[cfg(test)]
-            (StorageProfile::Test(_), StorageProfile::Test(_)) => false,
             _ => false,
         }
     }
@@ -600,7 +649,7 @@ impl StorageProfile {
                 return false;
             }
             if other_scheme != base_location.scheme() {
-                base_location.set_scheme_mut(other_scheme);
+                base_location.set_scheme_unchecked_mut(other_scheme);
             }
         }
 
@@ -611,7 +660,7 @@ impl StorageProfile {
                 return false;
             }
             if other_scheme != base_location.scheme() {
-                base_location.set_scheme_mut(other_scheme);
+                base_location.set_scheme_unchecked_mut(other_scheme);
             }
         }
 
@@ -680,16 +729,14 @@ impl StorageLocations for S3Profile {}
 impl StorageLocations for AdlsProfile {}
 
 #[cfg(test)]
-#[derive(Debug, Eq, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct TestProfile {
-    base_location: uuid::Uuid,
-}
-
-#[cfg(test)]
-impl Default for TestProfile {
+impl Default for MemoryProfile {
     fn default() -> Self {
         Self {
-            base_location: uuid::Uuid::now_v7(),
+            base_location: <Location as std::str::FromStr>::from_str(
+                format!("memory://test-{}", uuid::Uuid::new_v4()).as_str(),
+            )
+            .expect("Failed to create temporary directory location")
+            .to_string(),
         }
     }
 }
@@ -765,11 +812,11 @@ impl SecretInStorage for StorageCredential {}
 
 impl StorageCredential {
     #[must_use]
-    pub fn storage_type(&self) -> StorageType {
+    pub fn storage_type(&self) -> &'static str {
         match self {
-            StorageCredential::S3(_) => StorageType::S3,
-            StorageCredential::Az(_) => StorageType::Adls,
-            StorageCredential::Gcs(_) => StorageType::Gcs,
+            StorageCredential::S3(_) => "s3",
+            StorageCredential::Az(_) => "adls",
+            StorageCredential::Gcs(_) => "gcs",
         }
     }
 
@@ -777,14 +824,13 @@ impl StorageCredential {
     ///
     /// # Errors
     /// Fails if the credential is not an S3 credential.
-    pub fn try_to_s3(&self) -> Result<&S3Credential, CredentialsError> {
+    pub fn try_to_s3(&self) -> Result<&S3Credential, UnexpectedStorageType> {
         match self {
             Self::S3(profile) => Ok(profile),
-            _ => Err(ConversionError {
+            _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
-                to: StorageType::S3,
-            }
-            .into()),
+                to: "s3",
+            }),
         }
     }
 
@@ -792,14 +838,13 @@ impl StorageCredential {
     ///
     /// # Errors
     /// Fails if the credential is not an Az credential.
-    pub fn try_to_az(&self) -> Result<&AzCredential, CredentialsError> {
+    pub fn try_to_az(&self) -> Result<&AzCredential, UnexpectedStorageType> {
         match self {
             Self::Az(profile) => Ok(profile),
-            _ => Err(ConversionError {
+            _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
-                to: StorageType::Adls,
-            }
-            .into()),
+                to: "adls",
+            }),
         }
     }
 
@@ -807,21 +852,23 @@ impl StorageCredential {
     ///
     ///  # Errors
     /// Fails if the credential is not an Gcs credential.
-    pub fn try_into_gcs(&self) -> Result<&GcsCredential, CredentialsError> {
+    pub fn try_to_gcs(&self) -> Result<&GcsCredential, UnexpectedStorageType> {
         match self {
             Self::Gcs(profile) => Ok(profile),
-            _ => Err(ConversionError {
+            _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
-                to: StorageType::Gcs,
-            }
-            .into()),
+                to: "gcs",
+            }),
         }
     }
 }
 
 /// Split a location into a filesystem prefix and the path.
 /// Splits at "://"
-pub(crate) fn split_location(location: &str) -> Result<(&str, &str), ErrorModel> {
+///
+/// # Errors
+/// Fails if the location does not contain "://"
+pub fn split_location(location: &str) -> Result<(&str, &str), ErrorModel> {
     let mut split = location.splitn(2, "://");
     let prefix = split.next().ok_or_else(|| {
         ErrorModel::internal(
@@ -840,43 +887,40 @@ pub(crate) fn split_location(location: &str) -> Result<(&str, &str), ErrorModel>
     Ok((prefix, path))
 }
 
-pub(crate) fn join_location(prefix: &str, path: &str) -> String {
+#[must_use]
+pub fn join_location(prefix: &str, path: &str) -> String {
     format!("{prefix}://{path}")
 }
 
-pub(crate) async fn check_location_is_empty(
-    file_io: &FileIO,
+pub(crate) async fn is_empty(
+    io: &impl LakekeeperStorage,
     location: &Location,
-    storage_profile: &StorageProfile,
-    error_fn: impl FnOnce() -> ValidationError,
-) -> Result<(), ValidationError> {
-    tracing::info!("Checking location is empty: {location}");
+) -> Result<bool, ValidationError> {
+    tracing::debug!("Checking location is empty: {location}");
 
-    let mut entry_stream = list_location(file_io, location, Some(1))
-        .await
-        .map_err(|e| {
-            tracing::warn!("Initing list location failed: {e}");
-            ValidationError::IoOperationFailed(e, Box::new(storage_profile.clone()))
-        })?;
+    let mut entry_stream = list_location(io, location, Some(1)).await.map_err(|e| {
+        tracing::debug!("Initializing list location failed: {e}");
+        ValidationError::from(e)
+    })?;
     while let Some(entries) = entry_stream.next().await {
         let entries = entries.map_err(|e| {
-            tracing::warn!("Stream batch failed: {e}");
-            ValidationError::IoOperationFailed(e, Box::new(storage_profile.clone()))
+            tracing::debug!("Stream batch failed: {e}");
+            ValidationError::from(Box::new(e))
         })?;
 
         if !entries.is_empty() {
-            tracing::debug!("Location is not empty: {location}, entries: {entries:?}",);
-            let er = error_fn();
-            return Err(er);
+            tracing::debug!("Location `{location}` is not empty, entries: {entries:?}",);
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::HashMap, str::FromStr};
 
+    use iceberg::spec::{PartitionSpec, Schema, SortOrder, TableMetadata, TableMetadataBuilder};
     use needs_env_var::needs_env_var;
 
     use super::{
@@ -884,7 +928,7 @@ mod tests {
         *,
     };
     use crate::{
-        catalog::io::{delete_file, read_file, write_metadata_file},
+        catalog::io::{delete_file, read_metadata_file, write_file},
         service::storage::s3::S3AccessKeyCredential,
     };
 
@@ -1093,13 +1137,14 @@ mod tests {
     #[tokio::test]
     #[needs_env_var::needs_env_var(TEST_AZURE = 1)]
     async fn test_vended_az() {
-        for (cred, typ) in [
+        for (cred, _typ) in [
             (az::test::azure_tests::client_creds(), "client-credentials"),
             (az::test::azure_tests::shared_key(), "shared-key"),
         ] {
             let mut profile: StorageProfile = az::test::azure_tests::azure_profile().into();
-            eprintln!("testing {typ}");
-            test_profile(&cred.into(), &mut profile).await;
+            let cred: StorageCredential = cred.into();
+            test_profile_vended_creds(&cred, &mut profile).await;
+            test_profile_io(&cred, &mut profile).await;
         }
     }
 
@@ -1107,21 +1152,22 @@ mod tests {
     #[needs_env_var::needs_env_var(TEST_GCS = 1)]
     async fn test_vended_gcs() {
         let key_prefix = Some(format!("test_prefix-{}", uuid::Uuid::now_v7()));
-        let cred: StorageCredential = std::env::var("GCS_CREDENTIAL")
+        let cred: StorageCredential = std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL")
             .map(|s| GcsCredential::ServiceAccountKey {
                 key: serde_json::from_str::<GcsServiceKey>(&s).unwrap(),
             })
             .map_err(|_| ())
             .expect("Missing cred")
             .into();
-        let bucket = std::env::var("GCS_BUCKET").expect("Missing bucket");
+        let bucket = std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").expect("Missing bucket");
         let mut profile: StorageProfile = GcsProfile {
             bucket,
             key_prefix: key_prefix.clone(),
         }
         .into();
 
-        test_profile(&cred, &mut profile).await;
+        test_profile_vended_creds(&cred, &mut profile).await;
+        test_profile_io(&cred, &mut profile).await;
     }
 
     #[needs_env_var(TEST_AWS = 1)]
@@ -1150,7 +1196,8 @@ mod tests {
                     .build()
                     .into();
 
-                test_profile(&cred, &mut profile).await;
+                test_profile_vended_creds(&cred, &mut profile).await;
+                test_profile_io(&cred, &mut profile).await;
             },
             true,
         );
@@ -1165,10 +1212,13 @@ mod tests {
         let (profile, credential) = get_storage_profile();
         let profile: StorageProfile = profile.into();
         let cred: StorageCredential = credential.into();
-        profile
-            .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-            .await
-            .expect("Failed to validate access");
+        Box::pin(profile.validate_access(
+            Some(&cred),
+            None,
+            &RequestMetadata::new_unauthenticated(),
+        ))
+        .await
+        .expect("Failed to validate access");
     }
 
     #[needs_env_var::needs_env_var(TEST_MINIO = 1)]
@@ -1183,14 +1233,66 @@ mod tests {
                 let mut profile: StorageProfile = profile.into();
                 let cred: StorageCredential = cred.into();
 
-                test_profile(&cred, &mut profile).await;
+                test_profile_vended_creds(&cred, &mut profile).await;
+                test_profile_io(&cred, &mut profile).await;
             },
             true,
         );
     }
 
+    #[allow(dead_code)]
+    fn generate_table_metadata() -> TableMetadata {
+        TableMetadataBuilder::new(
+            Schema::builder().build().expect("Failed to build schema"),
+            PartitionSpec::unpartition_spec(),
+            SortOrder::unsorted_order(),
+            format!("test-table-{}", uuid::Uuid::now_v7(),),
+            iceberg::spec::FormatVersion::V2,
+            HashMap::new(),
+        )
+        .unwrap()
+        .build()
+        .expect("Failed to build table metadata")
+        .metadata
+    }
+
     #[allow(dead_code, clippy::too_many_lines)]
-    async fn test_profile(cred: &StorageCredential, profile: &mut StorageProfile) {
+    async fn test_profile_io(cred: &StorageCredential, profile: &mut StorageProfile) {
+        profile
+            .normalize(Some(cred))
+            .expect("Failed to normalize profile");
+        let base_location = profile
+            .base_location()
+            .expect("Failed to get base location");
+        let table_location = base_location.clone();
+        let mut metadata_location = table_location.clone();
+        metadata_location
+            .without_trailing_slash()
+            .push("test.gz.metadata.json");
+
+        let io = profile.file_io(Some(cred)).await.unwrap();
+
+        let m = generate_table_metadata();
+
+        write_file(&io, &metadata_location, m.clone(), CompressionCodec::Gzip)
+            .await
+            .unwrap();
+        let read_metadata = read_metadata_file(&io, &metadata_location)
+            .await
+            .expect("Failed to read metadata file");
+        assert_eq!(read_metadata, m);
+        delete_file(&io, &metadata_location)
+            .await
+            .expect("Failed to delete metadata file");
+        // Check that the location is empty
+        assert!(
+            is_empty(&io, &table_location).await.unwrap(),
+            "Location should be empty after delete"
+        );
+    }
+
+    #[allow(dead_code, clippy::too_many_lines)]
+    async fn test_profile_vended_creds(cred: &StorageCredential, profile: &mut StorageProfile) {
         profile
             .normalize(Some(cred))
             .expect("Failed to normalize profile");
@@ -1234,9 +1336,6 @@ mod tests {
             .await
             .unwrap();
         let (downscoped1, downscoped2) = match profile {
-            StorageProfile::Test(_) => {
-                unimplemented!("Not supported")
-            }
             StorageProfile::Adls(_) => {
                 let downscoped1 = az::get_file_io_from_table_config(&config1.config).unwrap();
                 let downscoped2 = az::get_file_io_from_table_config(&config2.config).unwrap();
@@ -1252,63 +1351,109 @@ mod tests {
                 let downscoped2 = gcs::get_file_io_from_table_config(&config2.config).unwrap();
                 (downscoped1, downscoped2)
             }
+            StorageProfile::Memory(_) => {
+                unreachable!("Local storage does not support vended credentials")
+            }
         };
         // can read & write in own locations
         let test_file1 = table_location1.cloning_push("test.txt");
         let test_file2 = table_location2.cloning_push("test.txt");
 
-        write_metadata_file(&test_file1, "test", CompressionCodec::None, &downscoped1)
+        downscoped1
+            .new_output(&test_file1)
+            .unwrap()
+            .write("test content 1".into())
             .await
             .unwrap();
 
-        write_metadata_file(&test_file2, "test2", CompressionCodec::None, &downscoped2)
+        downscoped2
+            .new_output(&test_file2)
+            .unwrap()
+            .write("test content 2".into())
             .await
             .unwrap();
 
-        let input1 = read_file(&downscoped1, &test_file1).await.unwrap();
-        assert_eq!(input1.as_slice(), b"\"test\"");
+        let input1 = downscoped1
+            .new_input(&test_file1)
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(input1, "test content 1");
 
-        let input2 = read_file(&downscoped2, &test_file2).await.unwrap();
-
-        assert_eq!(input2.as_slice(), b"\"test2\"");
+        let input2 = downscoped2
+            .new_input(&test_file2)
+            .unwrap()
+            .read()
+            .await
+            .unwrap();
+        assert_eq!(input2, "test content 2");
 
         // cannot read across locations
-        let _ = read_file(&downscoped1, &test_file2).await.unwrap_err();
-        let _ = read_file(&downscoped2, &test_file1).await.unwrap_err();
+        let _ = downscoped1
+            .new_input(&test_file2)
+            .unwrap()
+            .read()
+            .await
+            .unwrap_err();
+        let _ = downscoped2
+            .new_input(&test_file1)
+            .unwrap()
+            .read()
+            .await
+            .unwrap_err();
 
         // cannot write across locations
-        let _ = write_metadata_file(
-            &table_location2.cloning_push("this-should-fail.txt"),
-            "this-fails",
-            CompressionCodec::None,
-            &downscoped1,
-        )
-        .await
-        .unwrap_err();
+        let _ = downscoped1
+            .new_output(&test_file2)
+            .unwrap()
+            .write("this-should-fail".into())
+            .await
+            .unwrap_err();
 
-        let _ = write_metadata_file(
-            &table_location1.cloning_push("this-should-fail.txt"),
-            "this-fails",
-            CompressionCodec::None,
-            &downscoped2,
-        )
-        .await
-        .unwrap_err();
+        let _ = downscoped2
+            .new_output(&test_file1)
+            .unwrap()
+            .write("this-should-fail".into())
+            .await
+            .unwrap_err();
 
         // cannot delete across locations
-        delete_file(&downscoped1, &test_file2).await.unwrap_err();
-        delete_file(&downscoped2, &test_file1).await.unwrap_err();
+        downscoped1.delete(&test_file2).await.unwrap_err();
+        downscoped2.delete(&test_file1).await.unwrap_err();
 
         // can delete in own locations
-        delete_file(&downscoped1, &test_file1).await.unwrap();
-        delete_file(&downscoped2, &test_file2).await.unwrap();
+        downscoped1.delete(&test_file1).await.unwrap();
+        downscoped2.delete(&test_file2).await.unwrap();
 
         // cleanup
         profile
             .file_io(Some(cred))
             .await
             .unwrap()
-            .remove_dir_all(base_location.as_str())
+            .remove_all(base_location.as_str())
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn test_memory_profile_serde() {
+        let profile = MemoryProfile::default();
+        let serialized = serde_json::to_string(&profile).unwrap();
+        assert!(serialized.contains("memory://"));
+        assert!(serialized.contains("base-location"));
+        let deserialized: MemoryProfile = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(profile, deserialized);
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_local_profile_validate_access() {
+        let profile: StorageProfile = MemoryProfile::default().into();
+        let cred: Option<StorageCredential> = None;
+        let request_metadata = RequestMetadata::new_unauthenticated();
+
+        Box::pin(profile.validate_access(cred.as_ref(), None, &request_metadata))
             .await
             .unwrap();
     }

@@ -8,11 +8,10 @@ mod rename;
 
 use std::str::FromStr;
 
+#[allow(unused_imports)]
 pub(crate) use exists::authorized_view_ident_to_id;
-use iceberg_ext::{
-    catalog::rest::{ErrorModel, ViewUpdate},
-    configs::Location,
-};
+use iceberg_ext::catalog::rest::{ErrorModel, ViewUpdate};
+use lakekeeper_io::Location;
 
 use super::{tables::validate_table_properties, CatalogServer};
 use crate::{
@@ -151,7 +150,7 @@ mod test {
         },
         service::{
             authz::AllowAllAuthorizer,
-            storage::{StorageProfile, TestProfile},
+            storage::{MemoryProfile, StorageProfile},
             State,
         },
         WarehouseId,
@@ -169,7 +168,7 @@ mod test {
         let state = api_context.v1_state.catalog.clone();
         let warehouse_id = initialize_warehouse(
             state.clone(),
-            Some(StorageProfile::Test(TestProfile::default())),
+            Some(StorageProfile::Memory(MemoryProfile::default())),
             None,
             None,
             true,

@@ -6,28 +6,29 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use base64::Engine;
 use google_cloud_auth::{
     token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
-use iceberg::io::{GCS_DISABLE_CONFIG_LOAD, GCS_DISABLE_VM_METADATA};
-use iceberg_ext::configs::{
-    table::{gcs, TableProperties},
-    Location,
+use iceberg_ext::configs::table::{gcs, TableProperties};
+use lakekeeper_io::{
+    gcs::{validate_bucket_name, CredentialsFile, GCSSettings, GcsAuth, GcsStorage},
+    InvalidLocationError, Location,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
 use veil::Redact;
 
-use super::StorageType;
 use crate::{
     api::{
         iceberg::{supported_endpoints, v1::DataAccess},
         CatalogConfig,
     },
     service::storage::{
-        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
+        error::{
+            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+            UpdateError, ValidationError,
+        },
         StoragePermissions, TableConfig,
     },
     WarehouseId, CONFIG,
@@ -105,6 +106,47 @@ pub struct GcsServiceKey {
     pub universe_domain: String,
 }
 
+impl From<GcsServiceKey> for CredentialsFile {
+    fn from(key: GcsServiceKey) -> Self {
+        let GcsServiceKey {
+            r#type,
+            project_id,
+            private_key_id,
+            private_key,
+            client_email,
+            client_id,
+            auth_uri,
+            token_uri,
+            auth_provider_x509_cert_url: _,
+            client_x509_cert_url: _,
+            universe_domain: _,
+        } = key;
+
+        CredentialsFile {
+            tp: r#type,
+            client_email: Some(client_email),
+            private_key_id: Some(private_key_id),
+            private_key: Some(private_key),
+            auth_uri: Some(auth_uri),
+            token_uri: Some(token_uri),
+            project_id: Some(project_id),
+            client_secret: None,
+            client_id: Some(client_id),
+            refresh_token: None,
+            audience: None,
+            subject_token_type: None,
+            token_url_external: None,
+            token_info_url: None,
+            service_account_impersonation_url: None,
+            service_account_impersonation: None,
+            delegates: None,
+            credential_source: None,
+            quota_project_id: None,
+            workforce_pool_user_project: None,
+        }
+    }
+}
+
 pub(crate) enum TokenSource {
     GAuth(Arc<dyn GCloudAuthTokenSource>),
     Token(Arc<dyn GCloudTokenSource>),
@@ -125,42 +167,20 @@ impl TokenSource {
 }
 
 impl GcsProfile {
-    /// Create a new `FileIO` instance for GCS.
+    /// Create a new GCS storage client.
     ///
     /// # Errors
-    /// Fails if the `FileIO` instance cannot be created.
-    #[allow(clippy::unused_self)]
-    pub fn file_io(&self, credential: &GcsCredential) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("gcs").with_client(HTTP_CLIENT.clone());
-
-        match credential {
-            GcsCredential::ServiceAccountKey { key } => {
-                builder = builder
-                    .with_prop(
-                        iceberg::io::GCS_CREDENTIALS_JSON,
-                        base64::prelude::BASE64_STANDARD.encode(
-                            serde_json::to_string(key)
-                                .map_err(CredentialsError::from)?
-                                .as_bytes(),
-                        ),
-                    )
-                    .with_prop(GCS_DISABLE_VM_METADATA, "true")
-                    .with_prop(GCS_DISABLE_CONFIG_LOAD, "true");
-            }
-            GcsCredential::GcpSystemIdentity {} => {
-                if !CONFIG.enable_gcp_system_credentials {
-                    return Err(CredentialsError::Misconfiguration(
-                        "GCP System identity credentials are disabled in this Lakekeeper deployment."
-                            .to_string(),
-                    ).into());
-                }
-                builder = builder
-                    .with_prop(GCS_DISABLE_VM_METADATA, "false")
-                    .with_prop(GCS_DISABLE_CONFIG_LOAD, "false");
-            }
-        }
-
-        Ok(builder.build()?)
+    /// Fails if the client cannot be initialized
+    pub async fn lakekeeper_io(
+        &self,
+        credential: &GcsCredential,
+    ) -> Result<GcsStorage, CredentialsError> {
+        let gcs_auth = GcsAuth::try_from(credential.clone())?;
+        let settings = GCSSettings {};
+        settings
+            .get_storage_client(&gcs_auth)
+            .await
+            .map_err(Into::into)
     }
 
     /// Validate the GCS profile.
@@ -173,6 +193,21 @@ impl GcsProfile {
         self.normalize_key_prefix()?;
 
         Ok(())
+    }
+
+    /// Validate the GCS profile with credentials.
+    /// # Errors
+    /// - Fails if the bucket or key prefix changed
+    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+        if self.bucket != other.bucket {
+            return Err(UpdateError::ImmutableField("bucket".to_string()));
+        }
+
+        if self.key_prefix != other.key_prefix {
+            return Err(UpdateError::ImmutableField("key_prefix".to_string()));
+        }
+
+        Ok(other)
     }
 
     /// Check if the profile can be updated with the other profile.
@@ -208,7 +243,7 @@ impl GcsProfile {
     ///
     /// # Errors
     /// Can fail for un-normalized profiles
-    pub fn base_location(&self) -> Result<Location, ValidationError> {
+    pub fn base_location(&self) -> Result<Location, InvalidLocationError> {
         let prefix: Vec<String> = self
             .key_prefix
             .as_ref()
@@ -219,11 +254,11 @@ impl GcsProfile {
                 l.extend(prefix.iter());
                 l
             })
-            .map_err(|e| ValidationError::InvalidLocation {
-                reason: "Invalid GCS location.".to_string(),
-                location: format!("gs://{}/", self.bucket),
-                source: Some(e.into()),
-                storage_type: StorageType::Gcs,
+            .map_err(|e| {
+                InvalidLocationError::new(
+                    format!("gs://{}/", self.bucket),
+                    format!("Failed to create base location for GCS profile: {e}"),
+                )
             })
     }
 
@@ -322,11 +357,11 @@ impl GcsProfile {
         if let Some(key_prefix) = self.key_prefix.as_mut() {
             *key_prefix = key_prefix.trim_matches('/').to_string();
             if key_prefix.starts_with(".well-known/acme-challenge/") {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
                     reason: "Storage Profile `key_prefix` cannot start with `.well-known/acme-challenge/`.".to_string(),
                     entity: "key_prefix".to_string(),
-                });
+                }.into());
             }
         }
 
@@ -339,12 +374,13 @@ impl GcsProfile {
         // GCS supports a max of 1024 chars and we need some buffer for tables.
         if let Some(key_prefix) = self.key_prefix.as_ref() {
             if key_prefix.len() > 896 {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
                     reason: "Storage Profile `key_prefix` must be less than 896 characters."
                         .to_string(),
                     entity: "key_prefix".to_string(),
-                });
+                }
+                .into());
             }
         }
         Ok(())
@@ -379,129 +415,37 @@ impl GcsProfile {
 
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, FileIoError> {
+) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
     Ok(iceberg::io::FileIOBuilder::new("gcs")
-        .with_client(HTTP_CLIENT.clone())
         .with_props(config.inner())
         .build()?)
 }
 
-fn validate_bucket_name(bucket: &str) -> Result<(), ValidationError> {
-    // Bucket names must be between 3 (min) and 63 (max) characters long.
-    if bucket.len() < 3 || bucket.len() > 63 {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`bucket` must be between 3 and 63 characters long.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
+impl TryFrom<GcsCredential> for GcsAuth {
+    type Error = CredentialsError;
 
-    // Bucket names can consist only of lowercase letters, numbers, dots (.), and hyphens (-).
-    if !bucket
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
-    {
-        return Err(
-            ValidationError::InvalidProfile {
-                source: None,
-                reason: "Bucket name can consist only of lowercase letters, numbers, dots (.), and hyphens (-).".to_string(),
-                entity: "BucketName".to_string(),
+    fn try_from(credential: GcsCredential) -> Result<Self, Self::Error> {
+        if !CONFIG.enable_gcp_system_credentials
+            && matches!(credential, GcsCredential::GcpSystemIdentity {})
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "GCP System identity credentials are disabled in this Lakekeeper deployment."
+                    .to_string(),
+            ));
+        }
+
+        Ok(match credential {
+            GcsCredential::ServiceAccountKey { key } => {
+                GcsAuth::CredentialsFile { file: key.into() }
             }
-        );
+            GcsCredential::GcpSystemIdentity {} => GcsAuth::GcpSystemIdentity {},
+        })
     }
-
-    // Bucket names must begin and end with a letter or number.
-    if !bucket.chars().next().unwrap().is_ascii_alphanumeric()
-        || !bucket.chars().last().unwrap().is_ascii_alphanumeric()
-    {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Bucket name must begin and end with a letter or number.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    // Bucket names must not contain two adjacent periods.
-    if bucket.contains("..") {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Bucket name must not contain two adjacent periods.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    // Bucket names cannot be represented as an IP address in dotted-decimal notation.
-    if bucket.parse::<std::net::Ipv4Addr>().is_ok() {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason:
-                "Bucket name cannot be represented as an IP address in dotted-decimal notation."
-                    .to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    // Bucket names cannot begin with the "goog" prefix.
-    if bucket.starts_with("goog") {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Bucket name cannot begin with the \"goog\" prefix.".to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    // Bucket names cannot contain "google" or close misspellings.
-    let lower_bucket = bucket.to_lowercase();
-    if lazy_regex::regex!(r"(g[0o][0o]+g[l1]e)").is_match(&lower_bucket) {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason:
-                "Bucket name cannot contain \"google\" or close misspellings, such as \"g00gle\"."
-                    .to_string(),
-            entity: "BucketName".to_string(),
-        });
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod test {
     use needs_env_var::needs_env_var;
-
-    use crate::service::storage::gcs::validate_bucket_name;
-
-    // Bucket names: Your bucket names must meet the following requirements:
-    //
-    // Bucket names can only contain lowercase letters, numeric characters, dashes (-), underscores (_), and dots (.). Spaces are not allowed. Names containing dots require verification.
-    // Bucket names must start and end with a number or letter.
-    // Bucket names must contain 3-63 characters. Names containing dots can contain up to 222 characters, but each dot-separated component can be no longer than 63 characters.
-    // Bucket names cannot be represented as an IP address in dotted-decimal notation (for example, 192.168.5.4).
-    // Bucket names cannot begin with the "goog" prefix.
-    // Bucket names cannot contain "google" or close misspellings, such as "g00gle".
-    #[test]
-    fn test_valid_bucket_names() {
-        // Valid bucket names
-        assert!(validate_bucket_name("valid-bucket-name").is_ok());
-        assert!(validate_bucket_name("valid.bucket.name").is_ok());
-        assert!(validate_bucket_name("valid-bucket-name-123").is_ok());
-        assert!(validate_bucket_name("123-valid-bucket-name").is_ok());
-        assert!(validate_bucket_name("valid-bucket-name-123").is_ok());
-        assert!(validate_bucket_name("valid.bucket.name.123").is_ok());
-
-        // Invalid bucket names
-        assert!(validate_bucket_name("Invalid-Bucket-Name").is_err()); // Uppercase letters
-        assert!(validate_bucket_name("invalid_bucket_name").is_err()); // Underscores
-        assert!(validate_bucket_name("invalid bucket name").is_err()); // Spaces
-        assert!(validate_bucket_name("invalid..bucket..name").is_err()); // Adjacent periods
-        assert!(validate_bucket_name("invalid-bucket-name-").is_err()); // Ends with hyphen
-        assert!(validate_bucket_name("-invalid-bucket-name").is_err()); // Starts with hyphen
-        assert!(validate_bucket_name("gooogle-bucket-name").is_err()); // Contains "gooogle"
-        assert!(validate_bucket_name("192.168.5.4").is_err()); // IP address format
-        assert!(validate_bucket_name("goog-bucket-name").is_err()); // Begins with "goog"
-        assert!(validate_bucket_name("a").is_err()); // Less than 3 characters
-        assert!(validate_bucket_name("a".repeat(64).as_str()).is_err()); // More than 63 characters
-    }
 
     #[needs_env_var(TEST_GCS = 1)]
     pub(crate) mod cloud_tests {
@@ -514,8 +458,9 @@ pub(crate) mod test {
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
-            let bucket = std::env::var("GCS_BUCKET").expect("Missing GCS_BUCKET");
-            let key = std::env::var("GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
+            let bucket = std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").expect("Missing GCS_BUCKET");
+            let key =
+                std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
             let key: GcsServiceKey = serde_json::from_str(&key).unwrap();
             let cred = GcsCredential::ServiceAccountKey { key };
             let profile = GcsProfile {
@@ -538,10 +483,13 @@ pub(crate) mod test {
             profile
                 .normalize(Some(&cred))
                 .expect("Failed to normalize profile");
-            profile
-                .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                .await
-                .unwrap();
+            Box::pin(profile.validate_access(
+                Some(&cred),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            ))
+            .await
+            .unwrap();
         }
 
         #[tokio::test]
@@ -570,8 +518,10 @@ pub(crate) mod test {
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
-            let bucket = std::env::var("GCS_HNS_BUCKET").expect("Missing GCS_HNS_BUCKET");
-            let key = std::env::var("GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
+            let bucket =
+                std::env::var("LAKEKEEPER_TEST__GCS_HNS_BUCKET").expect("Missing GCS_HNS_BUCKET");
+            let key =
+                std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
             let key: GcsServiceKey = serde_json::from_str(&key).unwrap();
             let cred = GcsCredential::ServiceAccountKey { key };
             let profile = GcsProfile {
@@ -594,10 +544,13 @@ pub(crate) mod test {
             profile
                 .normalize(Some(&cred))
                 .expect("Failed to normalize profile");
-            profile
-                .validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                .await
-                .unwrap();
+            Box::pin(profile.validate_access(
+                Some(&cred),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            ))
+            .await
+            .unwrap();
         }
     }
 }

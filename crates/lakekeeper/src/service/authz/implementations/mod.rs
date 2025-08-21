@@ -67,6 +67,7 @@ impl From<allow_all::AllowAllAuthorizer> for BuiltInAuthorizers {
     }
 }
 
+#[cfg(feature = "authz-openfga")]
 impl From<openfga::OpenFGAAuthorizer> for BuiltInAuthorizers {
     fn from(authorizer: openfga::OpenFGAAuthorizer) -> Self {
         Self::OpenFGA(authorizer)

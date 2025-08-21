@@ -1,12 +1,15 @@
-use std::{str::FromStr, sync::Arc};
+#[cfg(feature = "router")]
+use std::str::FromStr;
+use std::sync::Arc;
 
+#[cfg(feature = "router")]
 use axum::{
     extract::MatchedPath,
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use http::{HeaderMap, Method};
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 use limes::Authentication;
 use uuid::Uuid;
 
@@ -15,6 +18,7 @@ use crate::{
     ProjectId, WarehouseId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
+#[cfg(feature = "router")]
 const PROJECT_ID_HEADER_DEPRECATED: &str = "x-project-ident";
 pub const X_PROJECT_ID_HEADER: &str = "x-project-id";
 pub const X_REQUEST_ID_HEADER: &str = "x-request-id";
@@ -166,7 +170,7 @@ impl RequestMetadata {
         user_project: Option<ProjectId>, // Explicitly requested via an API parameter
     ) -> crate::api::Result<ProjectId> {
         user_project.or(self.preferred_project_id()).ok_or_else(|| {
-            crate::api::ErrorModel::bad_request(
+            ErrorModel::bad_request(
                 format!("No project provided. Please provide the `{X_PROJECT_ID_HEADER}` header"),
                 "NoProjectIdProvided",
                 None,
@@ -233,7 +237,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .unwrap_or(Uuid::now_v7());
 
     let Some(base_uri) = determine_base_uri(&headers) else {
-        return IcebergErrorResponse::from(ErrorModel::bad_request(
+        return iceberg_ext::catalog::rest::IcebergErrorResponse::from(ErrorModel::bad_request(
             "base_uri is not set and neither x-forwarded-host nor host header are set. Either send the appropriate headers or configure the base_uri according to the documentation.".to_string(),
             "NoHostHeader",
             None,

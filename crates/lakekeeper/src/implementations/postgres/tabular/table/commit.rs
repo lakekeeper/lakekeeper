@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use iceberg::spec::{FormatVersion, TableMetadata};
-use iceberg_ext::{catalog::rest::ErrorModel, configs::Location};
+use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
+use lakekeeper_io::Location;
 use sqlx::{Postgres, Row, Transaction};
 
 use crate::{

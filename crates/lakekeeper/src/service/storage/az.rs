@@ -1,34 +1,26 @@
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{Arc, LazyLock},
-};
+use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
-use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
-use azure_identity::{
-    DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
-};
 use azure_storage::{
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
         service_sas::{BlobSharedAccessSignature, SasKey},
         SasToken,
     },
-    StorageCredentials,
+    CloudLocation,
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use iceberg::io::{
-    ADLS_ACCOUNT_KEY, ADLS_ACCOUNT_NAME, ADLS_AUTHORITY_HOST, ADLS_CLIENT_ID, ADLS_CLIENT_SECRET,
-    ADLS_TENANT_ID,
+use iceberg::io::ADLS_AUTHORITY_HOST;
+use iceberg_ext::configs::table::{custom, TableProperties};
+use lakekeeper_io::{
+    adls::{
+        normalize_host, validate_account_name, validate_filesystem_name, AdlsLocation, AdlsStorage,
+        AzureAuth, AzureClientCredentialsAuth, AzureSettings, AzureSharedAccessKeyAuth,
+    },
+    InvalidLocationError, Location,
 };
-use iceberg_ext::configs::{
-    table::{custom, TableProperties},
-    Location,
-};
-use lazy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use url::{Host, Url};
+use url::Url;
 use veil::Redact;
 
 use crate::{
@@ -37,8 +29,11 @@ use crate::{
         CatalogConfig, Result,
     },
     service::storage::{
-        error::{CredentialsError, FileIoError, TableConfigError, UpdateError, ValidationError},
-        StoragePermissions, StorageType, TableConfig,
+        error::{
+            CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
+            UpdateError, ValidationError,
+        },
+        StoragePermissions, TableConfig,
     },
     WarehouseId, CONFIG,
 };
@@ -70,21 +65,10 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
-    LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
-
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
 
 pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
-static ADLS_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("^(?<protocol>(abfss|wasbs)?://)[^/@]+@[^/]+(?<path>/.+)")
-        .expect("ADLS path regex is valid")
-});
-
-static SYSTEM_IDENTITY_CACHE: LazyLock<moka::sync::Cache<String, Arc<DefaultAzureCredential>>> =
-    LazyLock::new(|| moka::sync::Cache::builder().max_capacity(1000).build());
 
 impl AdlsProfile {
     /// Check if an Azure variant is allowed.
@@ -107,11 +91,12 @@ impl AdlsProfile {
         if let Some(sas_validity) = self.sas_token_validity_seconds {
             // 7 days in seconds
             if sas_validity > MAX_SAS_TOKEN_VALIDITY_SECONDS {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
                     reason: "SAS token can be only valid up to a week.".to_string(),
                     entity: "sas-token-validity-seconds".to_string(),
-                });
+                }
+                .into());
             }
         }
         validate_filesystem_name(&self.filesystem)?;
@@ -165,7 +150,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Can fail for un-normalized profiles
-    pub fn base_location(&self) -> Result<Location, ValidationError> {
+    pub fn base_location(&self) -> Result<Location, InvalidLocationError> {
         let location = if let Some(key_prefix) = &self.key_prefix {
             format!(
                 "abfss://{}@{}.{}/{}/",
@@ -185,15 +170,60 @@ impl AdlsProfile {
                     .trim_end_matches('/'),
             )
         };
-        let location =
-            Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
-                source: Some(Box::new(e)),
-                reason: "Failed to create location for storage profile.".to_string(),
-                storage_type: StorageType::Adls,
+        let location = Location::from_str(&location).map_err(|e| {
+            InvalidLocationError::new(
                 location,
-            })?;
+                format!("Failed to create base location for storage profile: {e}"),
+            )
+        })?;
 
         Ok(location)
+    }
+
+    fn cloud_location(&self) -> CloudLocation {
+        if let Some(host) = &self.host {
+            CloudLocation::Custom {
+                account: self.account_name.clone(),
+                uri: host.clone(),
+            }
+        } else {
+            CloudLocation::Public {
+                account: self.account_name.clone(),
+            }
+        }
+    }
+
+    fn azure_settings(&self) -> AzureSettings {
+        AzureSettings {
+            authority_host: self.authority_host.clone(),
+            cloud_location: self.cloud_location(),
+        }
+    }
+
+    fn blob_service_client(
+        &self,
+        credential: &AzCredential,
+    ) -> Result<BlobServiceClient, CredentialsError> {
+        let azure_auth = AzureAuth::try_from(credential.clone())?;
+
+        self.azure_settings()
+            .get_blob_service_client(&azure_auth)
+            .map_err(Into::into)
+    }
+
+    /// Get the Lakekeeper IO for this storage profile.
+    ///
+    /// # Errors
+    /// - If system identity is requested but not enabled in the configuration.
+    /// - If the client could not be initialized.
+    pub fn lakekeeper_io(
+        &self,
+        credential: &AzCredential,
+    ) -> Result<AdlsStorage, CredentialsError> {
+        let azure_auth = AzureAuth::try_from(credential.clone())?;
+        self.azure_settings()
+            .get_storage_client(&azure_auth)
+            .map_err(Into::into)
     }
 
     /// Generate the table configuration for Azure Datalake Storage Gen2.
@@ -208,27 +238,10 @@ impl AdlsProfile {
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
         let sas = match credential {
-            AzCredential::ClientCredentials {
-                client_id,
-                tenant_id,
-                client_secret,
-            } => {
-                let token = azure_identity::ClientSecretCredential::new(
-                    HTTP_CLIENT_ARC.clone(),
-                    self.authority_host
-                        .clone()
-                        .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
-                    tenant_id.clone(),
-                    client_id.clone(),
-                    client_secret.clone(),
-                );
-
-                self.sas_via_delegation_key(
-                    table_location,
-                    StorageCredentials::token_credential(Arc::new(token)),
-                    permissions,
-                )
-                .await?
+            AzCredential::ClientCredentials { .. } => {
+                let client = self.blob_service_client(credential)?;
+                self.sas_via_delegation_key(table_location, client, permissions)
+                    .await?
             }
             AzCredential::SharedAccessKey { key } => self.sas(
                 table_location,
@@ -239,20 +252,16 @@ impl AdlsProfile {
                 azure_core::auth::Secret::new(key.to_string()),
             )?,
             AzCredential::AzureSystemIdentity {} => {
-                let identity: Arc<DefaultAzureCredential> = self.get_system_identity()?;
-                self.sas_via_delegation_key(
-                    table_location,
-                    StorageCredentials::token_credential(identity),
-                    permissions,
-                )
-                .await
-                .map_err(|e| {
-                    tracing::debug!("Failed to get azure system identity token: {e}",);
-                    CredentialsError::ShortTermCredential {
-                        reason: "Failed to get azure system identity token".to_string(),
-                        source: Some(Box::new(e)),
-                    }
-                })?
+                let client = self.blob_service_client(credential)?;
+                self.sas_via_delegation_key(table_location, client, permissions)
+                    .await
+                    .map_err(|e| {
+                        tracing::debug!("Failed to get azure system identity token: {e}",);
+                        CredentialsError::ShortTermCredential {
+                            reason: "Failed to get azure system identity token".to_string(),
+                            source: Some(Box::new(e)),
+                        }
+                    })?
             }
         };
 
@@ -270,116 +279,12 @@ impl AdlsProfile {
         })
     }
 
-    fn get_system_identity(&self) -> Result<Arc<DefaultAzureCredential>, CredentialsError> {
-        if !CONFIG.enable_azure_system_credentials {
-            return Err(CredentialsError::Misconfiguration(
-                "Azure System identity credentials are disabled in this Lakekeeper deployment."
-                    .to_string(),
-            ));
-        }
-
-        let authority_host_str = (self.authority_host.as_ref()).map_or(
-            DEFAULT_AUTHORITY_HOST.clone().to_string(),
-            std::string::ToString::to_string,
-        );
-
-        SYSTEM_IDENTITY_CACHE
-            .try_get_with(authority_host_str.clone(), || {
-                let mut options = TokenCredentialOptions::default();
-                options.set_authority_host(authority_host_str);
-                DefaultAzureCredentialBuilder::new()
-                    .with_options(options)
-                    .build()
-                    .map(Arc::new)
-            })
-            .map_err(|e| {
-                tracing::error!("Failed to get Azure system identity: {e}");
-                CredentialsError::ShortTermCredential {
-                    reason: "Failed to get Azure system identity".to_string(),
-                    source: Some(Box::new(e)),
-                }
-            })
-    }
-
-    /// Create a new `FileIO` instance for Adls.
-    ///
-    /// # Errors
-    /// Fails if the `FileIO` instance cannot be created.
-    pub async fn file_io(
-        &self,
-        credential: &AzCredential,
-    ) -> Result<iceberg::io::FileIO, FileIoError> {
-        let mut builder = iceberg::io::FileIOBuilder::new("abfss").with_client(HTTP_CLIENT.clone());
-
-        builder = builder
-            .with_prop(ADLS_ACCOUNT_NAME, self.account_name.clone())
-            .with_prop(
-                ADLS_AUTHORITY_HOST,
-                self.authority_host
-                    .as_ref()
-                    .map_or_else(|| DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string),
-            )
-            .with_client(HTTP_CLIENT.clone());
-
-        match credential {
-            AzCredential::ClientCredentials {
-                client_id,
-                tenant_id,
-                client_secret,
-            } => {
-                builder = builder
-                    .with_prop(ADLS_CLIENT_SECRET, client_secret.to_string())
-                    .with_prop(ADLS_CLIENT_ID, client_id.to_string())
-                    .with_prop(ADLS_TENANT_ID, tenant_id.to_string());
-            }
-            AzCredential::SharedAccessKey { key } => {
-                builder = builder.with_prop(ADLS_ACCOUNT_KEY, key.to_string());
-            }
-            AzCredential::AzureSystemIdentity {} => {
-                // ToDo: Use azure_identity to get token, then pass it to FileIO.
-                // As of writing this is not supported in OpenDAL and iceberg-rust.
-                if !CONFIG.enable_azure_system_credentials {
-                    return Err(CredentialsError::Misconfiguration(
-                        "Azure System identity credentials are disabled in this Lakekeeper deployment.".to_string(),
-                    ).into());
-                }
-                let table_config = self
-                    .generate_table_config(
-                        DataAccess {
-                            vended_credentials: true,
-                            remote_signing: false,
-                        },
-                        self.base_location()
-                            .map_err(|e| CredentialsError::ShortTermCredential {
-                                reason: "Failed to get base location for storage profile"
-                                    .to_string(),
-                                source: Some(Box::new(e)),
-                            })?
-                            .without_trailing_slash(),
-                        credential,
-                        StoragePermissions::ReadWriteDelete,
-                    )
-                    .await
-                    .map_err(|e| CredentialsError::ShortTermCredential {
-                        reason: e.to_string(),
-                        source: Some(Box::new(e)),
-                    })?;
-
-                builder = builder.with_props(table_config.config.inner());
-            }
-        }
-
-        Ok(builder.build()?)
-    }
-
     async fn sas_via_delegation_key(
         &self,
         path: &Location,
-        cred: StorageCredentials,
+        client: BlobServiceClient,
         permissions: StoragePermissions,
     ) -> Result<String, CredentialsError> {
-        let client = blob_service_client(self.account_name.as_str(), cred);
-
         // allow for some clock drift
         let start = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
         let max_validity_seconds = MAX_SAS_TOKEN_VALIDITY_SECONDS_I64;
@@ -420,9 +325,10 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(&path.to_string(), true);
-        let rootless_path = path.trim_start_matches('/');
+        let path = reduce_scheme_string(path.as_ref());
+        let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
         let depth = rootless_path.split('/').count();
+
         let canonical_resource = format!(
             "/blob/{}/{}/{}",
             self.account_name.as_str(),
@@ -467,16 +373,14 @@ impl AdlsProfile {
         // Azure supports a max of 1024 chars and we need some buffer for tables.
         if let Some(key_prefix) = &self.key_prefix {
             if key_prefix.len() > 512 {
-                return Err(ValidationError::InvalidProfile {
+                return Err(InvalidProfileError {
                     source: None,
 
                     reason: "Storage Profile `key-prefix` must be less than 512 characters."
                         .to_string(),
                     entity: "key-prefix".to_string(),
-                });
-            }
-            for key in key_prefix.split('/') {
-                validate_path_segment(key)?;
+                }
+                .into());
             }
         }
 
@@ -514,185 +418,13 @@ impl AdlsProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AdlsLocation {
-    account_name: String,
-    filesystem: String,
-    endpoint_suffix: String,
-    key: Vec<String>,
-    // Redundant, but useful for failsafe access
-    location: Location,
-    custom_prefix: Option<String>,
-}
-
-impl AdlsLocation {
-    /// Create a new [`AdlsLocation`] from the given parameters.
-    ///
-    /// # Errors
-    /// Fails if validation of account name, filesystem name or key fails.
-    pub fn new(
-        account_name: String,
-        filesystem: String,
-        host: String,
-        key: Vec<String>,
-        custom_prefix: Option<String>,
-    ) -> Result<Self, ValidationError> {
-        validate_filesystem_name(&filesystem)?;
-        validate_account_name(&account_name)?;
-        for k in &key {
-            validate_path_segment(k)?;
-        }
-
-        let endpoint_suffix = normalize_host(host)?.unwrap_or(DEFAULT_HOST.to_string());
-
-        let location = format!("abfss://{filesystem}@{account_name}.{endpoint_suffix}",);
-        let mut location =
-            Location::from_str(&location).map_err(|e| ValidationError::InvalidLocation {
-                source: Some(Box::new(e)),
-                reason: "Invalid adls location".to_string(),
-                storage_type: StorageType::Adls,
-                location,
-            })?;
-        if !key.is_empty() {
-            location.without_trailing_slash().extend(key.iter());
-        }
-
-        Ok(Self {
-            account_name,
-            filesystem,
-            endpoint_suffix,
-            key,
-            location,
-            custom_prefix,
-        })
-    }
-
-    #[must_use]
-    pub fn location(&self) -> &Location {
-        &self.location
-    }
-
-    #[must_use]
-    pub fn account_name(&self) -> &str {
-        &self.account_name
-    }
-
-    #[must_use]
-    pub fn filesystem(&self) -> &str {
-        &self.filesystem
-    }
-
-    #[must_use]
-    pub fn endpoint_suffix(&self) -> &str {
-        &self.endpoint_suffix
-    }
-
-    /// Create a new `AdlsLocation` from a Location.
-    ///
-    /// If `allow_variants` is set to true, `wasbs://` schemes are allowed.
-    ///
-    /// # Errors
-    /// - Fails if the location is not a valid ADLS location
-    pub fn try_from_location(
-        location: &Location,
-        allow_variants: bool,
-    ) -> Result<Self, ValidationError> {
-        let schema = location.url().scheme();
-        let is_custom_variant = ALTERNATIVE_PROTOCOLS.contains(&schema);
-
-        // Protocol must be abfss or wasbs (if allowed)
-        if schema != "abfss" && !(allow_variants && is_custom_variant) {
-            let reason = if allow_variants {
-                format!(
-                    "ADLS location must use abfss or wasbs protocol. Found: {}",
-                    location.url().scheme()
-                )
-            } else {
-                format!(
-                    "ADLS location must use abfss protocol. Found: {}",
-                    location.url().scheme()
-                )
-            };
-
-            return Err(ValidationError::InvalidLocation {
-                reason,
-                location: location.to_string(),
-                source: None,
-                storage_type: StorageType::Adls,
-            });
-        }
-
-        let filesystem = location.url().username().to_string();
-        let host = location
-            .url()
-            .host_str()
-            .ok_or_else(|| ValidationError::InvalidLocation {
-                reason: "ADLS location has no host specified".to_string(),
-                location: location.to_string(),
-                source: None,
-                storage_type: StorageType::Adls,
-            })?
-            .to_string();
-        // Host: account_name.endpoint_suffix
-        let (account_name, endpoint_suffix) =
-            host.split_once('.')
-                .ok_or_else(|| ValidationError::InvalidLocation {
-                    reason: "ADLS location host must be in the format <account_name>.<endpoint>. Specified location has no point (.)"
-                        .to_string(),
-                    location: location.to_string(),
-                    source: None,
-                    storage_type: StorageType::Adls,
-                })?;
-
-        let key: Vec<String> = location
-            .url()
-            .path_segments()
-            .map_or(Vec::new(), |segments| {
-                segments.map(std::string::ToString::to_string).collect()
-            });
-
-        let custom_prefix = if is_custom_variant {
-            Some(schema.to_string())
-        } else {
-            None
-        };
-
-        Self::new(
-            account_name.to_string(),
-            filesystem,
-            endpoint_suffix.to_string(),
-            key,
-            custom_prefix,
-        )
-    }
-
-    #[cfg(test)]
-    /// Always returns `abfss://` prefixed location.
-    pub(crate) fn into_normalized_location(self) -> Location {
-        self.location
-    }
-}
-
-impl From<AdlsLocation> for Location {
-    fn from(location: AdlsLocation) -> Location {
-        location.location
-    }
-}
-
 /// Removes the hostname and user from the path.
 /// Keeps only the path and optionally the scheme.
 #[must_use]
-pub(crate) fn reduce_scheme_string(path: &str, only_path: bool) -> String {
-    if let Some(caps) = ADLS_PATH_PATTERN.captures(path) {
-        let mut location = String::new();
-        if only_path {
-            caps.expand("$path", &mut location);
-        } else {
-            caps.expand("$protocol$path", &mut location);
-        }
-        return location;
-    }
-    path.to_string()
+pub(crate) fn reduce_scheme_string(path: &str) -> String {
+    AdlsLocation::try_from_str(path, true)
+        .map(|l| format!("/{}", l.blob_name().to_string().trim_start_matches('/')))
+        .unwrap_or(path.to_string())
 }
 
 #[derive(Redact, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -754,7 +486,7 @@ fn iceberg_sas_property_key(account_name: &str, endpoint_suffix: &str) -> String
 
 pub(super) fn get_file_io_from_table_config(
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, FileIoError> {
+) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
     // Add Authority host if not present
     let mut config = config.inner().clone();
 
@@ -780,196 +512,47 @@ pub(super) fn get_file_io_from_table_config(
         );
     }
     Ok(iceberg::io::FileIOBuilder::new("abfss")
-        .with_client(HTTP_CLIENT.clone())
         .with_props(config)
         .build()?)
 }
 
-fn blob_service_client(account_name: &str, cred: StorageCredentials) -> BlobServiceClient {
-    azure_storage_blobs::prelude::BlobServiceClient::builder(account_name, cred)
-        .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-        .client_options(
-            azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-                FixedRetryOptions::default()
-                    .max_retries(3u32)
-                    .max_total_elapsed(std::time::Duration::from_secs(5)),
-            )),
-        )
-        .blob_service_client()
-}
+impl TryFrom<AzCredential> for AzureAuth {
+    type Error = CredentialsError;
 
-// https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_filesystem_name(container: &str) -> Result<(), ValidationError> {
-    if container.is_empty() {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`filesystem` must not be empty.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    // Container names must not contain consecutive hyphens.
-    if container.contains("--") {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Filesystem name must not contain consecutive hyphens.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    let container = container.chars().collect::<Vec<char>>();
-    // Container names must be between 3 (min) and 63 (max) characters long.
-    if container.len() < 3 || container.len() > 63 {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`filesystem` must be between 3 and 63 characters long.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    // Container names can consist only of lowercase letters, numbers, and hyphens (-).
-    if !container
-        .iter()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
-    {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason:
-                "Filesystem name can consist only of lowercase letters, numbers, and hyphens (-)."
+    fn try_from(cred: AzCredential) -> Result<Self, Self::Error> {
+        if !CONFIG.enable_azure_system_credentials
+            && matches!(cred, AzCredential::AzureSystemIdentity {})
+        {
+            return Err(CredentialsError::Misconfiguration(
+                "Azure System identity credentials are disabled in this Lakekeeper deployment."
                     .to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    // Container names must begin and end with a letter or number.
-    // Unwrap will not fail as the length is already checked.
-    if !container.first().is_some_and(char::is_ascii_alphanumeric)
-        || !container.last().is_some_and(char::is_ascii_alphanumeric)
-    {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "Filesystem name must begin and end with a letter or number.".to_string(),
-            entity: "FilesystemName".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-// https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-fn validate_path_segment(path_segment: &str) -> Result<(), ValidationError> {
-    if path_segment.contains(|c: char| {
-        c == ' '
-            || c == '!'
-            || c == '*'
-            || c == '\''
-            || c == '('
-            || c == ')'
-            || c == ';'
-            || c == ':'
-            || c == '@'
-            || c == '&'
-            || c == '='
-            || c == '+'
-            || c == '$'
-            || c == ','
-            || c == '/'
-            || c == '?'
-            || c == '%'
-            || c == '#'
-            || c == '['
-            || c == ']'
-    }) {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason:
-                "Directory path contains reserved URL characters that are not properly escaped."
-                    .to_string(),
-            entity: "DirectoryPath".to_string(),
-        });
-    }
-
-    // Check if the directory name ends with a dot (.), a backslash (\), or a combination of these.
-    if path_segment.ends_with('.') || path_segment.ends_with('\\') {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: format!(
-                "Directory: '{path_segment}' must not end with a dot (.), or a backslash (\\)."
-            ),
-            entity: "DirectoryPath".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-fn normalize_host(host: String) -> Result<Option<String>, ValidationError> {
-    // If endpoint suffix is Some(""), set it to None.
-    if host.is_empty() {
-        Ok(None)
-    } else {
-        // Endpoint suffix must not contain slashes.
-        if host.contains('/') {
-            return Err(ValidationError::InvalidProfile {
-                source: None,
-                reason: "`endpoint_suffix` must not contain slashes.".to_string(),
-                entity: "EndpointSuffix".to_string(),
-            });
+            ));
         }
 
-        // Endpoint suffix must be a valid hostname
-        if Host::parse(&host).is_err() {
-            return Err(ValidationError::InvalidProfile {
-                source: None,
-                reason: "`endpoint_suffix` must be a valid hostname.".to_string(),
-                entity: "EndpointSuffix".to_string(),
-            });
-        }
-
-        Ok(Some(host))
+        Ok(match cred {
+            AzCredential::ClientCredentials {
+                client_id,
+                tenant_id,
+                client_secret,
+            } => AzureClientCredentialsAuth {
+                client_id,
+                tenant_id,
+                client_secret,
+            }
+            .into(),
+            AzCredential::SharedAccessKey { key } => AzureSharedAccessKeyAuth { key }.into(),
+            AzCredential::AzureSystemIdentity {} => AzureAuth::AzureSystemIdentity,
+        })
     }
-}
-
-// Storage account names must be between 3 and 24 characters in length
-// and may contain numbers and lowercase letters only.
-fn validate_account_name(account_name: &str) -> Result<(), ValidationError> {
-    if account_name.len() < 3 || account_name.len() > 24 {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`account_name` must be between 3 and 24 characters long.".to_string(),
-            entity: "AccountName".to_string(),
-        });
-    }
-
-    if !account_name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-    {
-        return Err(ValidationError::InvalidProfile {
-            source: None,
-            reason: "`account_name` must contain only lowercase letters and numbers.".to_string(),
-            entity: "AccountName".to_string(),
-        });
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
 pub(crate) mod test {
-    use std::str::FromStr;
-
-    use iceberg_ext::configs::Location;
     use needs_env_var::needs_env_var;
 
+    use super::*;
     use crate::service::{
-        storage::{
-            az::{
-                normalize_host, reduce_scheme_string, validate_account_name,
-                validate_filesystem_name, validate_path_segment, DEFAULT_AUTHORITY_HOST,
-            },
-            AdlsLocation, AdlsProfile, StorageLocations, StorageProfile,
-        },
+        storage::{az::DEFAULT_AUTHORITY_HOST, AdlsProfile, StorageLocations, StorageProfile},
         tabular_idents::TabularId,
         NamespaceId,
     };
@@ -978,24 +561,17 @@ pub(crate) mod test {
     fn test_reduce_scheme_string() {
         // Test abfss protocol
         let path = "abfss://filesystem@dfs.windows.net/path/_test";
-        let reduced_path = reduce_scheme_string(path, true);
+        let reduced_path = reduce_scheme_string(path);
         assert_eq!(reduced_path, "/path/_test");
-
-        let reduced_path = reduce_scheme_string(path, false);
-        assert_eq!(reduced_path, "abfss:///path/_test");
 
         // Test wasbs protocol
         let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path, true);
+        let reduced_wasbs_path = reduce_scheme_string(wasbs_path);
         assert_eq!(reduced_wasbs_path, "/path/to/data");
-
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path, false);
-        assert_eq!(reduced_wasbs_path, "wasbs:///path/to/data");
 
         // Test a non-matching path
         let non_matching = "http://example.com/path";
-        assert_eq!(reduce_scheme_string(non_matching, true), non_matching);
-        assert_eq!(reduce_scheme_string(non_matching, false), non_matching);
+        assert_eq!(reduce_scheme_string(non_matching), non_matching);
     }
 
     #[needs_env_var(TEST_AZURE = 1)]
@@ -1006,8 +582,10 @@ pub(crate) mod test {
         };
 
         pub(crate) fn azure_profile() -> AdlsProfile {
-            let account_name = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").unwrap();
-            let filesystem = std::env::var("AZURE_STORAGE_FILESYSTEM").unwrap();
+            let account_name = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME")
+                .expect("LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME to be set");
+            let filesystem = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM")
+                .expect("LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM to be set");
 
             let key_prefix = format!("test-{}", uuid::Uuid::now_v7());
             AdlsProfile {
@@ -1022,9 +600,12 @@ pub(crate) mod test {
         }
 
         pub(crate) fn client_creds() -> AzCredential {
-            let client_id = std::env::var("AZURE_CLIENT_ID").unwrap();
-            let client_secret = std::env::var("AZURE_CLIENT_SECRET").unwrap();
-            let tenant_id = std::env::var("AZURE_TENANT_ID").unwrap();
+            let client_id = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_ID")
+                .expect("LAKEKEEPER_TEST__AZURE_CLIENT_ID to be set");
+            let client_secret = std::env::var("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET")
+                .expect("LAKEKEEPER_TEST__AZURE_CLIENT_SECRET to be set");
+            let tenant_id = std::env::var("LAKEKEEPER_TEST__AZURE_TENANT_ID")
+                .expect("LAKEKEEPER_TEST__AZURE_TENANT_ID to be set");
 
             AzCredential::ClientCredentials {
                 client_id,
@@ -1034,12 +615,13 @@ pub(crate) mod test {
         }
 
         pub(crate) fn shared_key() -> AzCredential {
-            let key = std::env::var("AZURE_STORAGE_SHARED_KEY").unwrap();
+            let key = std::env::var("LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY")
+                .expect("LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY to be set");
             AzCredential::SharedAccessKey { key }
         }
 
         #[tokio::test]
-        async fn test_can_validate() {
+        async fn test_can_validate_adls() {
             for (cred, typ) in [
                 (client_creds(), "client-creds"),
                 (shared_key(), "shared-key"),
@@ -1049,9 +631,13 @@ pub(crate) mod test {
                 prof.normalize(Some(&cred.clone().into()))
                     .expect("failed to validate profile");
                 let cred: StorageCredential = cred.into();
-                prof.validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                    .await
-                    .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
+                Box::pin(prof.validate_access(
+                    Some(&cred),
+                    None,
+                    &RequestMetadata::new_unauthenticated(),
+                ))
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate '{typ}' due to '{e:?}'"));
             }
         }
 
@@ -1075,22 +661,6 @@ pub(crate) mod test {
             DEFAULT_AUTHORITY_HOST.as_str(),
             "https://login.microsoftonline.com/"
         );
-    }
-
-    #[test]
-    fn test_validate_endpoint_suffix() {
-        assert_eq!(
-            normalize_host("dfs.core.windows.net".to_string()).unwrap(),
-            Some("dfs.core.windows.net".to_string())
-        );
-        assert!(normalize_host(String::new()).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_valid_account_names() {
-        for name in &["abc", "a1b2c3", "abc123", "123abc"] {
-            assert!(validate_account_name(name).is_ok(), "{}", name);
-        }
     }
 
     #[test]
@@ -1128,199 +698,6 @@ pub(crate) mod test {
             location.to_string(),
             format!("abfss://filesystem@account.blob.com/{namespace_id}/{table_id}")
         );
-    }
-
-    #[test]
-    fn test_parse_adls_location() {
-        let cases = vec![
-            (
-                "abfss://filesystem@account0name.foo.com",
-                "account0name",
-                "filesystem",
-                "foo.com",
-                vec![],
-            ),
-            (
-                "abfss://filesystem@account0name.dfs.core.windows.net/one",
-                "account0name",
-                "filesystem",
-                "dfs.core.windows.net",
-                vec!["one"],
-            ),
-            (
-                "abfss://filesystem@account0name.foo.com/one",
-                "account0name",
-                "filesystem",
-                "foo.com",
-                vec!["one"],
-            ),
-        ];
-
-        for (location_str, account_name, filesystem, endpoint_suffix, key) in cases {
-            let adls_location =
-                AdlsLocation::try_from_location(&Location::from_str(location_str).unwrap(), false)
-                    .unwrap();
-            assert_eq!(adls_location.account_name(), account_name);
-            assert_eq!(adls_location.filesystem(), filesystem);
-            assert_eq!(adls_location.endpoint_suffix(), endpoint_suffix);
-            assert_eq!(adls_location.key, key);
-            // Roundtrip
-            assert_eq!(
-                adls_location.into_normalized_location().to_string(),
-                location_str
-            );
-        }
-    }
-
-    #[test]
-    fn test_invalid_adls_location() {
-        let cases = vec![
-            "abfss://filesystem@account_name",
-            "abfss://filesystem@account_name.example.com./foo",
-            "s3://filesystem@account_name.dfs.core.windows/foo",
-            "abfss://account_name.dfs.core.windows/foo",
-        ];
-
-        for location in cases {
-            let location = Location::from_str(location).unwrap();
-            let parsed_location = AdlsLocation::try_from_location(&location, false);
-            assert!(parsed_location.is_err(), "{parsed_location:?}");
-        }
-    }
-
-    #[test]
-    fn test_invalid_account_names() {
-        for name in &["Abc", "abc!", "abc.def", "abc_def", "abc/def"] {
-            assert!(validate_account_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_valid_container_names() {
-        for name in &[
-            "abc", "a1b2c3", "a-b-c", "1-2-3", "a1-b2-c3", "abc123", "123abc",
-        ] {
-            assert!(validate_filesystem_name(name).is_ok(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_invalid_container_length() {
-        assert!(validate_filesystem_name("ab").is_err(), "ab");
-        assert!(
-            validate_filesystem_name(&"a".repeat(64)).is_err(),
-            "64 character long string"
-        );
-    }
-
-    #[test]
-    fn test_invalid_container_characters() {
-        for name in &[
-            "Abc",     // Uppercase letter
-            "abc!",    // Special character
-            "abc.def", // Dot character
-            "abc_def", // Underscore character
-        ] {
-            assert!(validate_filesystem_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_invalid_start_end() {
-        for name in &[
-            "-abc",   // Starts with hyphen
-            "abc-",   // Ends with hyphen
-            "-abc-",  // Starts and ends with hyphen
-            "1-2-3-", // Ends with hyphen
-        ] {
-            assert!(validate_filesystem_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_consecutive_hyphens_container_name() {
-        for name in &[
-            "a--b", // Consecutive hyphens
-            "1--2", // Consecutive hyphens
-            "a--1", // Consecutive hyphens
-        ] {
-            assert!(validate_filesystem_name(name).is_err(), "{}", name);
-        }
-    }
-
-    #[test]
-    fn test_valid_directory_paths() {
-        for path in &[
-            "valid/path",
-            "another/valid/path",
-            "valid/path/with123",
-            "valid/path/with-dash",
-            "valid/path/with_underscore",
-        ] {
-            for segment in path.split('/') {
-                assert!(validate_path_segment(segment).is_ok(), "{}", segment);
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_reserved_characters() {
-        for path in &[
-            " path", "path!", "path*", "path'", "path(", "path)", "path;", "path:", "path@",
-            "path&", "path=", "path+", "path$", "path,", "path?", "path%", "path#", "path[",
-            "path]",
-        ] {
-            for segment in path.split('/') {
-                assert!(validate_path_segment(segment).is_err(), "{}", segment);
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_ending_characters() {
-        for path in &["path.", "path\\", "path/.", "path/\\"] {
-            assert!(validate_path_segment(path).is_err(), "{}", path);
-        }
-    }
-
-    #[test]
-    fn test_normalize_wasbs_location() {
-        let location =
-            Location::from_str("wasbs://filesystem@account0name.foo.com/path/to/data").unwrap();
-
-        let location = AdlsLocation::try_from_location(&location, true).unwrap();
-        assert_eq!(
-            location.into_normalized_location().to_string(),
-            "abfss://filesystem@account0name.foo.com/path/to/data",
-        );
-    }
-
-    #[test]
-    fn test_parse_wasbs_location() {
-        let location = "wasbs://filesystem@account0name.foo.com/path/to/data";
-
-        // Test with allow_variants = true
-        let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), true);
-
-        assert!(result.is_ok(), "Should parse with allow_variants = true");
-        let adls_location = result.unwrap();
-
-        // Check that it was normalized to abfss
-        assert_eq!(
-            adls_location.location().url().scheme(),
-            "abfss",
-            "Protocol should be normalized to abfss"
-        );
-
-        // Check that other properties were preserved
-        assert_eq!(adls_location.account_name(), "account0name");
-        assert_eq!(adls_location.filesystem(), "filesystem");
-        assert_eq!(adls_location.endpoint_suffix(), "foo.com");
-        assert_eq!(adls_location.key, vec!["path", "to", "data"]);
-
-        // Test with allow_variants = false
-        let result = AdlsLocation::try_from_location(&Location::from_str(location).unwrap(), false);
-        assert!(result.is_err(), "Should fail with allow_variants = false");
     }
 
     #[test]

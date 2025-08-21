@@ -1,0 +1,63 @@
+name: Lint Pull Request
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - labeled
+      - unlabeled
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    permissions:
+      contents: read
+      pull-requests: write
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+    if: github.repository == 'lakekeeper/lakekeeper'
+    steps:
+      - uses: thehanimo/pr-title-checker@7fbfe05602bdd86f926d3fb3bccb6f3aed43bc70 # v1.4.3
+        id: check
+        continue-on-error: true
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          configuration_path: ".github/pr-title-checker-config.json"
+          pass_on_octokit_error: false
+
+      - uses: marocchino/sticky-pull-request-comment@v2
+        if: ${{ steps.check.outputs.success == 'false'}}
+        with:
+          header: 'pr-title-checker'
+          recreate: true
+          message: |
+              ### 🚨 PR Title Needs Formatting
+              The title of this PR needs to be formatted correctly. 
+              Please update the title to match the [conventional commits](https://www.conventionalcommits.org) format. Examples:
+              
+              * `feat: feature description` for a new feature
+              * `fix: what was fixed` for a bug fix
+              * `docs: documentation` for documentation changes
+              * `chore(deps): update dependencies` other changes
+
+              We only use types: `feat`, `fix`, `docs` and `chore`.
+
+      - uses: marocchino/sticky-pull-request-comment@v2
+        if: ${{ steps.check.outputs.success == 'true'}}
+        with:
+          header: 'pr-title-checker'
+          recreate: true
+          message: |
+              ### ✅ PR Title Formatted Correctly
+              The title of this PR match the correct format. Thank you!
+      
+      - if: ${{ steps.check.outputs.success == 'false'}}
+        name: Fail on invalid title
+        run: exit 1

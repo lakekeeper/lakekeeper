@@ -25,7 +25,7 @@ use crate::{
 
 #[sqlx::test]
 async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
-    let storage_profile = crate::tests::test_io_profile();
+    let storage_profile = crate::tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer {};
 
     let api_context = get_api_context(&pool, authorizer);

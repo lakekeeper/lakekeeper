@@ -1,9 +1,7 @@
-use std::{sync::LazyLock, time::Duration};
+use std::{str::FromStr, sync::LazyLock, time::Duration};
 
-use iceberg_ext::{
-    catalog::rest::ErrorModel,
-    configs::{Location, ParseFromStr},
-};
+use iceberg_ext::catalog::rest::ErrorModel;
+use lakekeeper_io::Location;
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -185,7 +183,7 @@ where
             e
         })?;
 
-    let tabular_location = Location::parse_value(tabular_location).map_err(|e| {
+    let tabular_location = Location::from_str(tabular_location).map_err(|e| {
         tracing::error!(
             "Failed delete tabular - to parse location {}: {:?}",
             tabular_location,
