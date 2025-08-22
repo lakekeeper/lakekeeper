@@ -13,6 +13,7 @@ use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use rand::RngCore as _;
 use serde::{de::DeserializeOwned, Serialize};
 use strum::EnumIter;
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -40,8 +41,10 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
 });
 
 /// Infinitely running task worker loop function that polls tasks from a queue and
-/// processes.
-pub type TaskQueueWorker = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static>;
+/// processes. Accepts a cancellation token for graceful shutdown.
+pub type TaskQueueWorker = Arc<
+    dyn Fn(tokio_util::sync::CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+>;
 type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
 
 /// Warehouse specific configuration for a task queue.
@@ -217,7 +220,7 @@ impl TaskQueueRegistry {
         let catalog_state_clone = catalog_state.clone();
         self.register_queue::<ExpirationQueueConfig>(QueueRegistration {
             queue_name: tabular_expiration_queue::QUEUE_NAME,
-            worker_fn: Arc::new(move || {
+            worker_fn: Arc::new(move |cancellation_token| {
                 let authorizer = authorizer.clone();
                 let catalog_state_clone = catalog_state_clone.clone();
                 Box::pin({
@@ -226,6 +229,7 @@ impl TaskQueueRegistry {
                             catalog_state_clone.clone(),
                             authorizer.clone(),
                             &poll_interval,
+                            cancellation_token,
                         )
                         .await;
                     }
@@ -236,7 +240,7 @@ impl TaskQueueRegistry {
 
         self.register_queue::<PurgeQueueConfig>(QueueRegistration {
             queue_name: tabular_purge_queue::QUEUE_NAME,
-            worker_fn: Arc::new(move || {
+            worker_fn: Arc::new(move |cancellation_token| {
                 let catalog_state_clone = catalog_state.clone();
                 let secret_store = secret_store.clone();
                 Box::pin(async move {
@@ -244,6 +248,7 @@ impl TaskQueueRegistry {
                         catalog_state_clone.clone(),
                         secret_store.clone(),
                         &poll_interval,
+                        cancellation_token,
                     )
                     .await;
                 })
@@ -262,9 +267,19 @@ impl TaskQueueRegistry {
         }
     }
 
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.registered_queues.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.registered_queues.is_empty()
+    }
+
     /// Creates a [`TaskQueuesRunner`] that can be used to start the task queue workers
     #[must_use]
-    pub fn task_queues_runner(&self) -> TaskQueuesRunner {
+    pub fn task_queues_runner(&self, cancellation_token: CancellationToken) -> TaskQueuesRunner {
         let mut registered_task_queues = HashMap::new();
 
         for name in self.registered_queues.keys() {
@@ -281,6 +296,7 @@ impl TaskQueueRegistry {
 
         TaskQueuesRunner {
             registered_queues: Arc::new(registered_task_queues),
+            cancellation_token,
         }
     }
 }
@@ -289,10 +305,12 @@ impl TaskQueueRegistry {
 #[derive(Debug, Clone)]
 pub struct TaskQueuesRunner {
     registered_queues: Arc<HashMap<&'static str, QueueWorkerConfig>>,
+    cancellation_token: CancellationToken,
 }
 
 impl TaskQueuesRunner {
     /// Runs all registered task queue workers and monitors them, restarting any that exit.
+    /// Accepts a cancellation token for graceful shutdown.
     pub async fn run_queue_workers(self, restart_workers: bool) {
         // Create a structure to track worker information and hold task handles
         struct WorkerInfo {
@@ -307,17 +325,21 @@ impl TaskQueuesRunner {
         // Initialize all workers
         for (queue_name, queue) in registered_queues.iter() {
             tracing::info!(
-                "Starting task queue {queue_name} with {} workers",
+                "Starting {} workers for task queue `{queue_name}`.",
                 queue.num_workers
             );
 
             for worker_id in 0..queue.num_workers {
                 let task_fn = Arc::clone(&queue.worker_fn);
-                tracing::debug!("Starting task queue {queue_name} worker {worker_id}");
+                let cancellation_token_clone = self.cancellation_token.clone();
+                tracing::debug!(
+                    "Starting `{queue_name}` worker {worker_id}/{}",
+                    queue.num_workers
+                );
                 workers.push(WorkerInfo {
                     queue_name,
                     worker_id,
-                    handle: tokio::task::spawn(task_fn()),
+                    handle: tokio::task::spawn(task_fn(cancellation_token_clone)),
                 });
             }
         }
@@ -343,8 +365,13 @@ impl TaskQueuesRunner {
 
             // Log the result
             match result {
-                Ok(()) => tracing::error!(
+                Ok(()) if !self.cancellation_token.is_cancelled() => tracing::warn!(
                     "Task queue {} worker {} finished. {log_msg_suffix}",
+                    worker.queue_name,
+                    worker.worker_id
+                ),
+                Ok(()) => tracing::info!(
+                    "Task queue {} worker {} finished gracefully after cancellation.",
                     worker.queue_name,
                     worker.worker_id
                 ),
@@ -356,10 +383,11 @@ impl TaskQueuesRunner {
                 ),
             }
 
-            // Restart the worker
-            if restart_workers {
+            // Restart the worker only if cancellation hasn't been requested
+            if restart_workers && !self.cancellation_token.is_cancelled() {
                 if let Some(queue) = registered_queues.get(worker.queue_name) {
                     let task_fn = Arc::clone(&queue.worker_fn);
+                    let cancellation_token_clone = self.cancellation_token.clone();
                     tracing::debug!(
                         "Restarting task queue {} worker {}",
                         worker.queue_name,
@@ -368,9 +396,15 @@ impl TaskQueuesRunner {
                     workers.push(WorkerInfo {
                         queue_name: worker.queue_name,
                         worker_id: worker.worker_id,
-                        handle: tokio::task::spawn(task_fn()),
+                        handle: tokio::task::spawn(task_fn(cancellation_token_clone)),
                     });
                 }
+            } else if self.cancellation_token.is_cancelled() {
+                tracing::info!(
+                    "Cancellation requested, not restarting task queue {} worker {}",
+                    worker.queue_name,
+                    worker.worker_id
+                );
             }
         }
     }
@@ -608,31 +642,51 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
     }
 
     /// Continuously poll for a new task in the queue until a task is found.
+    /// Returns None if cancellation is requested.
     pub async fn poll_for_new_task<C: Catalog>(
         catalog_state: C::State,
         poll_interval: &Duration,
-    ) -> Self {
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) -> Option<Self> {
         loop {
-            let task = match Self::pick_new_task::<C>(catalog_state.clone()).await {
-                Ok(task) => task,
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
-                        Q::queue_name()
-                    );
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue;
+            tokio::select! {
+                () = cancellation_token.cancelled() => {
+                    tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                    return None;
                 }
-            };
+                task_result = Self::pick_new_task::<C>(catalog_state.clone()) => {
+                    let task = match task_result {
+                        Ok(task) => task,
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
+                                Q::queue_name()
+                            );
+                            tokio::select! {
+                                () = cancellation_token.cancelled() => {
+                                    tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                                    return None;
+                                }
+                                () = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                            }
+                        }
+                    };
 
-            let Some(task) = task else {
-                let jitter = { rand::rng().next_u64() % 500 };
-                tokio::time::sleep(*poll_interval + Duration::from_millis(jitter)).await;
-                continue;
-            };
+                    let Some(task) = task else {
+                        let jitter = { rand::rng().next_u64() % 500 };
+                        tokio::select! {
+                            () = cancellation_token.cancelled() => {
+                                tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                                return None;
+                            }
+                            () = tokio::time::sleep(*poll_interval + Duration::from_millis(jitter)) => continue,
+                        }
+                    };
 
-            tracing::debug!("Picked up `{}` task {}.", task.task_id, Q::queue_name());
-            break task;
+                    tracing::debug!("Picked up `{}` task {}.", task.task_id, Q::queue_name());
+                    return Some(task);
+                }
+            }
         }
     }
 
@@ -823,8 +877,17 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
             }
         };
 
-        self.record_status_for_transaction::<C>(result, transaction.transaction())
+        self.record_status_for_transaction::<C>(result.clone(), transaction.transaction())
             .await?;
+
+        transaction.commit().await.map_err(|e| {
+            e.append_detail(format!(
+                "Failed to commit DB transaction to record status for task {} in queue `{}`.",
+                self.task_id,
+                self.queue_name()
+            ))
+            .append_detail(format!("Task Status that failed to commit: `{result}`"))
+        })?;
 
         Ok(())
     }
@@ -840,7 +903,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                     .await
                     .map_err(|e| {
                         e.append_detail(format!(
-                            "Failed to record success for `{}` task {}.`",
+                            "Failed to record success for `{}` task {}.",
                             self.queue_name(),
                             self.task_id,
                         ))
@@ -961,7 +1024,9 @@ mod test {
             auth,
             Duration::from_millis(100),
         );
-        let _queue_task = tokio::task::spawn(queues.task_queues_runner().run_queue_workers(true));
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let runner = queues.task_queues_runner(cancellation_token.clone());
+        let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),

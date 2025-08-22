@@ -63,7 +63,7 @@ mod test {
         let mut task_queue_registry = TaskQueueRegistry::new();
         task_queue_registry.register_queue::<Config>(QueueRegistration {
             queue_name: QUEUE_NAME,
-            worker_fn: Arc::new(move || {
+            worker_fn: Arc::new(move |_| {
                 let ctx = ctx_clone.clone();
                 let rx = rx.clone();
                 let result_clone = result_clone.clone();
@@ -135,13 +135,15 @@ mod test {
         transaction.commit().await.unwrap();
         tx.send(task_id).await.unwrap();
 
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
         let task_handle = tokio::task::spawn(
             task_queue_registry
-                .task_queues_runner()
+                .task_queues_runner(cancellation_token.clone())
                 .run_queue_workers(false),
         );
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        task_handle.abort();
+        cancellation_token.cancel();
+        task_handle.await.unwrap();
         assert!(
             *result.lock().unwrap(),
             "Task was not processed as expected"

@@ -138,8 +138,11 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 tracing::info!(
                     "Concurrent update detected (attempt {attempt}/{MAX_RETRIES_ON_CONCURRENT_UPDATE}), retrying view commit operation",
                 );
-                // Short delay before retry to reduce contention
-                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                // Short jittered exponential backoff to reduce contention
+                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
+                let base = 50u64 * (1u64 << (attempt - 1).min(6)); // cap growth
+                let jitter = fastrand::u64(..base / 2);
+                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),
         }

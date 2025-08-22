@@ -49,14 +49,20 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     poll_interval: &Duration,
+    cancellation_token: tokio_util::sync::CancellationToken,
 ) {
     loop {
-        let task =
-            SpecializedTask::<ExpirationQueueConfig, TabularExpirationPayload>::poll_for_new_task::<C>(
-                catalog_state.clone(),
-                poll_interval,
-            )
-            .await;
+        let task = SpecializedTask::<ExpirationQueueConfig, TabularExpirationPayload>::poll_for_new_task::<C>(
+            catalog_state.clone(),
+            poll_interval,
+            cancellation_token.clone(),
+        )
+        .await;
+
+        let Some(task) = task else {
+            tracing::info!("Graceful shutdown: exiting tabular expiration worker");
+            return;
+        };
 
         let EntityId::Tabular(tabular_id) = task.task_metadata.entity_id;
 
@@ -66,7 +72,6 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
             deletion_kind = ?task.data.deletion_kind,
-            task_data = ?task.data,
             attempt = %task.attempt,
         );
 
@@ -176,8 +181,7 @@ where
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
-                        "Failed to delete view from authorizer in `{QUEUE_NAME}` task. {}",
-                        e.error
+                        "Failed to delete view from authorizer in `{QUEUE_NAME}` task. {e}"
                     );
                 })
                 .ok();

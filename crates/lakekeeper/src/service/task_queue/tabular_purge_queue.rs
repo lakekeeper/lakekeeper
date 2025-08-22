@@ -44,14 +44,21 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
     poll_interval: &Duration,
+    cancellation_token: tokio_util::sync::CancellationToken,
 ) {
     loop {
         let task =
             SpecializedTask::<PurgeQueueConfig, TabularPurgePayload>::poll_for_new_task::<C>(
                 catalog_state.clone(),
                 poll_interval,
+                cancellation_token.clone(),
             )
             .await;
+
+        let Some(task) = task else {
+            tracing::info!("Graceful shutdown: exiting tabular purge worker");
+            return;
+        };
 
         let span = tracing::debug_span!(
             QUEUE_NAME,
@@ -59,7 +66,6 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
             queue_name = %task.queue_name(),
-            task_data = ?task.data,
             attempt = %task.attempt,
         );
 
@@ -108,7 +114,7 @@ where
     C: Catalog,
     S: SecretStore,
 {
-    let tabular_location = &task.data.tabular_location;
+    let tabular_location_str = &task.data.tabular_location;
     let warehouse_id = task.task_metadata.warehouse_id;
     let mut trx = C::Transaction::begin_read(catalog_state.clone())
         .await
@@ -122,11 +128,13 @@ where
             ))
         })?;
 
-    trx.commit().await.ok();
+    if let Err(e) = trx.commit().await {
+        tracing::warn!("Failed to commit read transaction for `{QUEUE_NAME}` before IO. {e}");
+    }
 
-    let tabular_location = Location::from_str(tabular_location).map_err(|e| {
+    let tabular_location = Location::from_str(tabular_location_str).map_err(|e| {
         ErrorModel::internal(
-            format!("Failed to parse table location `{tabular_location}` to purge table data."),
+            format!("Failed to parse table location `{tabular_location_str}` to purge table data."),
             "ParseError",
             Some(Box::new(e)),
         )

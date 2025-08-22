@@ -48,10 +48,7 @@ use crate::{
     catalog::{self, compression_codec::CompressionCodec, tabular::list_entities},
     request_metadata::RequestMetadata,
     service::{
-        authz::{
-            Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
-            TableUuid,
-        },
+        authz::{Authorizer, CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction},
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
@@ -630,7 +627,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 storage_permission,
                 &request_metadata,
                 warehouse_id,
-                tabular_details.table_uuid().into(),
+                tabular_details.table_id.into(),
             )
             .await?;
 
@@ -669,7 +666,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             request_metadata,
         )
         .await?;
-        let Some(item) = t.into_iter().next() else {
+        let mut it = t.into_iter();
+        let Some(item) = it.next() else {
             return Err(ErrorModel::internal(
                 "No new metadata returned by backend",
                 "NoNewMetadataReturned",
@@ -677,6 +675,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .into());
         };
+        debug_assert!(
+            it.next().is_none(),
+            "commit_table must return exactly one CommitContext"
+        );
 
         Ok(CommitTableResponse {
             metadata_location: item.new_metadata_location.to_string(),
@@ -1039,7 +1041,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
 
         if change.identifier.is_none() {
             return Err(ErrorModel::bad_request(
-                "Table identifier is required for each change in the CommitTransactionRequest",
+                "Table identifier is required for each change in the CommitTransactionRequest (one of the changes was missing an identifier)",
                 "TableIdentifierRequiredForCommitTransaction",
                 None,
             )
@@ -1125,8 +1127,11 @@ async fn commit_tables_inner<
                     attempt,
                     MAX_RETRIES_ON_CONCURRENT_UPDATE
                 );
-                // Short delay before retry to reduce contention
-                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                // Short jittered exponential backoff to reduce contention
+                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
+                let base = 50u64 * (1u64 << (attempt - 1).min(6)); // cap growth
+                let jitter = fastrand::u64(..base / 2);
+                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),
         }
@@ -1780,7 +1785,7 @@ pub(crate) fn require_active_warehouse(status: WarehouseStatus) -> Result<()> {
 
 // Quick validation of properties for early fails.
 // Full validation is performed when changes are applied.
-fn validate_table_updates(updates: &Vec<TableUpdate>) -> Result<()> {
+fn validate_table_updates(updates: &[TableUpdate]) -> Result<()> {
     for update in updates {
         match update {
             TableUpdate::SetProperties { updates } => {

@@ -3903,6 +3903,7 @@ dependencies = [
  "chrono",
  "cloudevents-sdk",
  "derive_more",
+ "fastrand 2.3.0",
  "figment",
  "figment_file_provider_adapter",
  "flate2",

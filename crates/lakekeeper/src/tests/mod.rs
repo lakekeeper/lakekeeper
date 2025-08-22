@@ -296,10 +296,11 @@ pub(crate) fn random_request_metadata() -> RequestMetadata {
     RequestMetadata::new_unauthenticated()
 }
 
-pub(crate) fn spawn_drop_queues<T: Authorizer>(
+pub(crate) fn spawn_build_in_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
     poll_interval: Option<std::time::Duration>,
-) {
+    cancellation_token: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     let ctx = ctx.clone();
 
     let mut task_queues = TaskQueueRegistry::new();
@@ -309,7 +310,7 @@ pub(crate) fn spawn_drop_queues<T: Authorizer>(
         ctx.v1_state.authz.clone(),
         poll_interval.unwrap_or(CONFIG.task_poll_interval),
     );
-    let task_runner = task_queues.task_queues_runner();
+    let task_runner = task_queues.task_queues_runner(cancellation_token);
 
-    tokio::task::spawn(task_runner.run_queue_workers(true));
+    tokio::task::spawn(task_runner.run_queue_workers(true))
 }
