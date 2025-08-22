@@ -24,10 +24,8 @@ use crate::service::{Catalog, ListNamespacesQuery, NamespaceId, WarehouseStatus}
 use crate::{ProjectId, WarehouseId};
 
 #[derive(Clone, Debug)]
-pub(crate) struct MigrationState<C: Catalog> {
+pub(crate) struct MigrationState {
     pub store_name: String,
-    pub catalog: C,
-    pub catalog_state: C::State,
     pub server_id: uuid::Uuid,
 }
 
@@ -84,11 +82,11 @@ static OPENFGA_REQ_PERMITS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::const_new(10)));
 
 // catalog trait reingeben, nicht postgres db
-pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
+pub(crate) async fn v4_push_down_warehouse_id(
     mut client: BasicOpenFgaServiceClient,
     _prev_auth_model_id: Option<String>,
     curr_auth_model_id: Option<String>,
-    state: MigrationState<C>,
+    state: MigrationState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     println!("state in migration fn: {}", state.store_name);
     // Construct OpenFGAClient to be able to use convenience methods.
@@ -98,33 +96,29 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         .expect("default store should exist");
     let curr_auth_model_id =
         curr_auth_model_id.expect("Migration hook needs current auth model's id");
-    let c = client
+    let client = client
         .into_client(&store.id, &curr_auth_model_id)
         .set_consistency(ConsistencyPreference::HigherConsistency);
-    // TODO error conversion instead of unwrap
-    let mut tx = C::Transaction::begin_read(state.catalog_state.clone())
-        .await
-        .map_err(|e| e.error)?;
 
-    let projects = get_all_projects(&c, state.server_id).await?;
-    let warehouses = get_all_warehouses(&c, projects).await?;
+    let projects = get_all_projects(&client, state.server_id).await?;
+    let warehouses = get_all_warehouses(&client, projects).await?;
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
     // TODO concurrency
     for wh in warehouses.into_iter() {
-        let namespaces = get_all_namespaces(&c, wh.clone()).await?;
+        let namespaces = get_all_namespaces(&client, wh.clone()).await?;
         namespaces_per_wh.push((wh, namespaces));
     }
 
     for (wh, nss) in namespaces_per_wh.into_iter() {
         // Load tabulars only inside this loop (i.e. per warehouse) and drop them at the end of it.
         // This is done to mitigate the risk of OOM during the migration of a huge catalog.
-        let tabulars = get_all_tabulars(&c, &nss).await.unwrap();
+        let tabulars = get_all_tabulars(&client, &nss).await.unwrap();
         let mut new_tuples_to_write = vec![];
         let wh_id = extract_id_from_full_object(&wh)?;
 
         for tab in tabulars.into_iter() {
-            let c1 = c.clone();
-            let c2 = c.clone();
+            let c1 = client.clone();
+            let c2 = client.clone();
             let tab1 = tab.clone();
             let tab2 = tab.clone();
             let (tab_as_object, tab_as_user) = tokio::try_join!(
@@ -147,7 +141,7 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
 
         let mut write_jobs = JoinSet::new();
         for chunk in new_tuples_to_write.chunks(OPENFGA_WRITE_BATCH_SIZE) {
-            let c = c.clone();
+            let c = client.clone();
             let semaphore = OPENFGA_REQ_PERMITS.clone();
             let tuples = chunk.to_vec();
             write_jobs.spawn(async move {
@@ -160,7 +154,7 @@ pub(crate) async fn v4_push_down_warehouse_id<C: Catalog>(
         }
     }
 
-    let _res = add_warehouse_id_to_tables(c.clone(), &HashMap::new()).await?;
+    let _res = add_warehouse_id_to_tables(client.clone(), &HashMap::new()).await?;
     Ok(())
 }
 
@@ -1186,15 +1180,11 @@ mod tests {
         /// Constructs a client for a store that has been initialized and migrated to v3.
         /// Returns the client and the name of the store.
         // TODO all of the above must use this instead of authorizer_for_empty_store
-        async fn v3_client_for_empty_store(
-            pool: sqlx::PgPool,
-        ) -> anyhow::Result<(BasicOpenFgaClient, String)> {
+        async fn v3_client_for_empty_store() -> anyhow::Result<(BasicOpenFgaClient, String)> {
             // TODO refactor openfga::migration::migrate s.t. no need to replicate it here
             let mut client = new_client_from_config().await?;
             let test_uuid = uuid::Uuid::now_v7();
             let store_name = format!("test_store_{test_uuid}");
-            let catalog = PostgresCatalog {};
-            let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
 
             let model_manager = TupleModelManager::new(
                 client.clone(),
@@ -1204,11 +1194,8 @@ mod tests {
             let mut model_manager = add_model_v3(model_manager);
             let migration_state = MigrationState {
                 store_name: store_name.clone(),
-                catalog,
-                catalog_state,
                 server_id: CONFIG.server_id,
             };
-            println!("migrating to model v3");
             model_manager.migrate(migration_state).await?;
 
             // TODO untangle new_authorizer from get_active_auth_model_id to use it here
@@ -1233,11 +1220,9 @@ mod tests {
         }
 
         // Migrates the OpenFGA store to v4, which will also execute the migration function.
-        async fn migrate_to_v4<C: Catalog>(
+        async fn migrate_to_v4(
             client: &BasicOpenFgaServiceClient,
             store_name: String,
-            catalog: C,
-            catalog_state: C::State,
         ) -> anyhow::Result<()> {
             let model_manager = TupleModelManager::new(
                 client.clone(),
@@ -1247,8 +1232,6 @@ mod tests {
             let mut model_manager = add_model_v4(model_manager);
             let migration_state = MigrationState {
                 store_name: store_name.clone(),
-                catalog,
-                catalog_state,
                 server_id: CONFIG.server_id,
             };
             println!("migrating to model v4");
@@ -1258,9 +1241,9 @@ mod tests {
                 .map_err(|e| e.into())
         }
 
-        #[sqlx::test]
-        async fn test_v4_push_down_warehouse_id(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (client, store_name) = v3_client_for_empty_store(pool.clone()).await?;
+        #[tokio::test]
+        async fn test_v4_push_down_warehouse_id() -> anyhow::Result<()> {
+            let (client, store_name) = v3_client_for_empty_store().await?;
 
             // Create the initial tuple structure:
             //
@@ -1396,13 +1379,7 @@ mod tests {
 
             // Migrate to v4, which will call the migration fn.
             // TODO use migrate_to_v4, which will resolve stuff mentioned there first
-            migrate_to_v4(
-                &client.client(),
-                store_name.clone(),
-                PostgresCatalog {},
-                postgres::CatalogState::from_pools(pool.clone(), pool.clone()),
-            )
-            .await?;
+            migrate_to_v4(&client.client(), store_name.clone()).await?;
             println!("authorizer is using store: {store_name}");
             println!(
                 "authorizer is using auth_model_id: {}",
@@ -1552,16 +1529,16 @@ mod tests {
 
         // TODO convert to bench once `pool` arg no longer needed
         // TODO nest namespaces
-        #[sqlx::test]
+        #[tokio::test]
         #[ignore]
-        async fn test_v4_push_down_warehouse_id_bench(pool: sqlx::PgPool) -> anyhow::Result<()> {
+        async fn test_v4_push_down_warehouse_id_bench() -> anyhow::Result<()> {
             const NUM_WAREHOUSES: usize = 10;
             /// equally distributed among warehouses
             const NUM_NAMESPACES: usize = 100;
             /// half tables, half views, equally distributed among namespaces
             const NUM_TABULARS: usize = 10_000;
 
-            let (client, store_name) = v3_client_for_empty_store(pool.clone()).await?;
+            let (client, store_name) = v3_client_for_empty_store().await?;
             let authorizer = OpenFGAAuthorizer {
                 client: client.clone(),
                 health: Default::default(),
@@ -1649,13 +1626,7 @@ mod tests {
 
             println!("Migrating the OpenFGA store");
             let start_migrating = Instant::now();
-            migrate_to_v4(
-                &client.client(),
-                store_name,
-                PostgresCatalog {},
-                postgres::CatalogState::from_pools(pool.clone(), pool.clone()),
-            )
-            .await?;
+            migrate_to_v4(&client.client(), store_name).await?;
             println!(
                 "Migrated the OpenFGA store in {} seconds",
                 start_migrating.elapsed().as_secs()

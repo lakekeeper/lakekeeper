@@ -21,10 +21,10 @@ pub(super) static V3_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
 mod migration_fns;
 use migration_fns::{v4_push_down_warehouse_id, MigrationState};
 
-fn get_model_manager<C: Catalog>(
+fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
     store_name: Option<String>,
-) -> TupleModelManager<BasicAuthLayer, MigrationState<C>> {
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
     let manager = TupleModelManager::new(
         client.clone(),
         &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
@@ -36,9 +36,10 @@ fn get_model_manager<C: Catalog>(
 }
 
 /// Has no migration hooks.
-pub(crate) fn add_model_v3<C: Catalog>(
-    manager: TupleModelManager<BasicAuthLayer, MigrationState<C>>,
-) -> TupleModelManager<BasicAuthLayer, MigrationState<C>> {
+#[cfg(test)]
+pub(crate) fn add_model_v3(
+    manager: TupleModelManager<BasicAuthLayer, MigrationState>,
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
     manager.add_model(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
@@ -55,9 +56,9 @@ pub(crate) fn add_model_v3<C: Catalog>(
 }
 
 /// Does have a migration hook which may add tuples to the store.
-pub(crate) fn add_model_v4<C: Catalog>(
-    manager: TupleModelManager<BasicAuthLayer, MigrationState<C>>,
-) -> TupleModelManager<BasicAuthLayer, MigrationState<C>> {
+pub(crate) fn add_model_v4(
+    manager: TupleModelManager<BasicAuthLayer, MigrationState>,
+) -> TupleModelManager<BasicAuthLayer, MigrationState> {
     manager.add_model(
         serde_json::from_str(include_str!(
             // Change this for backward compatible changes.
