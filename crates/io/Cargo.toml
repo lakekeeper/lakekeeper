@@ -1,0 +1,89 @@
+[package]
+name = "lakekeeper-io"
+resolver = "2"
+version = "0.9.3"
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+description = """
+Lakekeeper IO
+"""
+
+[features]
+all = ["storage-s3", "storage-adls", "storage-gcs", "storage-in-memory"]
+storage-s3 = [
+    "dep:aws-sdk-s3",
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:aws-smithy-async",
+    "dep:aws-smithy-http-client",
+]
+storage-adls = [
+    "dep:azure_storage_blobs",
+    "dep:azure_core",
+    "dep:azure_identity",
+    "dep:azure_storage",
+    "dep:azure_storage_datalake",
+    "dep:moka",
+]
+storage-gcs = [
+    "dep:google-cloud-storage",
+    "dep:reqwest-middleware",
+    "dep:reqwest-retry",
+]
+storage-in-memory = []
+default = ["storage-s3", "storage-adls", "storage-gcs"]
+
+[dependencies]
+anyhow = { workspace = true }
+async-stream = { workspace = true }
+aws-config = { workspace = true, features = [
+    "behavior-version-latest",
+], optional = true }
+aws-credential-types = { version = "^1.2", optional = true }
+aws-sdk-s3 = { version = "^1.65", optional = true }
+aws-smithy-async = { workspace = true, optional = true }
+aws-smithy-http-client = { workspace = true, optional = true }
+azure_core = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
+azure_storage = { workspace = true, optional = true }
+azure_storage_blobs = { workspace = true, optional = true }
+azure_storage_datalake = { workspace = true, optional = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+derive_more = { workspace = true }
+futures = { workspace = true }
+google-cloud-storage = { version = "0.24.0", features = [], optional = true }
+moka = { workspace = true, optional = true }
+reqwest = { workspace = true }
+reqwest-middleware = { version = "0.4", optional = true }
+reqwest-retry = { version = "0.7", optional = true }
+serde = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tryhard = { workspace = true }
+typed-builder = { workspace = true }
+url = { workspace = true }
+utoipa = { workspace = true, optional = true }
+uuid = { workspace = true }
+veil = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+futures = { workspace = true }
+paste = "1.0"
+rand = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3.0"
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[profile.dev]
+overflow-checks = true
+opt-level = 1
+panic = 'unwind'

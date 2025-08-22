@@ -639,7 +639,7 @@ mod test {
     }
 
     pub(crate) async fn setup(pool: PgPool) -> WarehouseId {
-        let prof = crate::tests::test_io_profile();
+        let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
             prof,

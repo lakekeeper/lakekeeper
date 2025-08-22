@@ -1,15 +1,16 @@
 use async_trait::async_trait;
+#[cfg(feature = "sqlx-postgres")]
 pub use postgres::CatalogState;
 
+#[cfg(feature = "sqlx-postgres")]
+use crate::implementations::postgres::{get_reader_pool, get_writer_pool};
 use crate::{
-    implementations::postgres::{get_reader_pool, get_writer_pool},
     service::{
-        endpoint_statistics::EndpointStatisticsSink,
         health::{Health, HealthExt},
         secrets::{Secret, SecretInStorage},
         SecretStore,
     },
-    SecretBackend, SecretIdent, CONFIG,
+    SecretIdent,
 };
 
 #[cfg(feature = "sqlx-postgres")]
@@ -17,6 +18,7 @@ pub mod postgres;
 
 pub mod kv2;
 
+#[cfg(feature = "sqlx-postgres")]
 /// Get the default Catalog Backend & Secret Store from the configuration.
 ///
 /// # Errors
@@ -26,32 +28,32 @@ pub mod kv2;
 pub async fn get_default_catalog_from_config() -> anyhow::Result<(
     CatalogState,
     Secrets,
-    std::sync::Arc<dyn EndpointStatisticsSink + 'static>,
+    std::sync::Arc<dyn crate::service::endpoint_statistics::EndpointStatisticsSink + 'static>,
 )> {
     let read_pool = get_reader_pool(
-        CONFIG
+        crate::CONFIG
             .to_pool_opts()
-            .max_connections(CONFIG.pg_read_pool_connections),
+            .max_connections(crate::CONFIG.pg_read_pool_connections),
     )
     .await?;
     let write_pool = get_writer_pool(
-        CONFIG
+        crate::CONFIG
             .to_pool_opts()
-            .max_connections(CONFIG.pg_write_pool_connections),
+            .max_connections(crate::CONFIG.pg_write_pool_connections),
     )
     .await?;
 
     let catalog_state = CatalogState::from_pools(read_pool.clone(), write_pool.clone());
-    let secrets_state: Secrets = match CONFIG.secret_backend {
-        SecretBackend::KV2 => kv2::SecretsState::from_config(
-            CONFIG
+    let secrets_state: Secrets = match crate::CONFIG.secret_backend {
+        crate::SecretBackend::KV2 => kv2::SecretsState::from_config(
+            crate::CONFIG
                 .kv2
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Need vault config to use vault as backend"))?,
         )
         .await?
         .into(),
-        SecretBackend::Postgres => {
+        crate::SecretBackend::Postgres => {
             postgres::SecretsState::from_pools(read_pool.clone(), write_pool.clone()).into()
         }
     };
@@ -65,6 +67,7 @@ pub async fn get_default_catalog_from_config() -> anyhow::Result<(
 
 #[derive(Debug, Clone)]
 pub enum Secrets {
+    #[cfg(feature = "sqlx-postgres")]
     Postgres(crate::implementations::postgres::SecretsState),
     KV2(crate::implementations::kv2::SecretsState),
 }
@@ -76,6 +79,7 @@ impl SecretStore for Secrets {
         secret_id: SecretIdent,
     ) -> crate::api::Result<Secret<S>> {
         match self {
+            #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.get_secret_by_id(secret_id).await,
             Self::KV2(state) => state.get_secret_by_id(secret_id).await,
         }
@@ -88,6 +92,7 @@ impl SecretStore for Secrets {
         secret: S,
     ) -> crate::api::Result<SecretIdent> {
         match self {
+            #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.create_secret(secret).await,
             Self::KV2(state) => state.create_secret(secret).await,
         }
@@ -95,6 +100,7 @@ impl SecretStore for Secrets {
 
     async fn delete_secret(&self, secret_id: &SecretIdent) -> crate::api::Result<()> {
         match self {
+            #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.delete_secret(secret_id).await,
             Self::KV2(state) => state.delete_secret(secret_id).await,
         }
@@ -105,6 +111,7 @@ impl SecretStore for Secrets {
 impl HealthExt for Secrets {
     async fn health(&self) -> Vec<Health> {
         match self {
+            #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.health().await,
             Self::KV2(state) => state.health().await,
         }
@@ -112,12 +119,14 @@ impl HealthExt for Secrets {
 
     async fn update_health(&self) {
         match self {
+            #[cfg(feature = "sqlx-postgres")]
             Self::Postgres(state) => state.update_health().await,
             Self::KV2(state) => state.update_health().await,
         }
     }
 }
 
+#[cfg(feature = "sqlx-postgres")]
 impl From<crate::implementations::postgres::SecretsState> for Secrets {
     fn from(state: crate::implementations::postgres::SecretsState) -> Self {
         Self::Postgres(state)

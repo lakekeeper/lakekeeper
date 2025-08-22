@@ -595,7 +595,7 @@ async fn setup_drop_test(
         .try_init()
         .ok();
 
-    let prof = crate::tests::test_io_profile();
+    let prof = crate::tests::memory_io_profile();
     let (ctx, warehouse) = crate::tests::setup(
         pool.clone(),
         prof,

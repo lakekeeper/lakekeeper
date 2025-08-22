@@ -1,227 +1,161 @@
-use futures::{stream::BoxStream, StreamExt};
-use iceberg::{io::FileIO, spec::TableMetadata};
-use iceberg_ext::{catalog::rest::IcebergErrorResponse, configs::Location};
+use futures::stream::BoxStream;
+use iceberg::spec::TableMetadata;
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
+use lakekeeper_io::{
+    DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location, ReadError, WriteError,
+};
 use serde::Serialize;
 
 use super::compression_codec::CompressionCodec;
-use crate::{
-    api::{ErrorModel, Result},
-    retry::retry_fn,
-    service::storage::az::ALTERNATIVE_PROTOCOLS as AZURE_ALTERNATIVE_PROTOCOLS,
-};
+use crate::api::{ErrorModel, Result};
 
-fn normalize_location(location: &Location) -> String {
-    if location.as_str().starts_with("abfs")
-        || AZURE_ALTERNATIVE_PROTOCOLS
-            .iter()
-            .any(|p| location.as_str().starts_with(p))
-    {
-        if location.scheme() == "abfss" {
-            location.to_string()
-        } else {
-            let mut location = location.clone();
-            location.set_scheme_mut("abfss");
-            location.to_string()
-        }
-    } else if location.scheme().starts_with("s3") {
-        if location.scheme() == "s3" {
-            location.to_string()
-        } else {
-            let mut location = location.clone();
-            location.set_scheme_mut("s3");
-            location.to_string()
-        }
-    } else {
-        location.to_string()
-    }
-}
-
-pub(crate) async fn write_metadata_file(
-    metadata_location: &Location,
-    metadata: impl Serialize,
+pub(crate) async fn write_file(
+    io: &impl LakekeeperStorage,
+    location: &Location,
+    data: impl Serialize,
     compression_codec: CompressionCodec,
-    file_io: &FileIO,
-) -> Result<(), IoError> {
-    let metadata_location = normalize_location(metadata_location);
-    tracing::debug!("Writing metadata file to {}", metadata_location);
-
-    let metadata_file = file_io
-        .new_output(metadata_location)
-        .map_err(IoError::FileCreation)?;
-
-    let buf = serde_json::to_vec(&metadata).map_err(IoError::Serialization)?;
-
+) -> Result<(), IOErrorExt> {
+    tracing::debug!("Writing file to {}", location);
+    let buf = serde_json::to_vec(&data).map_err(IOErrorExt::Serialization)?;
     let metadata_bytes = compression_codec.compress(buf).await?;
 
-    retry_fn(|| async {
-        metadata_file
-            .write(metadata_bytes.clone().into())
-            .await
-            .map_err(IoError::FileWriterCreation)
-    })
-    .await
+    io.write(location.as_str(), metadata_bytes.into())
+        .await
+        .map_err(Into::into)
 }
 
-pub(crate) async fn delete_file(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = normalize_location(location);
-
-    retry_fn(|| async {
-        file_io
-            .clone()
-            .delete(location.clone())
-            .await
-            .map_err(IoError::FileDelete)
-    })
-    .await
+pub(crate) async fn delete_file(
+    io: &impl LakekeeperStorage,
+    location: &Location,
+) -> Result<(), IOErrorExt> {
+    io.delete(location.as_str()).await.map_err(Into::into)
 }
 
-pub(crate) async fn read_file(file_io: &FileIO, file: &Location) -> Result<Vec<u8>, IoError> {
-    let file = normalize_location(file);
+pub(crate) async fn read_file(
+    io: &impl LakekeeperStorage,
+    file: &Location,
+    compression_codec: CompressionCodec,
+) -> Result<Vec<u8>, IOErrorExt> {
+    let content: Vec<_> = io.read(file.as_str()).await.map(Into::into)?;
 
-    let content: Vec<_> = retry_fn(|| async {
-        // InputFile isn't clone hence it's here
-        file_io
-            .clone()
-            .new_input(file.clone())
-            .map_err(IoError::FileInput)?
-            .read()
-            .await
-            .map_err(|e| IoError::FileRead(Box::new(e)))
-            .map(Into::into)
-    })
-    .await?;
-
-    if file.as_str().ends_with(".gz.metadata.json") {
-        let codec = CompressionCodec::Gzip;
-        let content = codec.decompress(content).await?;
+    if matches!(compression_codec, CompressionCodec::None) {
         Ok(content)
     } else {
+        let content = compression_codec
+            .decompress(content)
+            .await
+            .map_err(|e| IOErrorExt::FileDecompression(Box::new(e)))?;
+        tracing::debug!("Read file {} with codec {:?}", file, compression_codec);
         Ok(content)
     }
 }
 
 pub(crate) async fn read_metadata_file(
-    file_io: &FileIO,
+    io: &impl LakekeeperStorage,
     file: &Location,
-) -> Result<TableMetadata, IoError> {
-    let content = read_file(file_io, file).await?;
+) -> Result<TableMetadata, IOErrorExt> {
+    let compression_codec = if file.as_str().ends_with(".gz.metadata.json") {
+        CompressionCodec::Gzip
+    } else {
+        CompressionCodec::None
+    };
+
+    let content = read_file(io, file, compression_codec).await?;
     match tokio::task::spawn_blocking(move || {
-        serde_json::from_slice(&content).map_err(IoError::TableMetadataDeserialization)
+        serde_json::from_slice(&content).map_err(IOErrorExt::Deserialization)
     })
     .await
     {
         Ok(result) => result,
-        Err(e) => Err(IoError::FileDecompression(Box::new(e))),
+        Err(e) => Err(IOErrorExt::FileDecompression(Box::new(e))),
     }
 }
 
-pub(crate) async fn remove_all(file_io: &FileIO, location: &Location) -> Result<(), IoError> {
-    let location = normalize_location(location.clone().with_trailing_slash());
-
-    retry_fn(|| async {
-        file_io
-            .clone()
-            .remove_dir_all(location.clone())
-            .await
-            .map_err(IoError::FileRemoveAll)
-    })
-    .await
+pub(crate) async fn remove_all(
+    io: &impl LakekeeperStorage,
+    location: &Location,
+) -> Result<(), IOErrorExt> {
+    io.remove_all(location.as_str()).await.map_err(Into::into)
 }
 
-pub(crate) const DEFAULT_LIST_LOCATION_PAGE_SIZE: usize = 1000;
-
 pub(crate) async fn list_location<'a>(
-    file_io: &'a FileIO,
+    io: &'a impl LakekeeperStorage,
     location: &'a Location,
     page_size: Option<usize>,
-) -> Result<BoxStream<'a, std::result::Result<Vec<String>, IoError>>, IoError> {
-    let location = normalize_location(location);
-    let location = format!("{}/", location.trim_end_matches('/'));
+) -> Result<BoxStream<'a, std::result::Result<Vec<Location>, IOError>>, InvalidLocationError> {
     tracing::debug!("Listing location: {}", location);
-    let size = page_size.unwrap_or(DEFAULT_LIST_LOCATION_PAGE_SIZE);
-
-    let entries = retry_fn(|| async {
-        file_io
-            .list_paginated(location.clone().as_str(), true, size)
-            .await
-            .map_err(|e| {
-                tracing::warn!(?e, "Failed to list files in location. Retry three times...");
-                IoError::List(e)
-            })
-    })
-    .await?
-    .map(|res| match res {
-        Ok(entries) => Ok(entries
-            .into_iter()
-            .map(|it| it.path().to_string())
-            .collect()),
-        Err(e) => Err(IoError::List(e)),
-    });
-    Ok(entries.boxed())
+    let entries = io.list(location, page_size).await?;
+    Ok(entries)
 }
 
 #[derive(thiserror::Error, Debug, strum::IntoStaticStr)]
-pub enum IoError {
-    #[error("Failed to create file. Please check the storage credentials: {}", .0)]
-    FileCreation(#[source] iceberg::Error),
-    #[error("Failed to read file. Please check the storage credentials: {}", .0)]
-    FileInput(#[source] iceberg::Error),
-    #[error("Failed to create file writer. Please check the storage credentials: {}", .0)]
-    FileWriterCreation(#[source] iceberg::Error),
-    #[error("Failed to serialize data.")]
+pub enum IOErrorExt {
+    #[error("Failed to serialize data: {0}")]
     Serialization(#[source] serde_json::Error),
-    #[error("Failed to deserialize table metadata")]
-    TableMetadataDeserialization(#[source] serde_json::Error),
-    #[error("Failed to write table metadata to compressed buffer: {}", .0)]
-    Write(#[source] iceberg::Error),
-    #[error("Failed to finish compressing file")]
+    #[error("Failed to deserialize table metadata: {0}")]
+    Deserialization(#[source] serde_json::Error),
+    #[error("Failed to finish compressing file: {0}")]
     FileCompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-    #[error("Failed to finish decompressing file")]
+    #[error("Failed to finish decompressing file: {0}")]
     FileDecompression(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-    #[error("Failed to write file. Please check the storage credentials.")]
-    FileWrite(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-    #[error("Failed to read file. Please check the storage credentials.")]
-    FileRead(#[source] Box<dyn std::error::Error + Sync + Send + 'static>),
-    #[error("Failed to close file. Please check the storage credentials: {}", .0)]
-    FileClose(#[source] iceberg::Error),
-    #[error("Failed to delete file. Please check the storage credentials: {}", .0)]
-    FileDelete(#[source] iceberg::Error),
-    #[error(
-        "Failed to remove all files in location. Please check the storage credentials: {}", .0
-    )]
-    FileRemoveAll(#[source] iceberg::Error),
-    #[error("Failed to list files in location. Please check the storage credentials: {}", .0)]
-    List(#[source] iceberg::Error),
+    #[error("Invalid file location: {0}")]
+    InvalidLocation(#[from] InvalidLocationError),
+    #[error("{0}")]
+    IOError(#[from] IOError),
 }
 
-impl IoError {
+impl From<WriteError> for IOErrorExt {
+    fn from(value: WriteError) -> Self {
+        match value {
+            WriteError::IOError(e) => e.into(),
+            WriteError::InvalidLocation(e) => e.into(),
+        }
+    }
+}
+
+impl From<DeleteError> for IOErrorExt {
+    fn from(value: DeleteError) -> Self {
+        match value {
+            DeleteError::IOError(e) => e.into(),
+            DeleteError::InvalidLocation(e) => e.into(),
+        }
+    }
+}
+
+impl From<ReadError> for IOErrorExt {
+    fn from(value: ReadError) -> Self {
+        match value {
+            ReadError::IOError(e) => e.into(),
+            ReadError::InvalidLocation(e) => e.into(),
+        }
+    }
+}
+
+impl IOErrorExt {
     pub fn to_type(&self) -> &'static str {
         self.into()
     }
 }
 
-impl From<IoError> for IcebergErrorResponse {
-    fn from(value: IoError) -> Self {
+impl From<IOErrorExt> for IcebergErrorResponse {
+    fn from(value: IOErrorExt) -> Self {
         let typ = value.to_type();
         let boxed = Box::new(value);
         let message = boxed.to_string();
 
+        tracing::info!(?boxed, "IO Error: {message}");
+
         match boxed.as_ref() {
-            IoError::FileRead(_)
-            | IoError::FileInput(_)
-            | IoError::FileDelete(_)
-            | IoError::FileRemoveAll(_)
-            | IoError::FileClose(_)
-            | IoError::FileWrite(_)
-            | IoError::FileWriterCreation(_)
-            | IoError::FileCreation(_)
-            | IoError::FileDecompression(_)
-            | IoError::List(_) => ErrorModel::failed_dependency(message, typ, Some(boxed)).into(),
-            IoError::FileCompression(_) | IoError::Write(_) | IoError::Serialization(_) => {
+            IOErrorExt::FileDecompression(_) => {
+                ErrorModel::failed_dependency(message, typ, Some(boxed)).into()
+            }
+            IOErrorExt::FileCompression(_) | IOErrorExt::Serialization(_) => {
                 ErrorModel::internal(message, typ, Some(boxed)).into()
             }
-            IoError::TableMetadataDeserialization(e) => {
-                ErrorModel::bad_request(format!("{message} {e}"), typ, Some(boxed)).into()
+            IOErrorExt::Deserialization(_)
+            | IOErrorExt::InvalidLocation(_)
+            | IOErrorExt::IOError(_) => {
+                ErrorModel::bad_request(message.to_string(), typ, Some(boxed)).into()
             }
         }
     }
@@ -229,21 +163,23 @@ impl From<IoError> for IcebergErrorResponse {
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
     use needs_env_var::needs_env_var;
 
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
 
     #[allow(dead_code)]
-    async fn test_remove_all(cred: StorageCredential, profile: StorageProfile) {
-        async fn list_simple(file_io: &FileIO, location: &Location) -> Option<Vec<String>> {
-            let list = list_location(file_io, location, Some(10)).await.unwrap();
+    async fn test_list_and_remove_all(cred: StorageCredential, profile: StorageProfile) {
+        async fn list_simple(io: &impl LakekeeperStorage, location: &Location) -> Vec<Location> {
+            let list = list_location(io, location, Some(10)).await.unwrap();
 
             list.collect::<Vec<_>>()
                 .await
                 .into_iter()
                 .map(Result::unwrap)
                 .next()
+                .unwrap_or_default()
         }
 
         let mut location = profile.base_location().unwrap();
@@ -257,41 +193,55 @@ mod tests {
         let data_1 = serde_json::json!({"file": "1"});
         let data_2 = serde_json::json!({"file": "2"});
 
-        let file_io = profile.file_io(Some(&cred)).await.unwrap();
-        write_metadata_file(&file_1, data_1, CompressionCodec::Gzip, &file_io)
+        let io = profile.file_io(Some(&cred)).await.unwrap();
+        write_file(&io, &file_1, data_1, CompressionCodec::Gzip)
             .await
             .unwrap();
-        write_metadata_file(&file_2, data_2, CompressionCodec::Gzip, &file_io)
+        write_file(&io, &file_2, data_2, CompressionCodec::Gzip)
             .await
             .unwrap();
 
         // Test list - when we list folder 1, we should not see anything related to folder-2
-        let list_f1 = list_simple(&file_io, &folder_1).await.unwrap();
+        let list_f1 = list_simple(&io, &folder_1).await;
         // Assert that one of the items contains file1
-        assert!(list_f1.iter().any(|entry| entry.contains("file1")));
+        assert!(list_f1.iter().any(|entry| entry.as_str().contains("file1")));
         // Assert that "folder-2" is nowhere in the list
-        assert!(!list_f1.iter().any(|entry| entry.contains("folder-2")));
+        assert!(!list_f1
+            .iter()
+            .any(|entry| entry.as_str().contains("folder-2")));
 
         // List full location - we should see both folders
-        let list = list_simple(&file_io, &location).await.unwrap();
-        assert!(list.iter().any(|entry| entry.contains("folder/file1")));
-        assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
+        let list = list_simple(&io, &location).await;
+        assert!(list
+            .iter()
+            .any(|entry| entry.as_str().contains("folder/file1")));
+        assert!(list
+            .iter()
+            .any(|entry| entry.as_str().contains("folder-2/file2")));
 
         // Remove folder 1 - file 2 should still be here:
-        remove_all(&file_io, &folder_1).await.unwrap();
-        assert!(read_file(&file_io, &file_2).await.is_ok());
+        remove_all(&io, &folder_1).await.unwrap();
+        assert!(read_file(&io, &file_2, CompressionCodec::Gzip)
+            .await
+            .is_ok());
 
-        let list = list_simple(&file_io, &location).await.unwrap();
+        let list = list_simple(&io, &location).await;
         // Assert that "folder/" / file1 is gone
-        assert!(!list.iter().any(|entry| entry.contains("file1")));
+        assert!(!list.iter().any(|entry| entry.as_str().contains("file1")));
         // and that "folder-2/" / file2 is still here
-        assert!(list.iter().any(|entry| entry.contains("folder-2/file2")));
+        assert!(list
+            .iter()
+            .any(|entry| entry.as_str().contains("folder-2/file2")));
 
         // Listing location 1 should return an empty list
-        assert!(list_simple(&file_io, &folder_1).await.is_none());
+        let folder_1_list = list_simple(&io, &folder_1).await;
+        assert!(
+            folder_1_list.is_empty(),
+            "Folder 1 should be empty, got: {folder_1_list:?}"
+        );
 
         // Cleanup
-        remove_all(&file_io, &folder_2).await.unwrap();
+        remove_all(&io, &folder_2).await.unwrap();
     }
 
     #[needs_env_var(TEST_AWS = 1)]
@@ -307,7 +257,7 @@ mod tests {
             let cred: StorageCredential = cred.into();
             let profile: StorageProfile = profile.into();
 
-            test_remove_all(cred, profile).await;
+            test_list_and_remove_all(cred, profile).await;
         }
     }
 
@@ -324,7 +274,7 @@ mod tests {
             let cred: StorageCredential = client_creds().into();
             let profile: StorageProfile = azure_profile().into();
 
-            test_remove_all(cred, profile).await;
+            test_list_and_remove_all(cred, profile).await;
         }
     }
 
@@ -341,7 +291,7 @@ mod tests {
             let cred: StorageCredential = cred.into();
             let profile: StorageProfile = profile.into();
 
-            test_remove_all(cred, profile).await;
+            test_list_and_remove_all(cred, profile).await;
         }
     }
 }

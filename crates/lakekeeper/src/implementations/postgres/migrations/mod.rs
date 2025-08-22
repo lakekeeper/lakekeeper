@@ -39,7 +39,7 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         .map_err(|e| e.error)?;
     let locking = true;
     let transaction = trx.transaction();
-    // lock the database for exclusive access by the migrator
+    // Application advisory lock in the database to prevent concurrent migrations
     if locking {
         transaction.lock().await?;
     }
@@ -118,7 +118,7 @@ async fn run_checks(
 /// # Errors
 /// Returns an error if db connection fails or if migrations are missing.
 pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
-    let mut conn = pool.acquire().await?;
+    let mut conn: sqlx::pool::PoolConnection<Postgres> = pool.acquire().await?;
     let m = sqlx::migrate!();
     let changed_migrations = get_changed_migration_ids();
     tracing::info!(
