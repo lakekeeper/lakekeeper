@@ -21,7 +21,7 @@ pub mod v1 {
     use bootstrap::{BootstrapRequest, ServerInfo, Service as _};
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
-    use namespace::NamespaceManagementService as _;
+    use namespace::{MoveNamespaceRequest, NamespaceManagementService as _};
     use project::{
         CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
         RenameProjectRequest, Service as _,
@@ -50,6 +50,8 @@ pub mod v1 {
         WarehouseStatisticsResponse,
     };
 
+    // #[cfg(feature = "authz-openfga")]
+    // use crate::service::authz::implementations::openfga::OpenFGAAuthorizer;
     use crate::{
         api::{
             endpoints::ManagementV1Endpoint,
@@ -138,6 +140,7 @@ pub mod v1 {
             undrop_tabulars,
             undrop_tabulars_deprecated,
             update_role,
+            move_namespace,
             update_storage_credential,
             update_storage_profile,
             update_user,
@@ -1015,6 +1018,33 @@ pub mod v1 {
         .await
     }
 
+    #[utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::MoveNamespace.path(),
+        params(("warehouse_id" = Uuid,),("namespace_id" = Uuid,)),
+        request_body = MoveNamespaceRequest,
+        responses(
+            (status = 200, description = "Namespace moved successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn move_namespace<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<MoveNamespaceRequest>,
+    ) -> Result<()> {
+        ApiServer::<C, A, S>::move_namespace(
+            namespace_id.into(),
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     #[derive(Serialize, Deserialize)]
     struct RecursiveDeleteQuery {
         #[serde(default)]
@@ -1810,6 +1840,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
                     post(set_task_queue_config).get(get_task_queue_config),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/namespace/{namespace_id}/move",
+                    post(move_namespace),
                 )
                 .merge(authorizer.new_router())
         }

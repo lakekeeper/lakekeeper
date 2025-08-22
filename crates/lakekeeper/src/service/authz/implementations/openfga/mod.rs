@@ -620,6 +620,73 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&namespace_id).await
     }
 
+    async fn move_namespace(
+        &self,
+        _request: &RequestMetadata,
+        namespace_id: NamespaceId,
+        new_parent: NamespaceParent,
+        old_parent: NamespaceParent,
+    ) -> Result<()> {
+        let writes = match new_parent {
+            NamespaceParent::Warehouse(warehouse_id) => vec![
+                TupleKey {
+                    user: warehouse_id.to_openfga(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: namespace_id.to_openfga(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: namespace_id.to_openfga(),
+                    relation: WarehouseRelation::Namespace.to_string(),
+                    object: warehouse_id.to_openfga(),
+                    condition: None,
+                },
+            ],
+            NamespaceParent::Namespace(new_parent_namespace_id) => vec![
+                TupleKey {
+                    user: new_parent_namespace_id.to_openfga(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: namespace_id.to_openfga(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: namespace_id.to_openfga(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: new_parent_namespace_id.to_openfga(),
+                    condition: None,
+                },
+            ],
+        };
+        let deletes = match old_parent {
+            NamespaceParent::Warehouse(warehouse_id) => vec![
+                TupleKeyWithoutCondition {
+                    user: warehouse_id.to_openfga(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: namespace_id.to_openfga(),
+                },
+                TupleKeyWithoutCondition {
+                    user: namespace_id.to_openfga(),
+                    relation: WarehouseRelation::Namespace.to_string(),
+                    object: warehouse_id.to_openfga(),
+                },
+            ],
+            NamespaceParent::Namespace(old_parent_namespace_id) => vec![
+                TupleKeyWithoutCondition {
+                    user: old_parent_namespace_id.to_openfga(),
+                    relation: NamespaceRelation::Parent.to_string(),
+                    object: namespace_id.to_openfga(),
+                },
+                TupleKeyWithoutCondition {
+                    user: namespace_id.to_openfga(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: old_parent_namespace_id.to_openfga(),
+                },
+            ],
+        };
+        self.write(writes, deletes).await?;
+        Ok(())
+    }
+
     async fn create_table(
         &self,
         metadata: &RequestMetadata,

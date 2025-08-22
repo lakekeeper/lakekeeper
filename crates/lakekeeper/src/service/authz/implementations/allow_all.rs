@@ -212,6 +212,16 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(())
     }
 
+    async fn move_namespace(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _new_parent: NamespaceParent,
+        _old_parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn create_table(
         &self,
         _metadata: &RequestMetadata,

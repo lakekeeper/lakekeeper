@@ -207,6 +207,7 @@ generate_endpoints! {
         ActivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/activate"),
         UpdateStorageProfile(POST, "/management/v1/warehouse/{warehouse_id}/storage"),
         UpdateStorageCredential(POST, "/management/v1/warehouse/{warehouse_id}/storage-credential"),
+        MoveNamespace(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/move"),
         GetWarehouseStatistics(GET, "/management/v1/warehouse/{warehouse_id}/statistics"),
         LoadEndpointStatistics(POST, "/management/v1/endpoint-statistics"),
         ListDeletedTabulars(GET, "/management/v1/warehouse/{warehouse_id}/deleted-tabulars"),
