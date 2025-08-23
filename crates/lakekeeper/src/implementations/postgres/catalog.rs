@@ -430,12 +430,7 @@ impl Catalog for super::PostgresCatalog {
         project_id: &ProjectId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<GetProjectResponse>> {
-        get_project(project_id, transaction).await.map(|opt| {
-            opt.map(|response| GetProjectResponse {
-                project_id: response.project_id,
-                name: response.project_name,
-            })
-        })
+        get_project(project_id, transaction).await
     }
 
     async fn list_projects(

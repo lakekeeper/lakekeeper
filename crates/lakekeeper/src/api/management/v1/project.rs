@@ -55,15 +55,13 @@ pub struct ListProjectsQuery {
     pub page_token: PageToken,
     /// Signal an upper bound of the number of results that a client will receive
     /// Default: 100
-    #[serde(default = "crate::api::management::v1::default_page_size")]
-    pub page_size: i64,
+    pub page_size: Option<i64>,
 }
-impl ListProjectsQuery {
-    #[must_use]
-    pub fn pagination_query(&self) -> PaginationQuery {
+impl From<ListProjectsQuery> for PaginationQuery {
+    fn from(query: ListProjectsQuery) -> Self {
         PaginationQuery {
-            page_token: self.page_token.clone(),
-            page_size: Some(self.page_size),
+            page_token: query.page_token,
+            page_size: query.page_size,
         }
     }
 }
@@ -244,12 +242,8 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         };
         let mut trx = C::Transaction::begin_read(context.v1_state.catalog).await?;
 
-        let response = C::list_projects(
-            project_id_filter,
-            request.pagination_query(),
-            trx.transaction(),
-        )
-        .await?;
+        let response =
+            C::list_projects(project_id_filter, request.into(), trx.transaction()).await?;
         trx.commit().await?;
         Ok(response)
     }

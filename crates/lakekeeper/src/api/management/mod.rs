@@ -23,8 +23,8 @@ pub mod v1 {
     use iceberg_ext::catalog::rest::ErrorModel;
     use namespace::NamespaceManagementService as _;
     use project::{
-        CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsResponse,
-        RenameProjectRequest, Service as _,
+        CreateProjectRequest, CreateProjectResponse, GetProjectResponse, ListProjectsQuery,
+        ListProjectsResponse, RenameProjectRequest, Service as _,
     };
     use role::{
         CreateRoleRequest, ListRolesQuery, ListRolesResponse, Role, SearchRoleRequest,
@@ -565,9 +565,9 @@ pub mod v1 {
     async fn list_projects<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-        Query(request): Query<crate::api::management::v1::project::ListProjectsQuery>,
+        Query(query): Query<crate::api::management::v1::project::ListProjectsQuery>,
     ) -> Result<ListProjectsResponse> {
-        ApiServer::<C, A, S>::list_projects(request, api_context, metadata).await
+        ApiServer::<C, A, S>::list_projects(query, api_context, metadata).await
     }
 
     /// Create Project
