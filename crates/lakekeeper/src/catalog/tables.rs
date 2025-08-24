@@ -614,6 +614,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let (storage_secret_ident, storage_profile) =
             C::load_storage_profile(warehouse_id, tabular_details.table_id, t.transaction())
                 .await?;
+        // DB work is done; release the read transaction before external IO/crypto work.
+        t.commit().await?;
+
         let storage_secret =
             maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
         let storage_config = storage_profile
@@ -1123,14 +1126,18 @@ async fn commit_tables_inner<
             {
                 attempt += 1;
                 tracing::info!(
-                    "Concurrent update detected (attempt {}/{}), retrying commit operation",
-                    attempt,
-                    MAX_RETRIES_ON_CONCURRENT_UPDATE
+                    warehouse_id = %warehouse_id,
+                    n_tables = %table_ids.len(),
+                    attempt = attempt,
+                    max_attempts = MAX_RETRIES_ON_CONCURRENT_UPDATE,
+                    "Concurrent update detected, retrying commit operation"
                 );
                 // Short jittered exponential backoff to reduce contention
                 // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
-                let base = 50u64 * (1u64 << (attempt - 1).min(6)); // cap growth
+                let exp = attempt.saturating_sub(1).min(6) as u32; // cap growth explicitly
+                let base = 50u64.saturating_mul(1u64 << exp);
                 let jitter = fastrand::u64(..base / 2);
+                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
                 tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),

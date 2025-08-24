@@ -404,6 +404,7 @@ mod tests {
         assert!(display_output.contains("Stack:"));
         assert!(display_output.contains("  io_stack"));
         assert!(display_output.contains("Caused by:"));
+        assert_eq!(display_output.matches("Caused by:").count(), 1);
         assert!(display_output.contains("File not found"));
     }
 }

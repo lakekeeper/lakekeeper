@@ -2,7 +2,6 @@
 use std::{collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
 
 use itertools::{FoldWhile, Itertools};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::task::{AbortHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -20,7 +19,7 @@ pub trait HealthExt: Send + Sync + 'static {
             self.update_health().await;
             // Calculate jitter to avoid thundering herd problem
             // Jitter is a random value between 0 and 500 milliseconds
-            let jitter = { rand::rng().next_u64() % 500 };
+            let jitter = { fastrand::u64(0..500) };
             tokio::select! {
                 () = cancellation_token.cancelled() => {
                     // Gracefully exit when cancellation is requested

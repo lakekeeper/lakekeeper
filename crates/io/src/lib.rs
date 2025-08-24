@@ -31,6 +31,7 @@ pub mod memory;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
 
+#[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
 pub(crate) fn safe_usize_to_i32(value: usize, context: &str) -> Result<i32, IOError> {
     i32::try_from(value).map_err(|_| {
         IOError::new(
@@ -41,6 +42,7 @@ pub(crate) fn safe_usize_to_i32(value: usize, context: &str) -> Result<i32, IOEr
     })
 }
 
+#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
 pub(crate) fn safe_usize_to_i64(value: usize, context: &str) -> Result<i64, IOError> {
     i64::try_from(value).map_err(|_| {
         IOError::new(
@@ -51,6 +53,11 @@ pub(crate) fn safe_usize_to_i64(value: usize, context: &str) -> Result<i64, IOEr
     })
 }
 
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-s3"
+))]
 pub(crate) fn validate_file_size(size: i64, location: &str) -> Result<usize, IOError> {
     if size < 0 {
         return Err(IOError::new(

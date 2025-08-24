@@ -140,8 +140,10 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 );
                 // Short jittered exponential backoff to reduce contention
                 // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
-                let base = 50u64 * (1u64 << (attempt - 1).min(6)); // cap growth
+                let exp = attempt.saturating_sub(1).min(6) as u32; // cap growth explicitly
+                let base = 50u64.saturating_mul(1u64 << exp);
                 let jitter = fastrand::u64(..base / 2);
+                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
                 tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),
@@ -360,7 +362,7 @@ fn build_new_metadata(
             ViewUpdate::SetCurrentViewVersion { view_version_id } => {
                 m.set_current_version_id(view_version_id).map_err(|e| {
                     ErrorModel::bad_request(
-                        "Error setting current view version: {e}",
+                        format!("Error setting current view version: {e}"),
                         "SetCurrentViewVersionError",
                         Some(Box::new(e)),
                     )

@@ -1643,7 +1643,6 @@ mod tests {
     #[needs_env_var(TEST_OPENFGA = 1)]
     mod openfga {
         use openfga_client::client::TupleKey;
-        use rand::Rng;
         use uuid::Uuid;
 
         use super::super::*;
@@ -1742,9 +1741,8 @@ mod tests {
             let mut permissions = Vec::with_capacity(namespace_ids.len());
             let mut to_grant = vec![];
             let mut to_check = Vec::with_capacity(namespace_ids.len());
-            let mut rng = rand::rng();
             for ns in &namespace_ids {
-                let may_modify: bool = rng.random();
+                let may_modify: bool = fastrand::bool();
                 permissions.push(may_modify);
                 if may_modify {
                     to_grant.push(TupleKey {

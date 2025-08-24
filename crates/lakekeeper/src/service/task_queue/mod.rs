@@ -10,7 +10,6 @@ use std::{
 use chrono::Utc;
 use futures::future::BoxFuture;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use rand::RngCore as _;
 use serde::{de::DeserializeOwned, Serialize};
 use strum::EnumIter;
 use tokio_util::sync::CancellationToken;
@@ -673,7 +672,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                     };
 
                     let Some(task) = task else {
-                        let jitter = { rand::rng().next_u64() % 500 };
+                        let jitter = { fastrand::u64(0..500) };
                         tokio::select! {
                             () = cancellation_token.cancelled() => {
                                 tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());

@@ -3934,7 +3934,6 @@ dependencies = [
  "percent-encoding",
  "pretty_assertions",
  "quick-xml 0.37.5",
- "rand 0.9.2",
  "rdkafka",
  "reqwest",
  "serde",
