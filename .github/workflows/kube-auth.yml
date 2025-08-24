@@ -42,7 +42,7 @@ jobs:
 
       - name: Restore Docker image
         run:  docker load -i artifacts/lakekeeper-local-amd64.tar &&  kind load docker-image localhost/lakekeeper-local:amd64
-      - uses: azure/setup-helm@v4.3.0
+      - uses: azure/setup-helm@v4.3.1
         id: install
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
