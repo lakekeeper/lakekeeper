@@ -140,7 +140,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 );
                 // Short jittered exponential backoff to reduce contention
                 // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
-                let exp = attempt.saturating_sub(1).min(6) as u32; // cap growth explicitly
+                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
                 let base = 50u64.saturating_mul(1u64 << exp);
                 let jitter = fastrand::u64(..base / 2);
                 tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
