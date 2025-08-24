@@ -283,18 +283,36 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             stack: details,
         } = error;
         let error_id = uuid::Uuid::now_v7();
-        tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
+        let mut response = if code >= 500 {
+            tracing::error!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
+            axum::Json(IcebergErrorResponse {
+                error: ErrorModel {
+                    message,
+                    r#type,
+                    code,
+                    source: None,
+                    stack: vec![format!("Error ID: {error_id}")],
+                },
+            })
+            .into_response()
+        } else {
+            // Log at info level for 4xx errors
+            tracing::info!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
 
-        let mut response = axum::Json(IcebergErrorResponse {
-            error: ErrorModel {
-                message,
-                r#type,
-                code,
-                source: None,
-                stack: vec![error_id.to_string()],
-            },
-        })
-        .into_response();
+            let mut details = details;
+            details.push(format!("Error ID: {error_id}"));
+
+            axum::Json(IcebergErrorResponse {
+                error: ErrorModel {
+                    message,
+                    r#type,
+                    code,
+                    source: None,
+                    stack: details,
+                },
+            })
+            .into_response()
+        };
 
         *response.status_mut() = axum::http::StatusCode::from_u16(code)
             .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);

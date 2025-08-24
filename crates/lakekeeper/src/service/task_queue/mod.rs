@@ -1136,5 +1136,7 @@ mod test {
         .remove(&tab.table_id.into())
         .is_none());
         trx.commit().await.unwrap();
+
+        cancellation_token.cancel();
     }
 }

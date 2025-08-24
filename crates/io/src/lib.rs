@@ -32,23 +32,24 @@ pub mod memory;
 pub mod s3;
 
 #[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
-pub(crate) fn safe_usize_to_i32(value: usize, context: &str) -> Result<i32, IOError> {
+/// Fallible usize→i32 conversion with additional context for diagnostics.
+pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Result<i32, IOError> {
     i32::try_from(value).map_err(|_| {
         IOError::new(
             ErrorKind::ConditionNotMatch,
-            format!("Platform usize too large for i32: {value}"),
-            context.to_string(),
+            format!("value {value} does not fit into i32"),
+            context.into(),
         )
     })
 }
 
-#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
-pub(crate) fn safe_usize_to_i64(value: usize, context: &str) -> Result<i64, IOError> {
+/// Fallible usize→i64 conversion with contextual diagnostics.
+pub(crate) fn safe_usize_to_i64(value: usize, context: impl Into<String>) -> Result<i64, IOError> {
     i64::try_from(value).map_err(|_| {
         IOError::new(
-            ErrorKind::ConditionNotMatch,
-            format!("File too large - Platform usize too large for i64: {value}"),
-            context.to_string(),
+            ErrorKind::ConditionNotMatch, // consider a more specific kind if available
+            format!("value {value} does not fit into i64"),
+            context.into(),
         )
     })
 }
@@ -58,12 +59,15 @@ pub(crate) fn safe_usize_to_i64(value: usize, context: &str) -> Result<i64, IOEr
     feature = "storage-gcs",
     feature = "storage-s3"
 ))]
-pub(crate) fn validate_file_size(size: i64, location: &str) -> Result<usize, IOError> {
+/// Validate a remote-reported file size (i64), rejecting negative sizes and sizes
+/// that do not fit into `usize` on the current platform. The `location` is used
+/// for error diagnostics.
+pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Result<usize, IOError> {
     if size < 0 {
         return Err(IOError::new(
             ErrorKind::ConditionNotMatch,
             "File size cannot be negative".to_string(),
-            location.to_string(),
+            location.into(),
         ));
     }
 
@@ -72,7 +76,7 @@ pub(crate) fn validate_file_size(size: i64, location: &str) -> Result<usize, IOE
         Err(_) => Err(IOError::new(
             ErrorKind::ConditionNotMatch,
             format!("File size too large for this platform: {size}"),
-            location.to_string(),
+            location.into(),
         )),
     }
 }

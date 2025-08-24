@@ -16,18 +16,18 @@ pub trait HealthExt: Send + Sync + 'static {
         cancellation_token: tokio_util::sync::CancellationToken,
     ) {
         loop {
+            // Exit promptly if already cancelled before doing any work
+            if cancellation_token.is_cancelled() {
+                break;
+            }
+
             self.update_health().await;
-            // Calculate jitter to avoid thundering herd problem
-            // Jitter is a random value between 0 and 500 milliseconds
-            let jitter = { fastrand::u64(0..500) };
+
+            // Jitter is a random value between 0 and 500 milliseconds (inclusive)
+            let jitter = fastrand::u64(0..=500);
             tokio::select! {
-                () = cancellation_token.cancelled() => {
-                    // Gracefully exit when cancellation is requested
-                    break;
-                }
-                () = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {
-                    // Continue the loop after sleep
-                }
+                _ = cancellation_token.cancelled() => break,
+                _ = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {}
             }
         }
     }

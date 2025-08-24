@@ -16,7 +16,7 @@ use iceberg::{
     NamespaceIdent, TableUpdate,
 };
 use iceberg_ext::{
-    catalog::rest::{LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::{namespace::NamespaceProperties, ParseFromStr},
 };
 use itertools::Itertools;
@@ -65,7 +65,7 @@ use crate::{
 
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
     "write.metadata.delete-after-commit.enabled";
-const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = false;
+const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
 pub(crate) const CONCURRENT_UPDATE_ERROR_TYPE: &str = "ConcurrentUpdateError";
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
@@ -275,7 +275,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         authorizer
-            .create_table(&request_metadata, TableId::from(*tabular_id), namespace_id)
+            .create_table(&request_metadata, table_id, namespace_id)
             .await?;
 
         // Metadata file written, now we can commit the transaction
@@ -1061,8 +1061,21 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
     let n_identifiers = identifiers.len();
 
     if n_identifiers != request.table_changes.len() {
+        let mut counts = std::collections::HashMap::<&TableIdent, usize>::new();
+        for ident in request
+            .table_changes
+            .iter()
+            .filter_map(|c| c.identifier.as_ref())
+        {
+            *counts.entry(ident).or_default() += 1;
+        }
+        let dups = counts
+            .into_iter()
+            .filter_map(|(i, c)| (c > 1).then(|| i.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(ErrorModel::bad_request(
-            "Table identifiers must be unique in the CommitTransactionRequest",
+            format!("Table identifiers must be unique; duplicates: [{dups}]"),
             "UniqueTableIdentifiersRequiredForCommitTransaction",
             None,
         )
@@ -1140,7 +1153,18 @@ async fn commit_tables_inner<
                 tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
                 tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                if attempt > 0 {
+                    tracing::warn!(
+                        warehouse_id = %warehouse_id,
+                        n_tables = %table_ids.len(),
+                        attempt = attempt,
+                        "Table commit operation failed after {} attempts. Operation was retried due to concurrent updates. {e}",
+                        attempt + 1
+                    );
+                }
+                return Err(e);
+            }
         }
     }
 }
@@ -1194,7 +1218,7 @@ async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretSt
     .await
     .map_err(|e| {
         ErrorModel::internal("Error fetching table ids", "TableIdsFetchError", None)
-            .append_details(vec![e.error.message, e.error.r#type])
+            .append_detail(e.error.message)
             .append_details(e.error.stack)
     })?;
 
@@ -1250,6 +1274,8 @@ async fn try_commit_tables<
         transaction.transaction(),
     )
     .await?;
+
+    transaction.commit().await?;
 
     let mut expired_metadata_logs: Vec<MetadataLog> = vec![];
 
@@ -1322,14 +1348,6 @@ async fn try_commit_tables<
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Commit changes in DB
-    C::commit_table_transaction(
-        warehouse_id,
-        commits.iter().map(CommitContext::commit),
-        transaction.transaction(),
-    )
-    .await?;
-
     // Check contract verification
     let futures = commits.iter().map(|c| {
         state
@@ -1367,7 +1385,39 @@ async fn try_commit_tables<
         .collect();
     futures::future::try_join_all(write_futures).await?;
 
-    transaction.commit().await?;
+    // Make changes in DB
+    let transaction_result = async {
+        let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
+        C::commit_table_transaction(
+            warehouse_id,
+            commits.iter().map(CommitContext::commit),
+            transaction.transaction(),
+        )
+        .await?;
+
+        transaction.commit().await?;
+        Result::<_, IcebergErrorResponse>::Ok(())
+    }
+    .await;
+
+    // If transaction fails, delete the metadata files we just wrote (best-effort), then
+    // return the original error.
+    if let Err(e) = transaction_result {
+        let delete_result = futures::future::join_all(
+            commits
+                .iter()
+                .map(|commit| delete_file(&file_io, &commit.new_metadata_location))
+                .collect::<Vec<_>>(),
+        )
+        .await;
+        // Log any delete errors, but return the original error
+        for r in delete_result {
+            if let Err(e) = r {
+                tracing::warn!("Failed to delete metadata file after failed commit: {e:?}");
+            }
+        }
+        return Err(e);
+    }
 
     // Delete files in parallel - if one delete fails, we still want to delete the rest
     let expired_locations = expired_metadata_logs
@@ -1811,7 +1861,7 @@ pub(crate) fn get_delete_after_commit_enabled(properties: &HashMap<String, Strin
     properties
         .get(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED)
         .map_or(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT, |v| {
-            v == "true"
+            v.to_lowercase() == "true" || v == "1"
         })
 }
 
