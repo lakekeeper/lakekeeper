@@ -283,7 +283,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             stack: details,
         } = error;
         let error_id = uuid::Uuid::now_v7();
-        let mut response = if code >= 500 && ![401, 403].contains(&code) {
+        let mut response = if code >= 500 || [401, 403, 424].contains(&code) {
             tracing::error!(%error_id, %stack_s, ?details, %message, %r#type, %code, "Error response");
             axum::Json(IcebergErrorResponse {
                 error: ErrorModel {
