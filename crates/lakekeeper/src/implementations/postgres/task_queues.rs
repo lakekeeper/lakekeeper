@@ -44,7 +44,7 @@ pub(crate) async fn queue_task_batch(
     let mut scheduled_fors = Vec::with_capacity(tasks.len());
     let mut entity_ids = Vec::with_capacity(tasks.len());
     let mut entity_types = Vec::with_capacity(tasks.len());
-    let mut states = Vec::with_capacity(tasks.len());
+    let mut payloads = Vec::with_capacity(tasks.len());
     for TaskInput {
         task_metadata:
             TaskMetadata {
@@ -60,7 +60,7 @@ pub(crate) async fn queue_task_batch(
         parent_task_ids.push(parent_task_id.as_deref().copied());
         warehouse_idents.push(*warehouse_id);
         scheduled_fors.push(schedule_for);
-        states.push(payload);
+        payloads.push(payload);
         entity_types.push(EntityType::from(entity_id));
         entity_ids.push(entity_id.to_uuid());
     }
@@ -108,7 +108,7 @@ pub(crate) async fn queue_task_batch(
             .iter()
             .map(|t| t.as_ref())
             .collect::<Vec<_>>() as _,
-        &states,
+        &payloads,
         &entity_ids,
         &entity_types as _,
         TaskStatus::Scheduled as _,

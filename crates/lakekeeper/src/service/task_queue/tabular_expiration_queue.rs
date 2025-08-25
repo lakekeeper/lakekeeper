@@ -73,6 +73,7 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
             tabular_type = %task.data.tabular_type,
             deletion_kind = ?task.data.deletion_kind,
             attempt = %task.attempt,
+            task_id = %task.task_id,
         );
 
         instrumented_expire::<C, A>(catalog_state.clone(), authorizer.clone(), tabular_id, &task)
@@ -214,6 +215,7 @@ where
         }
     }
 
+    // Record success within the transaction - will be rolled back if commit fails
     task.record_success_in_transaction::<C>(trx.transaction(), None)
         .await;
 

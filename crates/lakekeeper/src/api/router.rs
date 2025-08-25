@@ -247,7 +247,10 @@ pub async fn serve(
     router: Router,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let cancellation_future = async move { cancellation_token.cancelled().await };
+    let cancellation_future = async move {
+        cancellation_token.cancelled().await;
+        tracing::info!("HTTP server shutdown requested (cancellation token)");
+    };
     axum::serve(listener, router)
         .with_graceful_shutdown(cancellation_future)
         .await

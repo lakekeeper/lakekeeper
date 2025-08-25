@@ -77,8 +77,8 @@ veil = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 paste = "1.0"
-rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3.0"
 tokio = { workspace = true }
 uuid = { workspace = true }
+fastrand = { workspace = true }

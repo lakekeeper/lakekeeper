@@ -27,7 +27,7 @@ mod test {
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, 1, 1).await;
         let cancellation_token = tokio_util::sync::CancellationToken::new();
-        spawn_build_in_queues(&setup.ctx, None, cancellation_token.clone());
+        let queues_handle = spawn_build_in_queues(&setup.ctx, None, cancellation_token.clone());
         let whi = setup.warehouse.warehouse_id;
         let stats = ApiServer::get_warehouse_statistics(
             whi,
@@ -119,6 +119,7 @@ mod test {
         assert_eq!(new_stats.stats.last().unwrap().number_of_tables, 1);
         assert_eq!(new_stats.stats.last().unwrap().number_of_views, 1);
         cancellation_token.cancel();
+        queues_handle.await.unwrap();
     }
 }
 

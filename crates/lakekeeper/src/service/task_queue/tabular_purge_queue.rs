@@ -67,6 +67,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
             tabular_type = %task.data.tabular_type,
             queue_name = %task.queue_name(),
             attempt = %task.attempt,
+            task_id = %task.task_id,
         );
 
         instrumented_purge::<_, C>(catalog_state.clone(), &secret_state, &task)
@@ -86,7 +87,8 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
                 "Task of `{QUEUE_NAME}` worker exited successfully. Data at location `{}` deleted.",
                 task.data.tabular_location
             );
-            task.record_success::<C>(catalog_state, None).await;
+            task.record_success::<C>(catalog_state, Some("Purged tabular data"))
+                .await;
         }
         Err(err) => {
             tracing::error!(

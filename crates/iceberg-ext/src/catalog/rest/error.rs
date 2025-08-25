@@ -425,4 +425,67 @@ mod tests {
         assert_eq!(display_output.matches("Caused by:").count(), 1);
         assert!(display_output.contains("File not found"));
     }
+
+    #[tokio::test]
+    async fn test_into_response_server_error_redacts_stack_and_adds_error_id() {
+        let val = IcebergErrorResponse {
+            error: ErrorModel {
+                message: "internal error".into(),
+                r#type: "Internal".into(),
+                code: 500,
+                source: None,
+                stack: vec!["secret detail".into()],
+            },
+        };
+        let resp = axum::response::IntoResponse::into_response(val);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = resp
+            .into_body()
+            .into_data_stream()
+            .collect::<Vec<_>>()
+            .await;
+        let buf = body
+            .into_iter()
+            .map(|r| r.unwrap())
+            .flatten()
+            .collect::<bytes::Bytes>();
+        let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
+
+        // Stack should contain only the error id, not the original detail
+        assert!(parsed.error.stack.len() == 1);
+        assert!(parsed.error.stack[0].starts_with("Error ID: "));
+    }
+
+    #[tokio::test]
+    async fn test_into_response_client_error_preserves_stack_and_adds_error_id() {
+        let val = IcebergErrorResponse {
+            error: ErrorModel {
+                message: "bad input".into(),
+                r#type: "BadRequest".into(),
+                code: 400,
+                source: None,
+                stack: vec!["user detail".into()],
+            },
+        };
+        let resp = axum::response::IntoResponse::into_response(val);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp
+            .into_body()
+            .into_data_stream()
+            .collect::<Vec<_>>()
+            .await;
+        let buf = body
+            .into_iter()
+            .map(|r| r.unwrap())
+            .flatten()
+            .collect::<bytes::Bytes>();
+        let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
+
+        // Stack should preserve original and append error id
+        assert_eq!(parsed.error.stack.len(), 2);
+        assert!(parsed.error.stack[0] == "user detail");
+        assert!(parsed.error.stack[1].starts_with("Error ID: "));
+    }
 }

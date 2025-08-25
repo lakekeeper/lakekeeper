@@ -30,7 +30,7 @@ pub async fn shutdown_signal(cancellation_token: tokio_util::sync::CancellationT
     let ctrl_c = async {
         signal::ctrl_c()
             .await
-            .expect("failed to install Ctrl+C handler");
+            .expect("Failed to register Ctrl+C handler");
     };
 
     #[cfg(unix)]

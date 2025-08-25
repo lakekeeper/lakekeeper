@@ -153,7 +153,7 @@ impl From<IOErrorExt> for ErrorModel {
                 ErrorModel::internal(message, typ, Some(boxed))
             }
             IOErrorExt::Deserialization(_) | IOErrorExt::InvalidLocation(_) => {
-                ErrorModel::bad_request(message.to_string(), typ, Some(boxed))
+                ErrorModel::bad_request(message, typ, Some(boxed))
             }
             IOErrorExt::IOError(e) => {
                 let context = e
@@ -161,8 +161,7 @@ impl From<IOErrorExt> for ErrorModel {
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>();
-                ErrorModel::bad_request(message.to_string(), typ, Some(boxed))
-                    .append_details(context)
+                ErrorModel::bad_request(message, typ, Some(boxed)).append_details(context)
             }
         }
     }

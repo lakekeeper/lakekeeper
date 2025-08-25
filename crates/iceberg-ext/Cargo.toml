@@ -45,3 +45,4 @@ lakekeeper-io = { path = "../io", default-features = false, features = [
 ] }
 lazy_static = { workspace = true }
 tokio = { workspace = true }
+bytes = { workspace = true }

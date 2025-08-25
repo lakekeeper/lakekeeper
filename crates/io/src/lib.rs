@@ -43,6 +43,7 @@ pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Res
     })
 }
 
+#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
 /// Fallible usize→i64 conversion with contextual diagnostics.
 pub(crate) fn safe_usize_to_i64(value: usize, context: impl Into<String>) -> Result<i64, IOError> {
     i64::try_from(value).map_err(|_| {

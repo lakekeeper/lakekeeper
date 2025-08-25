@@ -112,17 +112,24 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         cancellation_token.clone(),
     );
 
-    // Wait for tables to be dropped
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    // Drop warehouse - this should succeed now
-    ApiServer::delete_warehouse(
-        warehouse.warehouse_id,
-        DeleteWarehouseQuery::builder().build(),
-        api_context.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .expect("Warehouse deletion should succeed after purge tasks are completed");
+    // Drop warehouse — poll until purge tasks complete to avoid flakiness
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match ApiServer::delete_warehouse(
+            warehouse.warehouse_id,
+            DeleteWarehouseQuery::builder().build(),
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        {
+            Ok(_) => break,
+            Err(e) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(e) => panic!("Warehouse deletion did not complete within 5s: {e:?}"),
+        }
+    }
     cancellation_token.cancel();
     queues_future.await.unwrap();
 }

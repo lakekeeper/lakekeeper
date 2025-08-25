@@ -844,7 +844,11 @@ pub(crate) async fn drop_tabular(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("Table or View with ID {} not found", tabular_id.typ_str()),
+                format!(
+                    "{} with ID {} not found",
+                    tabular_id.typ_str(),
+                    tabular_id.as_ref()
+                ),
                 ErrorKind::TableNotFound.to_string(),
                 Some(Box::new(e)),
             )

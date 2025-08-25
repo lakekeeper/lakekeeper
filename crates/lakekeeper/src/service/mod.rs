@@ -491,6 +491,8 @@ impl TryFrom<Prefix> for WarehouseId {
 }
 
 #[derive(Debug, Clone)]
+/// Metadata for a tabular dataset, including its unique `table_id` and
+/// the storage `location` where its data lives.
 pub struct TabularDetails {
     pub table_id: TableId,
     pub location: String,

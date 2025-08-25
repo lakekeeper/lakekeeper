@@ -952,7 +952,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let _ = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
+        let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
+        tracing::debug!("Successfully committed {} table(s)", contexts.len());
         Ok(())
     }
 }
@@ -1862,7 +1863,7 @@ pub(crate) fn get_delete_after_commit_enabled(properties: &HashMap<String, Strin
     properties
         .get(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED)
         .map_or(PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT, |v| {
-            v.to_lowercase() == "true" || v == "1"
+            matches!(v.to_lowercase().as_str(), "true" | "yes" | "1")
         })
 }
 

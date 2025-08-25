@@ -45,11 +45,11 @@ pub fn get_axum_layer_and_install_recorder(
         Box::pin(async move {
             tokio::select! {
                 () = cancellation_token.cancelled() => {
-                    tracing::info!("Metrics exporter cancelled");
+                    tracing::info!(port = metrics_port, "Metrics exporter cancelled");
                     Ok(())
                 },
                 r = exporter => {
-                    r.map_err(|e| anyhow::anyhow!(format!("Metrics exporter failed: {e:?}")))
+                    r.map_err(|e| anyhow::anyhow!("Metrics exporter failed: {e:?}"))
                 }
             }
         }),
