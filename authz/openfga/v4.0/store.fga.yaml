@@ -1,5 +1,3 @@
-# TODO: add tests for lakekeeper_table and lakekeeper_view
-
 name: Lakekeeper Core
 model_file: ./fga.mod
 tuples:
@@ -29,12 +27,12 @@ tuples:
   - user: namespace:namespace_1
     relation: namespace
     object: warehouse:warehouse_1
-  - user: table:table_1
+  - user: lakekeeper_table:warehouse_1/table_1
     relation: child
     object: namespace:namespace_1
   - user: namespace:namespace_1
     relation: parent
-    object: table:table_1
+    object: lakekeeper_table:warehouse_1/table_1
   # Hierarchies: warehouse_1 -> namespace_1_1 -> namespace_1_2 -> (table_3, view_1)
   - user: warehouse:warehouse_1
     relation: parent
@@ -48,12 +46,12 @@ tuples:
   - user: namespace:namespace_1_2
     relation: child
     object: namespace:namespace_1_1
-  - user: table:table_3
+  - user: lakekeeper_table:warehouse_1/table_3
     relation: child
     object: namespace:namespace_1_2
   - user: namespace:namespace_1_2
     relation: parent
-    object: table:table_3
+    object: lakekeeper_table:warehouse_1/table_3
   - user: view:view_1
     relation: child
     object: namespace:namespace_1_2
@@ -73,12 +71,12 @@ tuples:
   - user: namespace:namespace_2_2
     relation: child
     object: namespace:namespace_2_1
-  - user: table:table_2_2
+  - user: lakekeeper_table:warehouse_2/table_2_2
     relation: child
     object: namespace:namespace_2_2
   - user: namespace:namespace_2_2
     relation: parent
-    object: table:table_2_2
+    object: lakekeeper_table:warehouse_2/table_2_2
   # warehouse_2 has managed access
   - user: role:*
     relation: managed_access
@@ -119,7 +117,7 @@ tuples:
     object: role:select_table_3
   - user: role:select_table_3#assignee
     relation: select
-    object: table:table_3
+    object: lakekeeper_table:warehouse_1/table_3
   # Roles (Owner on warehouse_2)
   - user: user:warehouse_2_owner
     relation: ownership
@@ -132,9 +130,9 @@ tuples:
   - user: user:namespace_2_2_owner
     relation: ownership
     object: namespace:namespace_2_2
-  - user: user:table_2_2_owner
+  - user: user:warehouse_2/table_2_2_owner
     relation: ownership
-    object: table:table_2_2
+    object: lakekeeper_table:warehouse_2/table_2_2
   # Roles (Owner role on namespace_2_1)
   - user: role:namespace_2_1_owner#assignee
     relation: ownership
@@ -246,7 +244,7 @@ tests:
           can_grant_manage_grants: false
           can_change_ownership: false
       - user: user:admin
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: false
           can_write_data: false
@@ -337,7 +335,7 @@ tests:
           can_grant_manage_grants: true
           can_change_ownership: true
       - user: user:project_1_project_admin
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: true
           can_write_data: true
@@ -429,7 +427,7 @@ tests:
           can_grant_manage_grants: true
           can_change_ownership: true
       - user: user:project_1_security_admin
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: false
           can_write_data: false
@@ -521,7 +519,7 @@ tests:
           can_grant_manage_grants: false
           can_change_ownership: false
       - user: user:project_1_data_admin
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: true
           can_write_data: true
@@ -597,7 +595,7 @@ tests:
           can_grant_manage_grants: true
           can_change_ownership: true
       - user: user:warehouse_1_owner
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: true
           can_write_data: true
@@ -686,7 +684,7 @@ tests:
           can_grant_manage_grants: false
           can_change_ownership: false
       - user: user:namespace_1_1_owner
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: true
           can_write_data: true
@@ -800,7 +798,7 @@ tests:
           can_grant_manage_grants: false
           can_change_ownership: false
       - user: user:select_table_3
-        object: table:table_3
+        object: lakekeeper_table:warehouse_1/table_3
         assertions:
           can_drop: false
           can_write_data: false
@@ -886,7 +884,7 @@ tests:
           can_grant_manage_grants: true
           can_change_ownership: true
       - user: user:warehouse_2_owner
-        object: table:table_2_2
+        object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
           can_drop: true
           can_undrop: true
@@ -988,8 +986,8 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: user:table_2_2_owner
-        object: table:table_2_2
+      - user: user:warehouse_2/table_2_2_owner
+        object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
           can_drop: true
           can_undrop: true
@@ -1090,7 +1088,7 @@ tests:
           can_grant_manage_grants: false
           can_change_ownership: false
       - user: user:namespace_2_2_owner
-        object: table:table_2_2
+        object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
           can_drop: true
           can_undrop: true
@@ -1106,8 +1104,8 @@ tests:
           can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
-      - user: user:table_2_2_owner
-        object: table:table_2_2
+      - user: user:warehouse_2/table_2_2_owner
+        object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
           can_drop: true
           can_write_data: true
@@ -1225,8 +1223,8 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
-      - user: user:table_2_2_owner
-        object: table:table_2_2
+      - user: user:warehouse_2/table_2_2_owner
+        object: lakekeeper_table:warehouse_2/table_2_2
         assertions:
           can_drop: true
           can_write_data: true
