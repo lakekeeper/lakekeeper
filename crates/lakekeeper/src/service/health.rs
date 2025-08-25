@@ -26,8 +26,8 @@ pub trait HealthExt: Send + Sync + 'static {
             // Jitter is a random value between 0 and 500 milliseconds (inclusive)
             let jitter = fastrand::u64(0..=500);
             tokio::select! {
-                _ = cancellation_token.cancelled() => break,
-                _ = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {}
+                () = cancellation_token.cancelled() => break,
+                () = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {}
             }
         }
     }

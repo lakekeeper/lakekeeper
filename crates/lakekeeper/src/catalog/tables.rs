@@ -1071,7 +1071,8 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
         }
         let dups = counts
             .into_iter()
-            .filter_map(|(i, c)| (c > 1).then(|| i.to_string()))
+            .filter(|&(i, c)| (c > 1))
+            .map(|(i, c)| i.to_string())
             .collect::<Vec<_>>()
             .join(", ");
         return Err(ErrorModel::bad_request(
