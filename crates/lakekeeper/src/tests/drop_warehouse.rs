@@ -123,8 +123,8 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         )
         .await
         {
-            Ok(_) => break,
-            Err(e) if std::time::Instant::now() < deadline => {
+            Ok(()) => break,
+            Err(_e) if std::time::Instant::now() < deadline => {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
             Err(e) => panic!("Warehouse deletion did not complete within 5s: {e:?}"),

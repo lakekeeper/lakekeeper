@@ -75,10 +75,10 @@ veil = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+fastrand = { workspace = true }
 futures = { workspace = true }
 paste = "1.0"
 serde_json = { workspace = true }
 tempfile = "3.0"
 tokio = { workspace = true }
 uuid = { workspace = true }
-fastrand = { workspace = true }

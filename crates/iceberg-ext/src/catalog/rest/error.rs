@@ -447,8 +447,7 @@ mod tests {
             .await;
         let buf = body
             .into_iter()
-            .map(|r| r.unwrap())
-            .flatten()
+            .flat_map(|r| r.unwrap())
             .collect::<bytes::Bytes>();
         let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
 
@@ -478,8 +477,7 @@ mod tests {
             .await;
         let buf = body
             .into_iter()
-            .map(|r| r.unwrap())
-            .flatten()
+            .flat_map(|r| r.unwrap())
             .collect::<bytes::Bytes>();
         let parsed: IcebergErrorResponse = serde_json::from_slice(&buf).unwrap();
 
