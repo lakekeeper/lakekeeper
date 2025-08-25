@@ -1063,8 +1063,6 @@ impl TryFrom<S3Credential> for S3Auth {
 pub(crate) mod test {
     use std::str::FromStr as _;
 
-    use needs_env_var::needs_env_var;
-
     use super::*;
     use crate::service::{
         storage::{StorageLocations as _, StorageProfile},
@@ -1279,8 +1277,7 @@ pub(crate) mod test {
         assert_eq!(location.to_string(), expected);
     }
 
-    #[needs_env_var(TEST_MINIO = 1)]
-    pub(crate) mod s3_compat {
+    pub(crate) mod minio_enabled_tests {
         use std::sync::LazyLock;
 
         use crate::{
@@ -1356,8 +1353,7 @@ pub(crate) mod test {
         }
     }
 
-    // #[needs_env_var(TEST_AWS = 1)]
-    pub(crate) mod aws {
+    pub(crate) mod aws_enabled_tests {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
 
@@ -1451,8 +1447,7 @@ pub(crate) mod test {
         }
     }
 
-    #[needs_env_var(TEST_AWS_KMS = 1)]
-    pub(crate) mod aws_kms {
+    pub(crate) mod aws_kms_enabled_tests {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
 
@@ -1509,8 +1504,7 @@ pub(crate) mod test {
         }
     }
 
-    #[needs_env_var(TEST_R2 = 1)]
-    pub(crate) mod r2 {
+    pub(crate) mod r2_enabled_tests {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
 

@@ -548,8 +548,6 @@ impl TryFrom<AzCredential> for AzureAuth {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use needs_env_var::needs_env_var;
-
     use super::*;
     use crate::service::{
         storage::{az::DEFAULT_AUTHORITY_HOST, AdlsProfile, StorageLocations, StorageProfile},
@@ -574,8 +572,7 @@ pub(crate) mod test {
         assert_eq!(reduce_scheme_string(non_matching), non_matching);
     }
 
-    #[needs_env_var(TEST_AZURE = 1)]
-    pub(crate) mod azure_tests {
+    pub(crate) mod azure_enabled_tests {
         use crate::{
             api::RequestMetadata,
             service::storage::{AdlsProfile, AzCredential, StorageCredential, StorageProfile},
