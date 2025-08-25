@@ -52,12 +52,12 @@ tuples:
   - user: namespace:namespace_1_2
     relation: parent
     object: lakekeeper_table:warehouse_1/table_3
-  - user: view:view_1
+  - user: lakekeeper_view:warehouse_1/view_1
     relation: child
     object: namespace:namespace_1_2
   - user: namespace:namespace_1_2
     relation: parent
-    object: view:view_1
+    object: lakekeeper_view:warehouse_1/view_1
   # Hierarchies: warehouse_2 -> namespace_2_1 -> namespace_2_2 -> table_2_2
   - user: warehouse:warehouse_2
     relation: parent
@@ -260,7 +260,7 @@ tests:
           can_grant_modify: false
           can_change_ownership: false
       - user: user:admin
-        object: view:view_1
+        object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_drop: false
           can_commit: false
@@ -351,7 +351,7 @@ tests:
           can_grant_modify: true
           can_change_ownership: true
       - user: user:project_1_project_admin
-        object: view:view_1
+        object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_drop: true
           can_commit: true
@@ -443,7 +443,7 @@ tests:
           can_grant_modify: true
           can_change_ownership: true
       - user: user:project_1_security_admin
-        object: view:view_1
+        object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_drop: false
           can_commit: false
@@ -535,7 +535,7 @@ tests:
           can_grant_modify: false
           can_change_ownership: false
       - user: user:project_1_data_admin
-        object: view:view_1
+        object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_drop: true
           can_commit: true
@@ -611,7 +611,7 @@ tests:
           can_grant_modify: true
           can_change_ownership: true
       - user: user:warehouse_1_owner
-        object: view:view_1
+        object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_drop: true
           can_commit: true
@@ -700,7 +700,7 @@ tests:
           can_grant_modify: true
           can_change_ownership: true
       - user: user:namespace_1_1_owner
-        object: view:view_1
+        object: lakekeeper_view:warehouse_1/view_1
         assertions:
           can_drop: true
           can_undrop: true
