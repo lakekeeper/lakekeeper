@@ -445,8 +445,6 @@ impl TryFrom<GcsCredential> for GcsAuth {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use needs_env_var::needs_env_var;
-
     pub(crate) mod gcs_enabled_tests {
         use crate::{
             api::RequestMetadata,
