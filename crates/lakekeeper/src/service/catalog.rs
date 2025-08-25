@@ -23,7 +23,10 @@ use crate::{
     api::{
         iceberg::v1::{namespace::NamespaceDropFlags, PaginatedMapping, PaginationQuery},
         management::v1::{
-            project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
+            project::{
+                EndpointStatisticsResponse, ListProjectsResponse, TimeWindowSelector,
+                WarehouseFilter,
+            },
             role::{ListRolesResponse, Role, SearchRoleResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{
@@ -594,8 +597,9 @@ where
     /// If project_ids is None, return all projects, otherwise return only the projects in the set
     async fn list_projects(
         project_ids: Option<HashSet<ProjectId>>,
+        pagination: PaginationQuery,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Vec<GetProjectResponse>>;
+    ) -> Result<ListProjectsResponse>;
 
     /// Get endpoint statistics for the project
     ///
