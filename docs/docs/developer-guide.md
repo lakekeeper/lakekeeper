@@ -127,15 +127,17 @@ Currently, we're not aware of a good way of testing cloud storage integration ag
 # if you compiled without TEST_AZURE, you'll have to change a file or do a cargo clean before rerunning tests. The same applies for the TEST_AWS and TEST_MINIO env vars.
 export TEST_AZURE=1
 export LAKEKEEPER_TEST__AZURE_TENANT_ID=<your tenant id>
+export LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=<your azure adls filesystem name>
+export LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=<your azure storage account name>
+# Auth Method 1: Client Credentials
 export LAKEKEEPER_TEST__AZURE_CLIENT_ID=<your entra id app registration client id>
 export LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=<your entra id app registration client secret>
-export LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=<your azure storage account name>
-export LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=<your azure adls filesystem name>
+# Auth Method 2: Shared Key
+export LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY=<shared key>
 
 export TEST_AWS=1
 export AWS_S3_BUCKET=<your aws s3 bucket>
 export AWS_S3_REGION=<your aws s3 region>
-# replace with actual values
 export AWS_S3_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 export AWS_S3_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 export AWS_S3_STS_ROLE_ARN=arn:aws:iam::123456789012:role/role-name
@@ -147,6 +149,11 @@ export LAKEKEEPER_TEST__S3_REGION=local
 export LAKEKEEPER_TEST__S3_ACCESS_KEY=minio-root-user
 export LAKEKEEPER_TEST__S3_SECRET_KEY=minio-root-password
 export LAKEKEEPER_TEST__S3_ENDPOINT=http://localhost:9000
+
+export TEST_GCS=1
+export LAKEKEEPER_TEST__GCS_CREDENTIAL='{"type": "service_account","project_id": "..", ...}'
+export LAKEKEEPER_TEST__GCS_BUCKET=name-of-gcs-bucket-without-hns
+export LAKEKEEPER_TEST__GCS_HNS_BUCKET=name-of-gcs-bucket-with-hns
 ```
 
 You may then run a test via:
