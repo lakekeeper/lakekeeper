@@ -31,7 +31,7 @@ pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
 pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
-const ANONYMOUS_ACTOR: &'static Actor = &Actor::Anonymous;
+const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
@@ -65,8 +65,7 @@ impl RequestMetadata {
         match &self.actor {
             InternalActor::External(Actor::Principal(user_id)) => Some(user_id),
             InternalActor::External(Actor::Role { principal, .. }) => Some(principal),
-            InternalActor::External(Actor::Anonymous) => None,
-            InternalActor::LakekeeperInternal => None,
+            InternalActor::External(Actor::Anonymous) | InternalActor::LakekeeperInternal => None,
         }
     }
 
@@ -79,6 +78,7 @@ impl RequestMetadata {
         &self.request_method
     }
 
+    #[must_use]
     pub fn new_lakekeeper_internal() -> Self {
         Self {
             request_id: Uuid::now_v7(),
@@ -92,6 +92,8 @@ impl RequestMetadata {
     }
 
     // If this grants admin-level privileges:
+    #[must_use]
+    #[inline]
     pub fn has_admin_privileges(&self) -> bool {
         matches!(self.actor, InternalActor::LakekeeperInternal)
     }

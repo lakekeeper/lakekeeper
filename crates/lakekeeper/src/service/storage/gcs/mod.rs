@@ -21,7 +21,7 @@ use veil::Redact;
 
 use crate::{
     api::{
-        iceberg::{supported_endpoints, v1::DataAccess},
+        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig,
     },
     service::storage::{
@@ -314,12 +314,19 @@ impl GcsProfile {
     /// Generate the table configuration for GCS.
     pub(crate) async fn generate_table_config(
         &self,
-        _: DataAccess,
+        data_access: DataAccessMode,
         cred: &GcsCredential,
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
+
+        if matches!(data_access, DataAccessMode::ClientManaged) {
+            return Ok(TableConfig {
+                creds: table_properties.clone(),
+                config: table_properties,
+            });
+        }
 
         let (source, project_id) = self.get_token_source(cred).await?;
         let token = sts::downscope(

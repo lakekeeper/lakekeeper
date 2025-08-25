@@ -19,6 +19,12 @@ impl Prefix {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    #[inline]
+    #[must_use]
+    pub fn from_string(s: String) -> Self {
+        Self(s)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -24,7 +24,7 @@ pub mod v1 {
 
     pub use self::{
         namespace::{ListNamespacesQuery, NamespaceParameters, PaginationQuery},
-        tables::{DataAccess, ListTablesQuery, TableParameters},
+        tables::{DataAccess, DataAccessMode, ListTablesQuery, TableParameters},
         views::ViewParameters,
     };
     pub use crate::{
