@@ -20,13 +20,14 @@ mod test {
             iceberg::types::PageToken,
             management::v1::{warehouse::Service, ApiServer, GetWarehouseStatisticsQuery},
         },
-        tests::{random_request_metadata, spawn_drop_queues},
+        tests::{random_request_metadata, spawn_build_in_queues},
     };
 
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, 1, 1).await;
-        spawn_drop_queues(&setup.ctx, None);
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let queues_handle = spawn_build_in_queues(&setup.ctx, None, cancellation_token.clone());
         let whi = setup.warehouse.warehouse_id;
         let stats = ApiServer::get_warehouse_statistics(
             whi,
@@ -117,6 +118,8 @@ mod test {
         assert_eq!(new_stats.stats.first().unwrap().number_of_views, 1);
         assert_eq!(new_stats.stats.last().unwrap().number_of_tables, 1);
         assert_eq!(new_stats.stats.last().unwrap().number_of_views, 1);
+        cancellation_token.cancel();
+        queues_handle.await.unwrap();
     }
 }
 

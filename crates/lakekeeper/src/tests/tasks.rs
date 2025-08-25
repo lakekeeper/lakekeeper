@@ -22,7 +22,7 @@ mod test {
         implementations::postgres::PostgresCatalog,
         service::{
             task_queue::{
-                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, TaskInput,
+                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, TaskData, TaskInput,
                 TaskMetadata, TaskQueueRegistry, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
             },
             Catalog, Transaction,
@@ -37,28 +37,33 @@ mod test {
         }
 
         #[derive(Debug, Clone, Deserialize, Serialize, Copy, PartialEq)]
-        struct TaskState {
+        struct TestTaskData {
             tabular_id: Uuid,
         }
-        impl QueueConfigTrait for Config {}
+        impl TaskData for TestTaskData {}
+        const QUEUE_NAME: &str = "test_queue";
+        impl QueueConfigTrait for Config {
+            fn queue_name() -> &'static str {
+                QUEUE_NAME
+            }
+        }
         let setup = super::setup_tasks_test(pool).await;
         let ctx = setup.ctx.clone();
         let catalog_state = ctx.v1_state.catalog.clone();
-        let task_state = TaskState {
+        let task_state = TestTaskData {
             tabular_id: Uuid::now_v7(),
         };
 
         let (tx, rx) = async_channel::unbounded();
         let ctx_clone = setup.ctx.clone();
-        let queue_name = "test_queue";
 
         let result = Arc::new(Mutex::new(false));
         let result_clone = result.clone();
 
         let mut task_queue_registry = TaskQueueRegistry::new();
         task_queue_registry.register_queue::<Config>(QueueRegistration {
-            queue_name,
-            worker_fn: Arc::new(move || {
+            queue_name: QUEUE_NAME,
+            worker_fn: Arc::new(move |_| {
                 let ctx = ctx_clone.clone();
                 let rx = rx.clone();
                 let result_clone = result_clone.clone();
@@ -66,19 +71,19 @@ mod test {
                     let task_id = rx.recv().await.unwrap();
 
                     let task = PostgresCatalog::pick_new_task(
-                        queue_name,
+                        QUEUE_NAME,
                         DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
                         ctx.v1_state.catalog.clone(),
                     )
                     .await
                     .unwrap()
                     .unwrap();
-                    let config = task.task_config::<Config>().unwrap().unwrap();
+                    let config = task.queue_config::<Config>().unwrap().unwrap();
                     assert_eq!(config.some_val, "test_value");
 
                     assert_eq!(task_id, task.task_id);
 
-                    let task = task.task_state::<TaskState>().unwrap();
+                    let task = task.task_data::<TestTaskData>().unwrap();
                     assert_eq!(task, task_state);
                     *result_clone.lock().unwrap() = true;
                 })
@@ -91,7 +96,7 @@ mod test {
                 .unwrap();
         <PostgresCatalog as Catalog>::set_task_queue_config(
             setup.warehouse.warehouse_id,
-            queue_name,
+            QUEUE_NAME,
             SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(
                     serde_json::to_value(Config {
@@ -112,7 +117,7 @@ mod test {
             .unwrap();
 
         let task_id = PostgresCatalog::enqueue_task(
-            queue_name,
+            QUEUE_NAME,
             TaskInput {
                 task_metadata: TaskMetadata {
                     warehouse_id: setup.warehouse.warehouse_id,
@@ -130,13 +135,15 @@ mod test {
         transaction.commit().await.unwrap();
         tx.send(task_id).await.unwrap();
 
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
         let task_handle = tokio::task::spawn(
             task_queue_registry
-                .task_queues_runner()
+                .task_queues_runner(cancellation_token.clone())
                 .run_queue_workers(false),
         );
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        task_handle.abort();
+        cancellation_token.cancel();
+        task_handle.await.unwrap();
         assert!(
             *result.lock().unwrap(),
             "Task was not processed as expected"

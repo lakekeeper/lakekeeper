@@ -1386,20 +1386,18 @@ async fn test_list_prefix_boundaries_impl(
 /// of the specified size without allocating all of it at once.
 fn generate_test_data(size_mb: usize) -> Bytes {
     use bytes::{BufMut, BytesMut};
-    use rand::RngCore;
-
     const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
     let total_size = size_mb * CHUNK_SIZE;
 
     let mut buffer = BytesMut::with_capacity(total_size);
-    let mut rng = rand::rng();
+    let mut rng = fastrand::Rng::with_seed(42);
 
     // Generate data in 1MB chunks to avoid large allocations
     let mut remaining = total_size;
     while remaining > 0 {
         let chunk_size = remaining.min(CHUNK_SIZE);
         let mut chunk = vec![0u8; chunk_size];
-        rng.fill_bytes(&mut chunk);
+        rng.fill(&mut chunk);
         buffer.put_slice(&chunk);
         remaining -= chunk_size;
     }

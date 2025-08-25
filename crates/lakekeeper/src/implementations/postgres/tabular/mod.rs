@@ -9,6 +9,7 @@ use std::{
 
 use chrono::Utc;
 use http::StatusCode;
+use iceberg::ErrorKind;
 use iceberg_ext::NamespaceIdent;
 use lakekeeper_io::Location;
 use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
@@ -843,8 +844,12 @@ pub(crate) async fn drop_tabular(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found", tabular_id.typ_str()),
-                "NoSuchTabularError",
+                format!(
+                    "{} with ID {} not found",
+                    tabular_id.typ_str(),
+                    tabular_id.as_ref()
+                ),
+                ErrorKind::TableNotFound.to_string(),
                 Some(Box::new(e)),
             )
         } else {

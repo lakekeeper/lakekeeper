@@ -137,7 +137,7 @@ impl IOErrorExt {
     }
 }
 
-impl From<IOErrorExt> for IcebergErrorResponse {
+impl From<IOErrorExt> for ErrorModel {
     fn from(value: IOErrorExt) -> Self {
         let typ = value.to_type();
         let boxed = Box::new(value);
@@ -147,17 +147,30 @@ impl From<IOErrorExt> for IcebergErrorResponse {
 
         match boxed.as_ref() {
             IOErrorExt::FileDecompression(_) => {
-                ErrorModel::failed_dependency(message, typ, Some(boxed)).into()
+                ErrorModel::failed_dependency(message, typ, Some(boxed))
             }
             IOErrorExt::FileCompression(_) | IOErrorExt::Serialization(_) => {
-                ErrorModel::internal(message, typ, Some(boxed)).into()
+                ErrorModel::internal(message, typ, Some(boxed))
             }
-            IOErrorExt::Deserialization(_)
-            | IOErrorExt::InvalidLocation(_)
-            | IOErrorExt::IOError(_) => {
-                ErrorModel::bad_request(message.to_string(), typ, Some(boxed)).into()
+            IOErrorExt::Deserialization(_) | IOErrorExt::InvalidLocation(_) => {
+                ErrorModel::bad_request(message, typ, Some(boxed))
+            }
+            IOErrorExt::IOError(e) => {
+                let context = e
+                    .context()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                ErrorModel::bad_request(message, typ, Some(boxed)).append_details(context)
             }
         }
+    }
+}
+
+impl From<IOErrorExt> for IcebergErrorResponse {
+    fn from(value: IOErrorExt) -> Self {
+        let error_model: ErrorModel = value.into();
+        IcebergErrorResponse::from(error_model)
     }
 }
 

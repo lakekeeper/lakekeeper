@@ -39,6 +39,10 @@ utoipa = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+bytes = { workspace = true }
 futures-util = { version = "^0.3" }
+lakekeeper-io = { path = "../io", default-features = false, features = [
+    "storage-in-memory",
+] }
 lazy_static = { workspace = true }
 tokio = { workspace = true }

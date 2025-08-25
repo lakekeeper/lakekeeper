@@ -24,7 +24,7 @@ all = [
 sqlx-postgres = ["sqlx"]
 sqlx = ["dep:sqlx"]
 s3-signer = ["dep:aws-sigv4"]
-router = ["dep:tower-http"]
+router = ["dep:tower-http", "dep:tower"]
 nats = ["dep:async-nats"]
 default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka", "dep:openssl-src"]
@@ -56,6 +56,7 @@ base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
+fastrand = { workspace = true }
 figment = { workspace = true }
 figment_file_provider_adapter = { workspace = true }
 flate2 = { workspace = true }
@@ -86,7 +87,6 @@ openfga-client = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
-rand = "0.9.0"
 rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -99,7 +99,7 @@ thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
     "default",
     "request-id",

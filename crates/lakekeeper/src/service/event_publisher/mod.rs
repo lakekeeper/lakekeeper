@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fmt::{Debug, Display},
     sync::Arc,
 };
@@ -30,7 +29,7 @@ use crate::{
     },
     catalog::tables::{maybe_body_to_json, CommitContext},
     service::{
-        endpoint_hooks::{EndpointHook, ViewCommit},
+        endpoint_hooks::{EndpointHook, TableIdentToIdFn, ViewCommit},
         tabular_idents::TabularId,
     },
     CONFIG,
@@ -83,18 +82,17 @@ impl EndpointHook for CloudEventsPublisher {
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
         _commits: Arc<Vec<CommitContext>>,
-        table_ident_map: Arc<HashMap<TableIdent, TableId>>,
+        table_ident_to_id_fn: &TableIdentToIdFn,
         request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
-        let mut events = vec![];
-        let mut event_table_ids: Vec<(TableIdent, TableId)> = vec![];
-        let mut updates = vec![];
+        let estimated = request.table_changes.len();
+        let mut events = Vec::with_capacity(estimated);
+        let mut event_table_ids: Vec<(TableIdent, TableId)> = Vec::with_capacity(estimated);
         for commit_table_request in &request.table_changes {
             if let Some(id) = &commit_table_request.identifier {
-                if let Some(uuid) = table_ident_map.get(id) {
+                if let Some(uuid) = table_ident_to_id_fn(id) {
                     events.push(maybe_body_to_json(commit_table_request));
-                    event_table_ids.push((id.clone(), *uuid));
-                    updates.push(commit_table_request.updates.clone());
+                    event_table_ids.push((id.clone(), uuid));
                 }
             }
         }

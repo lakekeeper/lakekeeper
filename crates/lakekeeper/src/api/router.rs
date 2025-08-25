@@ -5,6 +5,7 @@ use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderName, HeaderValue, Method};
 use limes::Authenticator;
+use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
@@ -16,7 +17,7 @@ use crate::{
     api::{
         iceberg::v1::new_v1_full_router,
         management::v1::{api_doc as v1_api_doc, ApiServer},
-        shutdown_signal, ApiContext,
+        ApiContext,
     },
     request_metadata::{create_request_metadata_with_trace_and_project_fn, X_PROJECT_ID_HEADER},
     service::{
@@ -241,9 +242,17 @@ fn maybe_merge_swagger_router<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 ///
 /// # Errors
 /// Fails if the webserver panics
-pub async fn serve(listener: tokio::net::TcpListener, router: Router) -> anyhow::Result<()> {
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    cancellation_token: CancellationToken,
+) -> anyhow::Result<()> {
+    let cancellation_future = async move {
+        cancellation_token.cancelled().await;
+        tracing::info!("HTTP server shutdown requested (cancellation token)");
+    };
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(cancellation_future)
         .await
         .map_err(|e| anyhow::anyhow!(e).context("error running HTTP server"))
 }

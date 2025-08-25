@@ -72,21 +72,29 @@ pub struct ViewCommit {
     pub new_metadata_location: Location,
 }
 
+/// Function type used by hooks to resolve a `TableIdent` to its `TableId`.
+/// Implementations should be cheap and non-blocking.
+/// Note: Hooks receive this as a borrowed reference valid only for the duration of the call.
+/// Do not store it for use outside the async method invocation.
+pub type TableIdentToIdFn = dyn Fn(&TableIdent) -> Option<TableId> + Send + Sync;
+
 impl EndpointHookCollection {
-    pub(crate) async fn commit_transaction(
+    // Strict bounds on H needed as this is used in the `table_ident_to_id_fn` closure which is shared between threads
+    pub(crate) async fn commit_transaction<H: ::std::hash::BuildHasher + 'static + Send + Sync>(
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
         commits: Arc<Vec<CommitContext>>,
-        table_ident_map: Arc<HashMap<TableIdent, TableId>>,
+        table_ident_map: Arc<HashMap<TableIdent, TableId, H>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
+        let table_ident_to_id_fn = move |ident: &TableIdent| table_ident_map.get(ident).copied();
         futures::future::join_all(self.0.iter().map(|hook| {
             hook.commit_transaction(
                 warehouse_id,
                 request.clone(),
                 commits.clone(),
-                table_ident_map.clone(),
+                &table_ident_to_id_fn,
                 request_metadata.clone(),
             )
             .map_err(|e| {
@@ -364,7 +372,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _warehouse_id: WarehouseId,
         _request: Arc<CommitTransactionRequest>,
         _commits: Arc<Vec<CommitContext>>,
-        _table_ident_map: Arc<HashMap<TableIdent, TableId>>,
+        _table_ident_to_id_fn: &TableIdentToIdFn,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())

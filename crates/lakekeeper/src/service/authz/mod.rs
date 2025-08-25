@@ -139,7 +139,7 @@ impl TableUuid for TableId {
 
 impl TableUuid for TabularDetails {
     fn table_uuid(&self) -> TableId {
-        self.ident
+        self.table_id
     }
 }
 
@@ -176,7 +176,7 @@ pub enum NamespaceParent {
 /// every item. These default implementations are provided for backwards compatibility.
 pub trait Authorizer
 where
-    Self: Send + Sync + 'static + HealthExt + Clone,
+    Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
     /// API Doc
     fn api_doc() -> utoipa::openapi::OpenApi;

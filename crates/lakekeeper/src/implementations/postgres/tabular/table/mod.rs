@@ -64,7 +64,7 @@ where
     .await?
     .map(|(id, location)| match id {
         TabularId::Table(tab) => Ok(TabularDetails {
-            ident: tab.into(),
+            table_id: tab.into(),
             location,
         }),
         TabularId::View(_) => Err(ErrorModel::builder()
@@ -1159,7 +1159,7 @@ pub(crate) mod tests {
         // Its staged - should not have metadata_location
         let load = load_tables(
             warehouse_id,
-            vec![table_id],
+            [table_id],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -1200,7 +1200,7 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
         let load_result = load_tables(
             warehouse_id,
-            vec![table_id],
+            [table_id],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -1274,7 +1274,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1417,7 +1417,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         // Table id should be the same
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1465,7 +1465,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]

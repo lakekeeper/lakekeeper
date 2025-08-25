@@ -189,7 +189,7 @@ impl Catalog for super::PostgresCatalog {
     ) -> Result<Option<TableId>> {
         resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction)
             .await
-            .map(|x| x.map(|x| x.ident))
+            .map(|x| x.map(|x| x.table_id))
     }
 
     async fn table_idents_to_ids(

@@ -242,7 +242,7 @@ impl std::fmt::Debug for SecretsState {
             .field("vault_client", &"VaultClient")
             .field("secret_mount", &self.secret_mount)
             .field("vault_user", &self.vault_user)
-            .field("vault_password", &"REDACTED")
+            .field("vault_password", &"<REDACTED>")
             .field("health", &self.health)
             .finish()
     }

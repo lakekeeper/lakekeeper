@@ -2,36 +2,34 @@
 use std::{collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
 
 use itertools::{FoldWhile, Itertools};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
 
 #[async_trait::async_trait]
 pub trait HealthExt: Send + Sync + 'static {
     async fn health(&self) -> Vec<Health>;
     async fn update_health(&self);
-    async fn spawn_update_health_task(
+    async fn update_health_loop(
         self: Arc<Self>,
         refresh_interval: Duration,
         cancellation_token: tokio_util::sync::CancellationToken,
-    ) -> JoinHandle<()> {
-        tokio::task::spawn(async move {
-            loop {
-                self.update_health().await;
-                // Calculate jitter to avoid thundering herd problem
-                // Jitter is a random value between 0 and 500 milliseconds
-                let jitter = { rand::rng().next_u64() % 500 };
-                tokio::select! {
-                    () = cancellation_token.cancelled() => {
-                        // Gracefully exit when cancellation is requested
-                        break;
-                    }
-                    () = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {
-                        // Continue the loop after sleep
-                    }
-                }
+    ) {
+        loop {
+            // Exit promptly if already cancelled before doing any work
+            if cancellation_token.is_cancelled() {
+                break;
             }
-        })
+
+            self.update_health().await;
+
+            // Jitter is a random value between 0 and 500 milliseconds (inclusive)
+            let jitter = fastrand::u64(0..=500);
+            tokio::select! {
+                () = cancellation_token.cancelled() => break,
+                () = tokio::time::sleep(refresh_interval + Duration::from_millis(jitter)) => {}
+            }
+        }
     }
 }
 
@@ -103,24 +101,33 @@ impl ServiceHealthProvider {
         }
     }
 
-    pub async fn spawn_update_heath_checks(
+    pub fn spawn_update_health_checks<T: Send + 'static>(
         &self,
-        cancellation_token: tokio_util::sync::CancellationToken,
-    ) -> Vec<JoinHandle<()>> {
-        let mut join_handles = Vec::with_capacity(self.providers.len());
+        join_set: &mut JoinSet<Result<(), T>>,
+        cancellation_token: &CancellationToken,
+    ) -> Vec<(String, AbortHandle)> {
+        let mut abort_handles = Vec::with_capacity(self.providers.len());
         for (service_name, provider) in &self.providers {
             let provider = provider.clone();
-            join_handles.push(
+            let service_name_cloned = (*service_name).to_string();
+            let check_frequency_seconds = self.check_frequency_seconds;
+            let cancellation_token_cloned = cancellation_token.clone();
+            let abort_handle = join_set.spawn(async move {
                 provider
-                    .spawn_update_health_task(
-                        Duration::from_secs(self.check_frequency_seconds),
-                        cancellation_token.clone(),
+                    .update_health_loop(
+                        Duration::from_secs(check_frequency_seconds),
+                        cancellation_token_cloned,
                     )
-                    .await,
-            );
-            tracing::info!("Spawned health provider: {service_name}");
+                    .await;
+                Ok(())
+            });
+            abort_handles.push((
+                format!("Health Check for Service '{service_name_cloned}'"),
+                abort_handle,
+            ));
+            tracing::info!("Spawned Health Check for Service '{service_name}'");
         }
-        join_handles
+        abort_handles
     }
 
     pub async fn collect_health(&self) -> HealthState {

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::collections::{HashMap, HashSet};
 
 use iceberg::{
     spec::{TableMetadata, ViewMetadata},
@@ -41,8 +38,8 @@ use crate::{
         tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
             tabular_expiration_queue, tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue, tabular_purge_queue::TabularPurgePayload, Status, Task,
-            TaskCheckState, TaskFilter, TaskId, TaskInput, TaskMetadata,
+            tabular_purge_queue, tabular_purge_queue::TabularPurgePayload, Task, TaskCheckState,
+            TaskFilter, TaskId, TaskInput, TaskMetadata,
         },
     },
     SecretIdent,
@@ -262,10 +259,10 @@ impl TabularInfo {
 #[async_trait::async_trait]
 pub trait Catalog
 where
-    Self: Clone + Send + Sync + 'static,
+    Self: std::fmt::Debug + Clone + Send + Sync + 'static,
 {
     type Transaction: Transaction<Self::State>;
-    type State: Clone + Send + Sync + 'static + HealthExt;
+    type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
     /// Get data required for startup validations and server info endpoint
     async fn get_server_info(
@@ -812,52 +809,6 @@ where
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
-    async fn retrying_record_task_success(
-        task_id: TaskId,
-        details: Option<&str>,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) {
-        Self::retrying_record_success_or_failure(task_id, Status::Success(details), transaction)
-            .await;
-    }
-
-    async fn retrying_record_task_failure(
-        task: TaskId,
-        details: &str,
-        max_retries: i32,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) {
-        Self::retrying_record_success_or_failure(
-            task,
-            Status::Failure(details, max_retries),
-            transaction,
-        )
-        .await;
-    }
-
-    async fn retrying_record_success_or_failure(
-        task_id: TaskId,
-        result: Status<'_>,
-        mut transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) {
-        let mut retry = 0;
-        while let Err(e) = match result {
-            Status::Success(details) => {
-                Self::record_task_success(task_id, details, &mut transaction).await
-            }
-            Status::Failure(details, max_retries) => {
-                Self::record_task_failure(task_id, details, max_retries, &mut transaction).await
-            }
-        } {
-            tracing::error!("Failed to record {}: {:?}", result, e);
-            tokio::time::sleep(Duration::from_secs(1 + retry)).await;
-            retry += 1;
-            if retry > 5 {
-                tracing::error!("Giving up trying to record {}.", result);
-                break;
-            }
-        }
-    }
     /// Enqueue a batch of tasks to a task queue.
     ///
     /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
