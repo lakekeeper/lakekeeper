@@ -1,4 +1,19 @@
+[profile.default]
+default-filter = """
+    not package(lakekeeper-io)
+    and not test(::aws_enabled_tests::)
+    and not test(::aws_kms_enabled_tests::)
+    and not test(::azure_enabled_tests::)
+    and not test(::gcs_enabled_tests::)
+    and not test(::gcs_hns_enabled_tests::)
+    and not test(::kv2_enabled_tests::)
+    and not test(::minio_enabled_tests::)
+    and not test(::openfga_enabled_tests::)
+    and not test(::r2_enabled_tests::)
+"""
+
 [profile.ci]
+default-filter = "all()"
 failure-output = "immediate-final"
 fail-fast = false
 retries = 0
