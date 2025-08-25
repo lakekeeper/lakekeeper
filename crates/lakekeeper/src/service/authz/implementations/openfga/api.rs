@@ -1644,7 +1644,6 @@ mod tests {
     mod openfga {
         use openfga_client::client::TupleKey;
         use rand::Rng;
-        use sqlx::postgres;
         use uuid::Uuid;
 
         use super::super::*;
@@ -1656,9 +1655,9 @@ mod tests {
             },
         };
 
-        #[sqlx::test]
-        async fn test_cannot_assign_role_to_itself(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_cannot_assign_role_to_itself() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let role_id = RoleId::new(Uuid::nil());
@@ -1687,10 +1686,10 @@ mod tests {
             result.unwrap_err();
         }
 
-        #[sqlx::test]
+        #[tokio::test]
         #[tracing_test::traced_test]
-        async fn test_get_relations(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        async fn test_get_relations() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let relations: Vec<ServerAssignment> =
                 get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
@@ -1730,10 +1729,10 @@ mod tests {
         /// namespaces are then queried via `batch_check`. As there are many namespaces with random
         /// `modify` assignments, getting the correct response provides sufficiently high
         /// probability that `batch_check` is implemented correctly.
-        #[sqlx::test]
+        #[tokio::test]
         #[tracing_test::traced_test]
-        async fn test_batch_check(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        async fn test_batch_check() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
 
@@ -1823,9 +1822,9 @@ mod tests {
             );
         }
 
-        #[sqlx::test]
-        async fn test_get_allowed_actions_as_user(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_allowed_actions_as_user() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Principal(user_id.clone());
             let access: Vec<ServerAction> =
@@ -1856,9 +1855,9 @@ mod tests {
             }
         }
 
-        #[sqlx::test]
-        async fn test_get_allowed_actions_as_role(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_allowed_actions_as_role() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Role {
@@ -1893,9 +1892,9 @@ mod tests {
             }
         }
 
-        #[sqlx::test]
-        async fn test_get_allowed_actions_for_other_principal(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_allowed_actions_for_other_principal() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let role_id = RoleId::new(Uuid::now_v7());
             let actor = Actor::Principal(user_id.clone());
@@ -1949,9 +1948,9 @@ mod tests {
             }
         }
 
-        #[sqlx::test]
-        async fn test_checked_write(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_checked_write() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let user1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user2_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
@@ -1986,9 +1985,9 @@ mod tests {
             assert_eq!(relations.len(), 2);
         }
 
-        #[sqlx::test]
-        async fn test_assign_to_role(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_assign_to_role() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let user_id_owner = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
             let role_id_1 = RoleId::new(Uuid::nil());
@@ -2027,9 +2026,9 @@ mod tests {
             assert_eq!(relations.len(), 3);
         }
 
-        #[sqlx::test]
-        async fn test_assign_to_project(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_assign_to_project() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let user_id_owner = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user_id_assignee = UserId::new_unchecked("kubernetes", &Uuid::nil().to_string());
@@ -2070,9 +2069,9 @@ mod tests {
             assert_eq!(relations.len(), 4);
         }
 
-        #[sqlx::test]
-        async fn test_set_namespace_managed_access(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_set_namespace_managed_access() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let namespace_id = NamespaceId::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &namespace_id)
@@ -2103,9 +2102,9 @@ mod tests {
                 .unwrap();
         }
 
-        #[sqlx::test]
-        async fn test_warehouse_managed_access(pool: postgres::PgPool) {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_warehouse_managed_access() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let warehouse_id = WarehouseId::from(Uuid::now_v7());
             let managed = get_managed_access(&authorizer, &warehouse_id)

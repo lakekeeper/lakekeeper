@@ -550,7 +550,7 @@ mod tests {
             CreateNamespaceResponse,
         ) {
             let prof = crate::catalog::test::memory_io_profile();
-            let authorizer = authorizer_for_empty_store(pool.clone()).await.1;
+            let authorizer = authorizer_for_empty_store().await.1;
             let (ctx, warehouse) = crate::catalog::test::setup(
                 pool.clone(),
                 prof,

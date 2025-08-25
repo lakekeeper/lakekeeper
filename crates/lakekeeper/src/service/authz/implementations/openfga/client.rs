@@ -9,8 +9,7 @@ use tokio::sync::RwLock;
 
 use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use crate::{
-    service::{authz::implementations::openfga::migration::get_active_auth_model_id, Catalog},
-    OpenFGAAuth,
+    service::authz::implementations::openfga::migration::get_active_auth_model_id, OpenFGAAuth,
 };
 
 pub type UnauthenticatedOpenFGAAuthorizer = OpenFGAAuthorizer;
@@ -61,9 +60,9 @@ pub(crate) async fn new_client_from_config() -> OpenFGAResult<BasicOpenFgaServic
 /// - Server connection fails
 /// - Store (name) not found (from crate Config)
 /// - Active Authorization model not found
-pub(crate) async fn new_authorizer_from_config<C: Catalog>() -> OpenFGAResult<OpenFGAAuthorizer> {
+pub(crate) async fn new_authorizer_from_config() -> OpenFGAResult<OpenFGAAuthorizer> {
     let client = new_client_from_config().await?;
-    new_authorizer::<C>(client, None, ConsistencyPreference::MinimizeLatency).await
+    new_authorizer(client, None, ConsistencyPreference::MinimizeLatency).await
 }
 
 /// Create a new `OpenFGA` authorizer with the given client.
@@ -74,14 +73,14 @@ pub(crate) async fn new_authorizer_from_config<C: Catalog>() -> OpenFGAResult<Op
 /// - Active Authorization model not found
 /// - Server connection fails
 ///
-pub(crate) async fn new_authorizer<C: Catalog>(
+pub(crate) async fn new_authorizer(
     mut service_client: BasicOpenFgaServiceClient,
     store_name: Option<String>,
     consistency: ConsistencyPreference,
 ) -> OpenFGAResult<OpenFGAAuthorizer> {
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());
     let auth_model_id =
-        get_active_auth_model_id::<C>(&mut service_client, Some(store_name.clone())).await?;
+        get_active_auth_model_id(&mut service_client, Some(store_name.clone())).await?;
     let store = service_client
         .get_store_by_name(&store_name)
         .await?

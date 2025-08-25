@@ -643,13 +643,13 @@ mod tests {
             CONFIG,
         };
 
-        // Tests must write tuples according to v4 model manually.
+        // Tests must write tuples according to v3 model manually.
         // Writing through methods like `authorizer.create_*` may create tuples different from
         // what v4 migration is designed to handle.
 
-        #[sqlx::test]
-        async fn test_get_all_projects(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_projects() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             authorizer
                 .write(
@@ -695,9 +695,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_projects_empty_server(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_projects_empty_server() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Test with a server that has no projects
             let projects = get_all_projects(&authorizer.client, CONFIG.server_id).await?;
@@ -705,9 +705,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_warehouses(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_warehouses() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             authorizer
                 .write(
@@ -764,9 +764,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_warehouses_empty_project(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_warehouses_empty_project() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Test with a project that has no warehouses
             let projects = vec!["project:empty".to_string()];
@@ -775,9 +775,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_namespaces(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_namespaces() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // warehouse:w1 -> ns1 -> ns2 -> ns3
             //            |--> ns4
@@ -850,9 +850,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_namespaces_empty_warehouse(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_namespaces_empty_warehouse() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             let namespaces =
                 get_all_namespaces(&authorizer.client, "warehouse:empty".to_string()).await?;
@@ -860,9 +860,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_tabulars(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tabulars() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Create structure:
             // namespace:ns1 -> table:t1, view:v1
@@ -939,9 +939,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_tabulars_empty_namespaces(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tabulars_empty_namespaces() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Test with namespaces that have no tables or views
             let namespaces = vec![
@@ -953,9 +953,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_tuples_with_object(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tuples_with_object() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             authorizer
                 .write(
@@ -1023,9 +1023,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_tuples_with_object_empty(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tuples_with_object_empty() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Test with an object that doesn't exist
             let tuples =
@@ -1036,9 +1036,9 @@ mod tests {
         }
 
         /// Testing for user type `table` which can be the user in only one relation as of v3.
-        #[sqlx::test]
-        async fn test_get_all_tuples_with_user(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tuples_with_user() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Write tuples with "table:target-table" as user and various objects
             authorizer
@@ -1083,11 +1083,9 @@ mod tests {
         }
 
         /// Testing for user type `namespace` which can be the user in multiple relations.
-        #[sqlx::test]
-        async fn test_get_all_tuples_with_user_multiple_results(
-            pool: sqlx::PgPool,
-        ) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tuples_with_user_multiple_results() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Write tuples with "namespace:target-ns" as user in multiple relations
             authorizer
@@ -1165,9 +1163,9 @@ mod tests {
             Ok(())
         }
 
-        #[sqlx::test]
-        async fn test_get_all_tuples_with_user_empty(pool: sqlx::PgPool) -> anyhow::Result<()> {
-            let (_, authorizer, _) = authorizer_for_empty_store(pool).await;
+        #[tokio::test]
+        async fn test_get_all_tuples_with_user_empty() -> anyhow::Result<()> {
+            let (_, authorizer) = authorizer_for_empty_store().await;
 
             // Test with a user that doesn't exist
             let tuples =

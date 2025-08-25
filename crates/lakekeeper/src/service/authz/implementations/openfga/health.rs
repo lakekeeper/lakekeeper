@@ -44,25 +44,18 @@ mod tests {
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
-        use crate::{
-            implementations::postgres::{self, PostgresCatalog},
-            service::authz::implementations::openfga::{
-                client::new_authorizer, migrate, new_client_from_config,
-            },
+        use crate::service::authz::implementations::openfga::{
+            client::new_authorizer, migrate, new_client_from_config,
         };
 
-        #[sqlx::test]
-        async fn test_health(pool: sqlx::PgPool) {
+        #[tokio::test]
+        async fn test_health() {
             let client = new_client_from_config().await.unwrap();
 
             let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
-            let catalog = PostgresCatalog {};
-            let catalog_state = postgres::CatalogState::from_pools(pool.clone(), pool.clone());
-            migrate(&client, Some(store_name.clone()), catalog, catalog_state)
-                .await
-                .unwrap();
+            migrate(&client, Some(store_name.clone())).await.unwrap();
 
-            let authorizer = new_authorizer::<PostgresCatalog>(
+            let authorizer = new_authorizer(
                 client.clone(),
                 Some(store_name),
                 ConsistencyPreference::HigherConsistency,

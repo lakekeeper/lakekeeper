@@ -10,7 +10,6 @@
 use clap::{Parser, Subcommand};
 use lakekeeper::{
     api::management::v1::api_doc as v1_api_doc,
-    implementations::{get_default_catalog_from_config, postgres::PostgresCatalog},
     service::{
         authz::{implementations::openfga::UnauthenticatedOpenFGAAuthorizer, AllowAllAuthorizer},
         task_queue::BUILT_IN_API_CONFIGS,
@@ -137,13 +136,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Migrate {}) => {
             print_info();
             println!("Migrating authorizer...");
-            let catalog = PostgresCatalog {};
-            let (catalog_state, _, _) = get_default_catalog_from_config().await?;
-            lakekeeper::service::authz::implementations::migrate_default_authorizer(
-                catalog,
-                catalog_state,
-            )
-            .await?;
+            lakekeeper::service::authz::implementations::migrate_default_authorizer().await?;
             println!("Authorizer migration complete.");
 
             println!("Migrating database...");
