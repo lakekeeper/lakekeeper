@@ -577,12 +577,12 @@ impl FromStr for PgSslMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_ref() {
-            "disabled" => Ok(Self::Disable),
+            "disabled" | "disable" => Ok(Self::Disable),
             "allow" => Ok(Self::Allow),
             "prefer" => Ok(Self::Prefer),
             "require" => Ok(Self::Require),
-            "verifyca" => Ok(Self::VerifyCa),
-            "verifyfull" => Ok(Self::VerifyFull),
+            "verifyca" | "verify-ca" | "verify_ca" => Ok(Self::VerifyCa),
+            "verifyfull" | "verify-full" | "verify_full" => Ok(Self::VerifyFull),
             _ => Err(anyhow!("PgSslMode not supported: '{}'", s)),
         }
     }
@@ -800,6 +800,18 @@ mod test {
         });
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disable");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "Disable");
             let config = get_config();
             assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
             Ok(())
