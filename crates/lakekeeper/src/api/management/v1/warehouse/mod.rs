@@ -987,11 +987,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 )
             })?;
         } else {
-            let existing_queue_names = task_queues.queue_names().await;
+            let mut existing_queue_names = task_queues.queue_names().await;
+            existing_queue_names.sort_unstable();
+            let existing_queue_names = existing_queue_names.join(", ");
             return Err(ErrorModel::bad_request(
-                format!(
-                    "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names:?}]"
-                ),
+                format!("Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"),
                 "QueueNotFound",
                 None,
             )

@@ -106,7 +106,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
 
     // Spawn task queue workers
     let cancellation_token = crate::CancellationToken::new();
-    let queues_future = spawn_build_in_queues(
+    let queues_handle = spawn_build_in_queues(
         &api_context,
         Some(std::time::Duration::from_secs(1)),
         cancellation_token.clone(),
@@ -132,5 +132,5 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         }
     }
     cancellation_token.cancel();
-    queues_future.await.unwrap();
+    queues_handle.await.unwrap();
 }
