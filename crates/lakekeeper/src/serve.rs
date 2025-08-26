@@ -31,13 +31,19 @@ use crate::{
 /// Type alias for a function that registers additional background services.
 ///
 /// # Arguments
-/// - `JoinSet`: A set of tasks which should be used to spawn the background service.
+/// - `JoinSet`: A collection which should be used to spawn the background service.
 /// - `CancellationToken`: A token to signal cancellation of the background service.
 ///
 /// # Returns
 /// - `Vec<(String, tokio::task::AbortHandle)>`: A vector of tuples containing the name of the service and its associated abort handle.
-pub type RegisterBackgroundServiceFn =
-    fn(&mut JoinSet<Result<(), anyhow::Error>>, CancellationToken) -> Vec<(String, AbortHandle)>;
+pub type RegisterBackgroundServiceFn<A, C, S> = fn(
+    &mut JoinSet<Result<(), anyhow::Error>>,
+    CancellationToken,
+    ApiContext<State<A, C, S>>,
+) -> Vec<(String, AbortHandle)>;
+
+pub type RegisterTaskQueueFn<A, C, S> =
+    fn(&mut TaskQueueRegistry, ApiContext<State<A, C, S>>) -> anyhow::Result<()>;
 
 /// Helper function to process the result of a service task completion
 fn handle_service_completion(
@@ -114,14 +120,14 @@ pub struct ServeConfiguration<
     pub enable_built_in_task_queues: bool,
     /// Additional task queues to run. Tuples of type:
     #[builder(default)]
-    pub register_additional_task_queues_fn: Option<fn(&mut TaskQueueRegistry)>,
+    pub register_additional_task_queues_fn: Vec<RegisterTaskQueueFn<A, C, S>>,
     /// Additional endpoint hooks to register.
     /// Emitting cloud events is always registered.
     #[builder(default)]
     pub additional_endpoint_hooks: Option<EndpointHookCollection>,
     /// Additional background services / futures to await.
     #[builder(default)]
-    pub additional_background_services: Vec<RegisterBackgroundServiceFn>,
+    pub register_additional_background_services_fn: Vec<RegisterBackgroundServiceFn<A, C, S>>,
 }
 
 /// Starts the service with the provided configuration.
@@ -147,7 +153,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
         additional_endpoint_hooks,
-        additional_background_services,
+        register_additional_background_services_fn: additional_background_services,
     } = config;
 
     let cancellation_token = CancellationToken::new();
@@ -230,23 +236,18 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         },
     };
 
-    if let Some(register_fn) = register_additional_task_queues_fn {
-        register_fn(&mut task_queue_registry);
+    for register_fn in register_additional_task_queues_fn {
+        register_fn(&mut task_queue_registry, state.clone())?;
     }
 
     // Router
     let mut router = new_full_router::<C, _, _, _>(RouterArgs {
         authenticator: authenticator.clone(),
-        authorizer: authorizer.clone(),
-        catalog_state: catalog_state.clone(),
-        secrets_state: secrets_state.clone(),
-        table_change_checkers: contract_verification,
+        state: state.clone(),
         service_health_provider: health_provider.clone(),
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
-        hooks,
-        registered_task_queues: task_queue_registry.registered_task_queues(),
     })
     .await?;
 
@@ -306,8 +307,11 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
 
     // Execute additional background services:
     for additional_service_register_fn in additional_background_services {
-        let abort_handles =
-            additional_service_register_fn(&mut service_futures, cancellation_token.clone());
+        let abort_handles = additional_service_register_fn(
+            &mut service_futures,
+            cancellation_token.clone(),
+            state.clone(),
+        );
         for (service_name, abort_handle) in abort_handles {
             tracing::info!("Spawned background service: {service_name}");
             service_ids.insert(abort_handle.id(), service_name);

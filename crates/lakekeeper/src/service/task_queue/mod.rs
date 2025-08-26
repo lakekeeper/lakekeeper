@@ -1000,10 +1000,13 @@ pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
 #[cfg(test)]
 mod test {
 
-    use std::time::Duration;
+    use super::*;
 
+    use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
+    use std::time::Duration;
     use tracing_test::traced_test;
+    use utoipa::ToSchema;
 
     use crate::{
         api::{
@@ -1029,50 +1032,59 @@ mod test {
         // This test verifies that RegisteredTaskQueues instances share the same
         // interior mutable state, so that tasks registered later are reflected
         // in previously created RegisteredTaskQueues instances.
-        
-        let mut registry = crate::service::task_queue::TaskQueueRegistry::new();
-        
-        // Create an initial RegisteredTaskQueues instance before registering any queues
-        let initial_queues = registry.registered_task_queues();
-        
-        // Verify registry starts empty and initial_queues reflects this
-        assert_eq!(registry.len().await, 0);
-        assert!(registry.is_empty().await);
-        assert!(initial_queues.api_config().await.is_empty());
-        
-        // Register a test queue
-        use super::QueueConfig;
-        use serde::{Deserialize, Serialize};
-        use utoipa::ToSchema;
-        
+
         #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
         struct TestQueueConfig {
             test_field: String,
         }
-        
+
         impl QueueConfig for TestQueueConfig {
             fn queue_name() -> &'static str {
                 "test-queue"
             }
         }
-        
-        registry.register_queue::<TestQueueConfig>(super::QueueRegistration {
-            queue_name: "test-queue",
-            worker_fn: std::sync::Arc::new(move |_cancellation_token| {
-                Box::pin(async {
-                    // Empty worker for testing
-                })
-            }),
-            num_workers: 1,
-        }).await;
-        
+
+        // Register another queue and verify both instances see it
+        #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+        struct SecondTestQueueConfig {
+            other_field: i32,
+        }
+
+        impl QueueConfig for SecondTestQueueConfig {
+            fn queue_name() -> &'static str {
+                "second-test-queue"
+            }
+        }
+
+        let mut registry = crate::service::task_queue::TaskQueueRegistry::new();
+
+        // Create an initial RegisteredTaskQueues instance before registering any queues
+        let initial_queues = registry.registered_task_queues();
+
+        // Verify registry starts empty and initial_queues reflects this
+        assert_eq!(registry.len().await, 0);
+        assert!(registry.is_empty().await);
+        assert!(initial_queues.api_config().await.is_empty());
+
+        registry
+            .register_queue::<TestQueueConfig>(super::QueueRegistration {
+                queue_name: "test-queue",
+                worker_fn: std::sync::Arc::new(move |_cancellation_token| {
+                    Box::pin(async {
+                        // Empty worker for testing
+                    })
+                }),
+                num_workers: 1,
+            })
+            .await;
+
         // Create another RegisteredTaskQueues instance after registration
         let later_queues = registry.registered_task_queues();
-        
+
         // Registry should now show the registered queue
         assert_eq!(registry.len().await, 1);
         assert!(!registry.is_empty().await);
-        
+
         // Both RegisteredTaskQueues instances should now see the registered queue due to shared state
         let initial_api_config = initial_queues.api_config().await;
         let later_api_config = later_queues.api_config().await;
@@ -1080,56 +1092,71 @@ mod test {
         assert_eq!(later_api_config.len(), 1);
         assert_eq!(initial_api_config[0].queue_name, "test-queue");
         assert_eq!(later_api_config[0].queue_name, "test-queue");
-        
+
         // Both should have access to the validator function
-        assert!(initial_queues.validate_config_fn("test-queue").await.is_some());
-        assert!(later_queues.validate_config_fn("test-queue").await.is_some());
-        assert!(initial_queues.validate_config_fn("non-existent").await.is_none());
-        assert!(later_queues.validate_config_fn("non-existent").await.is_none());
-        
-        // Register another queue and verify both instances see it
-        #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-        struct SecondTestQueueConfig {
-            other_field: i32,
-        }
-        
-        impl QueueConfig for SecondTestQueueConfig {
-            fn queue_name() -> &'static str {
-                "second-test-queue"
-            }
-        }
-        
-        registry.register_queue::<SecondTestQueueConfig>(super::QueueRegistration {
-            queue_name: "second-test-queue",
-            worker_fn: std::sync::Arc::new(move |_cancellation_token| {
-                Box::pin(async {
-                    // Empty worker for testing
-                })
-            }),
-            num_workers: 2,
-        }).await;
-        
+        assert!(initial_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(later_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(initial_queues
+            .validate_config_fn("non-existent")
+            .await
+            .is_none());
+        assert!(later_queues
+            .validate_config_fn("non-existent")
+            .await
+            .is_none());
+
+        registry
+            .register_queue::<SecondTestQueueConfig>(super::QueueRegistration {
+                queue_name: "second-test-queue",
+                worker_fn: std::sync::Arc::new(move |_cancellation_token| {
+                    Box::pin(async {
+                        // Empty worker for testing
+                    })
+                }),
+                num_workers: 2,
+            })
+            .await;
+
         // Registry should now show both queues
         assert_eq!(registry.len().await, 2);
-        
+
         // Both RegisteredTaskQueues instances should now see both queues due to shared interior mutable state
         let initial_api_config = initial_queues.api_config().await;
         let later_api_config = later_queues.api_config().await;
         assert_eq!(initial_api_config.len(), 2);
         assert_eq!(later_api_config.len(), 2);
-        
+
         // Check that both queues are accessible from both instances
-        assert!(initial_queues.validate_config_fn("test-queue").await.is_some());
-        assert!(initial_queues.validate_config_fn("second-test-queue").await.is_some());
-        assert!(later_queues.validate_config_fn("test-queue").await.is_some());
-        assert!(later_queues.validate_config_fn("second-test-queue").await.is_some());
-        
+        assert!(initial_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(initial_queues
+            .validate_config_fn("second-test-queue")
+            .await
+            .is_some());
+        assert!(later_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(later_queues
+            .validate_config_fn("second-test-queue")
+            .await
+            .is_some());
+
         // Verify that the queue names are correctly registered in both instances
-        let mut initial_queue_names: Vec<_> = initial_api_config.iter().map(|q| q.queue_name).collect();
+        let mut initial_queue_names: Vec<_> =
+            initial_api_config.iter().map(|q| q.queue_name).collect();
         let mut later_queue_names: Vec<_> = later_api_config.iter().map(|q| q.queue_name).collect();
-        initial_queue_names.sort();
-        later_queue_names.sort();
-        
+        initial_queue_names.sort_unstable();
+        later_queue_names.sort_unstable();
+
         assert_eq!(initial_queue_names, vec!["second-test-queue", "test-queue"]);
         assert_eq!(later_queue_names, vec!["second-test-queue", "test-queue"]);
     }

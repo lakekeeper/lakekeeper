@@ -8,8 +8,12 @@ use limes::Authenticator;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{
-    catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
-    sensitive_headers::SetSensitiveHeadersLayer, timeout::TimeoutLayer, trace, trace::TraceLayer,
+    catch_panic::CatchPanicLayer,
+    compression::CompressionLayer,
+    cors::AllowOrigin,
+    sensitive_headers::SetSensitiveHeadersLayer,
+    timeout::TimeoutLayer,
+    trace::{self, TraceLayer},
     ServiceBuilderExt,
 };
 
@@ -23,10 +27,8 @@ use crate::{
     service::{
         authn::{auth_middleware_fn, AuthMiddlewareState},
         authz::Authorizer,
-        contract_verification::ContractVerifiers,
-        endpoint_hooks::EndpointHookCollection,
         health::ServiceHealthProvider,
-        task_queue::{QueueApiConfig, RegisteredTaskQueues},
+        task_queue::QueueApiConfig,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
@@ -42,16 +44,11 @@ static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(||
 
 pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {
     pub authenticator: Option<N>,
-    pub authorizer: A,
-    pub catalog_state: C::State,
-    pub secrets_state: S,
-    pub table_change_checkers: ContractVerifiers,
+    pub state: ApiContext<State<A, C, S>>,
     pub service_health_provider: ServiceHealthProvider,
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
-    pub hooks: EndpointHookCollection,
-    pub registered_task_queues: RegisteredTaskQueues,
 }
 
 impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -60,9 +57,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RouterArgs")
             .field("authorizer", &"Authorizer")
-            .field("catalog_state", &"CatalogState")
-            .field("secrets_state", &"SecretsState")
-            .field("table_change_checkers", &self.table_change_checkers)
+            .field("state", &self.state)
             .field("authenticator", &self.authenticator)
             .field("service_health_provider", &self.service_health_provider)
             .field("cors_origins", &self.cors_origins)
@@ -74,8 +69,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
                 "endpoint_statistics_tracker_tx",
                 &self.endpoint_statistics_tracker_tx,
             )
-            .field("endpoint_hooks", &self.hooks)
-            .field("registered_task_queues", &self.registered_task_queues)
             .finish()
     }
 }
@@ -92,20 +85,17 @@ pub async fn new_full_router<
 >(
     RouterArgs {
         authenticator,
-        authorizer,
-        catalog_state,
-        secrets_state,
-        table_change_checkers,
+        state,
         service_health_provider,
         cors_origins,
         metrics_layer,
         endpoint_statistics_tracker_tx,
-        hooks,
-        registered_task_queues,
+        // registered_task_queues,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::catalog::CatalogServer<C, A, S>, State<A, C, S>>();
 
+    let authorizer = state.v1_state.authz.clone();
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
     let maybe_cors_layer = get_cors_layer(cors_origins);
 
@@ -113,7 +103,7 @@ pub async fn new_full_router<
         option_layer(Some(axum::middleware::from_fn_with_state(
             AuthMiddlewareState {
                 authenticator,
-                authorizer: authorizer.clone(),
+                authorizer: state.v1_state.authz.clone(),
             },
             auth_middleware_fn,
         )))
@@ -136,7 +126,7 @@ pub async fn new_full_router<
                 Json(health).into_response()
             }),
         );
-    let registered_api_config = registered_task_queues.api_config().await;
+    let registered_api_config = state.v1_state.registered_task_queues.api_config().await;
     let router = maybe_merge_swagger_router(router, registered_api_config.iter().collect())
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
@@ -159,16 +149,7 @@ pub async fn new_full_router<
                 .layer(maybe_cors_layer)
                 .propagate_x_request_id(),
         )
-        .with_state(ApiContext {
-            v1_state: State {
-                authz: authorizer,
-                catalog: catalog_state,
-                secrets: secrets_state,
-                contract_verifiers: table_change_checkers,
-                registered_task_queues,
-                hooks,
-            },
-        });
+        .with_state(state);
 
     Ok(if let Some(metrics_layer) = metrics_layer {
         router.layer(metrics_layer)
