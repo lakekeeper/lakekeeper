@@ -236,6 +236,9 @@ jobs:
           LAKEKEEPER_TEST__S3_SECRET_KEY: minio-root-password
           LAKEKEEPER_TEST__S3_ENDPOINT: http://localhost:9000
 
+          LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
+          LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
+
           TEST_OPENFGA: 1
           LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcs.json
