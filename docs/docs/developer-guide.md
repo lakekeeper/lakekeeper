@@ -34,7 +34,7 @@ just check-clippy
 # formatting the code. You may have to install nightly rust toolchain
 just fix-format
 ```
-Keep in mind that some tests are gated by `TEST_*` env vars. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for `needs_env_var` within files ending with `.rs`.
+Keep in mind that some tests are excluded by the `default-filter` in `.config/nextest.toml`. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for modules whose name contains `_integration_tests` within files ending with `.rs`.
 There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
 If you made any changes to SQL queries, please follow [Working with SQLx](#working-with-sqlx) before submitting your PR.
 
@@ -103,8 +103,6 @@ docker run -d -p 8200:8200 --cap-add=IPC_LOCK -e 'VAULT_DEV_ROOT_TOKEN_ID=myroot
 
 # append some more env vars to the .env file, it should already have PG related entries defined above.
 
-# this will enable the KV2 tests
-echo 'export TEST_KV2=1' >> .env
 # the values below configure KV2
 echo 'export ICEBERG_REST__KV2__URL="http://localhost:8200"' >> .env
 echo 'export ICEBERG_REST__KV2__USER="test"' >> .env
@@ -115,7 +113,9 @@ source .env
 # setup vault
 ./tests/vault-setup.sh http://localhost:8200
 
-cargo test --all-features --all-targets
+# Select kv2 tests
+cargo nextest run --all-features --all-targets \
+    --ignore-default-filter -E "test(::kv2_integration_tests::)"
 ```
 
 ## Test cloud storage profiles
@@ -123,9 +123,6 @@ cargo test --all-features --all-targets
 Currently, we're not aware of a good way of testing cloud storage integration against local deployments. That means, to test against AWS S3, GCS and ADLS Gen2, you need to set the following environment variables. For more information, take a look at the [Storage Guide](storage.md). A sample `.env` could look like this:
 
 ```sh
-# TEST_AZURE=<some-value> controls a proc macro which either includes or excludes the azure tests
-# if you compiled without TEST_AZURE, you'll have to change a file or do a cargo clean before rerunning tests. The same applies for the TEST_AWS and TEST_MINIO env vars.
-export TEST_AZURE=1
 export LAKEKEEPER_TEST__AZURE_TENANT_ID=<your tenant id>
 export LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM=<your azure adls filesystem name>
 export LAKEKEEPER_TEST__AZURE_STORAGE_ACCOUNT_NAME=<your azure storage account name>
@@ -135,7 +132,6 @@ export LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=<your entra id app registration clie
 # Auth Method 2: Shared Key
 export LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY=<shared key>
 
-export TEST_AWS=1
 export AWS_S3_BUCKET=<your aws s3 bucket>
 export AWS_S3_REGION=<your aws s3 region>
 export AWS_S3_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
@@ -143,24 +139,23 @@ export AWS_S3_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 export AWS_S3_STS_ROLE_ARN=arn:aws:iam::123456789012:role/role-name
 
 # the values below should work with the default minio in our docker-compose
-export TEST_MINIO=1
 export LAKEKEEPER_TEST__S3_BUCKET=tests
 export LAKEKEEPER_TEST__S3_REGION=local
 export LAKEKEEPER_TEST__S3_ACCESS_KEY=minio-root-user
 export LAKEKEEPER_TEST__S3_SECRET_KEY=minio-root-password
 export LAKEKEEPER_TEST__S3_ENDPOINT=http://localhost:9000
 
-export TEST_GCS=1
 export LAKEKEEPER_TEST__GCS_CREDENTIAL='{"type": "service_account","project_id": "..", ...}'
 export LAKEKEEPER_TEST__GCS_BUCKET=name-of-gcs-bucket-without-hns
 export LAKEKEEPER_TEST__GCS_HNS_BUCKET=name-of-gcs-bucket-with-hns
 ```
 
-You may then run a test via:
+You may then run tests by ignoring the nextest's default filter and selecting the desired tests:
 
 ```sh
 source .example.env-from-above
-cargo test service::storage::s3::test::aws::test_can_validate
+cargo nextest run --all-features --ignore-default-filter -E "test(::aws_integration_tests::)"
+# see .config/nextest.toml for all filters
 ```
 
 ## Running integration test
@@ -169,7 +164,7 @@ Our integration tests are written in Python and use pytest. They are located in 
 
 ### Running Authorization unit tests
 
-Some authorization unit tests need to be run against an OpenFGA server. They are enabled only if TEST_OPENFGA is set. The workflow for executing them is:
+Some authorization unit tests need to be run against an OpenFGA server. They are excluded by our nextest `default-filter`. The workflow for executing them is:
 
 ```bash
 # Start an OpenFGA server in a docker container
@@ -178,9 +173,8 @@ docker rm --force openfga-client && docker run -d --name openfga-client -p 36080
 # Set Lakekeeper's OpenFGA endpoint
 export LAKEKEEPER_TEST__OPENFGA__ENDPOINT="http://localhost:36081"
 
-# Enable and run the tests
-export TEST_OPENFGA=1
-cargo nextest run --all-features --lib openfga
+# Use a filterset to select the tests
+cargo nextest run --all-features --ignore-default-filter -E "test(::openfga_integration_tests::)"
 ```
 
 ## Extending Authz
