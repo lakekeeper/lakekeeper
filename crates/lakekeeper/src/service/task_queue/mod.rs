@@ -554,8 +554,8 @@ pub struct SpecializedTask<C: QueueConfig, P: TaskData> {
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub attempt: i32,
-    pub(crate) config: Option<C>,
-    pub(crate) data: P,
+    pub config: Option<C>,
+    pub data: P,
 }
 
 #[derive(Debug, Clone, Copy)]

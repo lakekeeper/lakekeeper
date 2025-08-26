@@ -56,7 +56,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
             .await;
 
         let Some(task) = task else {
-            tracing::info!("Graceful shutdown: exiting tabular purge worker");
+            tracing::info!("Graceful shutdown: exiting `{QUEUE_NAME}` worker");
             return;
         };
 
