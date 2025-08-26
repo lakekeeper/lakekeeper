@@ -18,9 +18,7 @@ default-filter = """
 default-filter = "test(::gcp_system_credentials_integration_tests::)"
 
 [profile.ci]
-default-filter = "test(::gcp_system_credentials_integration_tests::)"
-# TODO use filter below
-# default-filter = "all()"
+default-filter = "all()"
 failure-output = "immediate-final"
 fail-fast = false
 retries = 0
