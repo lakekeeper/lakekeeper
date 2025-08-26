@@ -243,10 +243,10 @@ mod tests {
         remove_all(&io, &folder_2).await.unwrap();
     }
 
-    pub(crate) mod aws_enabled_tests {
+    pub(crate) mod aws_integration_tests {
         use super::*;
         use crate::service::storage::{
-            s3::test::aws_enabled_tests::get_storage_profile, StorageCredential, StorageProfile,
+            s3::test::aws_integration_tests::get_storage_profile, StorageCredential, StorageProfile,
         };
 
         #[tokio::test]
@@ -259,10 +259,10 @@ mod tests {
         }
     }
 
-    pub(crate) mod azure_enabled_tests {
+    pub(crate) mod azure_integration_tests {
         use super::*;
         use crate::service::storage::{
-            az::test::azure_enabled_tests::{azure_profile, client_creds},
+            az::test::azure_integration_tests::{azure_profile, client_creds},
             StorageCredential, StorageProfile,
         };
 
@@ -275,10 +275,10 @@ mod tests {
         }
     }
 
-    pub(crate) mod gcs_enabled_tests {
+    pub(crate) mod gcs_integration_tests {
         use super::*;
         use crate::service::storage::{
-            gcs::test::gcs_enabled_tests::get_storage_profile, StorageCredential, StorageProfile,
+            gcs::test::gcs_integration_tests::get_storage_profile, StorageCredential, StorageProfile,
         };
 
         #[tokio::test]

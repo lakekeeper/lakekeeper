@@ -509,7 +509,7 @@ mod tests {
         );
     }
 
-    mod openfga_enabled_tests {
+    mod openfga_integration_tests {
         use std::str::FromStr;
 
         use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};

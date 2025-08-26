@@ -119,7 +119,7 @@ pub(crate) mod tests {
         (client, authorizer)
     }
 
-    mod openfga_enabled_tests {
+    mod openfga_integration_tests {
         use openfga_client::client::ReadAuthorizationModelsRequest;
 
         use super::super::*;

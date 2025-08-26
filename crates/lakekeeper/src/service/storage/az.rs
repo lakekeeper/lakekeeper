@@ -572,7 +572,7 @@ pub(crate) mod test {
         assert_eq!(reduce_scheme_string(non_matching), non_matching);
     }
 
-    pub(crate) mod azure_enabled_tests {
+    pub(crate) mod azure_integration_tests {
         use crate::{
             api::RequestMetadata,
             service::storage::{AdlsProfile, AzCredential, StorageCredential, StorageProfile},

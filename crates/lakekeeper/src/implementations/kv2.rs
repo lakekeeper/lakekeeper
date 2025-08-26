@@ -254,7 +254,7 @@ fn secret_ident_to_key(secret_id: SecretIdent) -> String {
 
 #[cfg(test)]
 mod tests {
-    mod kv2_enabled_tests {
+    mod kv2_integration_tests {
         use super::super::*;
         use crate::{
             service::storage::{s3::S3AccessKeyCredential, S3Credential, StorageCredential},

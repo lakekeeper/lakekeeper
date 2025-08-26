@@ -1277,7 +1277,7 @@ pub(crate) mod test {
         assert_eq!(location.to_string(), expected);
     }
 
-    pub(crate) mod minio_enabled_tests {
+    pub(crate) mod minio_integration_tests {
         use std::sync::LazyLock;
 
         use crate::{
@@ -1353,7 +1353,7 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) mod aws_enabled_tests {
+    pub(crate) mod aws_integration_tests {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
 
@@ -1447,7 +1447,7 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) mod aws_kms_enabled_tests {
+    pub(crate) mod aws_kms_integration_tests {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
 
@@ -1504,7 +1504,7 @@ pub(crate) mod test {
         }
     }
 
-    pub(crate) mod r2_enabled_tests {
+    pub(crate) mod r2_integration_tests {
         use super::super::*;
         use crate::service::storage::{StorageCredential, StorageProfile};
 

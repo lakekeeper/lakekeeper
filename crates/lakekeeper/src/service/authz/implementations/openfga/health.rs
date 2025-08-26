@@ -37,7 +37,7 @@ impl HealthExt for OpenFGAAuthorizer {
 
 #[cfg(test)]
 mod tests {
-    mod openfga_enabled_tests {
+    mod openfga_integration_tests {
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;

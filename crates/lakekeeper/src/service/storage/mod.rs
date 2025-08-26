@@ -1133,23 +1133,23 @@ mod tests {
         }
     }
 
-    mod azure_enabled_tests {
+    mod azure_integration_tests {
         use super::*;
 
         #[tokio::test]
         async fn test_vended_az() {
             for (cred, _typ) in [
                 (
-                    super::az::test::azure_enabled_tests::client_creds(),
+                    super::az::test::azure_integration_tests::client_creds(),
                     "client-credentials",
                 ),
                 (
-                    super::az::test::azure_enabled_tests::shared_key(),
+                    super::az::test::azure_integration_tests::shared_key(),
                     "shared-key",
                 ),
             ] {
                 let mut profile: StorageProfile =
-                    az::test::azure_enabled_tests::azure_profile().into();
+                    az::test::azure_integration_tests::azure_profile().into();
                 let cred: StorageCredential = cred.into();
                 test_profile_vended_creds(&cred, &mut profile).await;
                 test_profile_io(&cred, &mut profile).await;
@@ -1157,7 +1157,7 @@ mod tests {
         }
     }
 
-    mod gcs_enabled_tests {
+    mod gcs_integration_tests {
         use super::*;
 
         #[tokio::test]
@@ -1182,7 +1182,7 @@ mod tests {
         }
     }
 
-    mod aws_enabled_tests {
+    mod aws_integration_tests {
         use super::*;
 
         #[test]
@@ -1220,7 +1220,7 @@ mod tests {
         #[tokio::test]
         // #[tracing_test::traced_test]
         async fn test_validate_aws() {
-            use crate::service::storage::s3::test::aws_enabled_tests::get_storage_profile;
+            use crate::service::storage::s3::test::aws_integration_tests::get_storage_profile;
 
             let (profile, credential) = get_storage_profile();
             let profile: StorageProfile = profile.into();
@@ -1235,12 +1235,12 @@ mod tests {
         }
     }
 
-    mod minio_enabled_tests {
+    mod minio_integration_tests {
         use super::*;
 
         #[test]
         fn test_vended_s3_compat() {
-            use super::super::s3::test::minio_enabled_tests::storage_profile;
+            use super::super::s3::test::minio_integration_tests::storage_profile;
 
             crate::test::test_block_on(
                 async {
