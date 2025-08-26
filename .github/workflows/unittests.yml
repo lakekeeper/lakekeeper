@@ -179,8 +179,7 @@ jobs:
         run: |
           echo "${{ secrets.GCS_CREDENTIAL }}" > /tmp/gcs.json
           echo "GCP credentials written to /tmp/gcs.json"
-          echo "GCP credential keys found:"
-          echo "${{ secrets.GCS_CREDENTIAL }}" | jq -r 'keys[]'
+          echo "First few characters of GCS_CREDENTIAL: $(echo "${{ secrets.GCS_CREDENTIAL }}" | head -c 20)"
         shell: bash
 
       - name: Setup Rust toolchain and cache
