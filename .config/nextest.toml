@@ -1,18 +1,20 @@
 [profile.default]
-default-filter = """
-    not package(lakekeeper-io)
-    and not test(::aws_integration_tests::)
-    and not test(::aws_kms_integration_tests::)
-    and not test(::azure_integration_tests::)
-    and not test(::azure_system_credentials_integration_tests::)
-    and not test(::gcs_integration_tests::)
-    and not test(::gcs_hns_integration_tests::)
-    and not test(::gcp_system_credentials_integration_tests::)
-    and not test(::kv2_integration_tests::)
-    and not test(::minio_integration_tests::)
-    and not test(::openfga_integration_tests::)
-    and not test(::r2_integration_tests::)
-"""
+default-filter = "test(::gcp_system_credentials_integration_tests::)"
+# TODO use filter below
+# default-filter = """
+#     not package(lakekeeper-io)
+#     and not test(::aws_integration_tests::)
+#     and not test(::aws_kms_integration_tests::)
+#     and not test(::azure_integration_tests::)
+#     and not test(::azure_system_credentials_integration_tests::)
+#     and not test(::gcs_integration_tests::)
+#     and not test(::gcs_hns_integration_tests::)
+#     and not test(::gcp_system_credentials_integration_tests::)
+#     and not test(::kv2_integration_tests::)
+#     and not test(::minio_integration_tests::)
+#     and not test(::openfga_integration_tests::)
+#     and not test(::r2_integration_tests::)
+# """
 
 [profile.ci]
 default-filter = "all()"
