@@ -1000,14 +1000,14 @@ pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
 #[cfg(test)]
 mod test {
 
-    use super::*;
+    use std::time::Duration;
 
     use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
-    use std::time::Duration;
     use tracing_test::traced_test;
     use utoipa::ToSchema;
 
+    use super::*;
     use crate::{
         api::{
             iceberg::v1::PaginationQuery,
