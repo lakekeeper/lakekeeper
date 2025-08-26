@@ -648,11 +648,13 @@ pub(crate) mod test {
                 prof.normalize(None).expect("failed to validate profile");
                 let cred = AzCredential::AzureSystemIdentity {};
                 let cred: StorageCredential = cred.into();
-                prof.validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!("Failed to validate system identity due to '{e:?}'")
-                    });
+                Box::pin(prof.validate_access(
+                    Some(&cred),
+                    None,
+                    &RequestMetadata::new_unauthenticated(),
+                ))
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
             }
         }
     }
