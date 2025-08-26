@@ -5,7 +5,6 @@ use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
 use http::{header, HeaderName, HeaderValue, Method};
 use limes::Authenticator;
-use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer, compression::CompressionLayer, cors::AllowOrigin,
@@ -30,7 +29,7 @@ use crate::{
         Catalog, EndpointStatisticsTrackerTx, SecretStore, State,
     },
     tracing::{MakeRequestUuid7, RestMakeSpan},
-    CONFIG,
+    CancellationToken, CONFIG,
 };
 
 static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(|| {

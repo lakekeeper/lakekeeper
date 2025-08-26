@@ -422,7 +422,6 @@ impl S3Profile {
         }
 
         config.insert(&s3::Region(self.region.to_string()));
-        config.insert(&client::Region(self.region.to_string()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
             value: self.region.to_string(),
@@ -434,7 +433,7 @@ impl S3Profile {
         }
 
         if vended_credentials {
-            if self.sts_enabled | matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
+            if self.sts_enabled || matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
                 let aws_sdk_sts::types::Credentials {
                     access_key_id,
                     secret_access_key,
@@ -484,6 +483,9 @@ impl S3Profile {
                 creds.insert(&s3::SecretAccessKey(secret_access_key));
                 creds.insert(&s3::SessionToken(session_token));
             } else {
+                tracing::debug!(
+                    "Falling back to remote signing: vended_credentials requested but STS is disabled for this Warehouse and the credential type is not Cloudflare R2."
+                );
                 push_fsspec_fileio_with_s3v4restsigner(&mut config);
                 remote_signing = true;
             }

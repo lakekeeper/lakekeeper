@@ -2,7 +2,6 @@ use std::{sync::LazyLock, time::Duration};
 
 use iceberg::ErrorKind;
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
 use uuid::Uuid;
@@ -18,6 +17,7 @@ use crate::{
         task_queue::{tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData},
         Catalog, TableId, Transaction, ViewId,
     },
+    CancellationToken,
 };
 
 pub(crate) const QUEUE_NAME: &str = "tabular_expiration";

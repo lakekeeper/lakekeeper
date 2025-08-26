@@ -19,11 +19,17 @@ impl Prefix {
     pub fn into_string(self) -> String {
         self.0
     }
+}
 
-    #[inline]
-    #[must_use]
-    pub fn from_string(s: String) -> Self {
+impl From<String> for Prefix {
+    fn from(s: String) -> Self {
         Self(s)
+    }
+}
+
+impl From<&str> for Prefix {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
     }
 }
 

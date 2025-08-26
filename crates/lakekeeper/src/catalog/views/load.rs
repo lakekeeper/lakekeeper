@@ -22,7 +22,7 @@ use crate::{
 pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     state: ApiContext<State<A, C, S>>,
-    data_access: impl Into<DataAccessMode> + Send,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
     let data_access = data_access.into();

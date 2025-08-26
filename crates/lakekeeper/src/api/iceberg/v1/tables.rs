@@ -287,7 +287,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // {prefix}/namespaces/{namespace}/tables/{table}/credentials
         .route(
-            "/{prefix}/namespaces/{namespace}/tables/{namespace}/credentials",
+            "/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
@@ -365,6 +365,16 @@ pub enum DataAccessMode {
     // and thus doesn't need any form of data access delegation.
     ClientManaged,
     ServerDelegated(DataAccess),
+}
+
+impl DataAccessMode {
+    #[must_use]
+    pub fn requested(self) -> bool {
+        match self {
+            DataAccessMode::ClientManaged => false,
+            DataAccessMode::ServerDelegated(da) => da.requested(),
+        }
+    }
 }
 
 impl DataAccess {

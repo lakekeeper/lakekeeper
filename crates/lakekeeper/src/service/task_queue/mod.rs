@@ -25,7 +25,7 @@ use crate::service::{
 
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
-pub use tokio_util::sync::CancellationToken;
+pub use crate::CancellationToken;
 
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     valid_max_time_since_last_heartbeat(3600);
@@ -644,7 +644,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
     pub async fn poll_for_new_task<C: Catalog>(
         catalog_state: C::State,
         poll_interval: &Duration,
-        cancellation_token: tokio_util::sync::CancellationToken,
+        cancellation_token: crate::CancellationToken,
     ) -> Option<Self> {
         loop {
             tokio::select! {
@@ -1022,7 +1022,7 @@ mod test {
             auth,
             Duration::from_millis(100),
         );
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let cancellation_token = crate::CancellationToken::new();
         let runner = queues.task_queues_runner(cancellation_token.clone());
         let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
 

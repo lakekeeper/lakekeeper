@@ -465,7 +465,7 @@ where
         if metadata.has_admin_privileges() {
             Ok(vec![true; table_ids.len()])
         } else {
-            self.are_allowed_table_actions(metadata, table_ids, actions)
+            self.are_allowed_table_actions_impl(metadata, table_ids, actions)
                 .await
         }
     }
@@ -536,7 +536,7 @@ where
         if metadata.has_admin_privileges() {
             Ok(vec![true; view_ids.len()])
         } else {
-            self.are_allowed_view_actions(metadata, view_ids, actions)
+            self.are_allowed_view_actions_impl(metadata, view_ids, actions)
                 .await
         }
     }

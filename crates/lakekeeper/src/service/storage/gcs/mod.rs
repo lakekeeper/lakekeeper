@@ -321,7 +321,7 @@ impl GcsProfile {
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
-        if matches!(data_access, DataAccessMode::ClientManaged) {
+        if !data_access.requested() {
             return Ok(TableConfig {
                 creds: table_properties.clone(),
                 config: table_properties,

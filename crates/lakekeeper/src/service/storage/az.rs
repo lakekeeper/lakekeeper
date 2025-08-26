@@ -237,7 +237,7 @@ impl AdlsProfile {
         credential: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
-        if matches!(data_access, DataAccessMode::ClientManaged) {
+        if !data_access.requested() {
             return Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
@@ -362,7 +362,7 @@ impl AdlsProfile {
     fn iceberg_sas_property_key(&self) -> String {
         iceberg_sas_property_key(
             &self.account_name,
-            self.host.as_ref().unwrap_or(&DEFAULT_HOST.to_string()),
+            self.host.as_deref().unwrap_or(DEFAULT_HOST),
         )
     }
 
