@@ -489,18 +489,29 @@ pub(crate) mod test {
             .unwrap();
         }
 
-        #[tokio::test]
-        #[needs_env_var::needs_env_var(LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS = 1)]
-        async fn test_system_identity_can_validate() {
-            let (profile, _credential) = get_storage_profile();
-            let mut profile: StorageProfile = profile.into();
-            profile.normalize().expect("failed to validate profile");
-            let credential = GcsCredential::GcpSystemIdentity {};
-            let credential: StorageCredential = credential.into();
-            profile
-                .validate_access(Some(&credential), None)
-                .await
-                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
+        mod gcp_system_credentials_integration_tests {
+            use super::*;
+
+            #[tokio::test]
+            async fn test_system_identity_can_validate() {
+                let (profile, credential) = get_storage_profile();
+                let mut profile: StorageProfile = profile.into();
+                profile
+                    .normalize(Some(&StorageCredential::Gcs(credential)))
+                    .expect("failed to validate profile");
+                let credential = GcsCredential::GcpSystemIdentity {};
+                let credential: StorageCredential = credential.into();
+                profile
+                    .validate_access(
+                        Some(&credential),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to validate system identity due to '{e:?}'")
+                    });
+            }
         }
     }
 

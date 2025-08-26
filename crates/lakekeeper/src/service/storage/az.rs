@@ -638,17 +638,22 @@ pub(crate) mod test {
             }
         }
 
-        #[tokio::test]
-        #[needs_env_var::needs_env_var(LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS = 1)]
-        async fn test_system_identity_can_validate() {
-            let prof = azure_profile();
-            let mut prof: StorageProfile = prof.into();
-            prof.normalize().expect("failed to validate profile");
-            let cred = AzCredential::AzureSystemIdentity {};
-            let cred: StorageCredential = cred.into();
-            prof.validate_access(Some(&cred), None)
-                .await
-                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
+        mod azure_system_credentials_integration_tests {
+            use super::*;
+
+            #[tokio::test]
+            async fn test_system_identity_can_validate() {
+                let prof = azure_profile();
+                let mut prof: StorageProfile = prof.into();
+                prof.normalize(None).expect("failed to validate profile");
+                let cred = AzCredential::AzureSystemIdentity {};
+                let cred: StorageCredential = cred.into();
+                prof.validate_access(Some(&cred), None, &RequestMetadata::new_unauthenticated())
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to validate system identity due to '{e:?}'")
+                    });
+            }
         }
     }
 
