@@ -177,10 +177,10 @@ jobs:
       - name: Write gcp credential to file
         if: ${{ env.GCS_CREDENTIAL != '' }}
         run: |
-          echo "${{ env.GCS_CREDENTIAL }}" > /tmp/gcs.json
+          echo "${{ secrets.GCS_CREDENTIAL }}" > /tmp/gcs.json
           echo "GCP credentials written to /tmp/gcs.json"
           echo "GCP credential keys found:"
-          echo "${{ env.GCS_CREDENTIAL }}" | jq -r 'keys[]'
+          echo "${{ secrets.GCS_CREDENTIAL }}" | jq -r 'keys[]'
         shell: bash
 
       - name: Setup Rust toolchain and cache
