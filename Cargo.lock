@@ -3929,7 +3929,6 @@ dependencies = [
  "middle",
  "mockall",
  "moka",
- "needs_env_var",
  "openfga-client",
  "openssl-src",
  "paste",
@@ -4563,12 +4562,6 @@ dependencies = [
  "security-framework-sys",
  "tempfile",
 ]
-
-[[package]]
-name = "needs_env_var"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3b406fd667619150b3ac88bfa5b2791311d7100c0b91eb6ed6488b82349856d"
 
 [[package]]
 name = "nkeys"

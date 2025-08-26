@@ -1627,8 +1627,6 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use needs_env_var::needs_env_var;
-
     use super::*;
 
     #[test]
@@ -1640,8 +1638,7 @@ mod tests {
         );
     }
 
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 

@@ -1055,10 +1055,7 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use needs_env_var::needs_env_var;
-
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use http::StatusCode;
         use openfga_client::client::ConsistencyPreference;
 

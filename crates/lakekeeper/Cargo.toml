@@ -125,7 +125,6 @@ http-body-util = { workspace = true }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
-needs_env_var = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_urlencoded = "0.7.1"
 serde_yaml = { workspace = true }

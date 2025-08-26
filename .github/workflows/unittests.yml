@@ -78,23 +78,11 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
-          TEST_OPENFGA: 1
-          TEST_AZURE: 1
-          TEST_AWS: 1
-          TEST_GCS: 1
-          TEST_KV2: 1
-          TEST_MINIO: 1
 
       - name: Cargo clippy
         run: just check-clippy
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
-          TEST_OPENFGA: 1
-          TEST_AZURE: 1
-          TEST_AWS: 1
-          TEST_GCS: 1
-          TEST_KV2: 1
-          TEST_MINIO: 1
 
   check-generated-openapi-matches:
     runs-on: ubuntu-24.04
@@ -176,7 +164,7 @@ jobs:
 
       - name: Write gcp credential to file
         if: ${{ env.GCS_CREDENTIAL != '' }}
-        run: echo "${{ secrets.GCS_CREDENTIAL }}" > /tmp/gcs.json
+        run: echo '${{ secrets.GCS_CREDENTIAL }}' > /tmp/gcs.json
         shell: bash
 
       - name: Setup Rust toolchain and cache
@@ -223,13 +211,11 @@ jobs:
         run: cargo nextest run --profile ci --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-          TEST_KV2: 1
           LAKEKEEPER_TEST__KV2__URL: http://localhost:8200
           LAKEKEEPER_TEST__KV2__USER: test
           LAKEKEEPER_TEST__KV2__PASSWORD: test
           LAKEKEEPER_TEST__KV2__SECRET_MOUNT: secret
           # minio test envs
-          TEST_MINIO: 1
           LAKEKEEPER_TEST__S3_BUCKET: tests
           LAKEKEEPER_TEST__S3_REGION: local
           LAKEKEEPER_TEST__S3_ACCESS_KEY: minio-root-user
@@ -239,11 +225,9 @@ jobs:
           LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS: true
           LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
 
-          TEST_OPENFGA: 1
           LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcs.json
 
-          TEST_AZURE: ${{ secrets.TEST_AZURE }}
           LAKEKEEPER_TEST__AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           LAKEKEEPER_TEST__AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           LAKEKEEPER_TEST__AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -251,13 +235,11 @@ jobs:
           LAKEKEEPER_TEST__AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
           LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY: ${{ secrets.AZURE_STORAGE_SHARED_KEY }}
 
-          TEST_AWS: ${{ secrets.TEST_AWS }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_S3_REGION: ${{ secrets.AWS_S3_REGION }}
           AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
           AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
           AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
-          TEST_AWS_KMS: ${{ secrets.TEST_AWS_KMS }}
           AWS_KMS_S3_BUCKET: ${{ secrets.AWS_KMS_S3_BUCKET }}
           AWS_S3_KMS_ARN: ${{ secrets.AWS_S3_KMS_ARN }}
 
@@ -269,8 +251,6 @@ jobs:
           LAKEKEEPER_TEST__R2_ACCOUNT_ID: ${{ secrets.LAKEKEEPER_TEST__R2_ACCOUNT_ID }}
           LAKEKEEPER_TEST__R2_ENDPOINT: ${{ secrets.LAKEKEEPER_TEST__R2_ENDPOINT }}
 
-          TEST_GCS: ${{ secrets.TEST_GCS }}
-          TEST_GCS_HNS: ${{ secrets.TEST_GCS_HNS }}
           LAKEKEEPER_TEST__GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}

@@ -177,7 +177,6 @@ impl From<IOErrorExt> for IcebergErrorResponse {
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
-    use needs_env_var::needs_env_var;
 
     use super::*;
     use crate::service::storage::{StorageCredential, StorageProfile};
@@ -257,11 +256,10 @@ mod tests {
         remove_all(&io, &folder_2).await.unwrap();
     }
 
-    #[needs_env_var(TEST_AWS = 1)]
-    pub(crate) mod aws {
+    pub(crate) mod aws_integration_tests {
         use super::*;
         use crate::service::storage::{
-            s3::test::aws::get_storage_profile, StorageCredential, StorageProfile,
+            s3::test::aws_integration_tests::get_storage_profile, StorageCredential, StorageProfile,
         };
 
         #[tokio::test]
@@ -274,11 +272,10 @@ mod tests {
         }
     }
 
-    #[needs_env_var(TEST_AZURE = 1)]
-    pub(crate) mod az {
+    pub(crate) mod azure_integration_tests {
         use super::*;
         use crate::service::storage::{
-            az::test::azure_tests::{azure_profile, client_creds},
+            az::test::azure_integration_tests::{azure_profile, client_creds},
             StorageCredential, StorageProfile,
         };
 
@@ -291,11 +288,11 @@ mod tests {
         }
     }
 
-    #[needs_env_var(TEST_GCS = 1)]
-    pub(crate) mod gcs {
+    pub(crate) mod gcs_integration_tests {
         use super::*;
         use crate::service::storage::{
-            gcs::test::cloud_tests::get_storage_profile, StorageCredential, StorageProfile,
+            gcs::test::gcs_integration_tests::get_storage_profile, StorageCredential,
+            StorageProfile,
         };
 
         #[tokio::test]
