@@ -138,8 +138,13 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 tracing::info!(
                     "Concurrent update detected (attempt {attempt}/{MAX_RETRIES_ON_CONCURRENT_UPDATE}), retrying view commit operation",
                 );
-                // Short delay before retry to reduce contention
-                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                // Short jittered exponential backoff to reduce contention
+                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
+                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
+                let base = 50u64.saturating_mul(1u64 << exp);
+                let jitter = fastrand::u64(..base / 2);
+                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
+                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),
         }
@@ -357,7 +362,7 @@ fn build_new_metadata(
             ViewUpdate::SetCurrentViewVersion { view_version_id } => {
                 m.set_current_version_id(view_version_id).map_err(|e| {
                     ErrorModel::bad_request(
-                        "Error setting current view version: {e}",
+                        format!("Error setting current view version: {e}"),
                         "SetCurrentViewVersionError",
                         Some(Box::new(e)),
                     )

@@ -20,7 +20,7 @@ use crate::{
     },
     catalog::CatalogServer,
     service::authz::AllowAllAuthorizer,
-    tests::{get_api_context, random_request_metadata, spawn_drop_queues},
+    tests::{get_api_context, random_request_metadata, spawn_build_in_queues},
 };
 
 #[sqlx::test]
@@ -105,17 +105,31 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     .expect_err("Warehouse deletion should fail due to purge tasks");
 
     // Spawn task queue workers
-    spawn_drop_queues(&api_context, Some(std::time::Duration::from_secs(1)));
+    let cancellation_token = tokio_util::sync::CancellationToken::new();
+    let queues_future = spawn_build_in_queues(
+        &api_context,
+        Some(std::time::Duration::from_secs(1)),
+        cancellation_token.clone(),
+    );
 
-    // Wait for tables to be dropped
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    // Drop warehouse - this should succeed now
-    ApiServer::delete_warehouse(
-        warehouse.warehouse_id,
-        DeleteWarehouseQuery::builder().build(),
-        api_context.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .expect("Warehouse deletion should succeed after purge tasks are completed");
+    // Drop warehouse — poll until purge tasks complete to avoid flakiness
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match ApiServer::delete_warehouse(
+            warehouse.warehouse_id,
+            DeleteWarehouseQuery::builder().build(),
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        {
+            Ok(()) => break,
+            Err(_e) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(e) => panic!("Warehouse deletion did not complete within 5s: {e:?}"),
+        }
+    }
+    cancellation_token.cancel();
+    queues_future.await.unwrap();
 }

@@ -7,7 +7,7 @@
 #![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 mod error;
 use bytes::Bytes;
@@ -31,32 +31,44 @@ pub mod memory;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
 
-pub(crate) fn safe_usize_to_i32(value: usize, context: &str) -> Result<i32, IOError> {
+#[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
+/// Fallible usize→i32 conversion with additional context for diagnostics.
+pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Result<i32, IOError> {
     i32::try_from(value).map_err(|_| {
         IOError::new(
             ErrorKind::ConditionNotMatch,
-            format!("Platform usize too large for i32: {value}"),
-            context.to_string(),
+            format!("value {value} does not fit into i32"),
+            context.into(),
         )
     })
 }
 
-pub(crate) fn safe_usize_to_i64(value: usize, context: &str) -> Result<i64, IOError> {
+#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
+/// Fallible usize→i64 conversion with contextual diagnostics.
+pub(crate) fn safe_usize_to_i64(value: usize, context: impl Into<String>) -> Result<i64, IOError> {
     i64::try_from(value).map_err(|_| {
         IOError::new(
-            ErrorKind::ConditionNotMatch,
-            format!("File too large - Platform usize too large for i64: {value}"),
-            context.to_string(),
+            ErrorKind::ConditionNotMatch, // consider a more specific kind if available
+            format!("value {value} does not fit into i64"),
+            context.into(),
         )
     })
 }
 
-pub(crate) fn validate_file_size(size: i64, location: &str) -> Result<usize, IOError> {
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-s3"
+))]
+/// Validate a remote-reported file size (i64), rejecting negative sizes and sizes
+/// that do not fit into `usize` on the current platform. The `location` is used
+/// for error diagnostics.
+pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Result<usize, IOError> {
     if size < 0 {
         return Err(IOError::new(
             ErrorKind::ConditionNotMatch,
             "File size cannot be negative".to_string(),
-            location.to_string(),
+            location.into(),
         ));
     }
 
@@ -65,7 +77,7 @@ pub(crate) fn validate_file_size(size: i64, location: &str) -> Result<usize, IOE
         Err(_) => Err(IOError::new(
             ErrorKind::ConditionNotMatch,
             format!("File size too large for this platform: {size}"),
-            location.to_string(),
+            location.into(),
         )),
     }
 }
@@ -427,117 +439,73 @@ impl LakekeeperStorage for StorageBackend {
     }
 }
 
-// Implementation for Arc<StorageBackend>
-impl LakekeeperStorage for std::sync::Arc<StorageBackend> {
-    fn delete(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).delete(path)
-    }
+// Macro to generate LakekeeperStorage implementations for smart pointer types
+macro_rules! impl_lakekeeper_storage_for_smart_pointer {
+    ($($wrapper:ty),+ $(,)?) => {
+        $(
+            impl<T> LakekeeperStorage for $wrapper
+            where
+                T: LakekeeperStorage,
+            {
+                fn delete(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<(), DeleteError>> + Send {
+                    self.as_ref().delete(path)
+                }
 
-    fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
-        (**self).delete_batch(paths)
-    }
+                fn delete_batch(
+                    &self,
+                    paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
+                ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
+                    self.as_ref().delete_batch(paths)
+                }
 
-    fn write(
-        &self,
-        path: impl AsRef<str> + Send,
-        bytes: Bytes,
-    ) -> impl Future<Output = Result<(), WriteError>> + Send {
-        (**self).write(path, bytes)
-    }
+                fn write(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                    bytes: Bytes,
+                ) -> impl Future<Output = Result<(), WriteError>> + Send {
+                    self.as_ref().write(path, bytes)
+                }
 
-    fn read(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read(path)
-    }
+                fn read(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
+                    self.as_ref().read(path)
+                }
 
-    fn read_single(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read_single(path)
-    }
+                fn read_single(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
+                    self.as_ref().read_single(path)
+                }
 
-    fn list(
-        &self,
-        path: impl AsRef<str> + Send,
-        page_size: Option<usize>,
-    ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
-    > + Send {
-        (**self).list(path, page_size)
-    }
+                fn list(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                    page_size: Option<usize>,
+                ) -> impl Future<
+                    Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
+                > + Send {
+                    self.as_ref().list(path, page_size)
+                }
 
-    fn remove_all(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).remove_all(path)
-    }
+                fn remove_all(
+                    &self,
+                    path: impl AsRef<str> + Send,
+                ) -> impl Future<Output = Result<(), DeleteError>> + Send {
+                    self.as_ref().remove_all(path)
+                }
+            }
+        )+
+    };
 }
 
-// Implementation for Box<StorageBackend>
-impl LakekeeperStorage for Box<StorageBackend> {
-    fn delete(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).delete(path)
-    }
-
-    fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
-        (**self).delete_batch(paths)
-    }
-
-    fn write(
-        &self,
-        path: impl AsRef<str> + Send,
-        bytes: Bytes,
-    ) -> impl Future<Output = Result<(), WriteError>> + Send {
-        (**self).write(path, bytes)
-    }
-
-    fn read(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read(path)
-    }
-
-    fn read_single(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        (**self).read_single(path)
-    }
-
-    fn list(
-        &self,
-        path: impl AsRef<str> + Send,
-        page_size: Option<usize>,
-    ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError>,
-    > + Send {
-        (**self).list(path, page_size)
-    }
-
-    fn remove_all(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        (**self).remove_all(path)
-    }
-}
+// Generate implementations for Arc<T> and Box<T>
+impl_lakekeeper_storage_for_smart_pointer!(Arc<T>, Box<T>);
 
 async fn abort_unfinished_batch_delete_futures(
     join_set: &mut JoinSet<Result<(), DeleteBatchError>>,

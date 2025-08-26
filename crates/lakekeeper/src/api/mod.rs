@@ -23,19 +23,28 @@ pub type Result<T, E = IcebergErrorResponse> = std::result::Result<T, E>;
 ///
 /// # Panics
 /// If the function fails to install the signal handler, it will panic.
-pub async fn shutdown_signal() {
+#[cfg(feature = "router")]
+pub async fn shutdown_signal(cancellation_token: tokio_util::sync::CancellationToken) {
     use tokio::signal;
 
     let ctrl_c = async {
         signal::ctrl_c()
             .await
-            .expect("failed to install Ctrl+C handler");
+            .expect("Failed to register Ctrl+C handler");
     };
 
     #[cfg(unix)]
     let terminate = async {
         signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
+            .expect("Failed to register SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(unix)]
+    let interrupt = async {
+        signal::unix::signal(signal::unix::SignalKind::interrupt())
+            .expect("Failed to register SIGINT handler")
             .recv()
             .await;
     };
@@ -43,9 +52,25 @@ pub async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    #[cfg(not(unix))]
+    let interrupt = std::future::pending::<()>();
+
     tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
+        () = ctrl_c => {
+            tracing::info!("Received Ctrl+C, initiating graceful shutdown...");
+            cancellation_token.cancel();
+        },
+        () = terminate => {
+            tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+            cancellation_token.cancel();
+        },
+        () = interrupt => {
+            tracing::info!("Received SIGINT, initiating graceful shutdown...");
+            cancellation_token.cancel();
+        },
+        () = cancellation_token.cancelled() => {
+            tracing::info!("Shutdown signal function terminating due to external cancellation");
+        },
     }
 }
 

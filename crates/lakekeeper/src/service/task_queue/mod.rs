@@ -9,8 +9,10 @@ use std::{
 
 use chrono::Utc;
 use futures::future::BoxFuture;
+use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use serde::{de::DeserializeOwned, Serialize};
 use strum::EnumIter;
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -25,10 +27,10 @@ use crate::service::{
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 
-pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
+pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     valid_max_time_since_last_heartbeat(3600);
-pub const DEFAULT_MAX_RETRIES: i32 = 5;
-pub const DEFAULT_NUM_WORKERS: usize = 2;
+const DEFAULT_MAX_RETRIES: i32 = 5;
+
 #[allow(clippy::declare_interior_mutable_const)]
 pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|| {
     vec![
@@ -38,22 +40,29 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
 });
 
 /// Infinitely running task worker loop function that polls tasks from a queue and
-/// processes.
-pub type TaskQueueWorker = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static>;
+/// processes. Accepts a cancellation token for graceful shutdown.
+pub type TaskQueueWorker = Arc<
+    dyn Fn(tokio_util::sync::CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+>;
 type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
 
 /// Warehouse specific configuration for a task queue.
 pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
-    fn max_time_since_last_heartbeat(&self) -> chrono::Duration {
+    #[must_use]
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
         DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT
     }
-    fn max_retries(&self) -> i32 {
+
+    #[must_use]
+    fn max_retries() -> i32 {
         DEFAULT_MAX_RETRIES
     }
-    fn num_workers(&self) -> usize {
-        DEFAULT_NUM_WORKERS
-    }
+
+    fn queue_name() -> &'static str;
 }
+
+/// Task Payload
+pub trait TaskData: Clone + Serialize + DeserializeOwned {}
 
 /// A container for registered task queues that can be used for validation and API configuration.
 /// This can be included in the Axum application state.
@@ -210,7 +219,7 @@ impl TaskQueueRegistry {
         let catalog_state_clone = catalog_state.clone();
         self.register_queue::<ExpirationQueueConfig>(QueueRegistration {
             queue_name: tabular_expiration_queue::QUEUE_NAME,
-            worker_fn: Arc::new(move || {
+            worker_fn: Arc::new(move |cancellation_token| {
                 let authorizer = authorizer.clone();
                 let catalog_state_clone = catalog_state_clone.clone();
                 Box::pin({
@@ -218,7 +227,8 @@ impl TaskQueueRegistry {
                         tabular_expiration_queue::tabular_expiration_worker::<C, A>(
                             catalog_state_clone.clone(),
                             authorizer.clone(),
-                            poll_interval,
+                            &poll_interval,
+                            cancellation_token,
                         )
                         .await;
                     }
@@ -229,14 +239,15 @@ impl TaskQueueRegistry {
 
         self.register_queue::<PurgeQueueConfig>(QueueRegistration {
             queue_name: tabular_purge_queue::QUEUE_NAME,
-            worker_fn: Arc::new(move || {
+            worker_fn: Arc::new(move |cancellation_token| {
                 let catalog_state_clone = catalog_state.clone();
                 let secret_store = secret_store.clone();
                 Box::pin(async move {
                     tabular_purge_queue::tabular_purge_worker::<C, S>(
                         catalog_state_clone.clone(),
                         secret_store.clone(),
-                        poll_interval,
+                        &poll_interval,
+                        cancellation_token,
                     )
                     .await;
                 })
@@ -255,9 +266,19 @@ impl TaskQueueRegistry {
         }
     }
 
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.registered_queues.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.registered_queues.is_empty()
+    }
+
     /// Creates a [`TaskQueuesRunner`] that can be used to start the task queue workers
     #[must_use]
-    pub fn task_queues_runner(&self) -> TaskQueuesRunner {
+    pub fn task_queues_runner(&self, cancellation_token: CancellationToken) -> TaskQueuesRunner {
         let mut registered_task_queues = HashMap::new();
 
         for name in self.registered_queues.keys() {
@@ -274,6 +295,7 @@ impl TaskQueueRegistry {
 
         TaskQueuesRunner {
             registered_queues: Arc::new(registered_task_queues),
+            cancellation_token,
         }
     }
 }
@@ -282,10 +304,12 @@ impl TaskQueueRegistry {
 #[derive(Debug, Clone)]
 pub struct TaskQueuesRunner {
     registered_queues: Arc<HashMap<&'static str, QueueWorkerConfig>>,
+    cancellation_token: CancellationToken,
 }
 
 impl TaskQueuesRunner {
     /// Runs all registered task queue workers and monitors them, restarting any that exit.
+    /// Accepts a cancellation token for graceful shutdown.
     pub async fn run_queue_workers(self, restart_workers: bool) {
         // Create a structure to track worker information and hold task handles
         struct WorkerInfo {
@@ -300,17 +324,21 @@ impl TaskQueuesRunner {
         // Initialize all workers
         for (queue_name, queue) in registered_queues.iter() {
             tracing::info!(
-                "Starting task queue {queue_name} with {} workers",
+                "Starting {} workers for task queue `{queue_name}`.",
                 queue.num_workers
             );
 
             for worker_id in 0..queue.num_workers {
                 let task_fn = Arc::clone(&queue.worker_fn);
-                tracing::debug!("Starting task queue {queue_name} worker {worker_id}");
+                let cancellation_token_clone = self.cancellation_token.clone();
+                tracing::debug!(
+                    "Starting `{queue_name}` worker {worker_id}/{}",
+                    queue.num_workers
+                );
                 workers.push(WorkerInfo {
                     queue_name,
                     worker_id,
-                    handle: tokio::task::spawn(task_fn()),
+                    handle: tokio::task::spawn(task_fn(cancellation_token_clone)),
                 });
             }
         }
@@ -336,8 +364,13 @@ impl TaskQueuesRunner {
 
             // Log the result
             match result {
-                Ok(()) => tracing::error!(
+                Ok(()) if !self.cancellation_token.is_cancelled() => tracing::warn!(
                     "Task queue {} worker {} finished. {log_msg_suffix}",
+                    worker.queue_name,
+                    worker.worker_id
+                ),
+                Ok(()) => tracing::info!(
+                    "Task queue {} worker {} finished gracefully after cancellation.",
                     worker.queue_name,
                     worker.worker_id
                 ),
@@ -349,10 +382,11 @@ impl TaskQueuesRunner {
                 ),
             }
 
-            // Restart the worker
-            if restart_workers {
+            // Restart the worker only if cancellation hasn't been requested
+            if restart_workers && !self.cancellation_token.is_cancelled() {
                 if let Some(queue) = registered_queues.get(worker.queue_name) {
                     let task_fn = Arc::clone(&queue.worker_fn);
+                    let cancellation_token_clone = self.cancellation_token.clone();
                     tracing::debug!(
                         "Restarting task queue {} worker {}",
                         worker.queue_name,
@@ -361,9 +395,15 @@ impl TaskQueuesRunner {
                     workers.push(WorkerInfo {
                         queue_name: worker.queue_name,
                         worker_id: worker.worker_id,
-                        handle: tokio::task::spawn(task_fn()),
+                        handle: tokio::task::spawn(task_fn(cancellation_token_clone)),
                     });
                 }
+            } else if self.cancellation_token.is_cancelled() {
+                tracing::info!(
+                    "Cancellation requested, not restarting task queue {} worker {}",
+                    worker.queue_name,
+                    worker.worker_id
+                );
             }
         }
     }
@@ -482,7 +522,18 @@ pub struct Task {
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub attempt: i32,
     pub(crate) config: Option<serde_json::Value>,
-    pub(crate) state: serde_json::Value,
+    pub(crate) data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecializedTask<C: QueueConfig, P: TaskData> {
+    pub task_metadata: TaskMetadata,
+    pub task_id: TaskId,
+    pub status: TaskStatus,
+    pub picked_up_at: Option<chrono::DateTime<Utc>>,
+    pub attempt: i32,
+    pub(crate) config: Option<C>,
+    pub(crate) data: P,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -496,10 +547,13 @@ impl Task {
     ///
     /// # Errors
     /// Returns an error if the task state cannot be deserialized into the specified type.
-    pub fn task_state<T: DeserializeOwned>(&self) -> crate::api::Result<T> {
-        Ok(serde_json::from_value(self.state.clone()).map_err(|e| {
+    pub fn task_data<T: TaskData>(&self) -> crate::api::Result<T> {
+        Ok(serde_json::from_value(self.data.clone()).map_err(|e| {
             crate::api::ErrorModel::internal(
-                format!("Failed to deserialize task state: {e}"),
+                format!(
+                    "Failed to deserialize task data for task {} in queue `{}`: {e}",
+                    self.task_id, self.queue_name
+                ),
                 "TaskStateDeserializationError",
                 Some(Box::new(e)),
             )
@@ -510,20 +564,367 @@ impl Task {
     ///
     /// # Errors
     /// Returns an error if the task configuration cannot be deserialized into the specified type.
-    pub fn task_config<T: DeserializeOwned>(&self) -> crate::api::Result<Option<T>> {
+    pub fn queue_config<T: QueueConfig>(&self) -> crate::api::Result<Option<T>> {
         Ok(self
             .config
             .as_ref()
             .map(|cfg| {
                 serde_json::from_value(cfg.clone()).map_err(|e| {
                     crate::api::ErrorModel::internal(
-                        format!("Failed to deserialize task config: {e}"),
+                        format!(
+                            "Failed to deserialize configuration for task queue `{}`: {e}",
+                            self.queue_name
+                        ),
                         "TaskConfigDeserializationError",
                         Some(Box::new(e)),
                     )
                 })
             })
             .transpose()?)
+    }
+}
+
+impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
+    /// Pick a new task from the queue. If no task is available, returns None.
+    ///
+    /// # Errors
+    /// Returns an error if the task cannot be picked from the queue or if
+    /// deserialization of the queue configuration or task data fails.
+    pub async fn pick_new_task<C: Catalog>(
+        catalog_state: C::State,
+    ) -> crate::api::Result<Option<Self>> {
+        let task = C::pick_new_task(
+            Q::queue_name(),
+            Q::max_time_since_last_heartbeat(),
+            catalog_state.clone(),
+        )
+        .await
+        .map_err(|e| e.append_detail(format!("Failed to pick new `{}` task.", Q::queue_name())))?;
+
+        if let Some(task) = task {
+            let state = match task.task_data::<D>() {
+                Ok(state) => state,
+                Err(err) => {
+                    Self::report_deserialization_failure::<C>(
+                        catalog_state,
+                        task.task_id,
+                        &err.to_string(),
+                    )
+                    .await;
+                    return Ok(None);
+                }
+            };
+            let config = match task.queue_config::<Q>() {
+                Ok(config) => config,
+                Err(err) => {
+                    Self::report_deserialization_failure::<C>(
+                        catalog_state,
+                        task.task_id,
+                        &err.to_string(),
+                    )
+                    .await;
+                    return Ok(None);
+                }
+            };
+            Ok(Some(Self {
+                task_metadata: task.task_metadata,
+                task_id: task.task_id,
+                status: task.status,
+                picked_up_at: task.picked_up_at,
+                attempt: task.attempt,
+                config,
+                data: state,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Continuously poll for a new task in the queue until a task is found.
+    /// Returns None if cancellation is requested.
+    pub async fn poll_for_new_task<C: Catalog>(
+        catalog_state: C::State,
+        poll_interval: &Duration,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) -> Option<Self> {
+        loop {
+            tokio::select! {
+                () = cancellation_token.cancelled() => {
+                    tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                    return None;
+                }
+                task_result = Self::pick_new_task::<C>(catalog_state.clone()) => {
+                    let task = match task_result {
+                        Ok(task) => task,
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to pick new task from queue `{}`. Retrying in 5s. Error: {e}",
+                                Q::queue_name()
+                            );
+                            tokio::select! {
+                                () = cancellation_token.cancelled() => {
+                                    tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                                    return None;
+                                }
+                                () = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                            }
+                        }
+                    };
+
+                    let Some(task) = task else {
+                        let jitter = { fastrand::u64(0..500) };
+                        tokio::select! {
+                            () = cancellation_token.cancelled() => {
+                                tracing::info!("Graceful shutdown requested for queue `{}`", Q::queue_name());
+                                return None;
+                            }
+                            () = tokio::time::sleep(*poll_interval + Duration::from_millis(jitter)) => continue,
+                        }
+                    };
+
+                    tracing::debug!("Picked up `{}` task {}.", task.task_id, Q::queue_name());
+                    return Some(task);
+                }
+            }
+        }
+    }
+
+    async fn report_deserialization_failure<C: Catalog>(
+        catalog_state: C::State,
+        task_id: TaskId,
+        error: &str,
+    ) {
+        tracing::error!("{error}. TaskID: {task_id}");
+
+        let mut trx = match C::Transaction::begin_write(catalog_state).await {
+            Ok(trx) => trx,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to start DB transaction to record deserialization failure for `{}` task {task_id}: {e}. Original Error: {error}",
+                    Q::queue_name()
+                );
+                return;
+            }
+        };
+
+        let r = C::record_task_failure(
+            task_id,
+            format!("Failed to deserialize task data: {error}").as_str(),
+            Q::max_retries(),
+            &mut trx.transaction(),
+        )
+        .await
+        .map_err(|e| {
+            e.append_detail(format!(
+                "Failed to record deserialization failure for `{task_id}` task {}.",
+                Q::queue_name()
+            ))
+            .append_detail(format!("Original Error: {error}"))
+        });
+
+        if let Err(e) = r {
+            tracing::error!(
+                "Failed to record deserialization failure for `{task_id}` task {}: {e}. Original Error: {error}",
+                Q::queue_name()
+            );
+            return;
+        }
+
+        if let Err(e) = trx.commit().await {
+            tracing::error!(
+                "Failed to commit transaction for recording deserialization failure for `{task_id}` task {}: {e}. Original Error: {error}",
+                Q::queue_name()
+            );
+        };
+    }
+
+    pub fn queue_name(&self) -> &'static str {
+        Q::queue_name()
+    }
+
+    /// Records an failure for a task in the catalog, updating its status and retry count.
+    ///
+    /// Does not return an error, but logs it.
+    pub async fn record_failure<C: Catalog>(&self, catalog_state: C::State, error: &str) {
+        let max_retries = Q::max_retries();
+
+        let status = Status::Failure(error, max_retries);
+
+        for attempt in 1..=5 {
+            match self
+                .record_status_for_state::<C>(catalog_state.clone(), status.clone())
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!(
+                        "Successfully recorded error for task {} in queue '{}' on attempt {attempt}",
+                        self.task_id,
+                        self.queue_name(),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to record error for task {} in queue '{}' on attempt {attempt}/5: {e}",
+                        self.task_id,
+                        self.queue_name(),
+                    );
+
+                    if attempt < 5 {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    } else {
+                        tracing::error!(
+                            "Failed to record error for task {} in queue '{}' after 5 attempts. {e}. Original Error: {error}",
+                            self.task_id,
+                            self.queue_name()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record success.
+    ///
+    /// Records the success of a task in the catalog, updating its status.
+    /// Does not return an error, but logs it.
+    pub async fn record_success<C: Catalog>(&self, catalog_state: C::State, details: Option<&str>) {
+        let status = Status::Success(details);
+
+        for attempt in 1..=5 {
+            match self
+                .record_status_for_state::<C>(catalog_state.clone(), status.clone())
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!(
+                        "Successfully recorded success for task {} in queue '{}' on attempt {attempt}",
+                        self.task_id,
+                        self.queue_name(),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to record success for task {} in queue '{}' on attempt {attempt}/5: {e}",
+                        self.task_id,
+                        self.queue_name(),
+                    );
+
+                    if attempt < 5 {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    } else {
+                        tracing::error!(
+                            "Failed to record success for task {} in queue '{}' after 5 attempts. {e}. Original Success Details: {}",
+                            self.task_id,
+                            self.queue_name(),
+                            details.unwrap_or("No details provided")
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record success in an existing transaction.
+    ///
+    /// Records the success of a task in the catalog, updating its status.
+    /// Does not return an error, but logs it.
+    pub async fn record_success_in_transaction<C: Catalog>(
+        &self,
+        transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+        details: Option<&str>,
+    ) {
+        let status = Status::Success(details);
+
+        match self
+            .record_status_for_transaction::<C>(status, transaction)
+            .await
+        {
+            Ok(()) => {
+                tracing::debug!(
+                    "Successfully recorded success for task {} in queue '{}'",
+                    self.task_id,
+                    self.queue_name(),
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to record success for task {} in queue '{}': {e}. Original Success Details: {}",
+                    self.task_id,
+                    self.queue_name(),
+                    details.unwrap_or("No details provided")
+                );
+            }
+        }
+    }
+
+    async fn record_status_for_state<C: Catalog>(
+        &self,
+        catalog_state: C::State,
+        result: Status<'_>,
+    ) -> Result<(), IcebergErrorResponse> {
+        let mut transaction: C::Transaction = match Transaction::begin_write(catalog_state).await {
+            Ok(trx) => trx,
+            Err(e) => {
+                return Err(e
+                    .append_detail(format!(
+                    "Failed to start DB transaction to record status for task {} in queue `{}`.",
+                    self.task_id, self.queue_name()
+                ))
+                    .append_detail(format!("Task Status that failed to record: `{result}`")));
+            }
+        };
+
+        self.record_status_for_transaction::<C>(result.clone(), transaction.transaction())
+            .await?;
+
+        transaction.commit().await.map_err(|e| {
+            e.append_detail(format!(
+                "Failed to commit DB transaction to record status for task {} in queue `{}`.",
+                self.task_id,
+                self.queue_name()
+            ))
+            .append_detail(format!("Task Status that failed to commit: `{result}`"))
+        })?;
+
+        Ok(())
+    }
+
+    async fn record_status_for_transaction<C: Catalog>(
+        &self,
+        result: Status<'_>,
+        mut transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+    ) -> Result<(), IcebergErrorResponse> {
+        match result {
+            Status::Success(details) => {
+                C::record_task_success(self.task_id, details, &mut transaction)
+                    .await
+                    .map_err(|e| {
+                        e.append_detail(format!(
+                            "Failed to record success for `{}` task {}.",
+                            self.queue_name(),
+                            self.task_id,
+                        ))
+                        .append_detail(format!(
+                            "Original Success Details: `{}`",
+                            details.unwrap_or("No details provided")
+                        ))
+                    })
+            }
+            Status::Failure(details, max_retries) => {
+                C::record_task_failure(self.task_id, details, max_retries, &mut transaction)
+                    .await
+                    .map_err(|e| {
+                        e.append_detail(format!(
+                            "Failed to record failure for `{}` task {}.",
+                            self.queue_name(),
+                            self.task_id
+                        ))
+                        .append_detail(format!("Original Error Details: `{details}`"))
+                    })
+            }
+        }
     }
 }
 
@@ -551,7 +952,7 @@ pub enum TaskOutcome {
     Success,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Status<'a> {
     Success(Option<&'a str>),
     Failure(&'a str, i32),
@@ -566,29 +967,8 @@ impl std::fmt::Display for Status<'_> {
     }
 }
 
-pub(crate) async fn record_error_with_catalog<C: Catalog>(
-    catalog_state: C::State,
-    error: &str,
-    max_retries: i32,
-    task_id: TaskId,
-) {
-    let mut trx: C::Transaction = match Transaction::begin_write(catalog_state).await.map_err(|e| {
-        tracing::error!("Failed to start transaction: {:?}", e);
-        e
-    }) {
-        Ok(trx) => trx,
-        Err(e) => {
-            tracing::error!("Failed to start transaction: {:?}", e);
-            return;
-        }
-    };
-    C::retrying_record_task_failure(task_id, error, max_retries, trx.transaction()).await;
-    let _ = trx.commit().await.inspect_err(|e| {
-        tracing::error!("Failed to commit transaction: {:?}", e);
-    });
-}
-
-const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
+#[must_use]
+pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
     assert!(
         num > 0,
         "max_seconds_since_last_heartbeat must be greater than 0"
@@ -600,6 +980,8 @@ const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
 
 #[cfg(test)]
 mod test {
+
+    use std::time::Duration;
 
     use sqlx::PgPool;
     use tracing_test::traced_test;
@@ -639,9 +1021,11 @@ mod test {
             cat,
             sec,
             auth,
-            std::time::Duration::from_millis(100),
+            Duration::from_millis(100),
         );
-        let _queue_task = tokio::task::spawn(queues.task_queues_runner().run_queue_workers(true));
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let runner = queues.task_queues_runner(cancellation_token.clone());
+        let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
 
         let warehouse = initialize_warehouse(
             catalog_state.clone(),
@@ -752,5 +1136,7 @@ mod test {
         .remove(&tab.table_id.into())
         .is_none());
         trx.commit().await.unwrap();
+
+        cancellation_token.cancel();
     }
 }
