@@ -19,7 +19,7 @@ use crate::{
     api::{
         iceberg::{
             types::DropParams,
-            v1::{DataAccess, NamespaceParameters, TableParameters, ViewParameters},
+            v1::{DataAccessMode, NamespaceParameters, TableParameters, ViewParameters},
         },
         management::v1::warehouse::UndropTabularsRequest,
         RequestMetadata,
@@ -169,7 +169,7 @@ impl EndpointHookCollection {
         request: Arc<CreateTableRequest>,
         metadata: Arc<TableMetadata>,
         metadata_location: Option<Arc<Location>>,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -224,7 +224,7 @@ impl EndpointHookCollection {
         request: Arc<CreateViewRequest>,
         metadata: Arc<ViewMetadata>,
         metadata_location: Arc<Location>,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -253,7 +253,7 @@ impl EndpointHookCollection {
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
         view_commit: Arc<ViewCommit>,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -408,7 +408,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _request: Arc<CreateTableRequest>,
         _metadata: Arc<TableMetadata>,
         _metadata_location: Option<Arc<Location>>,
-        _data_access: DataAccess,
+        _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -432,7 +432,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _request: Arc<CreateViewRequest>,
         _metadata: Arc<ViewMetadata>,
         _metadata_location: Arc<Location>,
-        _data_access: DataAccess,
+        _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -445,7 +445,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _parameters: ViewParameters,
         _request: Arc<CommitViewRequest>,
         _view_commit: Arc<ViewCommit>,
-        _data_access: DataAccess,
+        _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())

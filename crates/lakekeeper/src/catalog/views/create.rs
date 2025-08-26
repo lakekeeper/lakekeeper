@@ -5,7 +5,7 @@ use iceberg_ext::catalog::rest::{CreateViewRequest, ErrorModel, LoadViewResult};
 
 use crate::{
     api::{
-        iceberg::v1::{DataAccess, NamespaceParameters},
+        iceberg::v1::{DataAccessMode, NamespaceParameters},
         ApiContext,
     },
     catalog::{
@@ -32,9 +32,10 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: DataAccess,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
+    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let NamespaceParameters { namespace, prefix } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.clone())?;
@@ -204,7 +205,7 @@ pub(crate) mod test {
 
     use super::*;
     use crate::{
-        api::iceberg::types::Prefix,
+        api::iceberg::{types::Prefix, v1::DataAccess},
         implementations::postgres::{
             namespace::tests::initialize_namespace, secrets::SecretsState,
         },

@@ -3,7 +3,6 @@ use std::{collections::HashMap, sync::Arc, vec};
 use anyhow::anyhow;
 use limes::{Authenticator, AuthenticatorEnum};
 use tokio::task::{AbortHandle, JoinSet};
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     api::{
@@ -25,7 +24,7 @@ use crate::{
         task_queue::TaskQueueRegistry,
         Catalog, EndpointStatisticsTrackerTx, SecretStore, ServerInfo,
     },
-    CONFIG,
+    CancellationToken, CONFIG,
 };
 
 /// Type alias for a function that registers additional background services.

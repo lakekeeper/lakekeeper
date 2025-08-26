@@ -44,6 +44,23 @@ pub enum Actor {
     },
 }
 
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    derive_more::From,
+    serde::Serialize,
+    serde::Deserialize,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub(crate) enum InternalActor {
+    LakekeeperInternal,
+    #[serde(untagged)]
+    External(Actor),
+}
+
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
 pub(crate) struct AuthMiddlewareState<T: limes::Authenticator, A: super::Authorizer> {
@@ -336,6 +353,17 @@ impl Actor {
     }
 }
 
+impl InternalActor {
+    #[must_use]
+    #[inline]
+    pub(crate) fn is_authenticated(&self) -> bool {
+        match self {
+            InternalActor::LakekeeperInternal => true,
+            InternalActor::External(actor) => actor.is_authenticated(),
+        }
+    }
+}
+
 impl TryFrom<String> for UserId {
     type Error = ErrorModel;
 
@@ -588,6 +616,14 @@ mod tests {
         assert_eq!(actor_json, expected_json);
         let actor_from_json: Actor = serde_json::from_value(actor_json).unwrap();
         assert_eq!(actor_from_json, actor);
+
+        // Also test InternalActor with same serialization
+        let internal_actor = InternalActor::External(actor.clone());
+        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
+        assert_eq!(internal_actor_json, expected_json);
+        let internal_actor_from_json: InternalActor =
+            serde_json::from_value(internal_actor_json).unwrap();
+        assert_eq!(internal_actor_from_json, internal_actor);
     }
 
     #[test]
@@ -607,6 +643,12 @@ mod tests {
         );
         let actor_json_2 = serde_json::to_value(&actor).unwrap();
         assert_eq!(actor_json, actor_json_2);
+
+        // Also test InternalActor with same serialization
+        let internal_actor: InternalActor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(internal_actor, InternalActor::External(actor));
+        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
+        assert_eq!(actor_json, internal_actor_json);
     }
 
     #[test]
@@ -616,5 +658,25 @@ mod tests {
         assert_eq!(actor, Actor::Anonymous);
         let actor_json_2 = serde_json::to_value(&actor).unwrap();
         assert_eq!(actor_json, actor_json_2);
+
+        // Also test InternalActor with same serialization
+        let internal_actor: InternalActor = serde_json::from_value(actor_json.clone()).unwrap();
+        assert_eq!(internal_actor, InternalActor::External(Actor::Anonymous));
+        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
+        assert_eq!(actor_json, internal_actor_json);
+    }
+
+    #[test]
+    fn test_internal_actor() {
+        let internal_actor = InternalActor::LakekeeperInternal;
+        let expected_json = serde_json::json!({
+            "type": "lakekeeper-internal"
+        });
+
+        let internal_actor_json = serde_json::to_value(&internal_actor).unwrap();
+        assert_eq!(internal_actor_json, expected_json);
+        let internal_actor_from_json: InternalActor =
+            serde_json::from_value(internal_actor_json).unwrap();
+        assert_eq!(internal_actor_from_json, internal_actor);
     }
 }

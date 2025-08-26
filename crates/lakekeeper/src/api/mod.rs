@@ -24,7 +24,7 @@ pub type Result<T, E = IcebergErrorResponse> = std::result::Result<T, E>;
 /// # Panics
 /// If the function fails to install the signal handler, it will panic.
 #[cfg(feature = "router")]
-pub async fn shutdown_signal(cancellation_token: tokio_util::sync::CancellationToken) {
+pub async fn shutdown_signal(cancellation_token: crate::CancellationToken) {
     use tokio::signal;
 
     let ctrl_c = async {

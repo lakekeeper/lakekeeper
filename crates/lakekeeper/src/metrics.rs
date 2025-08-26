@@ -19,7 +19,7 @@ pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>>
 /// Fails if the `PrometheusBuilder` fails to build.
 pub fn get_axum_layer_and_install_recorder(
     metrics_port: u16,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    cancellation_token: crate::CancellationToken,
 ) -> anyhow::Result<(PrometheusMetricLayer<'static>, ExporterFuture)> {
     let (recorder, exporter) = PrometheusBuilder::new()
         .set_buckets_for_metric(

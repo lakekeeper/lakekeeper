@@ -17,6 +17,7 @@ use crate::{
         task_queue::{tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData},
         Catalog, TableId, Transaction, ViewId,
     },
+    CancellationToken,
 };
 
 pub(crate) const QUEUE_NAME: &str = "tabular_expiration";
@@ -49,7 +50,7 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     poll_interval: &Duration,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    cancellation_token: CancellationToken,
 ) {
     loop {
         let task = SpecializedTask::<ExpirationQueueConfig, TabularExpirationPayload>::poll_for_new_task::<C>(

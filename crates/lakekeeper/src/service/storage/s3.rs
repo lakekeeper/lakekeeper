@@ -25,7 +25,10 @@ use veil::Redact;
 
 use crate::{
     api::{
-        iceberg::{supported_endpoints, v1::DataAccess},
+        iceberg::{
+            supported_endpoints,
+            v1::{tables::DataAccessMode, DataAccess},
+        },
         management::v1::warehouse::TabularDeleteProfile,
         CatalogConfig,
     },
@@ -388,10 +391,7 @@ impl S3Profile {
     #[allow(clippy::too_many_arguments)]
     pub async fn generate_table_config(
         &self,
-        DataAccess {
-            vended_credentials,
-            remote_signing,
-        }: DataAccess,
+        data_access: DataAccessMode,
         s3_credential: Option<&S3Credential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -399,10 +399,20 @@ impl S3Profile {
         warehouse_id: WarehouseId,
         tabular_id: TabularId,
     ) -> Result<TableConfig, TableConfigError> {
-        // If vended_credentials is False and remote_signing is False,
-        // use remote_signing. This avoids generating costly STS credentials
-        // for clients that don't need them.
-        let mut remote_signing = !vended_credentials || remote_signing;
+        let (remote_signing, vended_credentials) = match data_access {
+            DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials,
+                remote_signing,
+            }) => {
+                // If vended_credentials is False and remote_signing is False,
+                // use remote_signing. This avoids generating costly STS credentials
+                // for clients that don't need them.
+                let remote_signing = !vended_credentials || remote_signing;
+                (remote_signing, vended_credentials)
+            }
+            DataAccessMode::ClientManaged => (false, false),
+        };
+        let mut remote_signing = remote_signing;
 
         let mut config = TableProperties::default();
         let mut creds = TableProperties::default();
@@ -412,7 +422,6 @@ impl S3Profile {
         }
 
         config.insert(&s3::Region(self.region.to_string()));
-        config.insert(&client::Region(self.region.to_string()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
             value: self.region.to_string(),
@@ -424,7 +433,7 @@ impl S3Profile {
         }
 
         if vended_credentials {
-            if self.sts_enabled | matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
+            if self.sts_enabled || matches!(s3_credential, Some(S3Credential::CloudflareR2(..))) {
                 let aws_sdk_sts::types::Credentials {
                     access_key_id,
                     secret_access_key,
@@ -474,6 +483,9 @@ impl S3Profile {
                 creds.insert(&s3::SecretAccessKey(secret_access_key));
                 creds.insert(&s3::SessionToken(session_token));
             } else {
+                tracing::debug!(
+                    "Falling back to remote signing: vended_credentials requested but STS is disabled for this Warehouse and the credential type is not Cloudflare R2."
+                );
                 push_fsspec_fileio_with_s3v4restsigner(&mut config);
                 remote_signing = true;
             }

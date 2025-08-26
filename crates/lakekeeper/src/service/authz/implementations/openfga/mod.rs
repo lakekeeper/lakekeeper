@@ -196,17 +196,17 @@ impl Authorizer for OpenFGAAuthorizer {
         Ok(())
     }
 
-    async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
+    async fn list_projects_impl(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
         let actor = metadata.actor();
         self.list_projects_internal(actor).await
     }
 
-    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool> {
+    async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool> {
         // Currently all authenticated principals can search users
         Ok(metadata.actor().is_authenticated())
     }
 
-    async fn is_allowed_role_action(
+    async fn is_allowed_role_action_impl(
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
@@ -221,7 +221,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_user_action(
+    async fn is_allowed_user_action_impl(
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
@@ -271,7 +271,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_server_action(
+    async fn is_allowed_server_action_impl(
         &self,
         metadata: &RequestMetadata,
         action: CatalogServerAction,
@@ -285,7 +285,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_project_action(
+    async fn is_allowed_project_action_impl(
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
@@ -300,7 +300,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_warehouse_action(
+    async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
@@ -315,7 +315,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn is_allowed_namespace_action<A>(
+    async fn is_allowed_namespace_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_id: NamespaceId,
@@ -333,7 +333,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_namespace_actions<A>(
+    async fn are_allowed_namespace_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_ids: Vec<NamespaceId>,
@@ -354,7 +354,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.batch_check(items).await
     }
 
-    async fn is_allowed_table_action<A>(
+    async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         table_id: TableId,
@@ -372,7 +372,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_table_actions<A>(
+    async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
         table_ids: Vec<TableId>,
@@ -393,7 +393,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.batch_check(items).await
     }
 
-    async fn is_allowed_view_action<A>(
+    async fn is_allowed_view_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         view_id: ViewId,
@@ -411,7 +411,7 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn are_allowed_view_actions<A>(
+    async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
         view_ids: Vec<ViewId>,

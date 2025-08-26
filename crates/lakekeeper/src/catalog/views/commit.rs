@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     api::iceberg::v1::{
-        ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Result,
+        ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
     catalog::{
@@ -42,9 +42,10 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     parameters: ViewParameters,
     request: CommitViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: DataAccess,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
+    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(parameters.prefix.clone())?;
 
@@ -159,7 +160,7 @@ struct CommitViewContext<'a> {
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretIdent>,
     request: &'a CommitViewRequest,
-    data_access: DataAccess,
+    data_access: DataAccessMode,
 }
 
 // Core commit logic that may be retried

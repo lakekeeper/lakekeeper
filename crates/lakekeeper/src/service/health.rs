@@ -4,7 +4,8 @@ use std::{collections::HashMap, fmt::Formatter, sync::Arc, time::Duration};
 use itertools::{FoldWhile, Itertools};
 use serde::{Deserialize, Serialize};
 use tokio::task::{AbortHandle, JoinSet};
-use tokio_util::sync::CancellationToken;
+
+use crate::CancellationToken;
 
 #[async_trait::async_trait]
 pub trait HealthExt: Send + Sync + 'static {
@@ -13,7 +14,7 @@ pub trait HealthExt: Send + Sync + 'static {
     async fn update_health_loop(
         self: Arc<Self>,
         refresh_interval: Duration,
-        cancellation_token: tokio_util::sync::CancellationToken,
+        cancellation_token: crate::CancellationToken,
     ) {
         loop {
             // Exit promptly if already cancelled before doing any work

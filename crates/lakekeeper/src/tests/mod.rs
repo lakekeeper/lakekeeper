@@ -299,7 +299,7 @@ pub(crate) fn random_request_metadata() -> RequestMetadata {
 pub(crate) fn spawn_build_in_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
     poll_interval: Option<std::time::Duration>,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    cancellation_token: crate::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     let ctx = ctx.clone();
 

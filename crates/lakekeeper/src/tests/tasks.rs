@@ -135,7 +135,7 @@ mod test {
         transaction.commit().await.unwrap();
         tx.send(task_id).await.unwrap();
 
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let cancellation_token = crate::CancellationToken::new();
         let task_handle = tokio::task::spawn(
             task_queue_registry
                 .task_queues_runner(cancellation_token.clone())

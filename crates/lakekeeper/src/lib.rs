@@ -33,6 +33,7 @@ pub use request_metadata::{
     X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER, X_FORWARDED_PROTO_HEADER,
 };
 pub use tokio;
+pub use tokio_util::sync::CancellationToken;
 #[cfg(feature = "router")]
 #[cfg_attr(docsrs, doc(cfg(feature = "router")))]
 pub use tower;
