@@ -1,6 +1,6 @@
 [profile.default]
 default-filter = """
-    not package(lakekeeper-io)
+    not (package(lakekeeper-io) and binary(integration_tests))
     and not test(::aws_integration_tests::)
     and not test(::aws_kms_integration_tests::)
     and not test(::azure_integration_tests::)
