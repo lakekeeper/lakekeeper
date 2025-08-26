@@ -28,7 +28,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     let storage_profile = crate::tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer {};
 
-    let api_context = get_api_context(&pool, authorizer);
+    let api_context = get_api_context(&pool, authorizer).await;
 
     // Bootstrap
     ApiServer::bootstrap(
@@ -110,7 +110,8 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
         &api_context,
         Some(std::time::Duration::from_secs(1)),
         cancellation_token.clone(),
-    );
+    )
+    .await;
 
     // Drop warehouse — poll until purge tasks complete to avoid flakiness
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

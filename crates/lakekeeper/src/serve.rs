@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     api::{
         router::{new_full_router, serve as service_serve, RouterArgs},
-        shutdown_signal,
+        shutdown_signal, ApiContext,
     },
     service::{
         authz::{AllowAllAuthorizer, Authorizer},
@@ -23,7 +23,7 @@ use crate::{
         },
         health::ServiceHealthProvider,
         task_queue::TaskQueueRegistry,
-        Catalog, EndpointStatisticsTrackerTx, SecretStore, ServerInfo,
+        Catalog, EndpointStatisticsTrackerTx, SecretStore, ServerInfo, State,
     },
     CONFIG,
 };
@@ -205,13 +205,31 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     // Task queues
     let mut task_queue_registry = TaskQueueRegistry::new();
     if enable_built_in_queues {
-        task_queue_registry.register_built_in_queues::<C, _, _>(
-            catalog_state.clone(),
-            secrets_state.clone(),
-            authorizer.clone(),
-            CONFIG.task_poll_interval,
-        );
+        task_queue_registry
+            .register_built_in_queues::<C, _, _>(
+                catalog_state.clone(),
+                secrets_state.clone(),
+                authorizer.clone(),
+                CONFIG.task_poll_interval,
+            )
+            .await;
     }
+
+    // Register additional task queues if provided
+    // Registered task queues have interior mutability. A later registration of a task
+    // affects the state of all previously registered tasks.
+    let registered_task_queues = task_queue_registry.registered_task_queues();
+    let state = ApiContext {
+        v1_state: State::<_, C, _> {
+            authz: authorizer,
+            catalog: catalog_state,
+            secrets: secrets_state,
+            contract_verifiers: contract_verification,
+            registered_task_queues,
+            hooks,
+        },
+    };
+
     if let Some(register_fn) = register_additional_task_queues_fn {
         register_fn(&mut task_queue_registry);
     }
@@ -229,7 +247,8 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
         hooks,
         registered_task_queues: task_queue_registry.registered_task_queues(),
-    })?;
+    })
+    .await?;
 
     if let Some(modify_router_fn) = modify_router_fn {
         router = modify_router_fn(router);
@@ -296,8 +315,10 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     }
 
     // Task Queues:
-    let task_runner = task_queue_registry.task_queues_runner(cancellation_token.clone());
-    if task_queue_registry.is_empty() {
+    let task_runner = task_queue_registry
+        .task_queues_runner(cancellation_token.clone())
+        .await;
+    if task_queue_registry.is_empty().await {
         tracing::info!("No task queues registered, skipping task queue worker startup");
     } else {
         let task_abort_handle = service_futures.spawn(async move {

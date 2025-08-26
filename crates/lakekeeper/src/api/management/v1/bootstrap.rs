@@ -207,6 +207,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 .v1_state
                 .registered_task_queues
                 .queue_names()
+                .await
                 .into_iter()
                 .map(ToString::to_string)
                 .collect(),

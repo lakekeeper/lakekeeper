@@ -203,7 +203,7 @@ pub(crate) async fn setup<T: Authorizer>(
         "Number of warehouses must be greater than 0",
     );
 
-    let api_context = get_api_context(&pool, authorizer);
+    let api_context = get_api_context(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {
         RequestMetadata::random_human(user_id)
@@ -265,7 +265,7 @@ pub(crate) async fn setup<T: Authorizer>(
     )
 }
 
-pub(crate) fn get_api_context<T: Authorizer>(
+pub(crate) async fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
 ) -> ApiContext<State<T, PostgresCatalog, SecretsState>> {
@@ -273,12 +273,14 @@ pub(crate) fn get_api_context<T: Authorizer>(
     let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
 
     let mut task_queues = TaskQueueRegistry::new();
-    task_queues.register_built_in_queues::<PostgresCatalog, _, _>(
-        catalog_state,
-        secret_store,
-        auth.clone(),
-        CONFIG.task_poll_interval,
-    );
+    task_queues
+        .register_built_in_queues::<PostgresCatalog, _, _>(
+            catalog_state,
+            secret_store,
+            auth.clone(),
+            CONFIG.task_poll_interval,
+        )
+        .await;
     let registered_task_queues = task_queues.registered_task_queues();
     ApiContext {
         v1_state: State {
@@ -296,7 +298,7 @@ pub(crate) fn random_request_metadata() -> RequestMetadata {
     RequestMetadata::new_unauthenticated()
 }
 
-pub(crate) fn spawn_build_in_queues<T: Authorizer>(
+pub(crate) async fn spawn_build_in_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
     poll_interval: Option<std::time::Duration>,
     cancellation_token: tokio_util::sync::CancellationToken,
@@ -304,13 +306,15 @@ pub(crate) fn spawn_build_in_queues<T: Authorizer>(
     let ctx = ctx.clone();
 
     let mut task_queues = TaskQueueRegistry::new();
-    task_queues.register_built_in_queues::<PostgresCatalog, _, _>(
-        ctx.v1_state.catalog.clone(),
-        ctx.v1_state.secrets.clone(),
-        ctx.v1_state.authz.clone(),
-        poll_interval.unwrap_or(CONFIG.task_poll_interval),
-    );
-    let task_runner = task_queues.task_queues_runner(cancellation_token);
+    task_queues
+        .register_built_in_queues::<PostgresCatalog, _, _>(
+            ctx.v1_state.catalog.clone(),
+            ctx.v1_state.secrets.clone(),
+            ctx.v1_state.authz.clone(),
+            poll_interval.unwrap_or(CONFIG.task_poll_interval),
+        )
+        .await;
+    let task_runner = task_queues.task_queues_runner(cancellation_token).await;
 
     tokio::task::spawn(task_runner.run_queue_workers(true))
 }

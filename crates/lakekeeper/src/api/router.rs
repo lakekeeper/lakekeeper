@@ -84,7 +84,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug
 ///
 /// # Errors
 /// - Fails if the token verifier chain cannot be created
-pub fn new_full_router<
+pub async fn new_full_router<
     C: Catalog,
     A: Authorizer + Clone,
     S: SecretStore,
@@ -136,7 +136,8 @@ pub fn new_full_router<
                 Json(health).into_response()
             }),
         );
-    let router = maybe_merge_swagger_router(router, registered_task_queues.api_config())
+    let registered_api_config = registered_task_queues.api_config().await;
+    let router = maybe_merge_swagger_router(router, registered_api_config.iter().collect())
         .layer(axum::middleware::from_fn(
             create_request_metadata_with_trace_and_project_fn,
         ))
