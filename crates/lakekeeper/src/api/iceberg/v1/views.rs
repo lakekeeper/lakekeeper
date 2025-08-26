@@ -15,7 +15,7 @@ use crate::{
             types::{DropParams, Prefix},
             v1::{
                 namespace::{NamespaceIdentUrl, NamespaceParameters},
-                DataAccess,
+                tables::DataAccessMode,
             },
         },
         ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
@@ -42,7 +42,7 @@ where
         parameters: NamespaceParameters,
         request: CreateViewRequest,
         state: ApiContext<S>,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult>;
 
@@ -50,7 +50,7 @@ where
     async fn load_view(
         parameters: ViewParameters,
         state: ApiContext<S>,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult>;
 
@@ -59,7 +59,7 @@ where
         parameters: ViewParameters,
         request: CommitViewRequest,
         state: ApiContext<S>,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult>;
 

@@ -14,7 +14,10 @@ use limes::Authentication;
 use uuid::Uuid;
 
 use crate::{
-    service::{authn::Actor, TabularId},
+    service::{
+        authn::{Actor, InternalActor},
+        TabularId,
+    },
     ProjectId, WarehouseId, CONFIG, DEFAULT_PROJECT_ID,
 };
 
@@ -28,6 +31,8 @@ pub const X_FORWARDED_PROTO_HEADER: &str = "x-forwarded-proto";
 pub const X_FORWARDED_PORT_HEADER: &str = "x-forwarded-port";
 pub const X_FORWARDED_PREFIX_HEADER: &str = "x-forwarded-prefix";
 
+const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
+
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
@@ -35,7 +40,7 @@ pub struct RequestMetadata {
     project_id: Option<ProjectId>,
     authentication: Option<Authentication>,
     base_url: String,
-    actor: Actor,
+    actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
 }
@@ -47,7 +52,7 @@ impl RequestMetadata {
         actor: Actor,
         authentication: Authentication,
     ) -> &mut Self {
-        self.actor = actor;
+        self.actor = actor.into();
         self.authentication = Some(authentication);
         self
     }
@@ -58,9 +63,9 @@ impl RequestMetadata {
     #[must_use]
     pub fn user_id(&self) -> Option<&crate::service::UserId> {
         match &self.actor {
-            Actor::Principal(user_id) => Some(user_id),
-            Actor::Role { principal, .. } => Some(principal),
-            Actor::Anonymous => None,
+            InternalActor::External(Actor::Principal(user_id)) => Some(user_id),
+            InternalActor::External(Actor::Role { principal, .. }) => Some(principal),
+            InternalActor::External(Actor::Anonymous) | InternalActor::LakekeeperInternal => None,
         }
     }
 
@@ -73,6 +78,26 @@ impl RequestMetadata {
         &self.request_method
     }
 
+    #[must_use]
+    pub fn new_lakekeeper_internal() -> Self {
+        Self {
+            request_id: Uuid::now_v7(),
+            project_id: None,
+            authentication: None,
+            base_url: "http://localhost:8181".to_string(),
+            actor: InternalActor::LakekeeperInternal,
+            matched_path: None,
+            request_method: Method::default(),
+        }
+    }
+
+    // If this grants admin-level privileges:
+    #[must_use]
+    #[inline]
+    pub fn has_admin_privileges(&self) -> bool {
+        matches!(self.actor, InternalActor::LakekeeperInternal)
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn new_unauthenticated() -> Self {
@@ -81,7 +106,7 @@ impl RequestMetadata {
             project_id: None,
             authentication: None,
             base_url: "http://localhost:8181".to_string(),
-            actor: Actor::Anonymous,
+            actor: Actor::Anonymous.into(),
             matched_path: None,
             request_method: Method::default(),
         }
@@ -108,7 +133,7 @@ impl RequestMetadata {
                     .build(),
             ),
             base_url: "http://localhost:8181".to_string(),
-            actor: Actor::Principal(user_id),
+            actor: Actor::Principal(user_id).into(),
             matched_path: None,
             request_method: Method::default(),
             project_id: None,
@@ -129,7 +154,7 @@ impl RequestMetadata {
             request_id: Uuid::now_v7(),
             authentication,
             base_url: base_url.unwrap_or_else(|| "http://localhost:8181".to_string()),
-            actor,
+            actor: actor.into(),
             project_id,
             matched_path,
             request_method,
@@ -138,7 +163,10 @@ impl RequestMetadata {
 
     #[must_use]
     pub fn actor(&self) -> &Actor {
-        &self.actor
+        match &self.actor {
+            InternalActor::External(actor) => actor,
+            InternalActor::LakekeeperInternal => ANONYMOUS_ACTOR,
+        }
     }
 
     #[must_use]
@@ -267,7 +295,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         request_id,
         authentication: None,
         base_url: base_uri,
-        actor: Actor::Anonymous,
+        actor: Actor::Anonymous.into(),
         project_id,
         matched_path,
         request_method,

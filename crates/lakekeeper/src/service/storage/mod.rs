@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 use super::{secrets::SecretInStorage, NamespaceId, TableId};
 use crate::{
     api::{
-        iceberg::v1::DataAccess, management::v1::warehouse::TabularDeleteProfile, CatalogConfig,
+        iceberg::v1::{tables::DataAccessMode, DataAccess},
+        management::v1::warehouse::TabularDeleteProfile,
+        CatalogConfig,
     },
     catalog::{compression_codec::CompressionCodec, io::list_location},
     request_metadata::RequestMetadata,
@@ -234,7 +236,7 @@ impl StorageProfile {
     #[allow(clippy::too_many_arguments)]
     pub async fn generate_table_config(
         &self,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         secret: Option<&StorageCredential>,
         table_location: &Location,
         storage_permissions: StoragePermissions,
@@ -429,7 +431,8 @@ impl StorageProfile {
                 DataAccess {
                     remote_signing: false,
                     vended_credentials: true,
-                },
+                }
+                .into(),
                 credential,
                 test_location,
                 StoragePermissions::ReadWriteDelete,
@@ -1309,7 +1312,8 @@ mod tests {
                 DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
-                },
+                }
+                .into(),
                 Some(cred),
                 &table_location1,
                 StoragePermissions::ReadWriteDelete,
@@ -1325,7 +1329,8 @@ mod tests {
                 DataAccess {
                     vended_credentials: true,
                     remote_signing: false,
-                },
+                }
+                .into(),
                 Some(cred),
                 &table_location2,
                 StoragePermissions::ReadWriteDelete,

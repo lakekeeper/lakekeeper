@@ -36,10 +36,11 @@ use crate::{
         iceberg::{
             types::DropParams,
             v1::{
-                ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
-                CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
-                LoadTableResult, NamespaceParameters, PaginationQuery, Prefix,
-                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
+                tables::DataAccessMode, ApiContext, CommitTableRequest, CommitTableResponse,
+                CommitTransactionRequest, CreateTableRequest, DataAccess, ErrorModel,
+                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters,
+                PaginationQuery, Prefix, RegisterTableRequest, RenameTableRequest, Result,
+                TableIdent, TableParameters,
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
@@ -140,10 +141,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         parameters: NamespaceParameters,
         // mut because we need to change location
         mut request: CreateTableRequest,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
+        let data_access = data_access.into();
         // ------------------- VALIDATIONS -------------------
         let NamespaceParameters { namespace, prefix } = parameters.clone();
         let warehouse_id = require_warehouse_id(prefix.clone())?;
@@ -406,7 +408,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let config = storage_profile
             .generate_table_config(
-                DataAccess::not_specified(),
+                DataAccess::not_specified().into(),
                 storage_secret.as_ref(),
                 &table_location,
                 StoragePermissions::ReadWriteDelete,
@@ -481,7 +483,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn load_table(
         parameters: TableParameters,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult> {
@@ -548,7 +550,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             Some(
                 storage_profile
                     .generate_table_config(
-                        data_access,
+                        data_access.into(),
                         storage_secret.as_ref(),
                         &table_location,
                         storage_permissions,
@@ -621,7 +623,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             maybe_get_secret(storage_secret_ident, &state.v1_state.secrets).await?;
         let storage_config = storage_profile
             .generate_table_config(
-                data_access,
+                data_access.into(),
                 storage_secret.as_ref(),
                 &parse_location(
                     tabular_details.location.as_str(),

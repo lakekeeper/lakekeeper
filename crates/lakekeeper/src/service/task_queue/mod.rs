@@ -12,7 +12,6 @@ use futures::future::BoxFuture;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use serde::{de::DeserializeOwned, Serialize};
 use strum::EnumIter;
-use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -26,6 +25,7 @@ use crate::service::{
 
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
+pub use tokio_util::sync::CancellationToken;
 
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     valid_max_time_since_last_heartbeat(3600);
@@ -41,9 +41,8 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
 
 /// Infinitely running task worker loop function that polls tasks from a queue and
 /// processes. Accepts a cancellation token for graceful shutdown.
-pub type TaskQueueWorker = Arc<
-    dyn Fn(tokio_util::sync::CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static,
->;
+pub type TaskQueueWorker =
+    Arc<dyn Fn(CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static>;
 type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
 
 /// Warehouse specific configuration for a task queue.
@@ -532,8 +531,8 @@ pub struct SpecializedTask<C: QueueConfig, P: TaskData> {
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
     pub attempt: i32,
-    pub(crate) config: Option<C>,
-    pub(crate) data: P,
+    pub config: Option<C>,
+    pub data: P,
 }
 
 #[derive(Debug, Clone, Copy)]

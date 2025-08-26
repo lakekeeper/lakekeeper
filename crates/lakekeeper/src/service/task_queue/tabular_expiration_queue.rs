@@ -2,6 +2,7 @@ use std::{sync::LazyLock, time::Duration};
 
 use iceberg::ErrorKind;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
 use uuid::Uuid;
@@ -49,7 +50,7 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     poll_interval: &Duration,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    cancellation_token: CancellationToken,
 ) {
     loop {
         let task = SpecializedTask::<ExpirationQueueConfig, TabularExpirationPayload>::poll_for_new_task::<C>(
