@@ -195,58 +195,142 @@ where
     async fn bootstrap(&self, metadata: &RequestMetadata, is_operator: bool) -> Result<()>;
 
     /// Return Err only for internal errors.
-    async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse>;
+    async fn list_projects_impl(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse>;
+
+    async fn list_projects(&self, metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
+        if metadata.has_admin_privileges() {
+            Ok(ListProjectsResponse::All)
+        } else {
+            self.list_projects_impl(metadata).await
+        }
+    }
 
     /// Search users
-    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool>;
+    async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool>;
+
+    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.can_search_users_impl(metadata).await
+        }
+    }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_user_action(
+    async fn is_allowed_user_action_impl(
         &self,
         metadata: &RequestMetadata,
         user_id: &UserId,
         action: CatalogUserAction,
     ) -> Result<bool>;
 
+    async fn is_allowed_user_action(
+        &self,
+        metadata: &RequestMetadata,
+        user_id: &UserId,
+        action: CatalogUserAction,
+    ) -> Result<bool> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_user_action_impl(metadata, user_id, action)
+                .await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_role_action(
+    async fn is_allowed_role_action_impl(
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
         action: CatalogRoleAction,
     ) -> Result<bool>;
 
+    async fn is_allowed_role_action(
+        &self,
+        metadata: &RequestMetadata,
+        role_id: RoleId,
+        action: CatalogRoleAction,
+    ) -> Result<bool> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_role_action_impl(metadata, role_id, action)
+                .await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_server_action(
+    async fn is_allowed_server_action_impl(
         &self,
         metadata: &RequestMetadata,
         action: CatalogServerAction,
     ) -> Result<bool>;
 
+    async fn is_allowed_server_action(
+        &self,
+        metadata: &RequestMetadata,
+        action: CatalogServerAction,
+    ) -> Result<bool> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_server_action_impl(metadata, action).await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_project_action(
+    async fn is_allowed_project_action_impl(
         &self,
         metadata: &RequestMetadata,
         project_id: &ProjectId,
         action: CatalogProjectAction,
     ) -> Result<bool>;
 
+    async fn is_allowed_project_action(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: &ProjectId,
+        action: CatalogProjectAction,
+    ) -> Result<bool> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_project_action_impl(metadata, project_id, action)
+                .await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_warehouse_action(
+    async fn is_allowed_warehouse_action_impl(
         &self,
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         action: CatalogWarehouseAction,
     ) -> Result<bool>;
 
+    async fn is_allowed_warehouse_action(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        action: CatalogWarehouseAction,
+    ) -> Result<bool> {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_warehouse_action_impl(metadata, warehouse_id, action)
+                .await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_namespace_action<A>(
+    async fn is_allowed_namespace_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_id: NamespaceId,
@@ -254,6 +338,23 @@ where
     ) -> Result<bool>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send;
+
+    async fn is_allowed_namespace_action<A>(
+        &self,
+        metadata: &RequestMetadata,
+        namespace_id: NamespaceId,
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
+    {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_namespace_action_impl(metadata, namespace_id, action)
+                .await
+        }
+    }
 
     /// Checks if actions are allowed on namespaces. If supported by the concrete implementation,
     /// these checks may happen in batches to avoid sending a separate request for each tuple.
@@ -263,7 +364,7 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_namespace_actions<A>(
+    async fn are_allowed_namespace_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
         namespace_ids: Vec<NamespaceId>,
@@ -281,9 +382,26 @@ where
         .await
     }
 
+    async fn are_allowed_namespace_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        namespace_ids: Vec<NamespaceId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
+    {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; namespace_ids.len()])
+        } else {
+            self.are_allowed_namespace_actions_impl(metadata, namespace_ids, actions)
+                .await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_table_action<A>(
+    async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         table_id: TableId,
@@ -291,6 +409,23 @@ where
     ) -> Result<bool>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send;
+
+    async fn is_allowed_table_action<A>(
+        &self,
+        metadata: &RequestMetadata,
+        table_id: TableId,
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send,
+    {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_table_action_impl(metadata, table_id, action)
+                .await
+        }
+    }
 
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
@@ -300,7 +435,7 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_table_actions<A>(
+    async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
         table_ids: Vec<TableId>,
@@ -318,9 +453,26 @@ where
         .await
     }
 
+    async fn are_allowed_table_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        table_ids: Vec<TableId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogTableAction> + std::fmt::Display + Send,
+    {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; table_ids.len()])
+        } else {
+            self.are_allowed_table_actions_impl(metadata, table_ids, actions)
+                .await
+        }
+    }
+
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
     /// Return Err for internal errors.
-    async fn is_allowed_view_action<A>(
+    async fn is_allowed_view_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
         view_id: ViewId,
@@ -328,6 +480,23 @@ where
     ) -> Result<bool>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send;
+
+    async fn is_allowed_view_action<A>(
+        &self,
+        metadata: &RequestMetadata,
+        view_id: ViewId,
+        action: A,
+    ) -> Result<bool>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send,
+    {
+        if metadata.has_admin_privileges() {
+            Ok(true)
+        } else {
+            self.is_allowed_view_action_impl(metadata, view_id, action)
+                .await
+        }
+    }
 
     /// Checks if actions are allowed on views. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
@@ -337,7 +506,7 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_view_actions<A>(
+    async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
         view_ids: Vec<ViewId>,
@@ -354,6 +523,24 @@ where
         )
         .await
     }
+
+    async fn are_allowed_view_actions<A>(
+        &self,
+        metadata: &RequestMetadata,
+        view_ids: Vec<ViewId>,
+        actions: Vec<A>,
+    ) -> Result<Vec<bool>>
+    where
+        A: From<CatalogViewAction> + std::fmt::Display + Send,
+    {
+        if metadata.has_admin_privileges() {
+            Ok(vec![true; view_ids.len()])
+        } else {
+            self.are_allowed_view_actions_impl(metadata, view_ids, actions)
+                .await
+        }
+    }
+
     /// Hook that is called when a user is deleted.
     async fn delete_user(&self, metadata: &RequestMetadata, user_id: UserId) -> Result<()>;
 
@@ -842,15 +1029,18 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        async fn list_projects(&self, _metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
+        async fn list_projects_impl(
+            &self,
+            _metadata: &RequestMetadata,
+        ) -> Result<ListProjectsResponse> {
             Ok(ListProjectsResponse::All)
         }
 
-        async fn can_search_users(&self, _metadata: &RequestMetadata) -> Result<bool> {
+        async fn can_search_users_impl(&self, _metadata: &RequestMetadata) -> Result<bool> {
             Ok(true)
         }
 
-        async fn is_allowed_user_action(
+        async fn is_allowed_user_action_impl(
             &self,
             _metadata: &RequestMetadata,
             _user_id: &UserId,
@@ -859,7 +1049,7 @@ pub(crate) mod tests {
             Ok(true)
         }
 
-        async fn is_allowed_role_action(
+        async fn is_allowed_role_action_impl(
             &self,
             _metadata: &RequestMetadata,
             role_id: RoleId,
@@ -871,7 +1061,7 @@ pub(crate) mod tests {
             Ok(self.check_available(format!("role:{role_id}").as_str()))
         }
 
-        async fn is_allowed_server_action(
+        async fn is_allowed_server_action_impl(
             &self,
             _metadata: &RequestMetadata,
             _action: CatalogServerAction,
@@ -879,7 +1069,7 @@ pub(crate) mod tests {
             Ok(true)
         }
 
-        async fn is_allowed_project_action(
+        async fn is_allowed_project_action_impl(
             &self,
             _metadata: &RequestMetadata,
             project_id: &ProjectId,
@@ -891,7 +1081,7 @@ pub(crate) mod tests {
             Ok(self.check_available(format!("project:{project_id}").as_str()))
         }
 
-        async fn is_allowed_warehouse_action(
+        async fn is_allowed_warehouse_action_impl(
             &self,
             _metadata: &RequestMetadata,
             warehouse_id: WarehouseId,
@@ -903,7 +1093,7 @@ pub(crate) mod tests {
             Ok(self.check_available(format!("warehouse:{warehouse_id}").as_str()))
         }
 
-        async fn is_allowed_namespace_action<A>(
+        async fn is_allowed_namespace_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
             namespace_id: NamespaceId,
@@ -918,7 +1108,7 @@ pub(crate) mod tests {
             Ok(self.check_available(format!("namespace:{namespace_id}").as_str()))
         }
 
-        async fn is_allowed_table_action<A>(
+        async fn is_allowed_table_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
             table_id: TableId,
@@ -933,7 +1123,7 @@ pub(crate) mod tests {
             Ok(self.check_available(format!("table:{table_id}").as_str()))
         }
 
-        async fn is_allowed_view_action<A>(
+        async fn is_allowed_view_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
             view_id: ViewId,

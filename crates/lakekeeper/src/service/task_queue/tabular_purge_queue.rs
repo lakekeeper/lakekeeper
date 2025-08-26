@@ -44,7 +44,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
     poll_interval: &Duration,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    cancellation_token: crate::CancellationToken,
 ) {
     loop {
         let task =

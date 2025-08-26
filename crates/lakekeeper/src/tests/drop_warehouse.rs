@@ -105,7 +105,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     .expect_err("Warehouse deletion should fail due to purge tasks");
 
     // Spawn task queue workers
-    let cancellation_token = tokio_util::sync::CancellationToken::new();
+    let cancellation_token = crate::CancellationToken::new();
     let queues_future = spawn_build_in_queues(
         &api_context,
         Some(std::time::Duration::from_secs(1)),

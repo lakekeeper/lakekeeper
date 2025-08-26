@@ -25,7 +25,7 @@ use veil::Redact;
 
 use crate::{
     api::{
-        iceberg::{supported_endpoints, v1::DataAccess},
+        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig, Result,
     },
     service::storage::{
@@ -232,11 +232,18 @@ impl AdlsProfile {
     /// Fails if sas token cannot be generated.
     pub async fn generate_table_config(
         &self,
-        _: DataAccess,
+        data_access: DataAccessMode,
         table_location: &Location,
         credential: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
+        if matches!(data_access, DataAccessMode::ClientManaged) {
+            return Ok(TableConfig {
+                creds: TableProperties::default(),
+                config: TableProperties::default(),
+            });
+        }
+
         let sas = match credential {
             AzCredential::ClientCredentials { .. } => {
                 let client = self.blob_service_client(credential)?;
@@ -355,7 +362,7 @@ impl AdlsProfile {
     fn iceberg_sas_property_key(&self) -> String {
         iceberg_sas_property_key(
             &self.account_name,
-            self.host.as_ref().unwrap_or(&DEFAULT_HOST.to_string()),
+            self.host.as_deref().unwrap_or(DEFAULT_HOST),
         )
     }
 

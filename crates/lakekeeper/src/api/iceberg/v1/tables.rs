@@ -66,7 +66,7 @@ where
     async fn create_table(
         parameters: NamespaceParameters,
         request: CreateTableRequest,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult>;
@@ -82,7 +82,7 @@ where
     /// Load a table from the catalog
     async fn load_table(
         parameters: TableParameters,
-        data_access: DataAccess,
+        data_access: impl Into<DataAccessMode> + Send,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadTableResult>;
@@ -287,7 +287,7 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
         )
         // {prefix}/namespaces/{namespace}/tables/{table}/credentials
         .route(
-            "/{prefix}/namespaces/{namespace}/tables/{namespace}/credentials",
+            "/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
             // Load a table from the catalog
             get(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
@@ -357,6 +357,24 @@ pub const DATA_ACCESS_HEADER: &str = "X-Iceberg-Access-Delegation";
 pub struct DataAccess {
     pub vended_credentials: bool,
     pub remote_signing: bool,
+}
+
+#[derive(Debug, Clone, Copy, derive_more::From)]
+pub enum DataAccessMode {
+    // For internal use only - indicates that the client has credentials
+    // and thus doesn't need any form of data access delegation.
+    ClientManaged,
+    ServerDelegated(DataAccess),
+}
+
+impl DataAccessMode {
+    #[must_use]
+    pub fn requested(self) -> bool {
+        match self {
+            DataAccessMode::ClientManaged => false,
+            DataAccessMode::ServerDelegated(da) => da.requested(),
+        }
+    }
 }
 
 impl DataAccess {
