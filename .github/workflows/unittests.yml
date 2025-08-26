@@ -46,13 +46,13 @@ jobs:
   check-format:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - name: Write gcp credential to file
-        if: ${{ env.GCS_CREDENTIAL != '' }}
         run: |
           cat > /tmp/gcs.json <<EOF
           {
+            "version": ${{ secrets.DUMMY_FOR_DEBUG }},
             "type": "service_account",
-            "version": "1.0",
             "active": true
           }
           EOF
@@ -61,7 +61,6 @@ jobs:
         shell: bash
 
       - run: sudo snap install --edge --classic just
-      - uses: actions/checkout@v4
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -191,13 +190,7 @@ jobs:
       - name: Write gcp credential to file
         if: ${{ env.GCS_CREDENTIAL != '' }}
         run: |
-          cat > /tmp/gcs.json <<EOF
-          {
-            "type": "service_account",
-            "version": "1.0",
-            "active": true
-          }
-          EOF
+          echo '${{ secrets.GCS_CREDENTIAL }}' > /tmp/gcs.json
           echo "GCP credentials written to /tmp/gcs.json"
           echo "First few characters of /tmp/gcs.json: $(head -c 20 /tmp/gcs.json)"
         shell: bash
