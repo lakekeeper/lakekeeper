@@ -501,16 +501,13 @@ pub(crate) mod test {
                     .expect("failed to validate profile");
                 let credential = GcsCredential::GcpSystemIdentity {};
                 let credential: StorageCredential = credential.into();
-                profile
-                    .validate_access(
-                        Some(&credential),
-                        None,
-                        &RequestMetadata::new_unauthenticated(),
-                    )
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!("Failed to validate system identity due to '{e:?}'")
-                    });
+                Box::pin(profile.validate_access(
+                    Some(&credential),
+                    None,
+                    &RequestMetadata::new_unauthenticated(),
+                ))
+                .await
+                .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
             }
         }
     }

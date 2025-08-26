@@ -278,7 +278,8 @@ mod tests {
     pub(crate) mod gcs_integration_tests {
         use super::*;
         use crate::service::storage::{
-            gcs::test::gcs_integration_tests::get_storage_profile, StorageCredential, StorageProfile,
+            gcs::test::gcs_integration_tests::get_storage_profile, StorageCredential,
+            StorageProfile,
         };
 
         #[tokio::test]
