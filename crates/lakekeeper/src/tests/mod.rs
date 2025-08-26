@@ -275,8 +275,8 @@ pub(crate) async fn get_api_context<T: Authorizer>(
     let mut task_queues = TaskQueueRegistry::new();
     task_queues
         .register_built_in_queues::<PostgresCatalog, _, _>(
-            catalog_state,
-            secret_store,
+            catalog_state.clone(),
+            secret_store.clone(),
             auth.clone(),
             CONFIG.task_poll_interval,
         )
@@ -285,8 +285,8 @@ pub(crate) async fn get_api_context<T: Authorizer>(
     ApiContext {
         v1_state: State {
             authz: auth,
-            catalog: CatalogState::from_pools(pool.clone(), pool.clone()),
-            secrets: SecretsState::from_pools(pool.clone(), pool.clone()),
+            catalog: catalog_state,
+            secrets: secret_store,
             contract_verifiers: ContractVerifiers::new(vec![]),
             hooks: EndpointHookCollection::new(vec![]),
             registered_task_queues,
@@ -303,8 +303,6 @@ pub(crate) async fn spawn_build_in_queues<T: Authorizer>(
     poll_interval: Option<std::time::Duration>,
     cancellation_token: crate::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
-    let ctx = ctx.clone();
-
     let mut task_queues = TaskQueueRegistry::new();
     task_queues
         .register_built_in_queues::<PostgresCatalog, _, _>(

@@ -35,14 +35,19 @@ use crate::{
 ///
 /// # Returns
 /// - `Vec<(String, tokio::task::AbortHandle)>`: A vector of tuples containing the name of the service and its associated abort handle.
-pub type RegisterBackgroundServiceFn<A, C, S> = fn(
-    &mut JoinSet<Result<(), anyhow::Error>>,
-    CancellationToken,
-    ApiContext<State<A, C, S>>,
-) -> Vec<(String, AbortHandle)>;
+pub type RegisterBackgroundServiceFn<A, C, S> = std::sync::Arc<
+    dyn Fn(
+            &mut JoinSet<Result<(), anyhow::Error>>,
+            CancellationToken,
+            ApiContext<State<A, C, S>>,
+        ) -> Vec<(String, AbortHandle)>
+        + Send
+        + Sync,
+>;
 
-pub type RegisterTaskQueueFn<A, C, S> =
-    fn(&mut TaskQueueRegistry, ApiContext<State<A, C, S>>) -> anyhow::Result<()>;
+pub type RegisterTaskQueueFn<A, C, S> = std::sync::Arc<
+    dyn Fn(&mut TaskQueueRegistry, ApiContext<State<A, C, S>>) -> anyhow::Result<()> + Send + Sync,
+>;
 
 /// Helper function to process the result of a service task completion
 fn handle_service_completion(
@@ -84,7 +89,7 @@ fn handle_service_completion(
     }
 }
 
-#[derive(Debug, typed_builder::TypedBuilder)]
+#[derive(derive_more::Debug, typed_builder::TypedBuilder)]
 pub struct ServeConfiguration<
     C: Catalog,
     S: SecretStore,
@@ -119,6 +124,7 @@ pub struct ServeConfiguration<
     pub enable_built_in_task_queues: bool,
     /// Additional task queues to run. Tuples of type:
     #[builder(default)]
+    #[debug("Vec with {} functions", register_additional_task_queues_fn.len())]
     pub register_additional_task_queues_fn: Vec<RegisterTaskQueueFn<A, C, S>>,
     /// Additional endpoint hooks to register.
     /// Emitting cloud events is always registered.
@@ -126,6 +132,7 @@ pub struct ServeConfiguration<
     pub additional_endpoint_hooks: Option<EndpointHookCollection>,
     /// Additional background services / futures to await.
     #[builder(default)]
+    #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
     pub register_additional_background_services_fn: Vec<RegisterBackgroundServiceFn<A, C, S>>,
 }
 
