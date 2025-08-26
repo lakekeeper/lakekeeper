@@ -455,7 +455,6 @@ pub(crate) mod test {
         };
 
         pub(crate) fn get_storage_profile() -> (GcsProfile, GcsCredential) {
-            println!("get_storage_profile started");
             let bucket = std::env::var("LAKEKEEPER_TEST__GCS_BUCKET").expect("Missing GCS_BUCKET");
             let key =
                 std::env::var("LAKEKEEPER_TEST__GCS_CREDENTIAL").expect("Missing GCS_CREDENTIAL");
@@ -465,7 +464,6 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
             };
-            println!("get_storage_profile done");
             (profile, cred)
         }
 
@@ -502,7 +500,6 @@ pub(crate) mod test {
                 profile
                     .normalize(Some(&credential))
                     .expect("failed to validate profile");
-                println!("normalize done");
                 let credential = GcsCredential::GcpSystemIdentity {};
                 let credential: StorageCredential = credential.into();
                 Box::pin(profile.validate_access(
