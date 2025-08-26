@@ -60,7 +60,7 @@ mod test {
         let result = Arc::new(Mutex::new(false));
         let result_clone = result.clone();
 
-        let mut task_queue_registry = TaskQueueRegistry::new();
+        let task_queue_registry = TaskQueueRegistry::new();
         task_queue_registry
             .register_queue::<Config>(QueueRegistration {
                 queue_name: QUEUE_NAME,

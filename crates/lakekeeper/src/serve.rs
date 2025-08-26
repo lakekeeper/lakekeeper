@@ -46,7 +46,7 @@ pub type RegisterBackgroundServiceFn<A, C, S> = std::sync::Arc<
 >;
 
 pub type RegisterTaskQueueFn<A, C, S> = std::sync::Arc<
-    dyn Fn(&mut TaskQueueRegistry, ApiContext<State<A, C, S>>) -> anyhow::Result<()> + Send + Sync,
+    dyn Fn(&TaskQueueRegistry, ApiContext<State<A, C, S>>) -> anyhow::Result<()> + Send + Sync,
 >;
 
 /// Helper function to process the result of a service task completion
@@ -215,7 +215,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
 
     // Task queues
-    let mut task_queue_registry = TaskQueueRegistry::new();
+    let task_queue_registry = TaskQueueRegistry::new();
     if enable_built_in_queues {
         task_queue_registry
             .register_built_in_queues::<C, _, _>(
@@ -243,7 +243,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     };
 
     for register_fn in register_additional_task_queues_fn {
-        register_fn(&mut task_queue_registry, state.clone())?;
+        register_fn(&task_queue_registry, state.clone())?;
     }
 
     // Router

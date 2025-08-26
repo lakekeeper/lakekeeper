@@ -272,7 +272,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
     let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
 
-    let mut task_queues = TaskQueueRegistry::new();
+    let task_queues = TaskQueueRegistry::new();
     task_queues
         .register_built_in_queues::<PostgresCatalog, _, _>(
             catalog_state.clone(),
@@ -303,7 +303,7 @@ pub(crate) async fn spawn_build_in_queues<T: Authorizer>(
     poll_interval: Option<std::time::Duration>,
     cancellation_token: crate::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
-    let mut task_queues = TaskQueueRegistry::new();
+    let task_queues = TaskQueueRegistry::new();
     task_queues
         .register_built_in_queues::<PostgresCatalog, _, _>(
             ctx.v1_state.catalog.clone(),

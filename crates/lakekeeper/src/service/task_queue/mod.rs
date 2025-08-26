@@ -183,10 +183,7 @@ impl TaskQueueRegistry {
         }
     }
 
-    pub async fn register_queue<T: QueueConfig>(
-        &mut self,
-        task_queue: QueueRegistration,
-    ) -> &mut Self {
+    pub async fn register_queue<T: QueueConfig>(&self, task_queue: QueueRegistration) -> &Self {
         let QueueRegistration {
             queue_name,
             worker_fn,
@@ -221,12 +218,12 @@ impl TaskQueueRegistry {
     }
 
     pub async fn register_built_in_queues<C: Catalog, S: SecretStore, A: Authorizer>(
-        &mut self,
+        &self,
         catalog_state: C::State,
         secret_store: S,
         authorizer: A,
         poll_interval: Duration,
-    ) -> &mut Self {
+    ) -> &Self {
         let catalog_state_clone = catalog_state.clone();
         self.register_queue::<ExpirationQueueConfig>(QueueRegistration {
             queue_name: tabular_expiration_queue::QUEUE_NAME,
@@ -1059,7 +1056,7 @@ mod test {
             }
         }
 
-        let mut registry = crate::service::task_queue::TaskQueueRegistry::new();
+        let registry = crate::service::task_queue::TaskQueueRegistry::new();
 
         // Create an initial RegisteredTaskQueues instance before registering any queues
         let initial_queues = registry.registered_task_queues();
@@ -1169,7 +1166,7 @@ mod test {
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let mut queues = crate::service::task_queue::TaskQueueRegistry::new();
+        let queues = crate::service::task_queue::TaskQueueRegistry::new();
 
         let secrets =
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
