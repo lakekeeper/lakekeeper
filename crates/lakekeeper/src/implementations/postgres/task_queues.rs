@@ -93,7 +93,7 @@ pub(crate) async fn queue_task_batch(
             $9,
             i.parent_task_id,
             i.warehouse_id,
-            coalesce(i.scheduled_for, now()),
+            coalesce(i.scheduled_for, now() AT TIME ZONE 'UTC'),
             i.payload,
             i.entity_ids,
             i.entity_types
@@ -135,18 +135,18 @@ pub(crate) async fn queue_task_batch(
 pub(crate) async fn pick_task(
     pool: &PgPool,
     queue_name: &str,
-    max_time_since_last_heartbeat: chrono::Duration,
+    default_max_time_since_last_heartbeat: chrono::Duration,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
     let max_time_since_last_heartbeat = PgInterval {
         months: 0,
         days: 0,
-        microseconds: max_time_since_last_heartbeat.num_microseconds().ok_or(
-            ErrorModel::internal(
+        microseconds: default_max_time_since_last_heartbeat
+            .num_microseconds()
+            .ok_or(ErrorModel::internal(
                 "Could not convert max_age into microseconds. Integer overflow, this is a bug.",
                 "InternalError",
                 None,
-            ),
-        )?,
+            ))?,
     };
     let x = sqlx::query!(
         r#"WITH updated_task AS (
@@ -155,9 +155,11 @@ pub(crate) async fn pick_task(
         LEFT JOIN task_config tc
             ON tc.queue_name = t.queue_name
                    AND tc.warehouse_id = t.warehouse_id
-        WHERE (status = $3 AND t.queue_name = $1
-                   AND scheduled_for < now() AT TIME ZONE 'UTC')
-           OR (status = $4 AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
+        WHERE (t.queue_name = $1 AND scheduled_for < now() AT TIME ZONE 'UTC') 
+            AND (
+                (status = $3) OR 
+                (status != $3 AND (now() AT TIME ZONE 'UTC' - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
+            )           
         -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
         -- transactions locked, this is our queue right there.
         FOR UPDATE OF t SKIP LOCKED
@@ -165,6 +167,8 @@ pub(crate) async fn pick_task(
     )
     UPDATE task
     SET status = $4,
+        progress = 0.0,
+        execution_details = NULL,
         picked_up_at = now() AT TIME ZONE 'UTC',
         last_heartbeat_at = now() AT TIME ZONE 'UTC',
         attempt = task.attempt + 1
@@ -238,7 +242,9 @@ pub(crate) async fn record_success(
                                  message,
                                  attempt,
                                  started_at,
-                                 duration)
+                                 duration,
+                                 progress,
+                                 execution_details)
                 SELECT task_id,
                        warehouse_id,
                        queue_name,
@@ -249,7 +255,9 @@ pub(crate) async fn record_success(
                        $2,
                        attempt,
                        picked_up_at,
-                       now() - picked_up_at
+                       now() AT TIME ZONE 'UTC' - picked_up_at,
+                       1.0000,
+                       execution_details
                 FROM task
                 WHERE task_id = $1)
         DELETE FROM task
@@ -289,8 +297,8 @@ pub(crate) async fn record_failure(
         sqlx::query!(
             r#"
             WITH history as (
-                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, attempt, started_at, duration)
-                SELECT task_id, warehouse_id, queue_name, task_data, $2, entity_id, entity_type, attempt, picked_up_at, now() - picked_up_at
+                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, attempt, started_at, duration, progress, execution_details)
+                SELECT task_id, warehouse_id, queue_name, task_data, $2, entity_id, entity_type, attempt, picked_up_at, now() AT TIME ZONE 'UTC' - picked_up_at, progress, execution_details
                 FROM task WHERE task_id = $1
             )
             DELETE FROM task
@@ -306,12 +314,16 @@ pub(crate) async fn record_failure(
         sqlx::query!(
             r#"
             WITH task_log as (
-                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, message, attempt, started_at, duration)
-                SELECT task_id, warehouse_id, queue_name, task_data, $4, entity_id, entity_type, $2, attempt, picked_up_at, now() - picked_up_at
+                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, message, attempt, started_at, duration, progress, execution_details)
+                SELECT task_id, warehouse_id, queue_name, task_data, $4, entity_id, entity_type, $2, attempt, picked_up_at, now() AT TIME ZONE 'UTC' - picked_up_at, progress, execution_details
                 FROM task WHERE task_id = $1
             )
             UPDATE task
-            SET status = $3
+            SET 
+                status = $3, 
+                progress = 0.0,
+                picked_up_at = NULL,
+                execution_details = NULL
             WHERE task_id = $1
             "#,
             *task_id,
@@ -406,13 +418,13 @@ pub(crate) async fn set_task_queue_config(
     Ok(())
 }
 
-pub(crate) async fn stop_task(
+pub(crate) async fn request_task_stop(
     transaction: &mut PgConnection,
     task_id: TaskId,
 ) -> crate::api::Result<()> {
     sqlx::query!(
         r#"
-        WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() WHERE task_id = $1)
+        WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() AT TIME ZONE 'UTC' WHERE task_id = $1)
         UPDATE task
         SET status = $2
         WHERE task_id = $1
@@ -423,21 +435,25 @@ pub(crate) async fn stop_task(
     .execute(transaction)
     .await
     .map_err(|e| {
-        tracing::error!(?e, "Failed to stop task");
-        e.into_error_model(format!("Failed to stop task {task_id}"))
+        tracing::error!(?e, "Failed to request task to stop");
+        e.into_error_model(format!("Failed to request task to stop: {task_id}"))
     })?;
 
     Ok(())
 }
 
-pub(crate) async fn check_task(
+pub(crate) async fn check_and_heartbeat_task(
     transaction: &mut PgConnection,
     task_id: TaskId,
-) -> crate::api::Result<Option<TaskCheckState>> {
+    progress: f32,
+    execution_details: Option<serde_json::Value>,
+) -> crate::api::Result<TaskCheckState> {
     Ok(sqlx::query!(
-        r#"WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() WHERE task_id = $1)
+        r#"WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() AT TIME ZONE 'UTC', progress = $2, execution_details = $3 WHERE task_id = $1)
         SELECT status as "status: TaskStatus" FROM task WHERE task_id = $1"#,
-        *task_id
+        *task_id,
+        progress,
+        execution_details
     )
     .fetch_optional(transaction)
     .await
@@ -445,7 +461,7 @@ pub(crate) async fn check_task(
         tracing::error!(?e, "Failed to check task");
         e.into_error_model(format!("Failed to check task {task_id}"))
     })?
-    .map(|state| match state.status {
+    .map_or(TaskCheckState::NotActive, |state| match state.status {
         TaskStatus::ShouldStop => TaskCheckState::Stop,
         TaskStatus::Running | TaskStatus::Scheduled => TaskCheckState::Continue,
     }))
@@ -456,7 +472,7 @@ use crate::service::task_queue::{
 };
 
 /// Cancel scheduled tasks.
-/// If `force_delete_running_tasks` is true, running and should-stop tasks will also be cancelled.
+/// If `force_delete_running_tasks` is true, "running" and "should-stop" tasks will also be cancelled.
 /// If `queue_name` is `None`, tasks in all queues will be cancelled.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn cancel_scheduled_tasks(
@@ -480,7 +496,9 @@ pub(crate) async fn cancel_scheduled_tasks(
                                              status,
                                              attempt,
                                              started_at,
-                                             duration)
+                                             duration,
+                                             progress,
+                                             execution_details)
                         SELECT task_id,
                                warehouse_id,
                                queue_name,
@@ -491,8 +509,10 @@ pub(crate) async fn cancel_scheduled_tasks(
                                attempt,
                                picked_up_at,
                                case when picked_up_at is not null
-                                   then now() - picked_up_at
-                               end
+                                   then now() AT TIME ZONE 'UTC' - picked_up_at
+                               end,
+                                progress,
+                                execution_details
                         FROM task
                         WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
                     )
@@ -541,7 +561,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                attempt,
                                picked_up_at,
                                case when picked_up_at is not null
-                                   then now() - picked_up_at
+                                   then now() AT TIME ZONE 'UTC' - picked_up_at
                                end
                         FROM task
                         WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)

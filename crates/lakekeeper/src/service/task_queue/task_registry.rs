@@ -6,7 +6,7 @@ use crate::{
     service::{
         authz::Authorizer,
         task_queue::{
-            task_queues_runner::QueueWorkerConfig, QueueConfig, TaskQueueWorkerFn, TaskQueuesRunner,
+            task_queues_runner::QueueWorkerConfig, TaskConfig, TaskQueueWorkerFn, TaskQueuesRunner,
         },
         Catalog, SecretStore,
     },
@@ -133,7 +133,7 @@ impl TaskQueueRegistry {
         }
     }
 
-    pub async fn register_queue<T: QueueConfig>(&self, task_queue: QueueRegistration) -> &Self {
+    pub async fn register_queue<T: TaskConfig>(&self, task_queue: QueueRegistration) -> &Self {
         let QueueRegistration {
             queue_name,
             worker_fn,
@@ -312,7 +312,7 @@ mod test {
             test_field: String,
         }
 
-        impl QueueConfig for TestQueueConfig {
+        impl TaskConfig for TestQueueConfig {
             fn queue_name() -> &'static str {
                 "test-queue"
             }
@@ -324,7 +324,7 @@ mod test {
             other_field: i32,
         }
 
-        impl QueueConfig for SecondTestQueueConfig {
+        impl TaskConfig for SecondTestQueueConfig {
             fn queue_name() -> &'static str {
                 "second-test-queue"
             }

@@ -788,9 +788,12 @@ where
     ) -> Result<ProtectionResponse>;
 
     // ------------- Tasks -------------
+
+    /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
+    /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
     async fn pick_new_task(
         queue_name: &str,
-        max_time_since_last_heartbeat: chrono::Duration,
+        default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
 
@@ -844,13 +847,13 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
-    /// Checks task state and sends a hearbeat.
-    ///
-    /// This is used to send a heartbeat and check whether this task should continue to run.
+    /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
     async fn check_and_heartbeat_task(
         task_id: TaskId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskCheckState>>;
+        progress: f32,
+        execution_details: Option<serde_json::Value>,
+    ) -> Result<TaskCheckState>;
 
     /// Sends a stop signal to the task.
     ///

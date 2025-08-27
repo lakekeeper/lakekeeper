@@ -50,8 +50,8 @@ use crate::{
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
         task_queues::{
-            cancel_scheduled_tasks, check_task, get_task_queue_config, queue_task_batch,
-            set_task_queue_config, stop_task,
+            cancel_scheduled_tasks, check_and_heartbeat_task, get_task_queue_config,
+            queue_task_batch, request_task_stop, set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
@@ -762,15 +762,17 @@ impl Catalog for super::PostgresCatalog {
     async fn check_and_heartbeat_task(
         task_id: TaskId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskCheckState>> {
-        check_task(&mut *transaction, task_id).await
+        progress: f32,
+        execution_details: Option<serde_json::Value>,
+    ) -> Result<TaskCheckState> {
+        check_and_heartbeat_task(&mut *transaction, task_id, progress, execution_details).await
     }
 
     async fn stop_task(
         task_id: TaskId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        stop_task(&mut *transaction, task_id).await
+        request_task_stop(&mut *transaction, task_id).await
     }
 
     async fn set_task_queue_config(

@@ -6,6 +6,7 @@ pub mod v1 {
     pub mod project;
     pub mod role;
     pub mod table;
+    pub mod tasks;
     pub mod user;
     pub mod view;
     pub mod warehouse;

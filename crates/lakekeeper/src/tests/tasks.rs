@@ -22,8 +22,8 @@ mod test {
         implementations::postgres::PostgresCatalog,
         service::{
             task_queue::{
-                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, SpecializedTask,
-                TaskData, TaskInput, TaskMetadata, TaskQueueRegistry,
+                EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
+                TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueRegistry,
             },
             Catalog, Transaction,
         },
@@ -40,6 +40,11 @@ mod test {
         struct TestTaskData {
             tabular_id: Uuid,
         }
+        #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+        struct ExecutionDetails {}
+
+        impl TaskExecutionDetails for ExecutionDetails {}
+
         impl TaskData for TestTaskData {}
         const QUEUE_NAME: &str = "test_queue";
         impl QueueConfigTrait for Config {
@@ -71,7 +76,7 @@ mod test {
                     Box::pin(async move {
                         let task_id = rx.recv().await.unwrap();
 
-                        let task = SpecializedTask::<Config, TestTaskData>::pick_new_task::<
+                        let task = SpecializedTask::<Config, TestTaskData, ExecutionDetails>::pick_new_task::<
                             PostgresCatalog,
                         >(ctx.v1_state.catalog.clone())
                         .await

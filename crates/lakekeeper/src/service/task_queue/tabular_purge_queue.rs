@@ -6,14 +6,11 @@ use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 use utoipa::{PartialSchema, ToSchema};
 
-use super::{QueueApiConfig, QueueConfig};
+use super::{QueueApiConfig, SpecializedTask, TaskConfig, TaskData, TaskExecutionDetails};
 use crate::{
     api::{management::v1::TabularType, Result},
     catalog::{io::remove_all, maybe_get_secret},
-    service::{
-        task_queue::{SpecializedTask, TaskData},
-        Catalog, SecretStore, Transaction,
-    },
+    service::{Catalog, SecretStore, Transaction},
 };
 
 pub(crate) const QUEUE_NAME: &str = "tabular_purge";
@@ -23,7 +20,8 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_schema: PurgeQueueConfig::schema(),
 });
 
-pub type TabularPurgeTask = SpecializedTask<PurgeQueueConfig, TabularPurgePayload>;
+pub type TabularPurgeTask =
+    SpecializedTask<PurgeQueueConfig, TabularPurgePayload, TabularPurgeExecutionDetails>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TabularPurgePayload {
@@ -31,16 +29,30 @@ pub struct TabularPurgePayload {
     pub(crate) tabular_type: TabularType,
 }
 
+impl TabularPurgePayload {
+    pub fn new(tabular_location: impl Into<String>, tabular_type: TabularType) -> Self {
+        Self {
+            tabular_location: tabular_location.into(),
+            tabular_type,
+        }
+    }
+}
+
 impl TaskData for TabularPurgePayload {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct PurgeQueueConfig {}
 
-impl QueueConfig for PurgeQueueConfig {
+impl TaskConfig for PurgeQueueConfig {
     fn queue_name() -> &'static str {
         QUEUE_NAME
     }
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TabularPurgeExecutionDetails {}
+
+impl TaskExecutionDetails for TabularPurgeExecutionDetails {}
 
 pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
@@ -49,13 +61,12 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     cancellation_token: crate::CancellationToken,
 ) {
     loop {
-        let task =
-            SpecializedTask::<PurgeQueueConfig, TabularPurgePayload>::poll_for_new_task::<C>(
-                catalog_state.clone(),
-                &poll_interval,
-                cancellation_token.clone(),
-            )
-            .await;
+        let task = TabularPurgeTask::poll_for_new_task::<C>(
+            catalog_state.clone(),
+            &poll_interval,
+            cancellation_token.clone(),
+        )
+        .await;
 
         let Some(task) = task else {
             tracing::info!("Graceful shutdown: exiting `{QUEUE_NAME}` worker");
