@@ -772,7 +772,7 @@ impl OpenFGAAuthorizer {
     /// Read all tuples for a given request
     async fn read_all(
         &self,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: Option<impl Into<ReadRequestTupleKey>>,
     ) -> OpenFGAResult<Vec<Tuple>> {
         self.client
             .read_all_pages(tuple_key, 100, 500)

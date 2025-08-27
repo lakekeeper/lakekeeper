@@ -79,7 +79,7 @@ static DB_TX_PERMITS: LazyLock<Arc<Semaphore>> =
 ///
 /// Ensure the permit is dropped as soon as it's not needed anymore, to unblock other threads.
 static OPENFGA_REQ_PERMITS: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::const_new(10)));
+    LazyLock::new(|| Arc::new(Semaphore::const_new(50)));
 
 // catalog trait reingeben, nicht postgres db
 pub(crate) async fn v4_push_down_warehouse_id(
@@ -1495,7 +1495,7 @@ mod tests {
         /// It can be executed with:
         ///
         /// ```ignore
-        /// cargo test --all-features --release test_v4_push_down_warehouse_id_bench -- --ignored
+        /// cargo test --all-features --release test_v4_push_down_warehouse_id_bench -- --ignored --nocapture
         /// ```
         ///
         /// Results:
