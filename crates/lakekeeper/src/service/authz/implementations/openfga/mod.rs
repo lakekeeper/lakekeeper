@@ -1055,14 +1055,10 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod tests {
     mod openfga_integration_tests {
         use http::StatusCode;
-        use openfga_client::client::{
-            ConsistencyPreference, ListUsersRequest, Object, UserTypeFilter,
-        };
-        use tower_http::ServiceExt;
+        use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
         use crate::service::{authz::implementations::openfga::client::new_authorizer, RoleId};

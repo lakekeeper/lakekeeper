@@ -429,6 +429,7 @@ mod tests {
         use std::time::Instant;
 
         use openfga_client::{client::TupleKey, migration::TupleModelManager};
+        use tokio::sync::RwLock;
         use tokio::task::JoinSet;
 
         use super::super::*;
@@ -439,10 +440,7 @@ mod tests {
             service::{
                 authz::{
                     implementations::openfga::{
-                        migration::{
-                            add_model_v3, add_model_v4, tests::authorizer_for_empty_store,
-                            V3_MODEL_VERSION,
-                        },
+                        migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION},
                         new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG,
                         OPENFGA_SERVER,
                     },
@@ -460,7 +458,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_projects() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             authorizer
                 .write(
@@ -508,7 +506,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_projects_empty_server() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Test with a server that has no projects
             let projects = get_all_projects(&authorizer.client, CONFIG.server_id).await?;
@@ -518,7 +516,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_warehouses() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             authorizer
                 .write(
@@ -577,7 +575,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_warehouses_empty_project() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Test with a project that has no warehouses
             let projects = vec!["project:empty".to_string()];
@@ -588,7 +586,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_namespaces() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // warehouse:w1 -> ns1 -> ns2 -> ns3
             //            |--> ns4
@@ -663,7 +661,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_namespaces_empty_warehouse() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             let namespaces =
                 get_all_namespaces(&authorizer.client, "warehouse:empty".to_string()).await?;
@@ -673,7 +671,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_tabulars() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Create structure:
             // namespace:ns1 -> table:t1, view:v1
@@ -752,7 +750,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_tabulars_empty_namespaces() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Test with namespaces that have no tables or views
             let namespaces = vec![
@@ -766,7 +764,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_tuples_with_object() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             authorizer
                 .write(
@@ -836,7 +834,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_tuples_with_object_empty() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Test with an object that doesn't exist
             let tuples =
@@ -849,7 +847,7 @@ mod tests {
         /// Testing for user type `table` which can be the user in only one relation as of v3.
         #[tokio::test]
         async fn test_get_all_tuples_with_user() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Write tuples with "table:target-table" as user and various objects
             authorizer
@@ -896,7 +894,7 @@ mod tests {
         /// Testing for user type `namespace` which can be the user in multiple relations.
         #[tokio::test]
         async fn test_get_all_tuples_with_user_multiple_results() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Write tuples with "namespace:target-ns" as user in multiple relations
             authorizer
@@ -976,7 +974,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_get_all_tuples_with_user_empty() -> anyhow::Result<()> {
-            let (_, authorizer) = authorizer_for_empty_store().await;
+            let authorizer = new_v3_authorizer_for_empty_store().await?;
 
             // Test with a user that doesn't exist
             let tuples =
@@ -988,7 +986,6 @@ mod tests {
 
         /// Constructs a client for a store that has been initialized and migrated to v3.
         /// Returns the client and the name of the store.
-        // TODO all of the above must use this instead of authorizer_for_empty_store
         async fn v3_client_for_empty_store() -> anyhow::Result<(BasicOpenFgaClient, String)> {
             // TODO refactor openfga::migration::migrate s.t. no need to replicate it here
             let mut client = new_client_from_config().await?;
@@ -1026,6 +1023,14 @@ mod tests {
             let client = BasicOpenFgaClient::new(client, &store.id, &auth_model_id)
                 .set_consistency(ConsistencyPreference::HigherConsistency);
             Ok((client, store_name))
+        }
+
+        async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
+            let (client, _) = v3_client_for_empty_store().await?;
+            Ok(OpenFGAAuthorizer {
+                client,
+                health: Arc::new(RwLock::new(vec![])),
+            })
         }
 
         // Migrates the OpenFGA store to v4, which will also execute the migration function.
