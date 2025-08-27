@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc, vec};
 
 use anyhow::anyhow;
+use futures::future::BoxFuture;
 use limes::{Authenticator, AuthenticatorEnum};
 use tokio::task::{AbortHandle, JoinSet};
 
@@ -37,53 +38,63 @@ use crate::{
 /// - `Vec<(String, tokio::task::AbortHandle)>`: A vector of tuples containing the name of the service and its associated abort handle.
 pub type RegisterBackgroundServiceFn<A, C, S> = std::sync::Arc<
     dyn Fn(
-            &mut JoinSet<Result<(), anyhow::Error>>,
-            CancellationToken,
-            ApiContext<State<A, C, S>>,
-        ) -> Vec<(String, AbortHandle)>
-        + Send
-        + Sync,
+        &mut JoinSet<Result<(), anyhow::Error>>,
+        CancellationToken,
+        ApiContext<State<A, C, S>>,
+    ) -> BoxFuture<'_, anyhow::Result<Vec<(String, AbortHandle)>>>,
 >;
 
 pub type RegisterTaskQueueFn<A, C, S> = std::sync::Arc<
-    dyn Fn(&TaskQueueRegistry, ApiContext<State<A, C, S>>) -> anyhow::Result<()> + Send + Sync,
+    dyn Fn(&TaskQueueRegistry, ApiContext<State<A, C, S>>) -> BoxFuture<'_, anyhow::Result<()>>,
 >;
 
 /// Helper function to process the result of a service task completion
-fn handle_service_completion(
-    result: Result<(tokio::task::Id, Result<(), anyhow::Error>), tokio::task::JoinError>,
-    service_abort_handles: &mut HashMap<tokio::task::Id, String>,
+fn log_service_completion<H: ::std::hash::BuildHasher>(
+    result: &Result<(tokio::task::Id, Result<(), anyhow::Error>), tokio::task::JoinError>,
+    service_abort_handles: &mut HashMap<tokio::task::Id, String, H>,
     during_shutdown: bool,
-) {
+) -> String {
     match result {
         Ok((id, task_result)) => {
             let task_name = service_abort_handles
-                .remove(&id)
+                .remove(id)
                 .unwrap_or_else(|| format!("Unknown Service with ID {id}"));
             match task_result {
                 Ok(()) => {
                     if during_shutdown {
-                        tracing::info!("Service '{task_name}' finished gracefully during shutdown");
+                        let msg =
+                            format!("Service '{task_name}' finished gracefully during shutdown");
+                        tracing::info!(msg);
+                        msg
                     } else {
-                        tracing::info!("Service '{task_name}' finished successfully but was supposed to run indefinitely");
+                        let msg = format!("Service '{task_name}' finished successfully but was supposed to run indefinitely");
+                        tracing::info!(msg);
+                        msg
                     }
                 }
                 Err(e) => {
                     if during_shutdown {
-                        tracing::warn!(
-                            "Service '{task_name}' exited with error during shutdown: {e}"
-                        );
+                        let msg =
+                            format!("Service '{task_name}' exited with error during shutdown: {e}");
+                        tracing::warn!(msg);
+                        msg
                     } else {
-                        tracing::error!("Service '{task_name}' exited with error: {e}");
+                        let msg = format!("Service '{task_name}' exited with error: {e}");
+                        tracing::error!(msg);
+                        msg
                     }
                 }
             }
         }
         Err(join_err) => {
             if during_shutdown {
-                tracing::warn!("Service join error during shutdown: {join_err}");
+                let msg = format!("Service join error during shutdown: {join_err}");
+                tracing::warn!(msg);
+                msg
             } else {
-                tracing::error!("Service join error: {join_err}");
+                let msg = format!("Service join error: {join_err}");
+                tracing::error!(msg);
+                msg
             }
         }
     }
@@ -146,122 +157,7 @@ pub struct ServeConfiguration<
 pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
-    let ServeConfiguration {
-        bind_addr,
-        secrets_state,
-        catalog_state,
-        authorizer,
-        authenticator,
-        stats,
-        contract_verification,
-        modify_router_fn,
-        cloud_event_sinks,
-        enable_built_in_task_queues: enable_built_in_queues,
-        register_additional_task_queues_fn,
-        additional_endpoint_hooks,
-        register_additional_background_services_fn: additional_background_services,
-    } = config;
-
     let cancellation_token = CancellationToken::new();
-    let listener = tokio::net::TcpListener::bind(bind_addr)
-        .await
-        .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
-
-    // Validate ServerInfo, exit if ServerID does not match or terms are not accepted
-    let server_info = C::get_server_info(catalog_state.clone()).await?;
-    validate_server_info(&server_info)?;
-
-    // Health checks
-    let health_provider = ServiceHealthProvider::new(
-        vec![
-            ("catalog", Arc::new(catalog_state.clone())),
-            ("secrets", Arc::new(secrets_state.clone())),
-            ("auth", Arc::new(authorizer.clone())),
-        ],
-        CONFIG.health_check_frequency_seconds,
-    );
-
-    // Cloud events publisher setup
-    let (cloud_events_tx, cloud_events_rx) = tokio::sync::mpsc::channel(1000);
-    let cloud_events_background_task = CloudEventsPublisherBackgroundTask {
-        source: cloud_events_rx,
-        sinks: cloud_event_sinks,
-    };
-
-    // Metrics server
-    let (layer, metrics_future) = crate::metrics::get_axum_layer_and_install_recorder(
-        CONFIG.metrics_port,
-        cancellation_token.clone(),
-    )
-    .map_err(|e| {
-        anyhow!(e).context(format!(
-            "Failed to start metrics server on port: {}",
-            CONFIG.metrics_port
-        ))
-    })?;
-
-    // Endpoint stats
-    let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
-    let tracker = EndpointStatisticsTracker::new(
-        endpoint_statistics_rx,
-        stats,
-        CONFIG.endpoint_stat_flush_interval,
-        FlushMode::Automatic,
-    );
-    let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
-
-    // Endpoint Hooks
-    let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
-    hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
-
-    // Task queues
-    let task_queue_registry = TaskQueueRegistry::new();
-    if enable_built_in_queues {
-        task_queue_registry
-            .register_built_in_queues::<C, _, _>(
-                catalog_state.clone(),
-                secrets_state.clone(),
-                authorizer.clone(),
-                CONFIG.task_poll_interval,
-            )
-            .await;
-    }
-
-    // Register additional task queues if provided
-    // Registered task queues have interior mutability. A later registration of a task
-    // affects the state of all previously registered tasks.
-    let registered_task_queues = task_queue_registry.registered_task_queues();
-    let state = ApiContext {
-        v1_state: State::<_, C, _> {
-            authz: authorizer,
-            catalog: catalog_state,
-            secrets: secrets_state,
-            contract_verifiers: contract_verification,
-            registered_task_queues,
-            hooks,
-        },
-    };
-
-    for register_fn in register_additional_task_queues_fn {
-        register_fn(&task_queue_registry, state.clone())?;
-    }
-
-    // Router
-    let mut router = new_full_router::<C, _, _, _>(RouterArgs {
-        authenticator: authenticator.clone(),
-        state: state.clone(),
-        service_health_provider: health_provider.clone(),
-        cors_origins: CONFIG.allow_origin.as_deref(),
-        metrics_layer: Some(layer),
-        endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
-    })
-    .await?;
-
-    if let Some(modify_router_fn) = modify_router_fn {
-        router = modify_router_fn(router);
-    }
-
-    // ---- Launch background services ----
     // Strings are name of the service, used for logging
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
@@ -272,90 +168,35 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         shutdown_signal(cancellation_token_clone).await;
         Err(anyhow!("Shutdown signal received"))
     });
+    let shutdown_signal_id = shutdown_signal_handle.id();
     service_ids.insert(
         shutdown_signal_handle.id(),
         "Shutdown Signal Handler".to_string(),
     );
 
-    // Metrics server:
-    let metrics_handle = service_futures.spawn(async move {
-        metrics_future
-            .await
-            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
-    });
-    service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
+    // Endpoint statistics TX
+    let (endpoint_statistics_tx, endpoint_statistics_rx) = tokio::sync::mpsc::channel(1000);
+    let endpoint_statistics_tracker_tx = EndpointStatisticsTrackerTx::new(endpoint_statistics_tx);
 
-    // Periodic health checks:
-    let health_abort_handles =
-        health_provider.spawn_update_health_checks(&mut service_futures, &cancellation_token);
-    for (service_name, abort_handle) in health_abort_handles {
-        service_ids.insert(abort_handle.id(), service_name);
-    }
+    // Cloud Events TX
+    let (cloud_events_tx, cloud_events_rx) = tokio::sync::mpsc::channel(1000);
 
-    // Cloud events publisher:
-    let ce_abort_handle = service_futures.spawn(async move {
-        cloud_events_background_task
-            .publish()
-            .await
-            .map_err(|e| anyhow!(e).context("Event publisher exited with error"))
-    });
-    service_ids.insert(ce_abort_handle.id(), "Event Publisher".to_string());
+    // ------------- Serve -------------
+    let serving_result = serve_inner(
+        config,
+        cancellation_token.clone(),
+        &mut service_futures,
+        &mut service_ids,
+        cloud_events_tx.clone(),
+        cloud_events_rx,
+        endpoint_statistics_tracker_tx.clone(),
+        endpoint_statistics_rx,
+        shutdown_signal_id,
+    )
+    .await;
 
-    // Endpoint statistics tracker:
-    let tracker_abort_handle = service_futures.spawn(async move {
-        tracker.run().await;
-        Ok(())
-    });
-    service_ids.insert(
-        tracker_abort_handle.id(),
-        "Endpoint Statistics Tracker".to_string(),
-    );
-
-    // Execute additional background services:
-    for additional_service_register_fn in additional_background_services {
-        let abort_handles = additional_service_register_fn(
-            &mut service_futures,
-            cancellation_token.clone(),
-            state.clone(),
-        );
-        for (service_name, abort_handle) in abort_handles {
-            tracing::info!("Spawned background service: {service_name}");
-            service_ids.insert(abort_handle.id(), service_name);
-        }
-    }
-
-    // Task Queues:
-    let task_runner = task_queue_registry
-        .task_queues_runner(cancellation_token.clone())
-        .await;
-    if task_queue_registry.is_empty().await {
-        tracing::info!("No task queues registered, skipping task queue worker startup");
-    } else {
-        let task_abort_handle = service_futures.spawn(async move {
-            task_runner.run_queue_workers(true).await;
-            Ok(())
-        });
-        service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
-    }
-
-    // HTTP Server / Axum:
-    let cancellation_token_clone = cancellation_token.clone();
-    let axum_abort_handle = service_futures.spawn(async move {
-        service_serve(listener, router, cancellation_token_clone)
-            .await
-            .map_err(|e| anyhow!(e).context("Axum server exited with error"))
-    });
-    service_ids.insert(axum_abort_handle.id(), "Axum Server".to_string());
-
-    tracing::info!("All background services started. Lakekeeper is now running.");
-    match service_futures.join_next_with_id().await {
-        Some(result) => {
-            handle_service_completion(result, &mut service_ids, false);
-        }
-        None => {
-            tracing::error!("No services were started, exiting.");
-        }
-    }
+    // Handle shutdown if serve_inner returned (e.g. due to error)
+    cancellation_token.cancel();
 
     tracing::debug!("Sending shutdown signal to threads");
     cancellation_token.cancel();
@@ -379,7 +220,7 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
             let mut last_report = std::time::Instant::now();
 
             while let Some(result) = service_futures.join_next_with_id().await {
-                handle_service_completion(result, &mut service_ids, true);
+                log_service_completion(&result, &mut service_ids, true);
 
                 // Report progress every 5 seconds
                 if last_report.elapsed() >= std::time::Duration::from_secs(report_interval_secs) {
@@ -425,7 +266,230 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
         tracing::info!("Aborted all remaining background services");
     }
 
-    Ok(())
+    serving_result
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+async fn serve_inner<
+    C: Catalog,
+    S: SecretStore,
+    A: Authorizer,
+    N: Authenticator + 'static,
+    H: ::std::hash::BuildHasher + 'static,
+>(
+    config: ServeConfiguration<C, S, A, N>,
+    cancellation_token: CancellationToken,
+    service_futures: &mut JoinSet<Result<(), anyhow::Error>>,
+    service_ids: &mut HashMap<tokio::task::Id, String, H>,
+    cloud_events_tx: tokio::sync::mpsc::Sender<CloudEventsMessage>,
+    cloud_events_rx: tokio::sync::mpsc::Receiver<CloudEventsMessage>,
+    endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
+    endpoint_statistics_rx: tokio::sync::mpsc::Receiver<EndpointStatisticsMessage>,
+    shutdown_signal_id: tokio::task::Id,
+) -> anyhow::Result<()> {
+    let ServeConfiguration {
+        bind_addr,
+        secrets_state,
+        catalog_state,
+        authorizer,
+        authenticator,
+        stats,
+        contract_verification,
+        modify_router_fn,
+        cloud_event_sinks,
+        enable_built_in_task_queues: enable_built_in_queues,
+        register_additional_task_queues_fn,
+        additional_endpoint_hooks,
+        register_additional_background_services_fn: additional_background_services,
+    } = config;
+
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .map_err(|e| anyhow!(e).context(format!("Failed to bind to address: {bind_addr}")))?;
+
+    // Validate ServerInfo, exit if ServerID does not match or terms are not accepted
+    let server_info = C::get_server_info(catalog_state.clone()).await?;
+    validate_server_info(&server_info)?;
+
+    // Health checks
+    let health_provider = ServiceHealthProvider::new(
+        vec![
+            ("catalog", Arc::new(catalog_state.clone())),
+            ("secrets", Arc::new(secrets_state.clone())),
+            ("auth", Arc::new(authorizer.clone())),
+        ],
+        CONFIG.health_check_frequency_seconds,
+    );
+
+    // Cloud events publisher setup
+    let cloud_events_background_task = CloudEventsPublisherBackgroundTask {
+        source: cloud_events_rx,
+        sinks: cloud_event_sinks,
+    };
+
+    // Metrics server
+    let (layer, metrics_future) = crate::metrics::get_axum_layer_and_install_recorder(
+        CONFIG.metrics_port,
+        cancellation_token.clone(),
+    )
+    .map_err(|e| {
+        anyhow!(e).context(format!(
+            "Failed to start metrics server on port: {}",
+            CONFIG.metrics_port
+        ))
+    })?;
+
+    // Endpoint stats
+    let tracker = EndpointStatisticsTracker::new(
+        endpoint_statistics_rx,
+        stats,
+        CONFIG.endpoint_stat_flush_interval,
+        FlushMode::Automatic,
+    );
+
+    // Endpoint Hooks
+    let mut hooks = additional_endpoint_hooks.unwrap_or(EndpointHookCollection::new(vec![]));
+    hooks.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
+
+    // Task queues
+    let task_queue_registry = TaskQueueRegistry::new();
+    if enable_built_in_queues {
+        task_queue_registry
+            .register_built_in_queues::<C, _, _>(
+                catalog_state.clone(),
+                secrets_state.clone(),
+                authorizer.clone(),
+                CONFIG.task_poll_interval,
+            )
+            .await;
+    }
+
+    // Register additional task queues if provided
+    // Registered task queues have interior mutability. A later registration of a task
+    // affects the state of all previously registered tasks.
+    let registered_task_queues = task_queue_registry.registered_task_queues();
+    let state = ApiContext {
+        v1_state: State::<_, C, _> {
+            authz: authorizer,
+            catalog: catalog_state,
+            secrets: secrets_state,
+            contract_verifiers: contract_verification,
+            registered_task_queues,
+            hooks,
+        },
+    };
+
+    for register_fn in register_additional_task_queues_fn {
+        register_fn(&task_queue_registry, state.clone()).await?;
+    }
+
+    // Router
+    let mut router = new_full_router::<C, _, _, _>(RouterArgs {
+        authenticator: authenticator.clone(),
+        state: state.clone(),
+        service_health_provider: health_provider.clone(),
+        cors_origins: CONFIG.allow_origin.as_deref(),
+        metrics_layer: Some(layer),
+        endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
+    })
+    .await?;
+
+    if let Some(modify_router_fn) = modify_router_fn {
+        router = modify_router_fn(router);
+    }
+
+    // ---- Launch background services ----
+    // Metrics server:
+    let metrics_handle = service_futures.spawn(async move {
+        metrics_future
+            .await
+            .map_err(|e| anyhow!(e).context("Metrics Services exited with error"))
+    });
+    service_ids.insert(metrics_handle.id(), "Metrics Server".to_string());
+
+    // Periodic health checks:
+    let health_abort_handles =
+        health_provider.spawn_update_health_checks(service_futures, &cancellation_token);
+    for (service_name, abort_handle) in health_abort_handles {
+        service_ids.insert(abort_handle.id(), service_name);
+    }
+
+    // Cloud events publisher:
+    let ce_abort_handle = service_futures.spawn(async move {
+        cloud_events_background_task
+            .publish()
+            .await
+            .map_err(|e| anyhow!(e).context("Event publisher exited with error"))
+    });
+    service_ids.insert(ce_abort_handle.id(), "Event Publisher".to_string());
+
+    // Endpoint statistics tracker:
+    let tracker_abort_handle = service_futures.spawn(async move {
+        tracker.run().await;
+        Ok(())
+    });
+    service_ids.insert(
+        tracker_abort_handle.id(),
+        "Endpoint Statistics Tracker".to_string(),
+    );
+
+    // Execute additional background services:
+    for additional_service_register_fn in additional_background_services {
+        let abort_handles = additional_service_register_fn(
+            service_futures,
+            cancellation_token.clone(),
+            state.clone(),
+        )
+        .await?;
+        for (service_name, abort_handle) in abort_handles {
+            tracing::info!("Spawned background service: {service_name}");
+            service_ids.insert(abort_handle.id(), service_name);
+        }
+    }
+
+    // Task Queues:
+    let task_runner = task_queue_registry
+        .task_queues_runner(cancellation_token.clone())
+        .await;
+    if task_queue_registry.is_empty().await {
+        tracing::info!("No task queues registered, skipping task queue worker startup");
+    } else {
+        let task_abort_handle = service_futures.spawn(async move {
+            task_runner.run_queue_workers(true).await;
+            Ok(())
+        });
+        service_ids.insert(task_abort_handle.id(), "Task Worker Monitor".to_string());
+    }
+
+    // HTTP Server / Axum:
+    let cancellation_token_clone = cancellation_token.clone();
+    let axum_abort_handle = service_futures.spawn(async move {
+        service_serve(listener, router, cancellation_token_clone)
+            .await
+            .map_err(|e| anyhow!(e).context("Axum server exited with error"))
+    });
+    service_ids.insert(axum_abort_handle.id(), "Axum Server".to_string());
+
+    tracing::info!("All background services started. Lakekeeper is now running.");
+    if let Some(result) = service_futures.join_next_with_id().await {
+        let msg = log_service_completion(&result, service_ids, false);
+        match result {
+            Ok((id, res)) => {
+                if id == shutdown_signal_id || cancellation_token.is_cancelled() {
+                    Ok(())
+                } else {
+                    match res {
+                        Ok(()) => Err(anyhow!(msg)),
+                        Err(e) => Err(anyhow!(e).context(msg)),
+                    }
+                }
+            }
+            Err(e) => Err(anyhow!(e).context("Failed to join on a background service")),
+        }
+    } else {
+        tracing::error!("No services were started, exiting.");
+        Ok(())
+    }
 }
 
 fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
