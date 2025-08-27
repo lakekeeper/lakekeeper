@@ -12,8 +12,9 @@ use crate::{
         authz::{Authorizer, CatalogViewAction, CatalogWarehouseAction},
         contract_verification::ContractVerification,
         task_queue::{
-            tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue::TabularPurgePayload, EntityId, TaskMetadata,
+            tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            EntityId, TaskMetadata,
         },
         Catalog, Result, SecretStore, State, TabularId, Transaction, ViewId,
     },
@@ -68,7 +69,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             let location = C::drop_view(view_id, force, t.transaction()).await?;
 
             if purge_requested {
-                C::queue_tabular_purge(
+                TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
                         warehouse_id,
                         entity_id: EntityId::Tabular(*view_id),
@@ -95,7 +96,7 @@ pub(crate) async fn drop_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 .ok();
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
-            let _ = C::queue_tabular_expiration(
+            let _ = TabularExpirationTask::schedule_task::<C>(
                 TaskMetadata {
                     entity_id: EntityId::Tabular(*view_id),
                     warehouse_id,

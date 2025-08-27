@@ -31,7 +31,7 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
-        task_queue::TaskFilter,
+        task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter},
         Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
     },
     ProjectId, WarehouseId,
@@ -815,10 +815,11 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             .map(|i| TableId::from(*i))
             .collect::<Vec<_>>();
         let undrop_tabular_responses =
-            C::undrop_tabulars(&tabs, warehouse_id, transaction.transaction()).await?;
-        C::cancel_tabular_expiration(
+            C::clear_tabular_deleted_at(&tabs, warehouse_id, transaction.transaction()).await?;
+        TabularExpirationTask::cancel_scheduled_tasks::<C>(
             TaskFilter::TaskIds(undrop_tabular_responses.iter().map(|r| r.task_id).collect()),
             transaction.transaction(),
+            false,
         )
         .await?;
         transaction.commit().await?;

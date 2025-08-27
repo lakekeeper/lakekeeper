@@ -50,7 +50,7 @@ use crate::{
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
         task_queues::{
-            cancel_tasks, check_task, get_task_queue_config, queue_task_batch,
+            cancel_scheduled_tasks, check_task, get_task_queue_config, queue_task_batch,
             set_task_queue_config, stop_task,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
@@ -247,7 +247,7 @@ impl Catalog for super::PostgresCatalog {
         drop_table(table_id, force, transaction).await
     }
 
-    async fn undrop_tabulars(
+    async fn clear_tabular_deleted_at(
         tabular_ids: &[TableId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -735,7 +735,7 @@ impl Catalog for super::PostgresCatalog {
         .await
     }
 
-    async fn enqueue_task_batch(
+    async fn enqueue_tasks(
         queue_name: &'static str,
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -750,13 +750,13 @@ impl Catalog for super::PostgresCatalog {
         Ok(queued.into_iter().map(|t| t.task_id).collect())
     }
 
-    async fn cancel_pending_tasks(
-        queue_name: &str,
+    async fn cancel_scheduled_tasks(
+        queue_name: Option<&str>,
         filter: TaskFilter,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        cancel_tasks(&mut *transaction, filter, queue_name, force).await
+        cancel_scheduled_tasks(&mut *transaction, filter, queue_name, force).await
     }
 
     async fn check_and_heartbeat_task(

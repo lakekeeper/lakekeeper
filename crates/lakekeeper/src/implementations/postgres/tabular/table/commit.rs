@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use iceberg::spec::{FormatVersion, TableMetadata};
+use iceberg::{
+    spec::{FormatVersion, TableMetadata},
+    ErrorKind,
+};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use lakekeeper_io::Location;
@@ -209,9 +212,9 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
         let missing_ids = tabular_ids_in_commit
             .difference(&updated_tables_ids)
             .collect_vec();
-        return Err(ErrorModel::bad_request(
+        return Err(ErrorModel::not_found(
             format!("Tables with the following IDs no longer exist: {missing_ids:?}"),
-            "TableNotFound".to_string(),
+            ErrorKind::TableNotFound.to_string(),
             None,
         )
         .into());

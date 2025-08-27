@@ -36,11 +36,7 @@ use crate::{
         authn::UserId,
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
-        task_queue::{
-            tabular_expiration_queue, tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue, tabular_purge_queue::TabularPurgePayload, Task, TaskCheckState,
-            TaskFilter, TaskId, TaskInput, TaskMetadata,
-        },
+        task_queue::{Task, TaskCheckState, TaskFilter, TaskId, TaskInput},
     },
     SecretIdent,
 };
@@ -470,7 +466,7 @@ where
     ///
     /// Undrops a soft-deleted table. Does not work if the table was hard-deleted.
     /// Returns the task id of the expiration task associated with the soft-deletion.
-    async fn undrop_tabulars(
+    async fn clear_tabular_deleted_at(
         table_id: &[TableId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -791,21 +787,23 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
-    // Tasks
+    // ------------- Tasks -------------
     async fn pick_new_task(
         queue_name: &str,
         max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
+
     async fn record_task_success(
         id: TaskId,
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
+
     async fn record_task_failure(
         id: TaskId,
         error_details: &str,
-        max_retries: i32,
+        max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
@@ -815,7 +813,7 @@ where
     /// Any resubmitted pending/running task will be omitted from the returned task ids.
     ///
     /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`.
-    async fn enqueue_task_batch(
+    async fn enqueue_tasks(
         queue_name: &'static str,
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -823,85 +821,28 @@ where
 
     /// Enqueue a single task to a task queue.
     ///
-    /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
+    /// There can only be a single active task for a (entity_id, queue_name) tuple.
     /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
     async fn enqueue_task(
         queue_name: &'static str,
         task: TaskInput,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TaskId>> {
-        Ok(
-            Self::enqueue_task_batch(queue_name, vec![task], transaction)
-                .await
-                .map(|v| v.into_iter().next())?,
-        )
+        Ok(Self::enqueue_tasks(queue_name, vec![task], transaction)
+            .await
+            .map(|v| v.into_iter().next())?)
     }
-    async fn cancel_pending_tasks(
-        queue_name: &str,
+
+    /// Cancel scheduled tasks matching the filter.
+    ///
+    /// If `cancel_running_and_should_stop` is true, also cancel tasks in the `running` and `should-stop` states.
+    /// If `queue_name` is `None`, cancel tasks in all queues.
+    async fn cancel_scheduled_tasks(
+        queue_name: Option<&str>,
         filter: TaskFilter,
-        force: bool,
+        cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
-
-    #[tracing::instrument(skip(transaction))]
-    async fn queue_tabular_expiration(
-        task_metadata: TaskMetadata,
-        payload: TabularExpirationPayload,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskId>> {
-        Self::enqueue_task(
-            tabular_expiration_queue::QUEUE_NAME,
-            TaskInput {
-                task_metadata,
-                payload: serde_json::to_value(&payload).map_err(|e| {
-                    ErrorModel::internal(
-                        format!("Failed to serialize task payload: {e}"),
-                        "TaskPayloadSerializationError",
-                        Some(Box::new(e)),
-                    )
-                })?,
-            },
-            transaction,
-        )
-        .await
-    }
-
-    #[tracing::instrument(skip(transaction))]
-    async fn cancel_tabular_expiration(
-        filter: TaskFilter,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()> {
-        Self::cancel_pending_tasks(
-            tabular_expiration_queue::QUEUE_NAME,
-            filter,
-            false,
-            transaction,
-        )
-        .await
-    }
-
-    #[tracing::instrument(skip(transaction))]
-    async fn queue_tabular_purge(
-        task_metadata: TaskMetadata,
-        task: TabularPurgePayload,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskId>> {
-        Self::enqueue_task(
-            tabular_purge_queue::QUEUE_NAME,
-            TaskInput {
-                task_metadata,
-                payload: serde_json::to_value(&task).map_err(|e| {
-                    ErrorModel::internal(
-                        format!("Failed to serialize task payload: {e}"),
-                        "TaskPayloadSerializationError",
-                        Some(Box::new(e)),
-                    )
-                })?,
-            },
-            transaction,
-        )
-        .await
-    }
 
     /// Checks task state and sends a hearbeat.
     ///
@@ -913,8 +854,7 @@ where
 
     /// Sends a stop signal to the task.
     ///
-    /// This does by no means guarantee that the task will be actually stop. It is up to the task
-    /// handler to decide if it can stop.
+    /// It is up to the task handler to decide if it can stop.
     async fn stop_task(
         task_id: TaskId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
