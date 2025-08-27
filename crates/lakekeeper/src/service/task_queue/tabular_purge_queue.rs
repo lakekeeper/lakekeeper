@@ -45,14 +45,14 @@ impl QueueConfig for PurgeQueueConfig {
 pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
-    poll_interval: &Duration,
+    poll_interval: Duration,
     cancellation_token: crate::CancellationToken,
 ) {
     loop {
         let task =
             SpecializedTask::<PurgeQueueConfig, TabularPurgePayload>::poll_for_new_task::<C>(
                 catalog_state.clone(),
-                poll_interval,
+                &poll_interval,
                 cancellation_token.clone(),
             )
             .await;

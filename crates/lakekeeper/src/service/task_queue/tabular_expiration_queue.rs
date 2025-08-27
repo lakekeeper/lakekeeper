@@ -51,13 +51,13 @@ impl QueueConfig for ExpirationQueueConfig {
 pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
-    poll_interval: &Duration,
+    poll_interval: Duration,
     cancellation_token: CancellationToken,
 ) {
     loop {
         let task = SpecializedTask::<ExpirationQueueConfig, TabularExpirationPayload>::poll_for_new_task::<C>(
             catalog_state.clone(),
-            poll_interval,
+            &poll_interval,
             cancellation_token.clone(),
         )
         .await;

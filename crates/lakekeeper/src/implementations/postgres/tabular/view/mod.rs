@@ -829,7 +829,7 @@ pub(crate) mod tests {
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
             },
             TabularExpirationPayload {
-                tabular_type: crate::api::management::v1::TabularType::Table,
+                tabular_type: crate::api::management::v1::TabularType::View,
                 deletion_kind: DeleteKind::Purge,
             },
             &mut tx,

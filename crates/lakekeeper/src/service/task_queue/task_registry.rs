@@ -187,7 +187,7 @@ impl TaskQueueRegistry {
                         tabular_expiration_queue::tabular_expiration_worker::<C, A>(
                             catalog_state_clone.clone(),
                             authorizer.clone(),
-                            &poll_interval,
+                            poll_interval,
                             cancellation_token,
                         )
                         .await;
@@ -207,7 +207,7 @@ impl TaskQueueRegistry {
                     tabular_purge_queue::tabular_purge_worker::<C, S>(
                         catalog_state_clone.clone(),
                         secret_store.clone(),
-                        &poll_interval,
+                        poll_interval,
                         cancellation_token,
                     )
                     .await;
