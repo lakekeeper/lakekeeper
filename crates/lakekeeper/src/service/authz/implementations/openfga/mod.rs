@@ -621,7 +621,6 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&namespace_id).await
     }
 
-    // TODO(mooori) write `warehouse/table_id`, also when creating views and assigning to table
     async fn create_table(
         &self,
         metadata: &RequestMetadata,

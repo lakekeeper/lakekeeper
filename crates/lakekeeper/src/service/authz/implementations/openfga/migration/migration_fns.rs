@@ -455,6 +455,72 @@ mod tests {
         // Tests must write tuples according to v3 model manually.
         // Writing through methods like `authorizer.create_*` may create tuples different from
         // what v4 migration is designed to handle.
+        //
+        // Code that constructs OpenFGA authorizers and clients is geared towards using the
+        // default/configured model and running migrations up to there. However, in these
+        // tests we exactly need v3, so that we can test the v3 -> v4 migration. Hence below some
+        // functions to construct a v3 client/authorizer.
+
+        /// Constructs a client for a store that has been initialized and migrated to v3.
+        /// Returns the client and the name of the store.
+        async fn v3_client_for_empty_store() -> anyhow::Result<(BasicOpenFgaClient, String)> {
+            let mut client = new_client_from_config().await?;
+            let test_uuid = uuid::Uuid::now_v7();
+            let store_name = format!("test_store_{test_uuid}");
+
+            let model_manager = TupleModelManager::new(
+                client.clone(),
+                &store_name,
+                &AUTH_CONFIG.authorization_model_prefix,
+            );
+            let mut model_manager = add_model_v3(model_manager);
+            let migration_state = MigrationState {
+                store_name: store_name.clone(),
+                server_id: CONFIG.server_id,
+            };
+            model_manager.migrate(migration_state).await?;
+
+            let store = client
+                .get_store_by_name(&store_name)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Store should exist after initialization"))?;
+            let auth_model_id = model_manager
+                .get_authorization_model_id(*V3_MODEL_VERSION)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Auth model should be set after migration"))?;
+            let client = BasicOpenFgaClient::new(client, &store.id, &auth_model_id)
+                .set_consistency(ConsistencyPreference::HigherConsistency);
+            Ok((client, store_name))
+        }
+
+        async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
+            let (client, _) = v3_client_for_empty_store().await?;
+            Ok(OpenFGAAuthorizer {
+                client,
+                health: Arc::new(RwLock::new(vec![])),
+            })
+        }
+
+        // Migrates the OpenFGA store to v4, which will also execute the migration function.
+        async fn migrate_to_v4(
+            client: &BasicOpenFgaServiceClient,
+            store_name: String,
+        ) -> anyhow::Result<()> {
+            let model_manager = TupleModelManager::new(
+                client.clone(),
+                &store_name,
+                &AUTH_CONFIG.authorization_model_prefix,
+            );
+            let mut model_manager = add_model_v4(model_manager);
+            let migration_state = MigrationState {
+                store_name: store_name.clone(),
+                server_id: CONFIG.server_id,
+            };
+            model_manager
+                .migrate(migration_state)
+                .await
+                .map_err(|e| e.into())
+        }
 
         #[tokio::test]
         async fn test_get_all_projects() -> anyhow::Result<()> {
@@ -982,76 +1048,6 @@ mod tests {
                     .await?;
             assert!(tuples.is_empty());
             Ok(())
-        }
-
-        /// Constructs a client for a store that has been initialized and migrated to v3.
-        /// Returns the client and the name of the store.
-        async fn v3_client_for_empty_store() -> anyhow::Result<(BasicOpenFgaClient, String)> {
-            // TODO refactor openfga::migration::migrate s.t. no need to replicate it here
-            let mut client = new_client_from_config().await?;
-            let test_uuid = uuid::Uuid::now_v7();
-            let store_name = format!("test_store_{test_uuid}");
-
-            let model_manager = TupleModelManager::new(
-                client.clone(),
-                &store_name,
-                &AUTH_CONFIG.authorization_model_prefix,
-            );
-            let mut model_manager = add_model_v3(model_manager);
-            let migration_state = MigrationState {
-                store_name: store_name.clone(),
-                server_id: CONFIG.server_id,
-            };
-            model_manager.migrate(migration_state).await?;
-
-            // TODO untangle new_authorizer from get_active_auth_model_id to use it here
-            // instead of manually constructing authorizer
-            // let authorizer = new_authorizer::<PostgresCatalog>(
-            //     client,
-            //     Some(store_name.clone()),
-            //     openfga_client::client::ConsistencyPreference::HigherConsistency,
-            // )
-            // .await?;
-            let store = client
-                .get_store_by_name(&store_name)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Store should exist after initialization"))?;
-            let auth_model_id = model_manager
-                .get_authorization_model_id(*V3_MODEL_VERSION)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Auth model should be set after migration"))?;
-            let client = BasicOpenFgaClient::new(client, &store.id, &auth_model_id)
-                .set_consistency(ConsistencyPreference::HigherConsistency);
-            Ok((client, store_name))
-        }
-
-        async fn new_v3_authorizer_for_empty_store() -> anyhow::Result<OpenFGAAuthorizer> {
-            let (client, _) = v3_client_for_empty_store().await?;
-            Ok(OpenFGAAuthorizer {
-                client,
-                health: Arc::new(RwLock::new(vec![])),
-            })
-        }
-
-        // Migrates the OpenFGA store to v4, which will also execute the migration function.
-        async fn migrate_to_v4(
-            client: &BasicOpenFgaServiceClient,
-            store_name: String,
-        ) -> anyhow::Result<()> {
-            let model_manager = TupleModelManager::new(
-                client.clone(),
-                &store_name,
-                &AUTH_CONFIG.authorization_model_prefix,
-            );
-            let mut model_manager = add_model_v4(model_manager);
-            let migration_state = MigrationState {
-                store_name: store_name.clone(),
-                server_id: CONFIG.server_id,
-            };
-            model_manager
-                .migrate(migration_state)
-                .await
-                .map_err(|e| e.into())
         }
 
         #[tokio::test]
