@@ -336,15 +336,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_namespace_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        namespace_ids: Vec<NamespaceId>,
-        actions: Vec<A>,
+        namespaces_with_actions: Vec<(NamespaceId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
     {
-        let items: Vec<_> = namespace_ids
+        let items: Vec<_> = namespaces_with_actions
             .into_iter()
-            .zip(actions.into_iter())
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
@@ -375,15 +373,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        table_ids: Vec<TableId>,
-        actions: Vec<A>,
+        tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
-        let items: Vec<_> = table_ids
+        let items: Vec<_> = tables_with_actions
             .into_iter()
-            .zip(actions.into_iter())
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),
@@ -414,15 +410,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        view_ids: Vec<ViewId>,
-        actions: Vec<A>,
+        views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
-        let items: Vec<_> = view_ids
+        let items: Vec<_> = views_with_actions
             .into_iter()
-            .zip(actions.into_iter())
             .map(|(id, a)| CheckRequestTupleKey {
                 user: metadata.actor().to_openfga(),
                 relation: a.to_string(),

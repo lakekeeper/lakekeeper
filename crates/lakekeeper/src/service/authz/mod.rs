@@ -367,16 +367,14 @@ where
     async fn are_allowed_namespace_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        namespace_ids: Vec<NamespaceId>,
-        actions: Vec<A>,
+        namespaces_with_actions: Vec<(NamespaceId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
     {
         try_join_all(
-            namespace_ids
+            namespaces_with_actions
                 .into_iter()
-                .zip(actions.into_iter())
                 .map(|(id, a)| self.is_allowed_namespace_action(metadata, id, a)),
         )
         .await
@@ -385,16 +383,15 @@ where
     async fn are_allowed_namespace_actions<A>(
         &self,
         metadata: &RequestMetadata,
-        namespace_ids: Vec<NamespaceId>,
-        actions: Vec<A>,
+        namespaces_with_actions: Vec<(NamespaceId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
     {
         if metadata.has_admin_privileges() {
-            Ok(vec![true; namespace_ids.len()])
+            Ok(vec![true; namespaces_with_actions.len()])
         } else {
-            self.are_allowed_namespace_actions_impl(metadata, namespace_ids, actions)
+            self.are_allowed_namespace_actions_impl(metadata, namespaces_with_actions)
                 .await
         }
     }
@@ -438,16 +435,14 @@ where
     async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        table_ids: Vec<TableId>,
-        actions: Vec<A>,
+        tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
         try_join_all(
-            table_ids
+            tables_with_actions
                 .into_iter()
-                .zip(actions.into_iter())
                 .map(|(id, a)| self.is_allowed_table_action(metadata, id, a)),
         )
         .await
@@ -456,16 +451,15 @@ where
     async fn are_allowed_table_actions<A>(
         &self,
         metadata: &RequestMetadata,
-        table_ids: Vec<TableId>,
-        actions: Vec<A>,
+        tables_with_actions: Vec<(TableId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
         if metadata.has_admin_privileges() {
-            Ok(vec![true; table_ids.len()])
+            Ok(vec![true; tables_with_actions.len()])
         } else {
-            self.are_allowed_table_actions_impl(metadata, table_ids, actions)
+            self.are_allowed_table_actions_impl(metadata, tables_with_actions)
                 .await
         }
     }
@@ -509,16 +503,14 @@ where
     async fn are_allowed_view_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        view_ids: Vec<ViewId>,
-        actions: Vec<A>,
+        views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
         try_join_all(
-            view_ids
+            views_with_actions
                 .into_iter()
-                .zip(actions.into_iter())
                 .map(|(id, a)| self.is_allowed_view_action(metadata, id, a)),
         )
         .await
@@ -527,16 +519,15 @@ where
     async fn are_allowed_view_actions<A>(
         &self,
         metadata: &RequestMetadata,
-        view_ids: Vec<ViewId>,
-        actions: Vec<A>,
+        views_with_actions: Vec<(ViewId, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
         if metadata.has_admin_privileges() {
-            Ok(vec![true; view_ids.len()])
+            Ok(vec![true; views_with_actions.len()])
         } else {
-            self.are_allowed_view_actions_impl(metadata, view_ids, actions)
+            self.are_allowed_view_actions_impl(metadata, views_with_actions)
                 .await
         }
     }

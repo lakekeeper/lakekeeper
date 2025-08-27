@@ -1761,8 +1761,10 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespace_ids.clone(),
-                    vec![CatalogNamespaceAction::CanDelete; namespace_ids.len()],
+                    namespace_ids
+                        .iter()
+                        .map(|id| (*id, CatalogNamespaceAction::CanDelete))
+                        .collect(),
                 )
                 .await
                 .unwrap();
@@ -1780,8 +1782,10 @@ mod tests {
             let res = authorizer
                 .are_allowed_namespace_actions(
                     &RequestMetadata::random_human(user_id_assignee.clone()),
-                    namespace_ids.clone(),
-                    vec![CatalogNamespaceAction::CanDelete; namespace_ids.len()],
+                    namespace_ids
+                        .iter()
+                        .map(|id| (*id, CatalogNamespaceAction::CanDelete))
+                        .collect(),
                 )
                 .await
                 .unwrap();

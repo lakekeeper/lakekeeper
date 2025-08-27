@@ -137,8 +137,9 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         authorizer
                             .are_allowed_namespace_actions(
                                 &request_metadata,
-                                ids.clone(),
-                                vec![CatalogNamespaceAction::CanGetMetadata; ids.len()],
+                                ids.iter()
+                                    .map(|id| (*id, CatalogNamespaceAction::CanGetMetadata))
+                                    .collect(),
                             )
                             .await?
                     };

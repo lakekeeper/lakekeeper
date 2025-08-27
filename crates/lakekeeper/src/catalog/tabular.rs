@@ -55,8 +55,7 @@ macro_rules! list_entities {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions>](
                             &request_metadata,
-                            ids.clone(),
-                            vec![[<Catalog $entity Action>]::CanIncludeInList; ids.len()],
+                            ids.iter().map(|id| (*id, [<Catalog $entity Action>]::CanIncludeInList)).collect(),
                         ).await?
                     }
                 };
