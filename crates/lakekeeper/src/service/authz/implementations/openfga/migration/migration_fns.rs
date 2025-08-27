@@ -88,7 +88,6 @@ pub(crate) async fn v4_push_down_warehouse_id(
     curr_auth_model_id: Option<String>,
     state: MigrationState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    println!("state in migration fn: {}", state.store_name);
     // Construct OpenFGAClient to be able to use convenience methods.
     let store = client
         .get_store_by_name(&state.store_name)
@@ -325,7 +324,6 @@ async fn add_warehouse_id_to_tables<T>(
     Ok(())
 }
 
-// TODO concurrency, read with smaller page size
 async fn get_all_projects(
     client: &BasicOpenFgaClient,
     server_id: uuid::Uuid,
@@ -336,7 +334,7 @@ async fn get_all_projects(
         object: "project:".to_string(),
     };
     let tuples = client
-        .read_all_pages(request_key, OPENFGA_PAGE_SIZE, u32::MAX)
+        .read_all_pages(Some(request_key), OPENFGA_PAGE_SIZE, u32::MAX)
         .await?;
     let projects = tuples
         .into_iter()
@@ -364,11 +362,11 @@ async fn get_all_warehouses(
             let mut warehouses = vec![];
             let tuples = client
                 .read_all_pages(
-                    ReadRequestTupleKey {
+                    Some(ReadRequestTupleKey {
                         user: p.to_string(),
                         relation: WarehouseRelation::Project.to_string(),
                         object: "warehouse:".to_string(),
-                    },
+                    }),
                     OPENFGA_PAGE_SIZE,
                     u32::MAX,
                 )
@@ -410,11 +408,11 @@ async fn get_all_namespaces(
                 let _permit = semaphore.acquire().await.unwrap();
                 let tuples = client
                     .read_all_pages(
-                        ReadRequestTupleKey {
+                        Some(ReadRequestTupleKey {
                             user: parent.clone(),
                             relation: NamespaceRelation::Parent.to_string(),
                             object: "namespace:".to_string(),
-                        },
+                        }),
                         OPENFGA_PAGE_SIZE,
                         u32::MAX,
                     )
@@ -484,11 +482,11 @@ async fn get_all_tabulars(
                     let _permit = semaphore.acquire().await.unwrap();
                     let tuples = client
                         .read_all_pages(
-                            ReadRequestTupleKey {
+                            Some(ReadRequestTupleKey {
                                 user: ns,
                                 relation,
                                 object: object_type,
-                            },
+                            }),
                             OPENFGA_PAGE_SIZE,
                             u32::MAX,
                         )
@@ -527,11 +525,11 @@ async fn get_all_tuples_with_object(
 ) -> anyhow::Result<Vec<TupleKey>> {
     let tuples = client
         .read_all_pages(
-            ReadRequestTupleKey {
+            Some(ReadRequestTupleKey {
                 user: "".to_string(),
                 relation: "".to_string(),
                 object,
-            },
+            }),
             OPENFGA_PAGE_SIZE,
             u32::MAX,
         )
@@ -587,11 +585,11 @@ async fn get_all_tuples_with_user(
             let _permit = semaphore.acquire().await.unwrap();
             let res = client
                 .read_all_pages(
-                    ReadRequestTupleKey {
+                    Some(ReadRequestTupleKey {
                         user,
                         relation: "".to_string(),
                         object: ty,
-                    },
+                    }),
                     OPENFGA_PAGE_SIZE,
                     u32::MAX,
                 )
@@ -1226,7 +1224,6 @@ mod tests {
                 store_name: store_name.clone(),
                 server_id: CONFIG.server_id,
             };
-            println!("migrating to model v4");
             model_manager
                 .migrate(migration_state)
                 .await
@@ -1364,42 +1361,17 @@ mod tests {
             // Write initial tuples
             client.write(Some(initial_tuples.clone()), None).await?;
 
-            println!(
-                "projects queried from test pre v4: {:#?}",
-                get_all_projects(&client, CONFIG.server_id).await?
-            );
-
             // Migrate to v4, which will call the migration fn.
             // TODO use migrate_to_v4, which will resolve stuff mentioned there first
             migrate_to_v4(&client.client(), store_name.clone()).await?;
-            println!("authorizer is using store: {store_name}");
-            println!(
-                "authorizer is using auth_model_id: {}",
-                client.authorization_model_id()
-            );
-
-            println!(
-                "projects queried from test post v4: {:#?}",
-                get_all_projects(&client, CONFIG.server_id).await?
-            );
 
             // Read all tuples from store
             let all_tuples = client
-                .read_all_pages(
-                    ReadRequestTupleKey {
-                        user: "".to_string(),
-                        relation: "".to_string(),
-                        object: "".to_string(),
-                    },
-                    100,
-                    1000,
-                )
+                .read_all_pages(None::<ReadRequestTupleKey>, 100, 1000)
                 .await?;
 
-            // println!("all tuples: {:#?}", all_tuples);
             let all_tuple_keys: Vec<TupleKey> =
                 all_tuples.into_iter().filter_map(|t| t.key).collect();
-            // println!("all tuple keys: {:#?}", all_tuple_keys);
 
             // Separate initial tuples from new tuples added by migration and filter out
             // tuples belonging to the store's admin relations.
@@ -1508,7 +1480,6 @@ mod tests {
             });
 
             // Verify the new tuples match expected
-            println!("new tuples: {:#?}", new_tuples);
             assert_eq!(new_tuples.len(), expected_sorted.len());
             for (actual, expected) in new_tuples.iter().zip(expected_sorted.iter()) {
                 assert_eq!(actual.user, expected.user);
@@ -1657,7 +1628,6 @@ mod tests {
                 .tuples
                 .clone();
             assert!(sentinel.len() > 0, "There should be a sentinel tupel");
-            println!("{:?}", sentinel);
 
             Ok(())
         }
