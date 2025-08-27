@@ -1,27 +1,18 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock};
 
-use futures::stream::{FuturesUnordered, StreamExt};
-use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use openfga_client::client::{
-    BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, OpenFgaClient,
-    ReadRequestTupleKey, TupleKey,
+    BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
+    TupleKey,
 };
 use strum::IntoEnumIterator;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::api::iceberg::v1::PageToken;
-use crate::api::iceberg::v1::{NamespaceIdent, PaginationQuery};
 use crate::service::authz::implementations::openfga::{
     NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
+    MAX_TUPLES_PER_WRITE,
 };
-use crate::service::{
-    catalog::{ListFlags, Transaction},
-    TableId,
-};
-use crate::service::{Catalog, ListNamespacesQuery, NamespaceId, WarehouseStatus};
-use crate::{ProjectId, WarehouseId};
 
 #[derive(Clone, Debug)]
 pub(crate) struct MigrationState {
@@ -62,18 +53,11 @@ fn extract_id_from_full_object(full_object: &str) -> anyhow::Result<String> {
 
 // TODO add v4 to module name as everything here is version specific
 
-// TODO: get from config in case someone runs openfga server with lower max page size?
+// TODO add a param to OpenFGAConfig for this?
 const OPENFGA_PAGE_SIZE: i32 = 100;
 
-// TODO get from config, check if config value is overwritten by user's env var
-const OPENFGA_WRITE_BATCH_SIZE: usize = 50;
-
-/// Limits the number of concurrent transactions. It should be throttled as the catalog's db
-/// may still be in use during the migration.
-///
-/// Ensure permits are dropped as soon as the tx is not needed anymore, to unblock other threads.
-static DB_TX_PERMITS: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::const_new(10)));
+static OPENFGA_WRITE_BATCH_SIZE: LazyLock<usize> =
+    LazyLock::new(|| MAX_TUPLES_PER_WRITE.try_into().expect("should fit usize"));
 
 /// Limits the number of concurrent requests to the OpenFGA server, to avoid overloading it.
 ///
@@ -139,7 +123,7 @@ pub(crate) async fn v4_push_down_warehouse_id(
         }
 
         let mut write_jobs = JoinSet::new();
-        for chunk in new_tuples_to_write.chunks(OPENFGA_WRITE_BATCH_SIZE) {
+        for chunk in new_tuples_to_write.chunks(*OPENFGA_WRITE_BATCH_SIZE) {
             let c = client.clone();
             let semaphore = OPENFGA_REQ_PERMITS.clone();
             let tuples = chunk.to_vec();
@@ -153,174 +137,6 @@ pub(crate) async fn v4_push_down_warehouse_id(
         }
     }
 
-    let _res = add_warehouse_id_to_tables(client.clone(), &HashMap::new()).await?;
-    Ok(())
-}
-
-/// Creates a new read transaction. To use it responsibly, first acquire a permit from
-/// [`DB_TX_PERMITS`].
-async fn new_read_transaction<C: Catalog>(state: C::State) -> crate::api::Result<C::Transaction> {
-    let _permit = DB_TX_PERMITS.acquire().await.unwrap();
-    C::Transaction::begin_read(state).await
-}
-
-/// Returns the ids of all warehouses, regardless of their status.
-async fn all_warehouse_ids<C: Catalog>(
-    catalog_state: C::State,
-    project_ids: &[ProjectId],
-) -> crate::api::Result<Vec<WarehouseId>> {
-    let all_statuses: Vec<_> = WarehouseStatus::iter().collect();
-    let mut jobs = FuturesUnordered::new();
-
-    for pid in project_ids.iter() {
-        let semaphore = DB_TX_PERMITS.clone();
-        let catalog_state = catalog_state.clone();
-        let all_statuses = all_statuses.clone();
-
-        jobs.push(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-            let mut tx = new_read_transaction::<C>(catalog_state).await?;
-
-            // This returns all warehouses in the project since it is not (yet) possible to
-            // deactivate a warehouse.
-            let responses = C::list_warehouses(pid, Some(all_statuses), tx.transaction()).await?;
-            drop(_permit);
-
-            let ids = responses.into_iter().map(|res| res.id);
-            Ok::<_, IcebergErrorResponse>(ids)
-        });
-    }
-
-    let mut warehouse_ids = vec![];
-    while let Some(res) = jobs.next().await {
-        warehouse_ids.extend(res?)
-    }
-    Ok(warehouse_ids)
-}
-
-struct TabularQueryParams {
-    warehouse_id: WarehouseId,
-    namespace_id: NamespaceId,
-    namespace_ident: NamespaceIdent,
-}
-
-// TODO check if can be more efficient by storing whid only once and mapping all ns to it
-// same for table_id
-struct TableParams {
-    warehouse_id: WarehouseId,
-    namespace_id: NamespaceId,
-    namespace_ident: NamespaceIdent,
-    table_id: TableId,
-}
-
-// TODO in catalog: implement fn that traverses all namespaces
-// catalog's basic `list_namespaces` is only one level, not its children
-/// Returns the query paramaters for all namespaces, which are needed to get all tabulars
-/// via [`Catalog::list_tables`] and [`Catalog::list_views`].
-async fn all_tabular_query_params<C: Catalog>(
-    catalog_state: C::State,
-    warehouse_ids: Vec<WarehouseId>,
-) -> crate::api::Result<Vec<TabularQueryParams>> {
-    let mut jobs = FuturesUnordered::new();
-
-    for wid in warehouse_ids.into_iter() {
-        let semaphore = DB_TX_PERMITS.clone();
-        let catalog_state = catalog_state.clone();
-
-        jobs.push(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-            let mut tx = new_read_transaction::<C>(catalog_state).await?;
-
-            // The function mentioned in TODO above is expected to use smaller page size + paginate
-            let response = C::list_namespaces(
-                wid.clone(),
-                &ListNamespacesQuery {
-                    page_token: PageToken::Empty,
-                    page_size: Some(i64::MAX),
-                    parent: None,
-                    return_uuids: true,
-                    return_protection_status: false,
-                },
-                tx.transaction(),
-            )
-            .await?;
-            drop(_permit);
-
-            let query_params =
-                response
-                    .into_iter()
-                    .map(move |(nsid, ns_info)| TabularQueryParams {
-                        warehouse_id: wid,
-                        namespace_id: nsid,
-                        namespace_ident: ns_info.namespace_ident,
-                    });
-            Ok::<_, IcebergErrorResponse>(query_params)
-        })
-    }
-
-    let mut all_query_params = vec![];
-    while let Some(res) = jobs.next().await {
-        all_query_params.extend(res?);
-    }
-
-    Ok(all_query_params)
-}
-
-async fn all_tables<C: Catalog>(
-    catalog_state: C::State,
-    params: Vec<TabularQueryParams>,
-) -> crate::api::Result<Vec<TableParams>> {
-    let mut jobs = FuturesUnordered::new();
-
-    for param in params.into_iter() {
-        let semaphore = DB_TX_PERMITS.clone();
-        let catalog_state = catalog_state.clone();
-
-        jobs.push(async move {
-            let _permit = semaphore.acquire().await.unwrap();
-            let mut tx = new_read_transaction::<C>(catalog_state).await?;
-
-            let response = C::list_tables(
-                param.warehouse_id,
-                &param.namespace_ident,
-                ListFlags {
-                    include_active: true,
-                    include_staged: true,
-                    include_deleted: true,
-                },
-                tx.transaction(),
-                // TODO pagination with more reasonable page size
-                PaginationQuery {
-                    page_token: PageToken::Empty,
-                    page_size: Some(i64::MAX),
-                },
-            )
-            .await?;
-            drop(_permit);
-
-            let table_params = response.into_iter().map(move |(table_id, _)| TableParams {
-                warehouse_id: param.warehouse_id,
-                namespace_id: param.namespace_id,
-                namespace_ident: param.namespace_ident.clone(),
-                table_id,
-            });
-            Ok::<_, IcebergErrorResponse>(table_params)
-        });
-    }
-
-    let mut all_table_params = vec![];
-    while let Some(res) = jobs.next().await {
-        all_table_params.extend(res?);
-    }
-
-    Ok(all_table_params)
-}
-
-async fn add_warehouse_id_to_tables<T>(
-    _client: OpenFgaClient<T>,
-    _warhouse_ids: &HashMap<TableId, WarehouseId>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    // let tables_
     Ok(())
 }
 
@@ -616,6 +432,8 @@ mod tests {
         use tokio::task::JoinSet;
 
         use super::super::*;
+        use crate::service::NamespaceId;
+        use crate::service::TableId;
         use crate::{
             api::RequestMetadata,
             service::{
@@ -634,6 +452,7 @@ mod tests {
             },
             CONFIG,
         };
+        use crate::{ProjectId, WarehouseId};
 
         // Tests must write tuples according to v3 model manually.
         // Writing through methods like `authorizer.create_*` may create tuples different from
@@ -1362,7 +1181,6 @@ mod tests {
             client.write(Some(initial_tuples.clone()), None).await?;
 
             // Migrate to v4, which will call the migration fn.
-            // TODO use migrate_to_v4, which will resolve stuff mentioned there first
             migrate_to_v4(&client.client(), store_name.clone()).await?;
 
             // Read all tuples from store
