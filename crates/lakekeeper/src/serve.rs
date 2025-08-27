@@ -64,11 +64,11 @@ fn log_service_completion<H: ::std::hash::BuildHasher>(
                     if during_shutdown {
                         let msg =
                             format!("Service '{task_name}' finished gracefully during shutdown");
-                        tracing::info!(msg);
+                        tracing::info!("{msg}");
                         msg
                     } else {
                         let msg = format!("Service '{task_name}' finished successfully but was supposed to run indefinitely");
-                        tracing::info!(msg);
+                        tracing::info!("{msg}");
                         msg
                     }
                 }
@@ -76,11 +76,11 @@ fn log_service_completion<H: ::std::hash::BuildHasher>(
                     if during_shutdown {
                         let msg =
                             format!("Service '{task_name}' exited with error during shutdown: {e}");
-                        tracing::warn!(msg);
+                        tracing::warn!("{msg}");
                         msg
                     } else {
                         let msg = format!("Service '{task_name}' exited with error: {e}");
-                        tracing::error!(msg);
+                        tracing::error!("{msg}");
                         msg
                     }
                 }
@@ -89,11 +89,11 @@ fn log_service_completion<H: ::std::hash::BuildHasher>(
         Err(join_err) => {
             if during_shutdown {
                 let msg = format!("Service join error during shutdown: {join_err}");
-                tracing::warn!(msg);
+                tracing::warn!("{msg}");
                 msg
             } else {
                 let msg = format!("Service join error: {join_err}");
-                tracing::error!(msg);
+                tracing::error!("{msg}");
                 msg
             }
         }
@@ -196,8 +196,6 @@ pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator +
     .await;
 
     // Handle shutdown if serve_inner returned (e.g. due to error)
-    cancellation_token.cancel();
-
     tracing::debug!("Sending shutdown signal to threads");
     cancellation_token.cancel();
 
