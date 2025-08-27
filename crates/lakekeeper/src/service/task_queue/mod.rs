@@ -12,6 +12,8 @@ use futures::future::BoxFuture;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use serde::{de::DeserializeOwned, Serialize};
 use strum::EnumIter;
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -25,7 +27,6 @@ use crate::service::{
 
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
-pub use crate::CancellationToken;
 
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     valid_max_time_since_last_heartbeat(3600);
@@ -41,8 +42,9 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
 
 /// Infinitely running task worker loop function that polls tasks from a queue and
 /// processes. Accepts a cancellation token for graceful shutdown.
-pub type TaskQueueWorker =
-    Arc<dyn Fn(CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static>;
+pub type TaskQueueWorker = Arc<
+    dyn Fn(tokio_util::sync::CancellationToken) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+>;
 type ValidatorFn = Arc<dyn Fn(serde_json::Value) -> serde_json::Result<()> + Send + Sync>;
 
 /// Warehouse specific configuration for a task queue.
@@ -68,7 +70,7 @@ pub trait TaskData: Clone + Serialize + DeserializeOwned {}
 #[derive(Clone, Default, Debug)]
 pub struct RegisteredTaskQueues {
     // Mapping of queue names to their configurations
-    queues: Arc<HashMap<&'static str, RegisteredQueue>>,
+    queues: Arc<RwLock<HashMap<&'static str, RegisteredQueue>>>,
 }
 
 impl RegisteredTaskQueues {
@@ -77,22 +79,29 @@ impl RegisteredTaskQueues {
     /// # Returns
     /// Some(ValidatorFn) if the queue exists, None otherwise
     #[must_use]
-    pub fn validate_config_fn(&self, queue_name: &str) -> Option<ValidatorFn> {
+    pub async fn validate_config_fn(&self, queue_name: &str) -> Option<ValidatorFn> {
         self.queues
+            .read()
+            .await
             .get(queue_name)
             .map(|q| Arc::clone(&q.schema_validator_fn))
     }
 
     /// Get the API configuration for all registered queues
     #[must_use]
-    pub fn api_config(&self) -> Vec<&QueueApiConfig> {
-        self.queues.values().map(|q| &q.api_config).collect()
+    pub async fn api_config(&self) -> Vec<QueueApiConfig> {
+        self.queues
+            .read()
+            .await
+            .values()
+            .map(|q| q.api_config.clone())
+            .collect()
     }
 
     /// Get the names of all registered queues
     #[must_use]
-    pub fn queue_names(&self) -> Vec<&'static str> {
-        self.queues.keys().copied().collect()
+    pub async fn queue_names(&self) -> Vec<&'static str> {
+        self.queues.read().await.keys().copied().collect()
     }
 }
 
@@ -134,9 +143,9 @@ impl Debug for RegisteredTaskQueueWorker {
 #[derive(Debug)]
 pub struct TaskQueueRegistry {
     // Mapping of queue names to their configurations
-    registered_queues: HashMap<&'static str, RegisteredQueue>,
+    registered_queues: Arc<RwLock<HashMap<&'static str, RegisteredQueue>>>,
     // Mapping of queue names to their worker configuration
-    task_workers: HashMap<&'static str, RegisteredTaskQueueWorker>,
+    task_workers: Arc<RwLock<HashMap<&'static str, RegisteredTaskQueueWorker>>>,
 }
 
 impl Default for TaskQueueRegistry {
@@ -169,12 +178,12 @@ impl TaskQueueRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            registered_queues: HashMap::new(),
-            task_workers: HashMap::new(),
+            registered_queues: Arc::new(RwLock::new(HashMap::new())),
+            task_workers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn register_queue<T: QueueConfig>(&mut self, task_queue: QueueRegistration) -> &mut Self {
+    pub async fn register_queue<T: QueueConfig>(&self, task_queue: QueueRegistration) -> &Self {
         let QueueRegistration {
             queue_name,
             worker_fn,
@@ -190,7 +199,7 @@ impl TaskQueueRegistry {
             )),
         };
 
-        self.registered_queues.insert(
+        self.registered_queues.write().await.insert(
             queue_name,
             RegisteredQueue {
                 api_config,
@@ -198,7 +207,7 @@ impl TaskQueueRegistry {
             },
         );
 
-        self.task_workers.insert(
+        self.task_workers.write().await.insert(
             queue_name,
             RegisteredTaskQueueWorker {
                 worker_fn,
@@ -208,13 +217,13 @@ impl TaskQueueRegistry {
         self
     }
 
-    pub fn register_built_in_queues<C: Catalog, S: SecretStore, A: Authorizer>(
-        &mut self,
+    pub async fn register_built_in_queues<C: Catalog, S: SecretStore, A: Authorizer>(
+        &self,
         catalog_state: C::State,
         secret_store: S,
         authorizer: A,
         poll_interval: Duration,
-    ) -> &mut Self {
+    ) -> &Self {
         let catalog_state_clone = catalog_state.clone();
         self.register_queue::<ExpirationQueueConfig>(QueueRegistration {
             queue_name: tabular_expiration_queue::QUEUE_NAME,
@@ -234,7 +243,8 @@ impl TaskQueueRegistry {
                 })
             }),
             num_workers: 2,
-        });
+        })
+        .await;
 
         self.register_queue::<PurgeQueueConfig>(QueueRegistration {
             queue_name: tabular_purge_queue::QUEUE_NAME,
@@ -252,7 +262,8 @@ impl TaskQueueRegistry {
                 })
             }),
             num_workers: 2,
-        });
+        })
+        .await;
 
         self
     }
@@ -261,27 +272,36 @@ impl TaskQueueRegistry {
     #[must_use]
     pub fn registered_task_queues(&self) -> RegisteredTaskQueues {
         RegisteredTaskQueues {
-            queues: Arc::new(self.registered_queues.clone()),
+            // It is important to share the interior mutable state,
+            // so that tasks that register later are reflected to the state
+            // that previously registered tasks have a reference to.
+            queues: self.registered_queues.clone(),
         }
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.registered_queues.len()
+    pub async fn len(&self) -> usize {
+        self.registered_queues.read().await.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.registered_queues.is_empty()
+    pub async fn is_empty(&self) -> bool {
+        self.registered_queues.read().await.is_empty()
     }
 
     /// Creates a [`TaskQueuesRunner`] that can be used to start the task queue workers
     #[must_use]
-    pub fn task_queues_runner(&self, cancellation_token: CancellationToken) -> TaskQueuesRunner {
+    pub async fn task_queues_runner(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> TaskQueuesRunner {
         let mut registered_task_queues = HashMap::new();
 
-        for name in self.registered_queues.keys() {
-            if let Some(worker) = self.task_workers.get(name) {
+        let queues = self.registered_queues.read().await;
+        let workers = self.task_workers.read().await;
+
+        for name in queues.keys() {
+            if let Some(worker) = workers.get(name) {
                 registered_task_queues.insert(
                     *name,
                     QueueWorkerConfig {
@@ -644,7 +664,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
     pub async fn poll_for_new_task<C: Catalog>(
         catalog_state: C::State,
         poll_interval: &Duration,
-        cancellation_token: crate::CancellationToken,
+        cancellation_token: tokio_util::sync::CancellationToken,
     ) -> Option<Self> {
         loop {
             tokio::select! {
@@ -982,9 +1002,12 @@ mod test {
 
     use std::time::Duration;
 
+    use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
     use tracing_test::traced_test;
+    use utoipa::ToSchema;
 
+    use super::*;
     use crate::{
         api::{
             iceberg::v1::PaginationQuery,
@@ -1004,26 +1027,162 @@ mod test {
         },
     };
 
+    #[tokio::test]
+    async fn test_shared_interior_mutable_state() {
+        // This test verifies that RegisteredTaskQueues instances share the same
+        // interior mutable state, so that tasks registered later are reflected
+        // in previously created RegisteredTaskQueues instances.
+
+        #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+        struct TestQueueConfig {
+            test_field: String,
+        }
+
+        impl QueueConfig for TestQueueConfig {
+            fn queue_name() -> &'static str {
+                "test-queue"
+            }
+        }
+
+        // Register another queue and verify both instances see it
+        #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+        struct SecondTestQueueConfig {
+            other_field: i32,
+        }
+
+        impl QueueConfig for SecondTestQueueConfig {
+            fn queue_name() -> &'static str {
+                "second-test-queue"
+            }
+        }
+
+        let registry = crate::service::task_queue::TaskQueueRegistry::new();
+
+        // Create an initial RegisteredTaskQueues instance before registering any queues
+        let initial_queues = registry.registered_task_queues();
+
+        // Verify registry starts empty and initial_queues reflects this
+        assert_eq!(registry.len().await, 0);
+        assert!(registry.is_empty().await);
+        assert!(initial_queues.api_config().await.is_empty());
+
+        registry
+            .register_queue::<TestQueueConfig>(super::QueueRegistration {
+                queue_name: "test-queue",
+                worker_fn: std::sync::Arc::new(move |_cancellation_token| {
+                    Box::pin(async {
+                        // Empty worker for testing
+                    })
+                }),
+                num_workers: 1,
+            })
+            .await;
+
+        // Create another RegisteredTaskQueues instance after registration
+        let later_queues = registry.registered_task_queues();
+
+        // Registry should now show the registered queue
+        assert_eq!(registry.len().await, 1);
+        assert!(!registry.is_empty().await);
+
+        // Both RegisteredTaskQueues instances should now see the registered queue due to shared state
+        let initial_api_config = initial_queues.api_config().await;
+        let later_api_config = later_queues.api_config().await;
+        assert_eq!(initial_api_config.len(), 1);
+        assert_eq!(later_api_config.len(), 1);
+        assert_eq!(initial_api_config[0].queue_name, "test-queue");
+        assert_eq!(later_api_config[0].queue_name, "test-queue");
+
+        // Both should have access to the validator function
+        assert!(initial_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(later_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(initial_queues
+            .validate_config_fn("non-existent")
+            .await
+            .is_none());
+        assert!(later_queues
+            .validate_config_fn("non-existent")
+            .await
+            .is_none());
+
+        registry
+            .register_queue::<SecondTestQueueConfig>(super::QueueRegistration {
+                queue_name: "second-test-queue",
+                worker_fn: std::sync::Arc::new(move |_cancellation_token| {
+                    Box::pin(async {
+                        // Empty worker for testing
+                    })
+                }),
+                num_workers: 2,
+            })
+            .await;
+
+        // Registry should now show both queues
+        assert_eq!(registry.len().await, 2);
+
+        // Both RegisteredTaskQueues instances should now see both queues due to shared interior mutable state
+        let initial_api_config = initial_queues.api_config().await;
+        let later_api_config = later_queues.api_config().await;
+        assert_eq!(initial_api_config.len(), 2);
+        assert_eq!(later_api_config.len(), 2);
+
+        // Check that both queues are accessible from both instances
+        assert!(initial_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(initial_queues
+            .validate_config_fn("second-test-queue")
+            .await
+            .is_some());
+        assert!(later_queues
+            .validate_config_fn("test-queue")
+            .await
+            .is_some());
+        assert!(later_queues
+            .validate_config_fn("second-test-queue")
+            .await
+            .is_some());
+
+        // Verify that the queue names are correctly registered in both instances
+        let mut initial_queue_names: Vec<_> =
+            initial_api_config.iter().map(|q| q.queue_name).collect();
+        let mut later_queue_names: Vec<_> = later_api_config.iter().map(|q| q.queue_name).collect();
+        initial_queue_names.sort_unstable();
+        later_queue_names.sort_unstable();
+
+        assert_eq!(initial_queue_names, vec!["second-test-queue", "test-queue"]);
+        assert_eq!(later_queue_names, vec!["second-test-queue", "test-queue"]);
+    }
+
     #[sqlx::test]
     #[traced_test]
     async fn test_queue_expiration_queue_task(pool: PgPool) {
         let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let mut queues = crate::service::task_queue::TaskQueueRegistry::new();
+        let queues = crate::service::task_queue::TaskQueueRegistry::new();
 
         let secrets =
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
         let cat = catalog_state.clone();
         let sec = secrets.clone();
         let auth = AllowAllAuthorizer;
-        queues.register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
-            cat,
-            sec,
-            auth,
-            Duration::from_millis(100),
-        );
-        let cancellation_token = crate::CancellationToken::new();
-        let runner = queues.task_queues_runner(cancellation_token.clone());
+        queues
+            .register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
+                cat,
+                sec,
+                auth,
+                Duration::from_millis(100),
+            )
+            .await;
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        let runner = queues.task_queues_runner(cancellation_token.clone()).await;
         let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
 
         let warehouse = initialize_warehouse(

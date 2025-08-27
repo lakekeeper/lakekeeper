@@ -60,36 +60,38 @@ mod test {
         let result = Arc::new(Mutex::new(false));
         let result_clone = result.clone();
 
-        let mut task_queue_registry = TaskQueueRegistry::new();
-        task_queue_registry.register_queue::<Config>(QueueRegistration {
-            queue_name: QUEUE_NAME,
-            worker_fn: Arc::new(move |_| {
-                let ctx = ctx_clone.clone();
-                let rx = rx.clone();
-                let result_clone = result_clone.clone();
-                Box::pin(async move {
-                    let task_id = rx.recv().await.unwrap();
+        let task_queue_registry = TaskQueueRegistry::new();
+        task_queue_registry
+            .register_queue::<Config>(QueueRegistration {
+                queue_name: QUEUE_NAME,
+                worker_fn: Arc::new(move |_| {
+                    let ctx = ctx_clone.clone();
+                    let rx = rx.clone();
+                    let result_clone = result_clone.clone();
+                    Box::pin(async move {
+                        let task_id = rx.recv().await.unwrap();
 
-                    let task = PostgresCatalog::pick_new_task(
-                        QUEUE_NAME,
-                        DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
-                        ctx.v1_state.catalog.clone(),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                    let config = task.queue_config::<Config>().unwrap().unwrap();
-                    assert_eq!(config.some_val, "test_value");
+                        let task = PostgresCatalog::pick_new_task(
+                            QUEUE_NAME,
+                            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+                            ctx.v1_state.catalog.clone(),
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap();
+                        let config = task.queue_config::<Config>().unwrap().unwrap();
+                        assert_eq!(config.some_val, "test_value");
 
-                    assert_eq!(task_id, task.task_id);
+                        assert_eq!(task_id, task.task_id);
 
-                    let task = task.task_data::<TestTaskData>().unwrap();
-                    assert_eq!(task, task_state);
-                    *result_clone.lock().unwrap() = true;
-                })
-            }),
-            num_workers: 1,
-        });
+                        let task = task.task_data::<TestTaskData>().unwrap();
+                        assert_eq!(task, task_state);
+                        *result_clone.lock().unwrap() = true;
+                    })
+                }),
+                num_workers: 1,
+            })
+            .await;
         let mut transaction =
             <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
                 .await
@@ -139,6 +141,7 @@ mod test {
         let task_handle = tokio::task::spawn(
             task_queue_registry
                 .task_queues_runner(cancellation_token.clone())
+                .await
                 .run_queue_workers(false),
         );
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;

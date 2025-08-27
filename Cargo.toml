@@ -90,7 +90,7 @@ axum-macros = { version = "0.5.0" }
 itertools = "0.14.0"
 mockall = "0.13.0"
 http = "^1.1"
-derive_more = { version = "^2.0.0", features = ["from"] }
+derive_more = { version = "^2.0.0", features = ["from", "debug"] }
 flate2 = "^1.0"
 lazy_static = "^1.4"
 futures = "^0.3"
