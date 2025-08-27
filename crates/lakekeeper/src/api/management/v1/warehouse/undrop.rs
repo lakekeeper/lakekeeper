@@ -54,6 +54,6 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     let all_allowed = futures::future::try_join_all(futs)
         .await?
         .into_iter()
-        .all(|t| t);
+        .all(|t| t.into_inner());
     Ok(all_allowed)
 }

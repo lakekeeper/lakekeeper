@@ -42,7 +42,7 @@ macro_rules! list_entities {
                         $namespace_id,
                         CatalogNamespaceAction::CanListEverything,
                     )
-                    .await?;
+                    .await?.into_inner();
 
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
@@ -56,7 +56,7 @@ macro_rules! list_entities {
                         authorizer.[<are_allowed_ $entity:lower _actions>](
                             &request_metadata,
                             ids.iter().map(|id| (*id, [<Catalog $entity Action>]::CanIncludeInList)).collect(),
-                        ).await?
+                        ).await?.into_inner()
                     }
                 };
 
