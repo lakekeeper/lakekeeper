@@ -1258,7 +1258,7 @@ async fn update_role_assignments_by_id<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateRoleAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    // Improve error message of role beeing assigned to itself
+    // Improve error message of role being assigned to itself
     for assignment in &request.writes {
         let assignee = match assignment {
             RoleAssignment::Ownership(r) | RoleAssignment::Assignee(r) => r,
@@ -1627,8 +1627,6 @@ async fn set_managed_access<T: OpenFgaEntity>(
 
 #[cfg(test)]
 mod tests {
-    use needs_env_var::needs_env_var;
-
     use super::*;
 
     #[test]
@@ -1640,10 +1638,8 @@ mod tests {
         );
     }
 
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use openfga_client::client::TupleKey;
-        use rand::Rng;
         use uuid::Uuid;
 
         use super::super::*;
@@ -1742,9 +1738,9 @@ mod tests {
             let mut permissions = Vec::with_capacity(namespace_ids.len());
             let mut to_grant = vec![];
             let mut to_check = Vec::with_capacity(namespace_ids.len());
-            let mut rng = rand::rng();
+            let mut rng = fastrand::Rng::with_seed(42);
             for ns in &namespace_ids {
-                let may_modify: bool = rng.random();
+                let may_modify: bool = rng.bool();
                 permissions.push(may_modify);
                 if may_modify {
                     to_grant.push(TupleKey {

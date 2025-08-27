@@ -609,12 +609,9 @@ async fn get_all_tuples_with_user(
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
-    use needs_env_var::needs_env_var;
 
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use std::time::Instant;
 
         use openfga_client::{client::TupleKey, migration::TupleModelManager};
@@ -623,18 +620,15 @@ mod tests {
         use super::super::*;
         use crate::{
             api::RequestMetadata,
-            implementations::postgres::{self, PostgresCatalog, PostgresTransaction},
             service::{
                 authz::{
                     implementations::openfga::{
-                        client::new_authorizer,
                         migration::{
-                            add_model_v3, add_model_v4, get_model_manager,
-                            tests::authorizer_for_empty_store, V3_MODEL_VERSION,
+                            add_model_v3, add_model_v4, tests::authorizer_for_empty_store,
+                            V3_MODEL_VERSION,
                         },
-                        new_client_from_config,
-                        relations::ServerAssignment,
-                        OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG, OPENFGA_SERVER,
+                        new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG,
+                        OPENFGA_SERVER,
                     },
                     Authorizer, NamespaceParent,
                 },

@@ -21,7 +21,7 @@ use veil::Redact;
 
 use crate::{
     api::{
-        iceberg::{supported_endpoints, v1::DataAccess},
+        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig,
     },
     service::storage::{
@@ -314,12 +314,19 @@ impl GcsProfile {
     /// Generate the table configuration for GCS.
     pub(crate) async fn generate_table_config(
         &self,
-        _: DataAccess,
+        data_access: DataAccessMode,
         cred: &GcsCredential,
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
+
+        if matches!(data_access, DataAccessMode::ClientManaged) {
+            return Ok(TableConfig {
+                creds: table_properties.clone(),
+                config: table_properties,
+            });
+        }
 
         let (source, project_id) = self.get_token_source(cred).await?;
         let token = sts::downscope(
@@ -445,10 +452,7 @@ impl TryFrom<GcsCredential> for GcsAuth {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use needs_env_var::needs_env_var;
-
-    #[needs_env_var(TEST_GCS = 1)]
-    pub(crate) mod cloud_tests {
+    pub(crate) mod gcs_integration_tests {
         use crate::{
             api::RequestMetadata,
             service::storage::{
@@ -492,23 +496,31 @@ pub(crate) mod test {
             .unwrap();
         }
 
-        #[tokio::test]
-        #[needs_env_var::needs_env_var(LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS = 1)]
-        async fn test_system_identity_can_validate() {
-            let (profile, _credential) = get_storage_profile();
-            let mut profile: StorageProfile = profile.into();
-            profile.normalize().expect("failed to validate profile");
-            let credential = GcsCredential::GcpSystemIdentity {};
-            let credential: StorageCredential = credential.into();
-            profile
-                .validate_access(Some(&credential), None)
+        mod gcp_system_credentials_integration_tests {
+            use super::*;
+
+            #[tokio::test]
+            async fn test_system_identity_can_validate() {
+                let (profile, credential) = get_storage_profile();
+                let mut profile: StorageProfile = profile.into();
+                let credential: StorageCredential = credential.into();
+                profile
+                    .normalize(Some(&credential))
+                    .expect("failed to validate profile");
+                let credential = GcsCredential::GcpSystemIdentity {};
+                let credential: StorageCredential = credential.into();
+                Box::pin(profile.validate_access(
+                    Some(&credential),
+                    None,
+                    &RequestMetadata::new_unauthenticated(),
+                ))
                 .await
                 .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
+            }
         }
     }
 
-    #[needs_env_var(TEST_GCS_HNS = 1)]
-    pub(crate) mod gcs_hns_tests {
+    pub(crate) mod gcs_hns_integration_tests {
         use crate::{
             api::RequestMetadata,
             service::storage::{

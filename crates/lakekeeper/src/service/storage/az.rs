@@ -25,7 +25,7 @@ use veil::Redact;
 
 use crate::{
     api::{
-        iceberg::{supported_endpoints, v1::DataAccess},
+        iceberg::{supported_endpoints, v1::tables::DataAccessMode},
         CatalogConfig, Result,
     },
     service::storage::{
@@ -232,11 +232,18 @@ impl AdlsProfile {
     /// Fails if sas token cannot be generated.
     pub async fn generate_table_config(
         &self,
-        _: DataAccess,
+        data_access: DataAccessMode,
         table_location: &Location,
         credential: &AzCredential,
         permissions: StoragePermissions,
     ) -> Result<TableConfig, TableConfigError> {
+        if matches!(data_access, DataAccessMode::ClientManaged) {
+            return Ok(TableConfig {
+                creds: TableProperties::default(),
+                config: TableProperties::default(),
+            });
+        }
+
         let sas = match credential {
             AzCredential::ClientCredentials { .. } => {
                 let client = self.blob_service_client(credential)?;
@@ -355,7 +362,7 @@ impl AdlsProfile {
     fn iceberg_sas_property_key(&self) -> String {
         iceberg_sas_property_key(
             &self.account_name,
-            self.host.as_ref().unwrap_or(&DEFAULT_HOST.to_string()),
+            self.host.as_deref().unwrap_or(DEFAULT_HOST),
         )
     }
 
@@ -548,8 +555,6 @@ impl TryFrom<AzCredential> for AzureAuth {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use needs_env_var::needs_env_var;
-
     use super::*;
     use crate::service::{
         storage::{az::DEFAULT_AUTHORITY_HOST, AdlsProfile, StorageLocations, StorageProfile},
@@ -574,8 +579,7 @@ pub(crate) mod test {
         assert_eq!(reduce_scheme_string(non_matching), non_matching);
     }
 
-    #[needs_env_var(TEST_AZURE = 1)]
-    pub(crate) mod azure_tests {
+    pub(crate) mod azure_integration_tests {
         use crate::{
             api::RequestMetadata,
             service::storage::{AdlsProfile, AzCredential, StorageCredential, StorageProfile},
@@ -641,17 +645,24 @@ pub(crate) mod test {
             }
         }
 
-        #[tokio::test]
-        #[needs_env_var::needs_env_var(LAKEKEEPER_TEST__ENABLE_AZURE_SYSTEM_CREDENTIALS = 1)]
-        async fn test_system_identity_can_validate() {
-            let prof = azure_profile();
-            let mut prof: StorageProfile = prof.into();
-            prof.normalize().expect("failed to validate profile");
-            let cred = AzCredential::AzureSystemIdentity {};
-            let cred: StorageCredential = cred.into();
-            prof.validate_access(Some(&cred), None)
+        mod azure_system_credentials_integration_tests {
+            use super::*;
+
+            #[tokio::test]
+            async fn test_system_identity_can_validate() {
+                let prof = azure_profile();
+                let mut prof: StorageProfile = prof.into();
+                prof.normalize(None).expect("failed to validate profile");
+                let cred = AzCredential::AzureSystemIdentity {};
+                let cred: StorageCredential = cred.into();
+                Box::pin(prof.validate_access(
+                    Some(&cred),
+                    None,
+                    &RequestMetadata::new_unauthenticated(),
+                ))
                 .await
                 .unwrap_or_else(|e| panic!("Failed to validate system identity due to '{e:?}'"));
+            }
         }
     }
 

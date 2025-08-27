@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     api::iceberg::v1::{
-        ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Result,
+        ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
     catalog::{
@@ -42,9 +42,10 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     parameters: ViewParameters,
     request: CommitViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: DataAccess,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
+    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(parameters.prefix.clone())?;
 
@@ -138,8 +139,13 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 tracing::info!(
                     "Concurrent update detected (attempt {attempt}/{MAX_RETRIES_ON_CONCURRENT_UPDATE}), retrying view commit operation",
                 );
-                // Short delay before retry to reduce contention
-                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                // Short jittered exponential backoff to reduce contention
+                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
+                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
+                let base = 50u64.saturating_mul(1u64 << exp);
+                let jitter = fastrand::u64(..base / 2);
+                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
+                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),
         }
@@ -154,7 +160,7 @@ struct CommitViewContext<'a> {
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretIdent>,
     request: &'a CommitViewRequest,
-    data_access: DataAccess,
+    data_access: DataAccessMode,
 }
 
 // Core commit logic that may be retried
@@ -358,7 +364,7 @@ fn build_new_metadata(
             ViewUpdate::SetCurrentViewVersion { view_version_id } => {
                 m.set_current_version_id(view_version_id).map_err(|e| {
                     ErrorModel::bad_request(
-                        "Error setting current view version: {e}",
+                        format!("Error setting current view version: {e}"),
                         "SetCurrentViewVersionError",
                         Some(Box::new(e)),
                     )
