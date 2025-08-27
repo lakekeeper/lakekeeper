@@ -2,11 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
 use iceberg::spec::ViewMetadata;
-use iceberg_ext::{
-    catalog::rest::{CatalogConfig, ErrorModel},
-    configs::Location,
-};
+use iceberg_ext::catalog::rest::{CatalogConfig, ErrorModel};
 use itertools::Itertools;
+use lakekeeper_io::Location;
 
 use super::{
     bootstrap::{bootstrap, get_validation_data},
@@ -191,7 +189,7 @@ impl Catalog for super::PostgresCatalog {
     ) -> Result<Option<TableId>> {
         resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction)
             .await
-            .map(|x| x.map(|x| x.ident))
+            .map(|x| x.map(|x| x.table_id))
     }
 
     async fn table_idents_to_ids(

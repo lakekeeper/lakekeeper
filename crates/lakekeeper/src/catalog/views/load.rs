@@ -2,7 +2,7 @@ use iceberg_ext::catalog::rest::LoadViewResult;
 
 use crate::{
     api::{
-        iceberg::v1::{DataAccess, ViewParameters},
+        iceberg::v1::{DataAccessMode, ViewParameters},
         set_not_found_status_code, ApiContext,
     },
     catalog::{
@@ -22,9 +22,10 @@ use crate::{
 pub(crate) async fn load_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     state: ApiContext<State<A, C, S>>,
-    data_access: DataAccess,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
+    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = parameters;
     let warehouse_id = require_warehouse_id(prefix)?;
@@ -165,12 +166,12 @@ pub(crate) mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();

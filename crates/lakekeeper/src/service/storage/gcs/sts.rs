@@ -1,5 +1,5 @@
 use google_cloud_auth::credentials::CredentialsFile;
-use iceberg_ext::configs::Location;
+use lakekeeper_io::Location;
 use serde::{Deserialize, Serialize};
 
 use super::{TokenSource, HTTP_CLIENT, STS_URL};

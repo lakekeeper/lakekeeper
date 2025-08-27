@@ -15,6 +15,7 @@ nav:
       - authentication.md
       - authorization.md
       - opa.md
+      - table-maintenance.md
       - production.md
       - gotchas.md
   - Configuration: configuration.md

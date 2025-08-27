@@ -9,7 +9,9 @@ use std::{
 
 use chrono::Utc;
 use http::StatusCode;
-use iceberg_ext::{configs::Location, NamespaceIdent};
+use iceberg::ErrorKind;
+use iceberg_ext::NamespaceIdent;
+use lakekeeper_io::Location;
 use sqlx::{postgres::PgArguments, Arguments, Execute, FromRow, Postgres, QueryBuilder};
 use uuid::Uuid;
 
@@ -367,7 +369,7 @@ pub(crate) async fn create_tabular(
     }: CreateTabular<'_>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Uuid> {
-    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let (fs_protocol, fs_location) = split_location(location.as_str())?;
     let partial_locations = get_partial_fs_locations(location)?;
 
     let tabular_id = sqlx::query_scalar!(
@@ -381,7 +383,7 @@ pub(crate) async fn create_tabular(
         namespace_id,
         warehouse_id,
         typ as _,
-        metadata_location.map(iceberg_ext::configs::Location::as_str),
+        metadata_location.map(Location::as_str),
         fs_protocol,
         fs_location
     )
@@ -851,8 +853,12 @@ pub(crate) async fn drop_tabular(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found", tabular_id.typ_str()),
-                "NoSuchTabularError",
+                format!(
+                    "{} with ID {} not found",
+                    tabular_id.typ_str(),
+                    tabular_id.as_ref()
+                ),
+                ErrorKind::TableNotFound.to_string(),
                 Some(Box::new(e)),
             )
         } else {

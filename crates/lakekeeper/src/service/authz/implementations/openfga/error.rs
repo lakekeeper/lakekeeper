@@ -9,7 +9,7 @@ pub(crate) type OpenFGAResult<T> = Result<T, OpenFGAError>;
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OpenFGAError {
     #[error("OpenFGA client error: {0}")]
-    ClientError(#[source] OpenFGAClientError),
+    ClientError(#[source] Box<OpenFGAClientError>),
     #[error("Active authorization model with version {0} not found in OpenFGA. Make sure to run migration first!")]
     ActiveAuthModelNotFound(String),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
@@ -52,7 +52,7 @@ impl OpenFGAError {
 
 impl From<OpenFGAClientError> for OpenFGAError {
     fn from(err: OpenFGAClientError) -> Self {
-        OpenFGAError::ClientError(err)
+        OpenFGAError::ClientError(Box::new(err))
     }
 }
 
@@ -73,7 +73,7 @@ impl From<OpenFGAError> for ErrorModel {
                 ErrorModel::bad_request(err_msg, "SelfAssignment", Some(Box::new(e)))
             }
             OpenFGAError::ClientError(client_error) => {
-                let tonic_msg = match &client_error {
+                let tonic_msg = match client_error.as_ref() {
                     OpenFGAClientError::RequestFailed(status) => Some(status.message().to_string()),
                     _ => None,
                 };

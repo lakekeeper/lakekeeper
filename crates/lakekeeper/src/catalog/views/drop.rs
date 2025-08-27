@@ -179,12 +179,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();
@@ -237,12 +237,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();
@@ -333,12 +333,12 @@ mod test {
             super::super::create::test::create_view_request(Some(view_name), None);
 
         let prefix = &whi.to_string();
-        let created_view = create_view(
+        let created_view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             rq,
             Some(prefix.into()),
-        )
+        ))
         .await
         .unwrap();
         let mut table_ident = namespace.clone().inner();

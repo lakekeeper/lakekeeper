@@ -6,7 +6,7 @@ use std::{
 use flate2::{write::GzEncoder, Compression};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 
-use super::{io::IoError, CommonMetadata};
+use super::{io::IOErrorExt, CommonMetadata};
 
 const METADATA_COMPRESSION: &str = "write.metadata.compression-codec";
 
@@ -32,25 +32,25 @@ pub enum CompressionCodec {
 }
 
 impl CompressionCodec {
-    pub async fn compress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
+    pub async fn compress(self, payload: Vec<u8>) -> Result<Vec<u8>, IOErrorExt> {
         match self {
             CompressionCodec::None => Ok(payload),
             CompressionCodec::Gzip => tokio::task::spawn_blocking(move || {
                 let mut compressed_metadata = GzEncoder::new(Vec::new(), Compression::default());
                 compressed_metadata
                     .write_all(&payload)
-                    .map_err(|e| IoError::FileCompression(Box::new(e)))?;
+                    .map_err(|e| IOErrorExt::FileCompression(Box::new(e)))?;
 
                 compressed_metadata
                     .finish()
-                    .map_err(|e| IoError::FileCompression(Box::new(e)))
+                    .map_err(|e| IOErrorExt::FileCompression(Box::new(e)))
             })
             .await
-            .unwrap_or_else(|e| Err(IoError::FileCompression(Box::new(e)))),
+            .unwrap_or_else(|e| Err(IOErrorExt::FileCompression(Box::new(e)))),
         }
     }
 
-    pub async fn decompress(self, payload: Vec<u8>) -> Result<Vec<u8>, IoError> {
+    pub async fn decompress(self, payload: Vec<u8>) -> Result<Vec<u8>, IOErrorExt> {
         match self {
             CompressionCodec::None => Ok(payload),
             CompressionCodec::Gzip => tokio::task::spawn_blocking(move || {
@@ -58,12 +58,12 @@ impl CompressionCodec {
                 let mut decoder = flate2::read::GzDecoder::new(payload.as_slice());
                 decoder
                     .read_to_end(&mut decompressed_metadata)
-                    .map_err(|e| IoError::FileCompression(Box::new(e)))?;
+                    .map_err(|e| IOErrorExt::FileDecompression(Box::new(e)))?;
 
                 Ok(decompressed_metadata)
             })
             .await
-            .unwrap_or_else(|e| Err(IoError::FileDecompression(Box::new(e)))),
+            .unwrap_or_else(|e| Err(IOErrorExt::FileDecompression(Box::new(e)))),
         }
     }
 

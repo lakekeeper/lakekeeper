@@ -8,7 +8,7 @@ use crate::{api::Result, service::health::HealthExt};
 
 pub trait SecretStore
 where
-    Self: Send + Sync + 'static + HealthExt + Clone,
+    Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
     /// Get the secret for a given warehouse.
     async fn get_secret_by_id<S: SecretInStorage + DeserializeOwned>(

@@ -424,8 +424,6 @@ pub(super) struct CheckResponse {
 mod tests {
     use std::str::FromStr;
 
-    use needs_env_var::needs_env_var;
-
     use super::*;
     use crate::service::UserId;
 
@@ -511,8 +509,7 @@ mod tests {
         );
     }
 
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use std::str::FromStr;
 
         use iceberg_ext::catalog::rest::{CreateNamespaceRequest, CreateNamespaceResponse};
@@ -549,7 +546,7 @@ mod tests {
             TestWarehouseResponse,
             CreateNamespaceResponse,
         ) {
-            let prof = crate::catalog::test::test_io_profile();
+            let prof = crate::catalog::test::memory_io_profile();
             let authorizer = authorizer_for_empty_store().await.1;
             let (ctx, warehouse) = crate::catalog::test::setup(
                 pool.clone(),

@@ -57,15 +57,18 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(())
     }
 
-    async fn list_projects(&self, _metadata: &RequestMetadata) -> Result<ListProjectsResponse> {
+    async fn list_projects_impl(
+        &self,
+        _metadata: &RequestMetadata,
+    ) -> Result<ListProjectsResponse> {
         Ok(ListProjectsResponse::All)
     }
 
-    async fn can_search_users(&self, _metadata: &RequestMetadata) -> Result<bool> {
+    async fn can_search_users_impl(&self, _metadata: &RequestMetadata) -> Result<bool> {
         Ok(true)
     }
 
-    async fn is_allowed_user_action(
+    async fn is_allowed_user_action_impl(
         &self,
         _metadata: &RequestMetadata,
         _user_id: &UserId,
@@ -74,7 +77,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_role_action(
+    async fn is_allowed_role_action_impl(
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
@@ -83,7 +86,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_server_action(
+    async fn is_allowed_server_action_impl(
         &self,
         _metadata: &RequestMetadata,
         _action: CatalogServerAction,
@@ -91,7 +94,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_project_action(
+    async fn is_allowed_project_action_impl(
         &self,
         _metadata: &RequestMetadata,
         _project_id: &ProjectId,
@@ -100,7 +103,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_warehouse_action(
+    async fn is_allowed_warehouse_action_impl(
         &self,
         _metadata: &RequestMetadata,
         _warehouse_id: WarehouseId,
@@ -109,7 +112,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_namespace_action<A>(
+    async fn is_allowed_namespace_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
         _namespace_id: NamespaceId,
@@ -121,7 +124,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_table_action<A>(
+    async fn is_allowed_table_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
         _table_id: TableId,
@@ -133,7 +136,7 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(true)
     }
 
-    async fn is_allowed_view_action<A>(
+    async fn is_allowed_view_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
         _view_id: ViewId,

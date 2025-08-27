@@ -20,7 +20,8 @@ use iceberg::{
     },
     TableUpdate,
 };
-use iceberg_ext::{configs::Location, spec::TableMetadata, NamespaceIdent};
+use iceberg_ext::{spec::TableMetadata, NamespaceIdent};
+use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -63,7 +64,7 @@ where
     .await?
     .map(|(id, location)| match id {
         TabularId::Table(tab) => Ok(TabularDetails {
-            ident: tab.into(),
+            table_id: tab.into(),
             location,
         }),
         TabularId::View(_) => Err(ErrorModel::builder()
@@ -732,7 +733,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
     list_flags: crate::service::ListFlags,
     catalog_state: CatalogState,
 ) -> Result<Option<GetTableMetadataResponse>> {
-    let (fs_protocol, fs_location) = split_location(location.url().as_str())?;
+    let (fs_protocol, fs_location) = split_location(location.as_str())?;
     let partial_locations = get_partial_fs_locations(location)?;
 
     // Location might also be a subpath of the table location.
@@ -880,7 +881,8 @@ pub(crate) mod tests {
         },
         NamespaceIdent,
     };
-    use iceberg_ext::{catalog::rest::CreateTableRequest, configs::Location};
+    use iceberg_ext::catalog::rest::CreateTableRequest;
+    use lakekeeper_io::Location;
     use uuid::Uuid;
 
     use super::*;
@@ -1175,7 +1177,7 @@ pub(crate) mod tests {
         // Its staged - should not have metadata_location
         let load = load_tables(
             warehouse_id,
-            vec![table_id],
+            [table_id],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -1217,7 +1219,7 @@ pub(crate) mod tests {
         transaction.commit().await.unwrap();
         let load_result = load_tables(
             warehouse_id,
-            vec![table_id],
+            [table_id],
             false,
             &mut pool.begin().await.unwrap(),
         )
@@ -1291,7 +1293,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1434,7 +1436,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         // Table id should be the same
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]
@@ -1482,7 +1484,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(exists.map(|i| i.ident), Some(table.table_id));
+        assert_eq!(exists.map(|i| i.table_id), Some(table.table_id));
     }
 
     #[sqlx::test]

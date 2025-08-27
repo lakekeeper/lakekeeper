@@ -37,8 +37,8 @@ use crate::{
         contract_verification::ContractVerifiers,
         endpoint_hooks::EndpointHookCollection,
         storage::{
-            s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
-            StorageProfile, TestProfile,
+            s3::S3AccessKeyCredential, MemoryProfile, S3Credential, S3Flavor, S3Profile,
+            StorageCredential, StorageProfile,
         },
         task_queue::TaskQueueRegistry,
         Catalog, SecretStore, State, UserId,
@@ -46,8 +46,8 @@ use crate::{
     WarehouseId, CONFIG,
 };
 
-pub(crate) fn test_io_profile() -> StorageProfile {
-    TestProfile::default().into()
+pub(crate) fn memory_io_profile() -> StorageProfile {
+    MemoryProfile::default().into()
 }
 
 #[allow(dead_code)]
@@ -244,7 +244,7 @@ pub(crate) async fn setup<T: Authorizer>(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
                 project_id: None,
-                storage_profile: test_io_profile(),
+                storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,
             },
@@ -296,10 +296,11 @@ pub(crate) fn random_request_metadata() -> RequestMetadata {
     RequestMetadata::new_unauthenticated()
 }
 
-pub(crate) fn spawn_drop_queues<T: Authorizer>(
+pub(crate) fn spawn_build_in_queues<T: Authorizer>(
     ctx: &ApiContext<State<T, PostgresCatalog, SecretsState>>,
     poll_interval: Option<std::time::Duration>,
-) {
+    cancellation_token: crate::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     let ctx = ctx.clone();
 
     let mut task_queues = TaskQueueRegistry::new();
@@ -309,7 +310,7 @@ pub(crate) fn spawn_drop_queues<T: Authorizer>(
         ctx.v1_state.authz.clone(),
         poll_interval.unwrap_or(CONFIG.task_poll_interval),
     );
-    let task_runner = task_queues.task_queues_runner();
+    let task_runner = task_queues.task_queues_runner(cancellation_token);
 
-    tokio::task::spawn(task_runner.run_queue_workers(true));
+    tokio::task::spawn(task_runner.run_queue_workers(true))
 }

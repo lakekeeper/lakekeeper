@@ -1,10 +1,8 @@
 use std::str::FromStr as _;
 
 use iceberg::{spec::TableMetadata, TableRequirement, TableUpdate};
-use iceberg_ext::{
-    configs::Location,
-    spec::{TableMetadataBuildResult, TableMetadataBuilder},
-};
+use iceberg_ext::spec::{TableMetadataBuildResult, TableMetadataBuilder};
+use lakekeeper_io::Location;
 
 use crate::service::{ErrorModel, Result};
 
