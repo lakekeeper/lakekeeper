@@ -1519,9 +1519,26 @@ mod tests {
             Ok(())
         }
 
-        // TODO convert to bench once `pool` arg no longer needed
-        // TODO nest namespaces
-        #[tokio::test]
+        /// This is a "benchmark" for the migration of an OpenFGA store to v4.
+        ///
+        /// It can be executed with:
+        ///
+        /// ```ignore
+        /// cargo test --all-features --release test_v4_push_down_warehouse_id_bench -- --ignored
+        /// ```
+        ///
+        /// Results:
+        ///
+        /// * Migrating 10k tabulars takes ~25 seconds.
+        /// * Migrating 20k tabulars takes ~104 seconds.
+        /// * The bottleneck appears to be the OpenFGA server. During the migration lakekeeper's
+        ///   CPU usage lingers around 1% to 8%.
+        ///
+        /// Ignored by default as it's purpose is benchmarking instead of testing. In this form
+        /// it shows that the migration is fast enough (see above), so currently there would be
+        /// little benefit from trying to run async code in a `bench` or using something like
+        /// criterion.
+        #[tokio::test(flavor = "multi_thread")]
         #[ignore]
         async fn test_v4_push_down_warehouse_id_bench() -> anyhow::Result<()> {
             const NUM_WAREHOUSES: usize = 10;
