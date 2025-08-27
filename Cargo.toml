@@ -161,7 +161,7 @@ middle = { version = "0.3", features = ["tonic"] }
 fastrand = "2.3.0"
 
 [patch.crates-io]
-openfga-client = { path = "../openfga-client" }
+openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "refs/pull/16/head", features = ["auth-middle"] }
 
 [profile.dev]
 opt-level = 1
