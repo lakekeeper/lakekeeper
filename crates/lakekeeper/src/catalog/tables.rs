@@ -1003,6 +1003,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
                 CatalogTableAction::CanWriteData,
             ),
         )?;
+        let (read_access, write_access) = (read_access.into_inner(), write_access.into_inner());
 
         let storage_permissions = if write_access {
             Some(StoragePermissions::ReadWriteDelete)

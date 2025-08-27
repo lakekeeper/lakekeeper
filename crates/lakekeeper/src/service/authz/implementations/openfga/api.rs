@@ -1767,7 +1767,8 @@ mod tests {
                         .collect(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .into_inner();
             assert_eq!(res, vec![false; namespace_ids.len()]);
 
             for grant_chunk in to_grant.chunks(write_chunk_size) {
@@ -1788,7 +1789,8 @@ mod tests {
                         .collect(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .into_inner();
             assert_eq!(res, permissions);
         }
 

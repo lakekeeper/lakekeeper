@@ -157,6 +157,24 @@ pub enum NamespaceParent {
     Namespace(NamespaceId),
 }
 
+#[must_use]
+#[repr(transparent)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MustUse<T>(T);
+
+impl<T> From<T> for MustUse<T> {
+    fn from(v: T) -> Self {
+        Self(v)
+    }
+}
+
+impl<T> MustUse<T> {
+    #[must_use]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
 #[async_trait::async_trait]
 /// Interface to provide AuthZ functions to the catalog.
 /// The provided `Actor` argument of all methods except `check_actor`
@@ -208,12 +226,13 @@ where
     /// Search users
     async fn can_search_users_impl(&self, metadata: &RequestMetadata) -> Result<bool>;
 
-    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<bool> {
+    async fn can_search_users(&self, metadata: &RequestMetadata) -> Result<MustUse<bool>> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
             self.can_search_users_impl(metadata).await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -230,13 +249,14 @@ where
         metadata: &RequestMetadata,
         user_id: &UserId,
         action: CatalogUserAction,
-    ) -> Result<bool> {
+    ) -> Result<MustUse<bool>> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
             self.is_allowed_user_action_impl(metadata, user_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -253,13 +273,14 @@ where
         metadata: &RequestMetadata,
         role_id: RoleId,
         action: CatalogRoleAction,
-    ) -> Result<bool> {
+    ) -> Result<MustUse<bool>> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
             self.is_allowed_role_action_impl(metadata, role_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -274,12 +295,13 @@ where
         &self,
         metadata: &RequestMetadata,
         action: CatalogServerAction,
-    ) -> Result<bool> {
+    ) -> Result<MustUse<bool>> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
             self.is_allowed_server_action_impl(metadata, action).await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -296,13 +318,14 @@ where
         metadata: &RequestMetadata,
         project_id: &ProjectId,
         action: CatalogProjectAction,
-    ) -> Result<bool> {
+    ) -> Result<MustUse<bool>> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
             self.is_allowed_project_action_impl(metadata, project_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -319,13 +342,14 @@ where
         metadata: &RequestMetadata,
         warehouse_id: WarehouseId,
         action: CatalogWarehouseAction,
-    ) -> Result<bool> {
+    ) -> Result<MustUse<bool>> {
         if metadata.has_admin_privileges() {
             Ok(true)
         } else {
             self.is_allowed_warehouse_action_impl(metadata, warehouse_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -344,7 +368,7 @@ where
         metadata: &RequestMetadata,
         namespace_id: NamespaceId,
         action: A,
-    ) -> Result<bool>
+    ) -> Result<MustUse<bool>>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
     {
@@ -354,6 +378,7 @@ where
             self.is_allowed_namespace_action_impl(metadata, namespace_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Checks if actions are allowed on namespaces. If supported by the concrete implementation,
@@ -375,7 +400,11 @@ where
         try_join_all(
             namespaces_with_actions
                 .into_iter()
-                .map(|(id, a)| self.is_allowed_namespace_action(metadata, id, a)),
+                .map(|(id, a)| async move {
+                    self.is_allowed_namespace_action(metadata, id, a)
+                        .await
+                        .map(MustUse::into_inner)
+                }),
         )
         .await
     }
@@ -384,7 +413,7 @@ where
         &self,
         metadata: &RequestMetadata,
         namespaces_with_actions: Vec<(NamespaceId, A)>,
-    ) -> Result<Vec<bool>>
+    ) -> Result<MustUse<Vec<bool>>>
     where
         A: From<CatalogNamespaceAction> + std::fmt::Display + Send,
     {
@@ -394,6 +423,7 @@ where
             self.are_allowed_namespace_actions_impl(metadata, namespaces_with_actions)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -412,7 +442,7 @@ where
         metadata: &RequestMetadata,
         table_id: TableId,
         action: A,
-    ) -> Result<bool>
+    ) -> Result<MustUse<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
@@ -422,6 +452,7 @@ where
             self.is_allowed_table_action_impl(metadata, table_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
@@ -440,11 +471,11 @@ where
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
-        try_join_all(
-            tables_with_actions
-                .into_iter()
-                .map(|(id, a)| self.is_allowed_table_action(metadata, id, a)),
-        )
+        try_join_all(tables_with_actions.into_iter().map(|(id, a)| async move {
+            self.is_allowed_table_action(metadata, id, a)
+                .await
+                .map(MustUse::into_inner)
+        }))
         .await
     }
 
@@ -452,7 +483,7 @@ where
         &self,
         metadata: &RequestMetadata,
         tables_with_actions: Vec<(TableId, A)>,
-    ) -> Result<Vec<bool>>
+    ) -> Result<MustUse<Vec<bool>>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
     {
@@ -462,6 +493,7 @@ where
             self.are_allowed_table_actions_impl(metadata, tables_with_actions)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Return Ok(true) if the action is allowed, otherwise return Ok(false).
@@ -480,7 +512,7 @@ where
         metadata: &RequestMetadata,
         view_id: ViewId,
         action: A,
-    ) -> Result<bool>
+    ) -> Result<MustUse<bool>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
@@ -490,6 +522,7 @@ where
             self.is_allowed_view_action_impl(metadata, view_id, action)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Checks if actions are allowed on views. If supported by the concrete implementation, these
@@ -508,11 +541,11 @@ where
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
-        try_join_all(
-            views_with_actions
-                .into_iter()
-                .map(|(id, a)| self.is_allowed_view_action(metadata, id, a)),
-        )
+        try_join_all(views_with_actions.into_iter().map(|(id, a)| async move {
+            self.is_allowed_view_action(metadata, id, a)
+                .await
+                .map(MustUse::into_inner)
+        }))
         .await
     }
 
@@ -520,7 +553,7 @@ where
         &self,
         metadata: &RequestMetadata,
         views_with_actions: Vec<(ViewId, A)>,
-    ) -> Result<Vec<bool>>
+    ) -> Result<MustUse<Vec<bool>>>
     where
         A: From<CatalogViewAction> + std::fmt::Display + Send,
     {
@@ -530,6 +563,7 @@ where
             self.are_allowed_view_actions_impl(metadata, views_with_actions)
                 .await
         }
+        .map(MustUse::from)
     }
 
     /// Hook that is called when a user is deleted.
@@ -622,7 +656,7 @@ where
     async fn delete_view(&self, view_id: ViewId) -> Result<()>;
 
     async fn require_search_users(&self, metadata: &RequestMetadata) -> Result<()> {
-        if self.can_search_users(metadata).await? {
+        if self.can_search_users(metadata).await?.into_inner() {
             Ok(())
         } else {
             Err(ErrorModel::forbidden(
@@ -643,6 +677,7 @@ where
         if self
             .is_allowed_user_action(metadata, user_id, action)
             .await?
+            .into_inner()
         {
             Ok(())
         } else {
@@ -664,6 +699,7 @@ where
         if self
             .is_allowed_role_action(metadata, role_id, action)
             .await?
+            .into_inner()
         {
             Ok(())
         } else {
@@ -681,7 +717,11 @@ where
         metadata: &RequestMetadata,
         action: CatalogServerAction,
     ) -> Result<()> {
-        if self.is_allowed_server_action(metadata, action).await? {
+        if self
+            .is_allowed_server_action(metadata, action)
+            .await?
+            .into_inner()
+        {
             Ok(())
         } else {
             let actor = metadata.actor();
@@ -703,6 +743,7 @@ where
         if self
             .is_allowed_project_action(metadata, project_id, action)
             .await?
+            .into_inner()
         {
             Ok(())
         } else {
@@ -725,6 +766,7 @@ where
         if self
             .is_allowed_warehouse_action(metadata, warehouse_id, action)
             .await?
+            .into_inner()
         {
             Ok(())
         } else {
@@ -762,6 +804,7 @@ where
                 if self
                     .is_allowed_namespace_action(metadata, namespace_id, action)
                     .await?
+                    .into_inner()
                 {
                     Ok(namespace_id)
                 } else {
@@ -796,6 +839,7 @@ where
                 if self
                     .is_allowed_table_action(metadata, table_id.table_uuid(), action)
                     .await?
+                    .into_inner()
                 {
                     Ok(table_id)
                 } else {
@@ -830,6 +874,7 @@ where
                 if self
                     .is_allowed_view_action(metadata, view_id, action)
                     .await?
+                    .into_inner()
                 {
                     Ok(view_id)
                 } else {
@@ -1238,7 +1283,8 @@ pub(crate) mod tests {
                             $action
                         )
                         .await
-                        .unwrap());
+                        .unwrap()
+                        .into_inner());
 
                     // Generates "namespace:can_list_everything" for macro invoked with
                     // (namespace, CatalogNamespaceAction::CanListEverything)
@@ -1252,7 +1298,8 @@ pub(crate) mod tests {
                             $action
                         )
                         .await
-                        .unwrap());
+                        .unwrap()
+                        .into_inner());
                 }
             }
         };
