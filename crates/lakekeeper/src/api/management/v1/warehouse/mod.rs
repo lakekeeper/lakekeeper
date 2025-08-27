@@ -976,7 +976,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let task_queues = context.v1_state.registered_task_queues;
 
-        if let Some(validate_config_fn) = task_queues.validate_config_fn(&queue_name) {
+        if let Some(validate_config_fn) = task_queues.validate_config_fn(&queue_name).await {
             validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
                 ErrorModel::bad_request(
                     format!(
@@ -987,10 +987,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 )
             })?;
         } else {
-            let existing_queue_names = task_queues.queue_names();
+            let mut existing_queue_names = task_queues.queue_names().await;
+            existing_queue_names.sort_unstable();
+            let existing_queue_names = existing_queue_names.join(", ");
             return Err(ErrorModel::bad_request(
                 format!(
-                    "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names:?}]"
+                    "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"
                 ),
                 "QueueNotFound",
                 None,

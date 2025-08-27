@@ -26,8 +26,10 @@ mod test {
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, 1, 1).await;
+
         let cancellation_token = crate::CancellationToken::new();
-        let queues_handle = spawn_build_in_queues(&setup.ctx, None, cancellation_token.clone());
+        let queues_handle =
+            spawn_build_in_queues(&setup.ctx, None, cancellation_token.clone()).await;
         let whi = setup.warehouse.warehouse_id;
         let stats = ApiServer::get_warehouse_statistics(
             whi,
