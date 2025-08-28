@@ -785,6 +785,7 @@ mod test {
         .unwrap();
 
         <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
+            warehouse,
             tab.table_id.into(),
             false,
             trx.transaction(),

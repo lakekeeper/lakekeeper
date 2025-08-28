@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)\n        VALUES ($1, $2, $3, $4)\n        RETURNING schema_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schema_id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "17e54b156bb6d9eee483e8ad4a2150526ee047a05358fa0adddb42c2dad0a746"
+}

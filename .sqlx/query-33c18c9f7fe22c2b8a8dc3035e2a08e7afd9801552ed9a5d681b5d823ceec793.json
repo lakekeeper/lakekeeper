@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_default_partition_spec(partition_spec_id, table_id, warehouse_id)\n           VALUES ($1, $2, $3)\n           ON CONFLICT (table_id, warehouse_id)\n           DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "33c18c9f7fe22c2b8a8dc3035e2a08e7afd9801552ed9a5d681b5d823ceec793"
+}

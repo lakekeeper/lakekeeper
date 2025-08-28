@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_snapshot_log(warehouse_id, table_id, snapshot_id, timestamp)\n           SELECT $2, $3, UNNEST($1::BIGINT[]), UNNEST($4::BIGINT[])\n               ORDER BY UNNEST($5::BIGINT[]) ASC",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Uuid",
+        "Uuid",
+        "Int8Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fa993a9b8fb8f4e9d4b7a828e5aae3d55a3e9335e1b42a6c4e750e0638aa22bd"
+}
