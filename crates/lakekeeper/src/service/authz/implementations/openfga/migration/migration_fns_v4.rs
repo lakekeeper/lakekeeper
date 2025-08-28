@@ -1385,6 +1385,9 @@ mod tests {
         ///
         /// Results:
         ///
+        /// * Most expensive operation is writing new tuples. For each tabular at minimum 3 tuples
+        ///   need to be written. Assignments involving tabulars increase that number, as for each
+        ///   table/view tuple a new lakekeeper_table/lakekeeper_view tuple is written.
         /// * Migrating 10k tabulars takes ~25 seconds.
         /// * Migrating 20k tabulars takes ~104 seconds.
         /// * The bottleneck appears to be the OpenFGA server. During the migration lakekeeper's
