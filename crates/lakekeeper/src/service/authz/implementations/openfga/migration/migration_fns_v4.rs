@@ -480,19 +480,18 @@ mod tests {
         use tokio::task::JoinSet;
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::migration::V4_MODEL_VERSION;
+        use crate::service::authz::implementations::openfga::{
+            migration::V4_MODEL_VERSION, ServerRelation,
+        };
         use crate::service::NamespaceId;
         use crate::service::TableId;
         use crate::{
             api::RequestMetadata,
             service::{
-                authz::{
-                    implementations::openfga::{
-                        migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION},
-                        new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG,
-                        OPENFGA_SERVER,
-                    },
-                    Authorizer, NamespaceParent,
+                authz::implementations::openfga::{
+                    migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION},
+                    new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG,
+                    OPENFGA_SERVER,
                 },
                 UserId, ViewId,
             },
@@ -1418,8 +1417,38 @@ mod tests {
             tracing::info!("Populating OpenFGA store");
             let start_populating = Instant::now();
             let project_id = ProjectId::new_random();
+
+            // Write tuples manually to generate a store that would have been written by a v3
+            // authorizer.
+
+            // Write project tuples manually
+            let actor = req_meta_human.actor();
+            let server = OPENFGA_SERVER.clone();
+            let project_openfga = format!("project:{project_id}");
             authorizer
-                .create_project(&req_meta_human, &project_id)
+                .write(
+                    Some(vec![
+                        TupleKey {
+                            user: actor.to_openfga(),
+                            relation: ProjectRelation::ProjectAdmin.to_string(),
+                            object: project_openfga.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: server.clone(),
+                            relation: ProjectRelation::Server.to_string(),
+                            object: project_openfga.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: project_openfga,
+                            relation: ServerRelation::Project.to_string(),
+                            object: server,
+                            condition: None,
+                        },
+                    ]),
+                    None,
+                )
                 .await
                 .unwrap();
 
@@ -1437,9 +1466,36 @@ mod tests {
 
                 wh_jobs.spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
-                    auth.create_warehouse(&req_meta_human, wh_id, &project_id)
-                        .await
-                        .unwrap();
+
+                    // Write warehouse tuples manually
+                    let actor = req_meta_human.actor();
+                    let project_openfga = project_id.to_openfga();
+                    let warehouse_openfga = format!("warehouse:{wh_id}");
+                    auth.write(
+                        Some(vec![
+                            TupleKey {
+                                user: actor.to_openfga(),
+                                relation: WarehouseRelation::Ownership.to_string(),
+                                object: warehouse_openfga.clone(),
+                                condition: None,
+                            },
+                            TupleKey {
+                                user: project_openfga.clone(),
+                                relation: WarehouseRelation::Project.to_string(),
+                                object: warehouse_openfga.clone(),
+                                condition: None,
+                            },
+                            TupleKey {
+                                user: warehouse_openfga,
+                                relation: ProjectRelation::Warehouse.to_string(),
+                                object: project_openfga,
+                                condition: None,
+                            },
+                        ]),
+                        None,
+                    )
+                    .await
+                    .unwrap();
                 });
             }
             let _ = wh_jobs.join_all().await;
@@ -1458,10 +1514,33 @@ mod tests {
 
                 ns_jobs.spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
-                    auth.create_namespace(
-                        &req_meta_human,
-                        ns_id,
-                        NamespaceParent::Warehouse(wh_id),
+
+                    // Write namespace tuples manually
+                    let actor = req_meta_human.actor();
+                    let warehouse_openfga = format!("warehouse:{wh_id}");
+                    let namespace_openfga = format!("namespace:{ns_id}");
+                    auth.write(
+                        Some(vec![
+                            TupleKey {
+                                user: actor.to_openfga(),
+                                relation: NamespaceRelation::Ownership.to_string(),
+                                object: namespace_openfga.clone(),
+                                condition: None,
+                            },
+                            TupleKey {
+                                user: warehouse_openfga.clone(),
+                                relation: NamespaceRelation::Parent.to_string(),
+                                object: namespace_openfga.clone(),
+                                condition: None,
+                            },
+                            TupleKey {
+                                user: namespace_openfga,
+                                relation: WarehouseRelation::Namespace.to_string(),
+                                object: warehouse_openfga,
+                                condition: None,
+                            },
+                        ]),
+                        None,
                     )
                     .await
                     .unwrap();
@@ -1479,14 +1558,69 @@ mod tests {
 
                 tab_jobs.spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
+
+                    // Write table or view tuples manually
+                    let actor = req_meta_human.actor();
+                    let namespace_openfga = ns_id.to_openfga();
+
                     if i % 2 == 0 {
-                        auth.create_table(&req_meta_human, TableId::new_random(), ns_id)
-                            .await
-                            .unwrap();
+                        // Create table
+                        let table_id = TableId::new_random();
+                        let table_openfga = format!("table:{table_id}");
+                        auth.write(
+                            Some(vec![
+                                TupleKey {
+                                    user: actor.to_openfga(),
+                                    relation: TableRelation::Ownership.to_string(),
+                                    object: table_openfga.clone(),
+                                    condition: None,
+                                },
+                                TupleKey {
+                                    user: namespace_openfga.clone(),
+                                    relation: TableRelation::Parent.to_string(),
+                                    object: table_openfga.clone(),
+                                    condition: None,
+                                },
+                                TupleKey {
+                                    user: table_openfga,
+                                    relation: NamespaceRelation::Child.to_string(),
+                                    object: namespace_openfga,
+                                    condition: None,
+                                },
+                            ]),
+                            None,
+                        )
+                        .await
+                        .unwrap();
                     } else {
-                        auth.create_view(&req_meta_human, ViewId::new_random(), ns_id)
-                            .await
-                            .unwrap();
+                        // Create view
+                        let view_id = ViewId::new_random();
+                        let view_openfga = format!("view:{view_id}");
+                        auth.write(
+                            Some(vec![
+                                TupleKey {
+                                    user: actor.to_openfga(),
+                                    relation: ViewRelation::Ownership.to_string(),
+                                    object: view_openfga.clone(),
+                                    condition: None,
+                                },
+                                TupleKey {
+                                    user: namespace_openfga.clone(),
+                                    relation: ViewRelation::Parent.to_string(),
+                                    object: view_openfga.clone(),
+                                    condition: None,
+                                },
+                                TupleKey {
+                                    user: view_openfga,
+                                    relation: NamespaceRelation::Child.to_string(),
+                                    object: namespace_openfga,
+                                    condition: None,
+                                },
+                            ]),
+                            None,
+                        )
+                        .await
+                        .unwrap();
                     }
                 });
             }
