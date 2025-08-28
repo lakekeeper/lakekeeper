@@ -161,6 +161,7 @@ middle = { version = "0.3", features = ["tonic"] }
 fastrand = "2.3.0"
 
 [patch.crates-io]
+# TODO remove the patch once new version was released
 openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "refs/pull/16/head", features = ["auth-middle"] }
 
 [profile.dev]
