@@ -51,8 +51,6 @@ fn extract_id_from_full_object(full_object: &str) -> anyhow::Result<String> {
     Ok(parts[1].to_string())
 }
 
-// TODO add v4 to module name as everything here is version specific
-
 // TODO add a param to OpenFGAConfig for this?
 const OPENFGA_PAGE_SIZE: i32 = 100;
 
@@ -65,7 +63,6 @@ static OPENFGA_WRITE_BATCH_SIZE: LazyLock<usize> =
 static OPENFGA_REQ_PERMITS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::const_new(50)));
 
-// catalog trait reingeben, nicht postgres db
 pub(crate) async fn v4_push_down_warehouse_id(
     mut client: BasicOpenFgaServiceClient,
     _prev_auth_model_id: Option<String>,
@@ -86,10 +83,20 @@ pub(crate) async fn v4_push_down_warehouse_id(
     let projects = get_all_projects(&client, state.server_id).await?;
     let warehouses = get_all_warehouses(&client, projects).await?;
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
-    // TODO concurrency
+
+    let mut warehouse_jobs: JoinSet<anyhow::Result<(String, Vec<String>)>> = JoinSet::new();
     for wh in warehouses.into_iter() {
-        let namespaces = get_all_namespaces(&client, wh.clone()).await?;
-        namespaces_per_wh.push((wh, namespaces));
+        let c = client.clone();
+        let semaphore = OPENFGA_REQ_PERMITS.clone();
+
+        warehouse_jobs.spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let namespaces = get_all_namespaces(&c, wh.clone()).await?;
+            Ok((wh, namespaces))
+        });
+    }
+    while let Some(res) = warehouse_jobs.join_next().await {
+        namespaces_per_wh.push(res??);
     }
 
     for (wh, nss) in namespaces_per_wh.into_iter() {

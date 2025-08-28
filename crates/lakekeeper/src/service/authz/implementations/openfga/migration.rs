@@ -19,8 +19,8 @@ pub(super) static V4_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
 pub(super) static V3_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| AuthorizationModelVersion::new(3, 4));
 
-mod migration_fns;
-use migration_fns::{v4_push_down_warehouse_id, MigrationState};
+mod migration_fns_v4;
+use migration_fns_v4::{v4_push_down_warehouse_id, MigrationState};
 
 fn get_model_manager(
     client: &BasicOpenFgaServiceClient,
