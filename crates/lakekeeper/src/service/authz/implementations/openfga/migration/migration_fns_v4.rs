@@ -69,6 +69,11 @@ pub(crate) async fn v4_push_down_warehouse_id(
     curr_auth_model_id: Option<String>,
     state: MigrationState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    tracing::info!(
+        "Starting v4 warehouse ID push-down migration for store: {}",
+        state.store_name
+    );
+
     // Construct OpenFGAClient to be able to use convenience methods.
     let store = client
         .get_store_by_name(&state.store_name)
@@ -80,8 +85,14 @@ pub(crate) async fn v4_push_down_warehouse_id(
         .into_client(&store.id, &curr_auth_model_id)
         .set_consistency(ConsistencyPreference::HigherConsistency);
 
+    tracing::info!("Fetching all projects for server: {}", state.server_id);
     let projects = get_all_projects(&client, state.server_id).await?;
+    tracing::info!("Found {} projects, fetching all warehouses", projects.len());
     let warehouses = get_all_warehouses(&client, projects).await?;
+    tracing::info!(
+        "Found {} warehouses, starting namespace and tabular processing",
+        warehouses.len()
+    );
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
 
     let mut warehouse_jobs: JoinSet<anyhow::Result<(String, Vec<String>)>> = JoinSet::new();
@@ -98,11 +109,22 @@ pub(crate) async fn v4_push_down_warehouse_id(
     while let Some(res) = warehouse_jobs.join_next().await {
         namespaces_per_wh.push(res??);
     }
+    tracing::info!("Collected namespaces for all warehouses.");
 
-    for (wh, nss) in namespaces_per_wh.into_iter() {
+    let num_warehouses = namespaces_per_wh.len();
+    for (i, (wh, nss)) in namespaces_per_wh.into_iter().enumerate() {
+        let processing_wh_i = i + 1;
+        let wh_id = extract_id_from_full_object(&wh)?;
+        tracing::info!(
+            "Processing warehouse {processing_wh_i} of {num_warehouses} ({wh_id}) with {} namespaces: collecting all tabulars",
+            nss.len()
+        );
+
         // Load tabulars only inside this loop (i.e. per warehouse) and drop them at the end of it.
         // This is done to mitigate the risk of OOM during the migration of a huge catalog.
         let tabulars = get_all_tabulars(&client, &nss).await.unwrap();
+        let num_tabulars_in_wh = tabulars.len();
+        tracing::info!("Found {num_tabulars_in_wh} tabulars in warehouse {wh_id}");
         let mut new_tuples_to_write = vec![];
         let wh_id = extract_id_from_full_object(&wh)?;
 
@@ -129,7 +151,13 @@ pub(crate) async fn v4_push_down_warehouse_id(
             }
         }
 
+        tracing::info!(
+            "Collected {num_tabulars_in_wh} tabulars for warehouse {wh_id}, writing {} new tuples",
+            new_tuples_to_write.len()
+        );
+
         let mut write_jobs = JoinSet::new();
+
         for chunk in new_tuples_to_write.chunks(*OPENFGA_WRITE_BATCH_SIZE) {
             let c = client.clone();
             let semaphore = OPENFGA_REQ_PERMITS.clone();
@@ -142,8 +170,17 @@ pub(crate) async fn v4_push_down_warehouse_id(
         while let Some(res) = write_jobs.join_next().await {
             let _ = res??;
         }
+
+        tracing::info!(
+            "Completed migration for warehouse {processing_wh_i} of {num_warehouses} ({wh_id}) with {} tuples written",
+            new_tuples_to_write.len()
+        );
     }
 
+    tracing::info!(
+        "v4 warehouse ID push-down migration completed successfully for store: {}",
+        state.store_name
+    );
     Ok(())
 }
 
@@ -1358,6 +1395,7 @@ mod tests {
         /// little benefit from trying to run async code in a `bench` or using something like
         /// criterion.
         #[tokio::test(flavor = "multi_thread")]
+        #[test_log::test]
         #[ignore]
         async fn test_v4_push_down_warehouse_id_bench() -> anyhow::Result<()> {
             const NUM_WAREHOUSES: usize = 10;
@@ -1374,7 +1412,7 @@ mod tests {
             let req_meta_human =
                 RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
 
-            println!("Populating OpenFGA store");
+            tracing::info!("Populating OpenFGA store");
             let start_populating = Instant::now();
             let project_id = ProjectId::new_random();
             authorizer
@@ -1382,6 +1420,7 @@ mod tests {
                 .await
                 .unwrap();
 
+            tracing::info!("Creating {NUM_WAREHOUSES} warehouses");
             let mut warehouse_ids = Vec::with_capacity(NUM_WAREHOUSES);
             let mut wh_jobs = JoinSet::new();
             for _ in 0..NUM_WAREHOUSES {
@@ -1402,6 +1441,7 @@ mod tests {
             }
             let _ = wh_jobs.join_all().await;
 
+            tracing::info!("Creating {NUM_NAMESPACES} namespaces in {NUM_WAREHOUSES} warehouses");
             let mut namespace_ids = Vec::with_capacity(NUM_NAMESPACES);
             let mut ns_jobs = JoinSet::new();
             for i in 0..NUM_NAMESPACES {
@@ -1426,6 +1466,7 @@ mod tests {
             }
             let _ = ns_jobs.join_all().await;
 
+            tracing::info!("Creating {NUM_TABULARS} tabulars in {NUM_NAMESPACES} namespaces");
             let mut tab_jobs = JoinSet::new();
             for i in 0..NUM_TABULARS {
                 let ns_id = namespace_ids[i % namespace_ids.len()].clone();
@@ -1447,15 +1488,15 @@ mod tests {
                 });
             }
             let _ = tab_jobs.join_all().await;
-            println!(
+            tracing::info!(
                 "Populated the OpenFGA store in {} seconds",
                 start_populating.elapsed().as_secs()
             );
 
-            println!("Migrating the OpenFGA store");
+            tracing::info!("Migrating the OpenFGA store");
             let start_migrating = Instant::now();
             let client_v4 = migrate_to_v4(client, store_name).await?;
-            println!(
+            tracing::info!(
                 "Migrated the OpenFGA store in {} seconds",
                 start_migrating.elapsed().as_secs()
             );
