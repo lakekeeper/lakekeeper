@@ -5,9 +5,8 @@ use openfga_client::{
     migration::{AuthorizationModelVersion, MigrationFn, TupleModelManager},
 };
 
-use crate::CONFIG;
-
 use super::{OpenFGAError, OpenFGAResult, AUTH_CONFIG};
+use crate::CONFIG;
 
 pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
     LazyLock::new(|| *V4_MODEL_VERSION); // <- Change this for every change in the model

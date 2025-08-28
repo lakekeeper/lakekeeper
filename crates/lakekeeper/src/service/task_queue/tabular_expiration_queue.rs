@@ -136,7 +136,13 @@ where
     let tabular_location = match task.data.tabular_type {
         TabularType::Table => {
             let table_id = TableId::from(tabular_id);
-            let drop_result = C::drop_table(task.task_metadata.warehouse_id, table_id, true, trx.transaction()).await;
+            let drop_result = C::drop_table(
+                task.task_metadata.warehouse_id,
+                table_id,
+                true,
+                trx.transaction(),
+            )
+            .await;
 
             let location = match drop_result {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
@@ -165,7 +171,14 @@ where
         TabularType::View => {
             let view_id = ViewId::from(tabular_id);
 
-            let location = match C::drop_view(task.task_metadata.warehouse_id, view_id, true, trx.transaction()).await {
+            let location = match C::drop_view(
+                task.task_metadata.warehouse_id,
+                view_id,
+                true,
+                trx.transaction(),
+            )
+            .await
+            {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
                     tracing::warn!(
                         "View with id `{view_id}` not found in catalog for `{QUEUE_NAME}` task. Skipping deletion."

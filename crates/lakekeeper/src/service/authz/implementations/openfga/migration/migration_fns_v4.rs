@@ -1,13 +1,14 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, LazyLock},
+};
 
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
     TupleKey,
 };
 use strum::IntoEnumIterator;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::service::authz::implementations::openfga::{
     NamespaceRelation, ProjectRelation, TableRelation, ViewRelation, WarehouseRelation,
@@ -476,28 +477,21 @@ mod tests {
             client::{CheckRequestTupleKey, TupleKey},
             migration::TupleModelManager,
         };
-        use tokio::sync::RwLock;
-        use tokio::task::JoinSet;
+        use tokio::{sync::RwLock, task::JoinSet};
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::{
-            migration::V4_MODEL_VERSION, ServerRelation,
-        };
-        use crate::service::NamespaceId;
-        use crate::service::TableId;
         use crate::{
             api::RequestMetadata,
             service::{
                 authz::implementations::openfga::{
-                    migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION},
-                    new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, AUTH_CONFIG,
-                    OPENFGA_SERVER,
+                    migration::{add_model_v3, add_model_v4, V3_MODEL_VERSION, V4_MODEL_VERSION},
+                    new_client_from_config, OpenFGAAuthorizer, OpenFgaEntity, ServerRelation,
+                    AUTH_CONFIG, OPENFGA_SERVER,
                 },
-                UserId, ViewId,
+                NamespaceId, TableId, UserId, ViewId,
             },
-            CONFIG,
+            ProjectId, WarehouseId, CONFIG,
         };
-        use crate::{ProjectId, WarehouseId};
 
         // Tests must write tuples according to v3 model manually.
         // Writing through methods like `authorizer.create_*` may create tuples different from
