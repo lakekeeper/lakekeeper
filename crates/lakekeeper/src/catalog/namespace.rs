@@ -25,7 +25,8 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
         task_queue::{
-            tabular_purge_queue::TabularPurgePayload, EntityId, TaskFilter, TaskMetadata,
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            EntityId, TaskFilter, TaskMetadata,
         },
         Catalog, GetWarehouseResponse, NamespaceId, State, TabularId, Transaction,
     },
@@ -477,8 +478,13 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
 
         // cancel pending tasks
-        C::cancel_tabular_expiration(TaskFilter::TaskIds(drop_info.open_tasks), t.transaction())
-            .await?;
+        C::cancel_scheduled_tasks(
+            None,
+            TaskFilter::TaskIds(drop_info.open_tasks),
+            false,
+            t.transaction(),
+        )
+        .await?;
 
         if flags.purge {
             for (tabular_id, tabular_location) in drop_info.child_tables {
@@ -486,7 +492,7 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
                     TabularId::Table(id) => (id, TabularType::Table),
                     TabularId::View(id) => (id, TabularType::View),
                 };
-                C::queue_tabular_purge(
+                TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
                         warehouse_id,
                         entity_id: EntityId::Tabular(tabular_id),
