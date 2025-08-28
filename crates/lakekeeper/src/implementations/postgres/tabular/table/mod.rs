@@ -900,9 +900,10 @@ pub(crate) mod tests {
         },
         service::{
             task_queue::{
-                tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
+                tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+                EntityId, TaskMetadata,
             },
-            Catalog, ListFlags, NamespaceId, TableCreation,
+            ListFlags, NamespaceId, TableCreation,
         },
     };
 
@@ -1805,7 +1806,7 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
 
-        let _ = PostgresCatalog::queue_tabular_expiration(
+        let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
                 entity_id: EntityId::Tabular(*table.table_id),
                 warehouse_id,

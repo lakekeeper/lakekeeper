@@ -22,8 +22,8 @@ mod test {
         implementations::postgres::PostgresCatalog,
         service::{
             task_queue::{
-                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, TaskData, TaskInput,
-                TaskMetadata, TaskQueueRegistry, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+                EntityId, QueueConfig as QueueConfigTrait, QueueRegistration, SpecializedTask,
+                TaskData, TaskInput, TaskMetadata, TaskQueueRegistry,
             },
             Catalog, Transaction,
         },
@@ -71,20 +71,18 @@ mod test {
                     Box::pin(async move {
                         let task_id = rx.recv().await.unwrap();
 
-                        let task = PostgresCatalog::pick_new_task(
-                            QUEUE_NAME,
-                            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
-                            ctx.v1_state.catalog.clone(),
-                        )
+                        let task = SpecializedTask::<Config, TestTaskData>::pick_new_task::<
+                            PostgresCatalog,
+                        >(ctx.v1_state.catalog.clone())
                         .await
                         .unwrap()
                         .unwrap();
-                        let config = task.queue_config::<Config>().unwrap().unwrap();
+                        let config = task.config.unwrap();
                         assert_eq!(config.some_val, "test_value");
 
                         assert_eq!(task_id, task.task_id);
 
-                        let task = task.task_data::<TestTaskData>().unwrap();
+                        let task = task.data;
                         assert_eq!(task, task_state);
                         *result_clone.lock().unwrap() = true;
                     })

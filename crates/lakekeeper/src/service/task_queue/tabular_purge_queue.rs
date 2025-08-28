@@ -23,8 +23,10 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_schema: PurgeQueueConfig::schema(),
 });
 
+pub type TabularPurgeTask = SpecializedTask<PurgeQueueConfig, TabularPurgePayload>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct TabularPurgePayload {
+pub struct TabularPurgePayload {
     pub(crate) tabular_location: String,
     pub(crate) tabular_type: TabularType,
 }
@@ -32,7 +34,7 @@ pub(crate) struct TabularPurgePayload {
 impl TaskData for TabularPurgePayload {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
-pub(crate) struct PurgeQueueConfig {}
+pub struct PurgeQueueConfig {}
 
 impl QueueConfig for PurgeQueueConfig {
     fn queue_name() -> &'static str {
@@ -43,14 +45,14 @@ impl QueueConfig for PurgeQueueConfig {
 pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
     catalog_state: C::State,
     secret_state: S,
-    poll_interval: &Duration,
+    poll_interval: Duration,
     cancellation_token: crate::CancellationToken,
 ) {
     loop {
         let task =
             SpecializedTask::<PurgeQueueConfig, TabularPurgePayload>::poll_for_new_task::<C>(
                 catalog_state.clone(),
-                poll_interval,
+                &poll_interval,
                 cancellation_token.clone(),
             )
             .await;
@@ -65,7 +67,6 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
             location = %task.data.tabular_location,
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
-            queue_name = %task.queue_name(),
             attempt = %task.attempt,
             task_id = %task.task_id,
         );
@@ -79,7 +80,7 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
 async fn instrumented_purge<S: SecretStore, C: Catalog>(
     catalog_state: C::State,
     secret_state: &S,
-    task: &SpecializedTask<PurgeQueueConfig, TabularPurgePayload>,
+    task: &TabularPurgeTask,
 ) {
     match purge::<C, S>(task, secret_state, catalog_state.clone()).await {
         Ok(()) => {
@@ -108,7 +109,7 @@ async fn instrumented_purge<S: SecretStore, C: Catalog>(
 }
 
 async fn purge<C, S>(
-    task: &SpecializedTask<PurgeQueueConfig, TabularPurgePayload>,
+    task: &TabularPurgeTask,
     secret_state: &S,
     catalog_state: C::State,
 ) -> Result<()>

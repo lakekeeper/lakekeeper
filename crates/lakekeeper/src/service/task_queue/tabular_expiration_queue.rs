@@ -27,9 +27,11 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_schema: ExpirationQueueConfig::schema(),
 });
 
+pub type TabularExpirationTask = SpecializedTask<ExpirationQueueConfig, TabularExpirationPayload>;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 /// State stored for a tabular expiration in postgres as `payload` along with the task metadata.
-pub(crate) struct TabularExpirationPayload {
+pub struct TabularExpirationPayload {
     pub(crate) tabular_type: TabularType,
     pub(crate) deletion_kind: DeleteKind,
 }
@@ -38,7 +40,7 @@ impl TaskData for TabularExpirationPayload {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 /// Warehouse-specific configuration for the expiration queue.
-pub(crate) struct ExpirationQueueConfig {}
+pub struct ExpirationQueueConfig {}
 
 impl QueueConfig for ExpirationQueueConfig {
     fn queue_name() -> &'static str {
@@ -49,13 +51,13 @@ impl QueueConfig for ExpirationQueueConfig {
 pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
-    poll_interval: &Duration,
+    poll_interval: Duration,
     cancellation_token: CancellationToken,
 ) {
     loop {
         let task = SpecializedTask::<ExpirationQueueConfig, TabularExpirationPayload>::poll_for_new_task::<C>(
             catalog_state.clone(),
-            poll_interval,
+            &poll_interval,
             cancellation_token.clone(),
         )
         .await;
@@ -87,7 +89,7 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     catalog_state: C::State,
     authorizer: A,
     tabular_id: Uuid,
-    task: &SpecializedTask<ExpirationQueueConfig, TabularExpirationPayload>,
+    task: &TabularExpirationTask,
 ) {
     match handle_table::<C, A>(catalog_state.clone(), authorizer, tabular_id, task).await {
         Ok(()) => {
@@ -117,7 +119,7 @@ async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
     tabular_id: Uuid,
-    task: &SpecializedTask<ExpirationQueueConfig, TabularExpirationPayload>,
+    task: &TabularExpirationTask,
 ) -> Result<()>
 where
     C: Catalog,
@@ -193,7 +195,7 @@ where
 
     if let Some(tabular_location) = tabular_location {
         if matches!(task.data.deletion_kind, DeleteKind::Purge) {
-            C::queue_tabular_purge(
+            super::tabular_purge_queue::TabularPurgeTask::schedule_task::<C>(
                 TaskMetadata {
                     entity_id: task.task_metadata.entity_id,
                     warehouse_id: task.task_metadata.warehouse_id,

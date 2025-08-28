@@ -455,14 +455,18 @@ use crate::service::task_queue::{
     EntityId, TaskCheckState, TaskId, TaskInput, TaskMetadata, TaskOutcome,
 };
 
-/// Cancel pending tasks for a warehouse
-/// If `task_ids` are provided in `filter` which are not pending, they are ignored
-pub(crate) async fn cancel_tasks(
+/// Cancel scheduled tasks.
+/// If `force_delete_running_tasks` is true, running and should-stop tasks will also be cancelled.
+/// If `queue_name` is `None`, tasks in all queues will be cancelled.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn cancel_scheduled_tasks(
     connection: &mut PgConnection,
     filter: TaskFilter,
-    queue_name: &str,
+    queue_name: Option<&str>,
     force_delete_running_tasks: bool,
 ) -> crate::api::Result<()> {
+    let queue_name_is_none = queue_name.is_none();
+    let queue_name = queue_name.unwrap_or("");
     match filter {
         TaskFilter::WarehouseId(warehouse_id) => {
             sqlx::query!(
@@ -490,16 +494,17 @@ pub(crate) async fn cancel_tasks(
                                    then now() - picked_up_at
                                end
                         FROM task
-                        WHERE (status = $3 OR $5) AND warehouse_id = $1 AND queue_name = $2
+                        WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
                     )
                     DELETE FROM task
-                    WHERE (status = $3 OR $5) AND warehouse_id = $1 AND queue_name = $2
+                    WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
                 "#,
                 *warehouse_id,
                 queue_name,
                 TaskStatus::Scheduled as _,
                 TaskOutcome::Cancelled as _,
-                force_delete_running_tasks
+                force_delete_running_tasks,
+                queue_name_is_none
             )
             .fetch_all(connection)
             .await
@@ -539,15 +544,18 @@ pub(crate) async fn cancel_tasks(
                                    then now() - picked_up_at
                                end
                         FROM task
-                        WHERE status = $3 AND task_id = ANY($1)
+                        WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)
                     )
                     DELETE FROM task
-                    WHERE status = $3
+                    WHERE (status = $3 OR $6) AND (queue_name = $4 OR $5)
                     AND task_id = ANY($1)
                 "#,
                 &task_ids.iter().map(|s| **s).collect::<Vec<_>>(),
                 TaskOutcome::Cancelled as _,
                 TaskStatus::Scheduled as _,
+                queue_name,
+                queue_name_is_none,
+                force_delete_running_tasks
             )
             .fetch_all(connection)
             .await
@@ -834,9 +842,14 @@ mod test {
         .unwrap()
         .unwrap();
 
-        cancel_tasks(&mut conn, TaskFilter::TaskIds(vec![id]), "test", false)
-            .await
-            .unwrap();
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![id]),
+            Some("test"),
+            false,
+        )
+        .await
+        .unwrap();
 
         let id2 = queue_task(
             &mut conn,

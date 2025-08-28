@@ -13,7 +13,7 @@ use iceberg::{
         TableMetadataBuilder, UnboundPartitionSpec, PROPERTY_FORMAT_VERSION,
         PROPERTY_METADATA_PREVIOUS_VERSIONS_MAX,
     },
-    NamespaceIdent, TableUpdate,
+    ErrorKind, NamespaceIdent, TableUpdate,
 };
 use iceberg_ext::{
     catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
@@ -54,8 +54,9 @@ use crate::{
         secrets::SecretStore,
         storage::{StorageLocations as _, StoragePermissions, StorageProfile, ValidationError},
         task_queue::{
-            tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue::TabularPurgePayload, EntityId, TaskMetadata,
+            tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            EntityId, TaskMetadata,
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
@@ -764,7 +765,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     C::drop_table(warehouse_id, table_id, force, t.transaction()).await?;
 
                 if purge_requested {
-                    C::queue_tabular_purge(
+                    TabularPurgeTask::schedule_task::<C>(
                         TaskMetadata {
                             warehouse_id,
                             entity_id: EntityId::Tabular(*table_id),
@@ -791,7 +792,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     .ok();
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
-                let _ = C::queue_tabular_expiration(
+                let _ = TabularExpirationTask::schedule_task::<C>(
                     TaskMetadata {
                         entity_id: EntityId::Tabular(*table_id),
                         warehouse_id,
@@ -1805,7 +1806,7 @@ fn require_table_id(table_ident: &TableIdent, table_id: Option<TableId>) -> Resu
                 table_ident.namespace.to_url_string(),
                 table_ident.name
             ),
-            "TableNotFound",
+            ErrorKind::TableNotFound.to_string(),
             None,
         )
         .into()
@@ -1816,7 +1817,7 @@ fn require_not_staged<T>(metadata_location: Option<&T>) -> Result<()> {
     if metadata_location.is_none() {
         return Err(ErrorModel::not_found(
             "Table not found or staged.",
-            "TableNotFoundOrStaged",
+            ErrorKind::TableNotFound.to_string(),
             None,
         )
         .into());
@@ -1839,7 +1840,7 @@ fn take_table_metadata<T>(
                     table_ident.namespace.to_url_string(),
                     table_ident.name
                 ),
-                "TableNotFound",
+                ErrorKind::TableNotFound.to_string(),
                 None,
             )
         })
