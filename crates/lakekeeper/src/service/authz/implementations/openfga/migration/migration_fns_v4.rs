@@ -22,10 +22,10 @@ pub(crate) struct MigrationState {
 }
 
 fn openfga_user_type(inp: &str) -> Option<String> {
-    inp.split(":").next().map(|user| user.to_string())
+    inp.split(':').next().map(std::string::ToString::to_string)
 }
 
-/// Prepends `lakekeeper_` to the type and injects `prefix` into a full OpenFGA object.
+/// Prepends `lakekeeper_` to the type and injects `prefix` into a full `OpenFGA` object.
 ///
 /// ```rust
 /// let full_object = "table:t1";
@@ -33,7 +33,7 @@ fn openfga_user_type(inp: &str) -> Option<String> {
 /// assert_eq!(new_v4_tuple(full_object, "wh1"), extended_object.to_string());
 /// ```
 fn new_v4_tuple(full_object: &str, prefix: &str) -> anyhow::Result<String> {
-    let parts: Vec<_> = full_object.split(":").collect();
+    let parts: Vec<_> = full_object.split(':').collect();
     anyhow::ensure!(
         parts.len() == 2,
         "Expected full object (type:id), got {}",
@@ -43,7 +43,7 @@ fn new_v4_tuple(full_object: &str, prefix: &str) -> anyhow::Result<String> {
 }
 
 fn extract_id_from_full_object(full_object: &str) -> anyhow::Result<String> {
-    let parts: Vec<_> = full_object.split(":").collect();
+    let parts: Vec<_> = full_object.split(':').collect();
     anyhow::ensure!(
         parts.len() == 2,
         "Expected full object (type:id), got {}",
@@ -58,7 +58,7 @@ const OPENFGA_PAGE_SIZE: i32 = 100;
 static OPENFGA_WRITE_BATCH_SIZE: LazyLock<usize> =
     LazyLock::new(|| MAX_TUPLES_PER_WRITE.try_into().expect("should fit usize"));
 
-/// Limits the number of concurrent requests to the OpenFGA server, to avoid overloading it.
+/// Limits the number of concurrent requests to the `OpenFGA` server, to avoid overloading it.
 ///
 /// Ensure the permit is dropped as soon as it's not needed anymore, to unblock other threads.
 static OPENFGA_REQ_PERMITS: LazyLock<Arc<Semaphore>> =
@@ -97,7 +97,7 @@ pub(crate) async fn v4_push_down_warehouse_id(
     let mut namespaces_per_wh: Vec<(String, Vec<String>)> = vec![];
 
     let mut warehouse_jobs: JoinSet<anyhow::Result<(String, Vec<String>)>> = JoinSet::new();
-    for wh in warehouses.into_iter() {
+    for wh in warehouses {
         let c = client.clone();
         let semaphore = OPENFGA_REQ_PERMITS.clone();
 
@@ -129,7 +129,7 @@ pub(crate) async fn v4_push_down_warehouse_id(
         let mut new_tuples_to_write = vec![];
         let wh_id = extract_id_from_full_object(&wh)?;
 
-        for tab in tabulars.into_iter() {
+        for tab in tabulars {
             let c1 = client.clone();
             let c2 = client.clone();
             let tab1 = tab.clone();
@@ -142,11 +142,11 @@ pub(crate) async fn v4_push_down_warehouse_id(
             )?;
             let (tab_as_object, tab_as_user) = (tab_as_object?, tab_as_user?);
 
-            for mut tuple in tab_as_object.into_iter() {
+            for mut tuple in tab_as_object {
                 tuple.object = new_v4_tuple(&tuple.object, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
-            for mut tuple in tab_as_user.into_iter() {
+            for mut tuple in tab_as_user {
                 tuple.user = new_v4_tuple(&tuple.user, &wh_id)?;
                 new_tuples_to_write.push(tuple);
             }
@@ -169,7 +169,7 @@ pub(crate) async fn v4_push_down_warehouse_id(
             });
         }
         while let Some(res) = write_jobs.join_next().await {
-            let _ = res??;
+            let () = res??;
         }
 
         tracing::info!(
@@ -214,7 +214,7 @@ async fn get_all_warehouses(
     let mut all_warehouses = vec![];
     let mut jobs: JoinSet<anyhow::Result<Vec<String>>> = JoinSet::new();
 
-    for p in projects.into_iter() {
+    for p in projects {
         let client = client.clone();
         let semaphore = OPENFGA_REQ_PERMITS.clone();
 
@@ -233,7 +233,7 @@ async fn get_all_warehouses(
                 )
                 .await?;
             drop(_permit);
-            for t in tuples.into_iter() {
+            for t in tuples {
                 match t.key {
                     None => {}
                     Some(k) => warehouses.push(k.object),
@@ -260,7 +260,7 @@ async fn get_all_namespaces(
     while !to_process.is_empty() {
         let mut jobs = tokio::task::JoinSet::new();
         let parents: Vec<String> = to_process.drain(..).collect();
-        for parent in parents.iter() {
+        for parent in &parents {
             let client = client.clone();
             let parent = parent.clone();
             let semaphore = OPENFGA_REQ_PERMITS.clone();
@@ -327,7 +327,7 @@ async fn get_all_tabulars(
     let mut jobs = tokio::task::JoinSet::new();
 
     // Spawn one task per namespace. It will spawn nested tasks to get all tabular types.
-    for ns in namespaces.iter() {
+    for ns in namespaces {
         let client = client.clone();
         let ns = ns.clone();
         jobs.spawn(async move {
@@ -387,8 +387,8 @@ async fn get_all_tuples_with_object(
     let tuples = client
         .read_all_pages(
             Some(ReadRequestTupleKey {
-                user: "".to_string(),
-                relation: "".to_string(),
+                user: String::new(),
+                relation: String::new(),
                 object,
             }),
             OPENFGA_PAGE_SIZE,
@@ -437,7 +437,7 @@ async fn get_all_tuples_with_user(
     };
 
     let mut jobs = tokio::task::JoinSet::new();
-    for ty in object_types.into_iter() {
+    for ty in object_types {
         let client = client.clone();
         let user = user.clone();
         let semaphore = OPENFGA_REQ_PERMITS.clone();
@@ -448,7 +448,7 @@ async fn get_all_tuples_with_user(
                 .read_all_pages(
                     Some(ReadRequestTupleKey {
                         user,
-                        relation: "".to_string(),
+                        relation: String::new(),
                         object: ty,
                     }),
                     OPENFGA_PAGE_SIZE,
@@ -542,7 +542,7 @@ mod tests {
             })
         }
 
-        /// Migrates the OpenFGA store to v4, which will also execute the migration function.
+        /// Migrates the `OpenFGA` store to v4, which will also execute the migration function.
         /// Returns a new client set to interact with the store's v4 authorization model.
         async fn migrate_to_v4(
             client: BasicOpenFgaClient,
@@ -1368,7 +1368,7 @@ mod tests {
             Ok(())
         }
 
-        /// This is a "benchmark" for the migration of an OpenFGA store to v4.
+        /// This is a "benchmark" for the migration of an `OpenFGA` store to v4.
         ///
         /// It can be executed with:
         ///
@@ -1380,10 +1380,10 @@ mod tests {
         ///
         /// * Most expensive operation is writing new tuples. For each tabular at minimum 3 tuples
         ///   need to be written. Assignments involving tabulars increase that number, as for each
-        ///   table/view tuple a new lakekeeper_table/lakekeeper_view tuple is written.
+        ///   table/view tuple a new `lakekeeper_table/lakekeeper_view` tuple is written.
         /// * Migrating 10k tabulars takes ~25 seconds.
         /// * Migrating 20k tabulars takes ~104 seconds.
-        /// * The bottleneck appears to be the OpenFGA server. During the migration lakekeeper's
+        /// * The bottleneck appears to be the `OpenFGA` server. During the migration lakekeeper's
         ///   CPU usage lingers around 1% to 8%.
         ///
         /// Ignored by default as it's purpose is benchmarking instead of testing. In this form
@@ -1451,7 +1451,7 @@ mod tests {
             let mut wh_jobs = JoinSet::new();
             for _ in 0..NUM_WAREHOUSES {
                 let wh_id = WarehouseId::new_random();
-                warehouse_ids.push(wh_id.clone());
+                warehouse_ids.push(wh_id);
 
                 let project_id = project_id.clone();
                 let req_meta_human = req_meta_human.clone();
@@ -1499,9 +1499,9 @@ mod tests {
             let mut ns_jobs = JoinSet::new();
             for i in 0..NUM_NAMESPACES {
                 let ns_id = NamespaceId::new_random();
-                namespace_ids.push(ns_id.clone());
+                namespace_ids.push(ns_id);
 
-                let wh_id = warehouse_ids[i % warehouse_ids.len()].clone();
+                let wh_id = warehouse_ids[i % warehouse_ids.len()];
                 let req_meta_human = req_meta_human.clone();
                 let auth = authorizer.clone();
                 let semaphore = OPENFGA_REQ_PERMITS.clone();
@@ -1545,7 +1545,7 @@ mod tests {
             tracing::info!("Creating {NUM_TABULARS} tabulars in {NUM_NAMESPACES} namespaces");
             let mut tab_jobs = JoinSet::new();
             for i in 0..NUM_TABULARS {
-                let ns_id = namespace_ids[i % namespace_ids.len()].clone();
+                let ns_id = namespace_ids[i % namespace_ids.len()];
                 let req_meta_human = req_meta_human.clone();
                 let auth = authorizer.clone();
                 let semaphore = OPENFGA_REQ_PERMITS.clone();
@@ -1647,7 +1647,7 @@ mod tests {
                 .get_ref()
                 .tuples
                 .clone();
-            assert!(sentinel.len() > 0, "There should be a sentinel tupel");
+            assert!(!sentinel.is_empty(), "There should be a sentinel tupel");
 
             Ok(())
         }
@@ -1677,10 +1677,10 @@ mod tests {
             let namespace_1_openfga = format!("namespace:{namespace_id_1}");
             let namespace_2_openfga = format!("namespace:{namespace_id_2}");
             let user_openfga = format!("user:{}", urlencoding::encode(&user_id.to_string()));
-            let table_in_wh1 = format!("lakekeeper_table:{}/{}", warehouse_id_1, table_id);
-            let table_in_wh2 = format!("lakekeeper_table:{}/{}", warehouse_id_2, table_id);
-            let view_in_wh1 = format!("lakekeeper_view:{}/{}", warehouse_id_1, view_id);
-            let view_in_wh2 = format!("lakekeeper_view:{}/{}", warehouse_id_2, view_id);
+            let table_in_wh1 = format!("lakekeeper_table:{warehouse_id_1}/{table_id}");
+            let table_in_wh2 = format!("lakekeeper_table:{warehouse_id_2}/{table_id}");
+            let view_in_wh1 = format!("lakekeeper_view:{warehouse_id_1}/{view_id}");
+            let view_in_wh2 = format!("lakekeeper_view:{warehouse_id_2}/{view_id}");
 
             // Write tuples directly instead of using methods like `authorizer.create_project()`.
             // Also here we need exactly the v4 tuples but authorizer methods might divert in the
