@@ -1484,7 +1484,7 @@ mod tests {
         // migrated to v4.
 
         #[tokio::test]
-        async fn test_reuse_table_id_across_warehouses() -> anyhow::Result<()> {
+        async fn test_reuse_tabular_ids_across_warehouses() -> anyhow::Result<()> {
             let authorizer = new_v4_authorizer_for_empty_store().await?;
 
             // Generate IDs for our test entities
@@ -1494,6 +1494,7 @@ mod tests {
             let namespace_id_1 = NamespaceId::new_random();
             let namespace_id_2 = NamespaceId::new_random();
             let table_id = TableId::new_random();
+            let view_id = ViewId::new_random();
             let user_id = UserId::new_unchecked("oidc", "privileged_user");
 
             // Manually construct OpenFGA identifiers instead of using `to_openfga()` as this test
@@ -1506,6 +1507,8 @@ mod tests {
             let user_openfga = format!("user:{}", urlencoding::encode(&user_id.to_string()));
             let table_in_wh1 = format!("lakekeeper_table:{}/{}", warehouse_id_1, table_id);
             let table_in_wh2 = format!("lakekeeper_table:{}/{}", warehouse_id_2, table_id);
+            let view_in_wh1 = format!("lakekeeper_view:{}/{}", warehouse_id_1, view_id);
+            let view_in_wh2 = format!("lakekeeper_view:{}/{}", warehouse_id_2, view_id);
 
             // Write tuples directly instead of using methods like `authorizer.create_project()`.
             // Also here we need exactly the v4 tuples but authorizer methods might divert in the
@@ -1559,6 +1562,19 @@ mod tests {
                             object: table_in_wh2.clone(),
                             condition: None,
                         },
+                        // Views in namespaces (using lakekeeper_view format)
+                        TupleKey {
+                            user: namespace_1_openfga.clone(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: view_in_wh1.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: namespace_2_openfga.clone(),
+                            relation: ViewRelation::Parent.to_string(),
+                            object: view_in_wh2.clone(),
+                            condition: None,
+                        },
                         // Child relations for tables
                         TupleKey {
                             user: table_in_wh1.clone(),
@@ -1568,6 +1584,19 @@ mod tests {
                         },
                         TupleKey {
                             user: table_in_wh2.clone(),
+                            relation: NamespaceRelation::Child.to_string(),
+                            object: namespace_2_openfga.clone(),
+                            condition: None,
+                        },
+                        // Child relations for views
+                        TupleKey {
+                            user: view_in_wh1.clone(),
+                            relation: NamespaceRelation::Child.to_string(),
+                            object: namespace_1_openfga.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: view_in_wh2.clone(),
                             relation: NamespaceRelation::Child.to_string(),
                             object: namespace_2_openfga.clone(),
                             condition: None,
@@ -1583,6 +1612,19 @@ mod tests {
                             user: user_openfga.clone(),
                             relation: TableRelation::Select.to_string(),
                             object: table_in_wh1.clone(),
+                            condition: None,
+                        },
+                        // Assign ownership and select privileges to view in warehouse1 only
+                        TupleKey {
+                            user: user_openfga.clone(),
+                            relation: ViewRelation::Ownership.to_string(),
+                            object: view_in_wh1.clone(),
+                            condition: None,
+                        },
+                        TupleKey {
+                            user: user_openfga.clone(),
+                            relation: ViewRelation::Describe.to_string(),
+                            object: view_in_wh1.clone(),
                             condition: None,
                         },
                     ]),
@@ -1628,6 +1670,43 @@ mod tests {
                 .await
                 .unwrap();
 
+            // Verify that the privileges are only assigned to the view in warehouse1
+            let view_ownership_wh1_allowed = authorizer
+                .check(CheckRequestTupleKey {
+                    user: user_openfga.clone(),
+                    relation: ViewRelation::Ownership.to_string(),
+                    object: view_in_wh1.clone(),
+                })
+                .await
+                .unwrap();
+
+            let view_select_wh1_allowed = authorizer
+                .check(CheckRequestTupleKey {
+                    user: user_openfga.clone(),
+                    relation: ViewRelation::Describe.to_string(),
+                    object: view_in_wh1.clone(),
+                })
+                .await
+                .unwrap();
+
+            let view_ownership_wh2_allowed = authorizer
+                .check(CheckRequestTupleKey {
+                    user: user_openfga.clone(),
+                    relation: ViewRelation::Ownership.to_string(),
+                    object: view_in_wh2.clone(),
+                })
+                .await
+                .unwrap();
+
+            let view_select_wh2_allowed = authorizer
+                .check(CheckRequestTupleKey {
+                    user: user_openfga.clone(),
+                    relation: ViewRelation::Describe.to_string(),
+                    object: view_in_wh2.clone(),
+                })
+                .await
+                .unwrap();
+
             // Assert that privileges are only on warehouse1's table
             assert!(
                 ownership_wh1_allowed,
@@ -1644,6 +1723,24 @@ mod tests {
             assert!(
                 !select_wh2_allowed,
                 "User should NOT have select privilege on table in warehouse2"
+            );
+
+            // Assert that privileges are only on warehouse1's view
+            assert!(
+                view_ownership_wh1_allowed,
+                "User should have ownership on view in warehouse1"
+            );
+            assert!(
+                view_select_wh1_allowed,
+                "User should have describe privilege on view in warehouse1"
+            );
+            assert!(
+                !view_ownership_wh2_allowed,
+                "User should NOT have ownership on view in warehouse2"
+            );
+            assert!(
+                !view_select_wh2_allowed,
+                "User should NOT have describe privilege on view in warehouse2"
             );
 
             Ok(())
