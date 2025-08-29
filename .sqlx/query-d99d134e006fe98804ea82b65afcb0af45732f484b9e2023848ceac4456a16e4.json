@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH input_rows AS (\n            SELECT\n                unnest($1::uuid[]) as task_id,\n                $2 as queue_name,\n                unnest($3::uuid[]) as parent_task_id,\n                unnest($4::uuid[]) as warehouse_id,\n                unnest($5::timestamptz[]) as scheduled_for,\n                unnest($6::jsonb[]) as payload,\n                unnest($7::uuid[]) as entity_ids,\n                unnest($8::entity_type[]) as entity_types\n        )\n        INSERT INTO task(\n                task_id,\n                queue_name,\n                status,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                task_data,\n                entity_id,\n                entity_type)\n        SELECT\n            i.task_id,\n            i.queue_name,\n            $9,\n            i.parent_task_id,\n            i.warehouse_id,\n            coalesce(i.scheduled_for, now()),\n            i.payload,\n            i.entity_ids,\n            i.entity_types\n        FROM input_rows i\n        ON CONFLICT (warehouse_id, entity_type, entity_id, queue_name) DO NOTHING\n        RETURNING task_id, queue_name, entity_id, entity_type as \"entity_type: EntityType\"",
+  "query": "WITH input_rows AS (\n            SELECT\n                unnest($1::uuid[]) as task_id,\n                $2 as queue_name,\n                unnest($3::uuid[]) as parent_task_id,\n                unnest($4::uuid[]) as warehouse_id,\n                unnest($5::timestamptz[]) as scheduled_for,\n                unnest($6::jsonb[]) as payload,\n                unnest($7::uuid[]) as entity_ids,\n                unnest($8::entity_type[]) as entity_types\n        )\n        INSERT INTO task(\n                task_id,\n                queue_name,\n                status,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                task_data,\n                entity_id,\n                entity_type)\n        SELECT\n            i.task_id,\n            i.queue_name,\n            $9,\n            i.parent_task_id,\n            i.warehouse_id,\n            coalesce(i.scheduled_for, now() AT TIME ZONE 'UTC'),\n            i.payload,\n            i.entity_ids,\n            i.entity_types\n        FROM input_rows i\n        ON CONFLICT (warehouse_id, entity_type, entity_id, queue_name) DO NOTHING\n        RETURNING task_id, queue_name, entity_id, entity_type as \"entity_type: EntityType\"",
   "describe": {
     "columns": [
       {
@@ -80,5 +80,5 @@
       false
     ]
   },
-  "hash": "0e3c35e31f9e146ca50e58a8a81cd27e9cb8df8f597b7baa24448956b1b44ca2"
+  "hash": "d99d134e006fe98804ea82b65afcb0af45732f484b9e2023848ceac4456a16e4"
 }

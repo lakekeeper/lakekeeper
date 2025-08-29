@@ -8,9 +8,18 @@ use crate::{
         GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
     },
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{Task, TaskFilter, TaskStatus},
+    service::task_queue::{Task, TaskFilter, TaskQueueName, TaskStatus},
     WarehouseId,
 };
+
+mod list_pagination_token;
+
+mod get_task_details;
+mod list_tasks;
+mod resolve_tasks;
+pub(crate) use get_task_details::get_task_details;
+pub(crate) use list_tasks::list_tasks;
+pub(crate) use resolve_tasks::resolve_tasks;
 
 #[derive(Debug)]
 pub(crate) struct InsertResult {
@@ -35,9 +44,10 @@ impl From<EntityId> for EntityType {
 
 pub(crate) async fn queue_task_batch(
     conn: &mut PgConnection,
-    queue_name: &'static str,
+    queue_name: &TaskQueueName,
     tasks: Vec<TaskInput>,
 ) -> Result<Vec<InsertResult>, IcebergErrorResponse> {
+    let queue_name = queue_name.as_str();
     let mut task_ids = Vec::with_capacity(tasks.len());
     let mut parent_task_ids = Vec::with_capacity(tasks.len());
     let mut warehouse_idents = Vec::with_capacity(tasks.len());
@@ -134,9 +144,10 @@ pub(crate) async fn queue_task_batch(
 #[tracing::instrument]
 pub(crate) async fn pick_task(
     pool: &PgPool,
-    queue_name: &str,
+    queue_name: &TaskQueueName,
     default_max_time_since_last_heartbeat: chrono::Duration,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
+    let queue_name = queue_name.as_str();
     let max_time_since_last_heartbeat = PgInterval {
         months: 0,
         days: 0,
@@ -214,7 +225,7 @@ pub(crate) async fn pick_task(
             config: task.config,
             task_id: task.task_id.into(),
             status: task.status,
-            queue_name: task.queue_name,
+            queue_name: task.queue_name.into(),
             picked_up_at: task.picked_up_at,
             attempt: task.attempt,
             data: task.task_data,
@@ -244,7 +255,11 @@ pub(crate) async fn record_success(
                                  started_at,
                                  duration,
                                  progress,
-                                 execution_details)
+                                 execution_details,
+                                 attempt_scheduled_for,
+                                 last_heartbeat_at,
+                                 parent_task_id,
+                                 task_created_at)
                 SELECT task_id,
                        warehouse_id,
                        queue_name,
@@ -257,7 +272,11 @@ pub(crate) async fn record_success(
                        picked_up_at,
                        now() AT TIME ZONE 'UTC' - picked_up_at,
                        1.0000,
-                       execution_details
+                       execution_details,
+                       scheduled_for,
+                       last_heartbeat_at,
+                       parent_task_id,
+                       created_at
                 FROM task
                 WHERE task_id = $1)
         DELETE FROM task
@@ -273,6 +292,7 @@ pub(crate) async fn record_success(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn record_failure(
     conn: &mut PgConnection,
     task_id: TaskId,
@@ -297,8 +317,41 @@ pub(crate) async fn record_failure(
         sqlx::query!(
             r#"
             WITH history as (
-                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, attempt, started_at, duration, progress, execution_details)
-                SELECT task_id, warehouse_id, queue_name, task_data, $2, entity_id, entity_type, attempt, picked_up_at, now() AT TIME ZONE 'UTC' - picked_up_at, progress, execution_details
+                INSERT INTO task_log(
+                    task_id,
+                    warehouse_id,
+                    queue_name,
+                    task_data,
+                    status,
+                    entity_id,
+                    entity_type,
+                    attempt,
+                    started_at,
+                    duration,
+                    progress,
+                    execution_details,
+                    attempt_scheduled_for,
+                    last_heartbeat_at,
+                    parent_task_id,
+                    task_created_at
+                )
+                SELECT
+                    task_id,
+                    warehouse_id,
+                    queue_name,
+                    task_data,
+                    $2,
+                    entity_id,
+                    entity_type,
+                    attempt,
+                    picked_up_at,
+                    now() AT TIME ZONE 'UTC' - picked_up_at,
+                    progress,
+                    execution_details,
+                    scheduled_for,
+                    last_heartbeat_at,
+                    parent_task_id,
+                    created_at
                 FROM task WHERE task_id = $1
             )
             DELETE FROM task
@@ -307,15 +360,49 @@ pub(crate) async fn record_failure(
             *task_id,
             TaskOutcome::Failed as _,
         )
-            .execute(conn)
-            .await
-            .map_err(|e| e.into_error_model("failed to log and delete failed task"))?;
+        .execute(conn)
+        .await
+        .map_err(|e| e.into_error_model("failed to log and delete failed task"))?;
     } else {
         sqlx::query!(
             r#"
             WITH task_log as (
-                INSERT INTO task_log(task_id, warehouse_id, queue_name, task_data, status, entity_id, entity_type, message, attempt, started_at, duration, progress, execution_details)
-                SELECT task_id, warehouse_id, queue_name, task_data, $4, entity_id, entity_type, $2, attempt, picked_up_at, now() AT TIME ZONE 'UTC' - picked_up_at, progress, execution_details
+                INSERT INTO task_log(
+                    task_id,
+                    warehouse_id,
+                    queue_name,
+                    task_data,
+                    status,
+                    entity_id,
+                    entity_type,
+                    message,
+                    attempt,
+                    started_at,
+                    duration,
+                    progress,
+                    execution_details,
+                    attempt_scheduled_for,
+                    last_heartbeat_at,
+                    parent_task_id,
+                    task_created_at)
+                SELECT 
+                    task_id,
+                    warehouse_id,
+                    queue_name,
+                    task_data,
+                    $4,
+                    entity_id,
+                    entity_type,
+                    $2,
+                    attempt,
+                    picked_up_at,
+                    now() AT TIME ZONE 'UTC' - picked_up_at,
+                    progress,
+                    execution_details,
+                    scheduled_for,
+                    last_heartbeat_at,
+                    parent_task_id,
+                    created_at
                 FROM task WHERE task_id = $1
             )
             UPDATE task
@@ -331,9 +418,9 @@ pub(crate) async fn record_failure(
             TaskStatus::Scheduled as _,
             TaskOutcome::Failed as _,
         )
-            .execute(conn)
-            .await
-            .map_err(|e| e.into_error_model("failed to update task status"))?;
+        .execute(conn)
+        .await
+        .map_err(|e| e.into_error_model("failed to update task status"))?;
     }
 
     Ok(())
@@ -342,7 +429,7 @@ pub(crate) async fn record_failure(
 pub(crate) async fn get_task_queue_config(
     transaction: &mut PgConnection,
     warehouse_id: WarehouseId,
-    queue_name: &str,
+    queue_name: &TaskQueueName,
 ) -> crate::api::Result<Option<GetTaskQueueConfigResponse>> {
     let result = sqlx::query!(
         r#"
@@ -351,7 +438,7 @@ pub(crate) async fn get_task_queue_config(
         WHERE warehouse_id = $1 AND queue_name = $2
         "#,
         *warehouse_id,
-        queue_name
+        queue_name.as_str()
     )
     .fetch_optional(transaction)
     .await
@@ -365,7 +452,7 @@ pub(crate) async fn get_task_queue_config(
     Ok(Some(GetTaskQueueConfigResponse {
         queue_config: QueueConfigResponse {
             config: result.config,
-            queue_name: queue_name.to_string(),
+            queue_name: queue_name.clone(),
         },
         max_seconds_since_last_heartbeat: result
             .max_time_since_last_heartbeat
@@ -418,25 +505,27 @@ pub(crate) async fn set_task_queue_config(
     Ok(())
 }
 
-pub(crate) async fn request_task_stop(
+pub(crate) async fn request_tasks_stop(
     transaction: &mut PgConnection,
-    task_id: TaskId,
+    task_ids: &[TaskId],
 ) -> crate::api::Result<()> {
     sqlx::query!(
         r#"
-        WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() AT TIME ZONE 'UTC' WHERE task_id = $1)
         UPDATE task
         SET status = $2
-        WHERE task_id = $1
+        WHERE task_id = ANY($1) 
+            AND status = $3
         "#,
-        *task_id,
+        &task_ids.iter().map(|s| **s).collect_vec(),
         TaskStatus::ShouldStop as _,
+        TaskStatus::Running as _,
     )
     .execute(transaction)
     .await
     .map_err(|e| {
         tracing::error!(?e, "Failed to request task to stop");
-        e.into_error_model(format!("Failed to request task to stop: {task_id}"))
+        let task_ids_str = task_ids.iter().join(", ");
+        e.into_error_model(format!("Failed to request task to stop: {task_ids_str}"))
     })?;
 
     Ok(())
@@ -478,10 +567,11 @@ use crate::service::task_queue::{
 pub(crate) async fn cancel_scheduled_tasks(
     connection: &mut PgConnection,
     filter: TaskFilter,
-    queue_name: Option<&str>,
+    queue_name: Option<&TaskQueueName>,
     force_delete_running_tasks: bool,
 ) -> crate::api::Result<()> {
     let queue_name_is_none = queue_name.is_none();
+    let queue_name = queue_name.map(crate::service::task_queue::TaskQueueName::as_str);
     let queue_name = queue_name.unwrap_or("");
     match filter {
         TaskFilter::WarehouseId(warehouse_id) => {
@@ -498,7 +588,11 @@ pub(crate) async fn cancel_scheduled_tasks(
                                              started_at,
                                              duration,
                                              progress,
-                                             execution_details)
+                                             execution_details,
+                                             attempt_scheduled_for,
+                                             last_heartbeat_at,
+                                             parent_task_id,
+                                             task_created_at)
                         SELECT task_id,
                                warehouse_id,
                                queue_name,
@@ -512,7 +606,11 @@ pub(crate) async fn cancel_scheduled_tasks(
                                    then now() AT TIME ZONE 'UTC' - picked_up_at
                                end,
                                 progress,
-                                execution_details
+                                execution_details,
+                                scheduled_for,
+                                last_heartbeat_at,
+                                parent_task_id,
+                                created_at
                         FROM task
                         WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
                     )
@@ -550,7 +648,13 @@ pub(crate) async fn cancel_scheduled_tasks(
                                              entity_type,
                                              attempt,
                                              started_at,
-                                             duration)
+                                             duration,
+                                             progress,
+                                             execution_details,
+                                             attempt_scheduled_for,
+                                             last_heartbeat_at,
+                                             parent_task_id,
+                                             task_created_at)
                         SELECT task_id,
                                warehouse_id,
                                queue_name,
@@ -562,7 +666,13 @@ pub(crate) async fn cancel_scheduled_tasks(
                                picked_up_at,
                                case when picked_up_at is not null
                                    then now() AT TIME ZONE 'UTC' - picked_up_at
-                               end
+                               end,
+                                progress,
+                                execution_details,
+                                scheduled_for,
+                                last_heartbeat_at,
+                                parent_task_id,
+                                created_at
                         FROM task
                         WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)
                     )
@@ -570,7 +680,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                     WHERE (status = $3 OR $6) AND (queue_name = $4 OR $5)
                     AND task_id = ANY($1)
                 "#,
-                &task_ids.iter().map(|s| **s).collect::<Vec<_>>(),
+                &task_ids.iter().map(|s| **s).collect_vec(),
                 TaskOutcome::Cancelled as _,
                 TaskStatus::Scheduled as _,
                 queue_name,
@@ -609,7 +719,7 @@ mod test {
 
     async fn queue_task(
         conn: &mut PgConnection,
-        queue_name: &'static str,
+        queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
         entity_id: EntityId,
         warehouse_id: WarehouseId,
@@ -634,26 +744,45 @@ mod test {
         .map(|x| x.task_id))
     }
 
+    fn generate_tq_name() -> TaskQueueName {
+        TaskQueueName::from(format!("test-{}", Uuid::now_v7()))
+    }
+
     #[sqlx::test]
     async fn test_queue_task(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
 
         let entity_id = EntityId::Tabular(Uuid::now_v7());
-        let id = queue_task(&mut conn, "test", None, entity_id, warehouse_id, None, None)
-            .await
-            .unwrap();
+        let tq_name = generate_tq_name();
+        let id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-        assert!(
-            queue_task(&mut conn, "test", None, entity_id, warehouse_id, None, None)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
 
         let id3 = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -666,7 +795,7 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    pub(crate) async fn setup(pool: PgPool) -> WarehouseId {
+    pub(crate) async fn setup_warehouse(pool: PgPool) -> WarehouseId {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -681,13 +810,29 @@ mod test {
         wh.warehouse_id
     }
 
+    pub(crate) async fn setup_two_warehouses(pool: PgPool) -> (WarehouseId, WarehouseId) {
+        let prof = crate::tests::memory_io_profile();
+        let (_, wh) = crate::tests::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            TabularDeleteProfile::Hard {},
+            None,
+            2,
+        )
+        .await;
+        (wh.warehouse_id, wh.additional_warehouses[0].0)
+    }
+
     #[sqlx::test]
-    async fn test_failed_tasks_are_put_back(pool: PgPool) {
+    async fn test_failed_tasks_retry_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -698,7 +843,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -708,13 +853,13 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
-        record_failure(&mut pool.acquire().await.unwrap(), id, 5, "test")
+        record_failure(&mut pool.acquire().await.unwrap(), id, 5, "test details")
             .await
             .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -723,14 +868,14 @@ mod test {
         assert_eq!(task.attempt, 2);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         record_failure(&mut pool.acquire().await.unwrap(), id, 2, "test")
             .await
             .unwrap();
 
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none()
@@ -738,13 +883,14 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_success_task_arent_polled(pool: PgPool) {
+    async fn test_success_tasks_are_not_polled(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
+        let tq_name = generate_tq_name();
 
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -755,7 +901,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -765,14 +911,14 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         record_success(id, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
 
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none()
@@ -780,15 +926,16 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_success_tasks_can_be_reinserted(pool: PgPool) {
+    async fn test_success_tasks_can_be_reinserted_with_new_id(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
+        let tq_name = generate_tq_name();
 
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Tabular(Uuid::now_v7());
 
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             entity,
             warehouse_id,
@@ -799,7 +946,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -809,7 +956,7 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
         record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
@@ -818,7 +965,7 @@ mod test {
 
         let id2 = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             entity,
             warehouse_id,
@@ -830,7 +977,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -839,19 +986,20 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
     #[sqlx::test]
     async fn test_cancelled_tasks_can_be_reinserted(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Tabular(Uuid::now_v7());
+        let tq_name = generate_tq_name();
 
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             entity,
             warehouse_id,
@@ -865,7 +1013,7 @@ mod test {
         cancel_scheduled_tasks(
             &mut conn,
             TaskFilter::TaskIds(vec![id]),
-            Some("test"),
+            Some(&tq_name),
             false,
         )
         .await
@@ -873,7 +1021,7 @@ mod test {
 
         let id2 = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             entity,
             warehouse_id,
@@ -885,7 +1033,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -895,20 +1043,21 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
     #[sqlx::test]
     async fn test_failed_tasks_can_be_reinserted(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
+        let tq_name = generate_tq_name();
 
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Tabular(Uuid::now_v7());
 
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             entity,
             warehouse_id,
@@ -919,7 +1068,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -929,7 +1078,7 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
         record_failure(
@@ -943,7 +1092,7 @@ mod test {
 
         let id2 = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             entity,
             warehouse_id,
@@ -955,7 +1104,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -964,17 +1113,18 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"b": "b"}));
     }
 
     #[sqlx::test]
     async fn test_scheduled_tasks_are_polled_later(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -986,7 +1136,7 @@ mod test {
         .unwrap();
 
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none()
@@ -994,7 +1144,7 @@ mod test {
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1004,16 +1154,17 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
     }
 
     #[sqlx::test]
     async fn test_stale_tasks_are_picked_up_again(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -1024,7 +1175,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", chrono::Duration::milliseconds(500))
+        let task = pick_task(&pool, &tq_name, chrono::Duration::milliseconds(500))
             .await
             .unwrap()
             .unwrap();
@@ -1034,11 +1185,11 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-        let task = pick_task(&pool, "test", chrono::Duration::milliseconds(500))
+        let task = pick_task(&pool, &tq_name, chrono::Duration::milliseconds(500))
             .await
             .unwrap()
             .unwrap();
@@ -1048,16 +1199,17 @@ mod test {
         assert_eq!(task.attempt, 2);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
     }
 
     #[sqlx::test]
     async fn test_multiple_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
         let id = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -1070,7 +1222,7 @@ mod test {
 
         let id2 = queue_task(
             &mut conn,
-            "test",
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -1081,16 +1233,16 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1102,14 +1254,14 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         assert_eq!(task2.task_id, id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt, 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task2.queue_name, "test");
+        assert_eq!(&task2.queue_name, &tq_name);
 
         record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
             .await
@@ -1122,10 +1274,11 @@ mod test {
     #[sqlx::test]
     async fn test_queue_batch(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
         let ids = queue_task_batch(
             &mut conn,
-            "test",
+            &tq_name,
             vec![
                 TaskInput {
                     task_metadata: TaskMetadata {
@@ -1153,16 +1306,16 @@ mod test {
         let id = ids[0].task_id;
         let id2 = ids[1].task_id;
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1174,14 +1327,14 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         assert_eq!(task2.task_id, id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt, 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task2.queue_name, "test");
+        assert_eq!(&task2.queue_name, &tq_name);
 
         record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
             .await
@@ -1203,12 +1356,13 @@ mod test {
     #[sqlx::test]
     async fn test_queue_batch_idempotency(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
+        let warehouse_id = setup_warehouse(pool.clone()).await;
         let idp1 = EntityId::Tabular(Uuid::now_v7());
         let idp2 = EntityId::Tabular(Uuid::now_v7());
+        let tq_name = generate_tq_name();
         let ids = queue_task_batch(
             &mut conn,
-            "test",
+            &tq_name,
             vec![
                 TaskInput {
                     task_metadata: task_metadata(warehouse_id, idp1),
@@ -1226,16 +1380,16 @@ mod test {
         let id = ids[0].task_id;
         let id2 = ids[1].task_id;
 
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1247,14 +1401,14 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         assert_eq!(task2.task_id, id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt, 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task2.queue_name, "test");
+        assert_eq!(&task2.queue_name, &tq_name);
 
         // Re-insert the first task with the same idempotency key
         // and a new idempotency key
@@ -1262,7 +1416,7 @@ mod test {
         let new_key = EntityId::Tabular(Uuid::now_v7());
         let ids_second = queue_task_batch(
             &mut conn,
-            "test",
+            &tq_name,
             vec![
                 TaskInput {
                     task_metadata: task_metadata(warehouse_id, idp1),
@@ -1293,7 +1447,7 @@ mod test {
         // Re-insert two tasks with previously used idempotency keys
         let ids_third = queue_task_batch(
             &mut conn,
-            "test",
+            &tq_name,
             vec![TaskInput {
                 task_metadata: task_metadata(warehouse_id, idp1),
                 payload: serde_json::Value::default(),
@@ -1310,7 +1464,7 @@ mod test {
             .unwrap();
 
         // pick one new task, one re-inserted task
-        let task = pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1320,10 +1474,10 @@ mod test {
         assert_eq!(task.attempt, 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
-        assert_eq!(&task.queue_name, "test");
+        assert_eq!(&task.queue_name, &tq_name);
 
         assert!(
-            pick_task(&pool, "test", DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1338,10 +1492,10 @@ mod test {
     #[sqlx::test]
     async fn test_set_get_task_config(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
-        let queue_name = "test_queue";
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
 
-        assert!(get_task_queue_config(&mut conn, warehouse_id, queue_name)
+        assert!(get_task_queue_config(&mut conn, warehouse_id, &tq_name)
             .await
             .unwrap()
             .is_none());
@@ -1351,16 +1505,16 @@ mod test {
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
-        set_task_queue_config(&mut conn, queue_name, warehouse_id, config)
+        set_task_queue_config(&mut conn, &tq_name, warehouse_id, config)
             .await
             .unwrap();
 
-        let response = get_task_queue_config(&mut conn, warehouse_id, queue_name)
+        let response = get_task_queue_config(&mut conn, warehouse_id, &tq_name)
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(response.queue_config.queue_name, queue_name);
+        assert_eq!(&response.queue_config.queue_name, &tq_name);
         assert_eq!(
             response.queue_config.config,
             serde_json::json!({"max_attempts": 5})
@@ -1371,21 +1525,21 @@ mod test {
     #[sqlx::test]
     async fn test_set_task_config_yields_a_task_with_config(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup(pool.clone()).await;
-        let queue_name = "test_queue";
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
 
         let config = SetTaskQueueConfigRequest {
             queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
-        set_task_queue_config(&mut conn, queue_name, warehouse_id, config)
+        set_task_queue_config(&mut conn, &tq_name, warehouse_id, config)
             .await
             .unwrap();
         let payload = serde_json::json!("our-task");
         let _task = queue_task(
             &mut conn,
-            queue_name,
+            &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -1396,20 +1550,20 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, queue_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.queue_name, queue_name);
+        assert_eq!(task.queue_name, tq_name);
         assert_eq!(task.config, Some(serde_json::json!({"max_attempts": 5})));
         assert_eq!(task.data, payload);
 
-        let other_queue = "other-queue";
+        let other_tq_name = generate_tq_name();
         let other_payload = serde_json::json!("other-task");
         let _task = queue_task(
             &mut conn,
-            other_queue,
+            &other_tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
@@ -1420,11 +1574,11 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, other_queue, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &other_tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task.queue_name, other_queue);
+        assert_eq!(task.queue_name, other_tq_name);
         assert_eq!(task.config, None);
         assert_eq!(task.data, other_payload);
     }

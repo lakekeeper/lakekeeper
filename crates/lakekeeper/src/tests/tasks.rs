@@ -10,7 +10,7 @@ use crate::{
 };
 
 mod test {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, LazyLock, Mutex};
 
     use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
@@ -23,7 +23,8 @@ mod test {
         service::{
             task_queue::{
                 EntityId, QueueRegistration, SpecializedTask, TaskConfig as QueueConfigTrait,
-                TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueRegistry,
+                TaskData, TaskExecutionDetails, TaskInput, TaskMetadata, TaskQueueName,
+                TaskQueueRegistry,
             },
             Catalog, Transaction,
         },
@@ -46,10 +47,10 @@ mod test {
         impl TaskExecutionDetails for ExecutionDetails {}
 
         impl TaskData for TestTaskData {}
-        const QUEUE_NAME: &str = "test_queue";
+        static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| "test_queue".into());
         impl QueueConfigTrait for Config {
-            fn queue_name() -> &'static str {
-                QUEUE_NAME
+            fn queue_name() -> &'static TaskQueueName {
+                &QUEUE_NAME
             }
         }
         let setup = super::setup_tasks_test(pool).await;
@@ -68,7 +69,7 @@ mod test {
         let task_queue_registry = TaskQueueRegistry::new();
         task_queue_registry
             .register_queue::<Config>(QueueRegistration {
-                queue_name: QUEUE_NAME,
+                queue_name: &QUEUE_NAME,
                 worker_fn: Arc::new(move |_| {
                     let ctx = ctx_clone.clone();
                     let rx = rx.clone();
@@ -101,7 +102,7 @@ mod test {
                 .unwrap();
         <PostgresCatalog as Catalog>::set_task_queue_config(
             setup.warehouse.warehouse_id,
-            QUEUE_NAME,
+            &QUEUE_NAME,
             SetTaskQueueConfigRequest {
                 queue_config: QueueConfig(
                     serde_json::to_value(Config {
@@ -122,7 +123,7 @@ mod test {
             .unwrap();
 
         let task_id = PostgresCatalog::enqueue_task(
-            QUEUE_NAME,
+            &QUEUE_NAME,
             TaskInput {
                 task_metadata: TaskMetadata {
                     warehouse_id: setup.warehouse.warehouse_id,

@@ -14,15 +14,18 @@ use crate::{
     },
     service::{
         authz::Authorizer,
-        task_queue::{tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData},
+        task_queue::{
+            tabular_purge_queue::TabularPurgePayload, SpecializedTask, TaskData, TaskQueueName,
+        },
         Catalog, TableId, Transaction, ViewId,
     },
     CancellationToken,
 };
 
-pub(crate) const QUEUE_NAME: &str = "tabular_expiration";
+const QN_STR: &str = "tabular_expiration";
+pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
-    queue_name: QUEUE_NAME,
+    queue_name: &QUEUE_NAME,
     utoipa_type_name: ExpirationQueueConfig::name(),
     utoipa_schema: ExpirationQueueConfig::schema(),
 });
@@ -62,8 +65,8 @@ impl TaskExecutionDetails for TabularExpirationExecutionDetails {}
 pub struct ExpirationQueueConfig {}
 
 impl TaskConfig for ExpirationQueueConfig {
-    fn queue_name() -> &'static str {
-        QUEUE_NAME
+    fn queue_name() -> &'static TaskQueueName {
+        &QUEUE_NAME
     }
 }
 
@@ -89,7 +92,7 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
         let EntityId::Tabular(tabular_id) = task.task_metadata.entity_id;
 
         let span = tracing::debug_span!(
-            QUEUE_NAME,
+            QN_STR,
             tabular_id = %tabular_id,
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
@@ -113,13 +116,13 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     match handle_table::<C, A>(catalog_state.clone(), authorizer, tabular_id, task).await {
         Ok(()) => {
             tracing::debug!(
-                "Task of `{QUEUE_NAME}` worker exited successfully. {} with id {tabular_id} deleted.",
+                "Task of `{QN_STR}` worker exited successfully. {} with id {tabular_id} deleted.",
                 task.data.tabular_type
             );
         }
         Err(err) => {
             tracing::error!(
-                "Error in `{QUEUE_NAME}` worker. Expiration of {} with id {tabular_id} failed. Error: {err}",
+                "Error in `{QN_STR}` worker. Expiration of {} with id {tabular_id} failed. Error: {err}",
                 task.data.tabular_type
             );
             task.record_failure::<C>(
@@ -147,9 +150,7 @@ where
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
-            e.append_detail(format!(
-                "Failed to start transaction for `{QUEUE_NAME}` Queue.",
-            ))
+            e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue.",))
         })?;
 
     let tabular_location = match task.data.tabular_type {
@@ -160,13 +161,15 @@ where
             let location = match drop_result {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
                     tracing::warn!(
-                        "Table with id `{table_id}` not found in catalog for `{QUEUE_NAME}` task. Skipping deletion."
+                        "Table with id `{table_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
                     );
                     None
                 }
-                Err(e) => return Err(e.append_detail(format!(
-                    "Failed to drop table with id `{table_id}` from catalog for `{QUEUE_NAME}` task."
-                ))),
+                Err(e) => {
+                    return Err(e.append_detail(format!(
+                    "Failed to drop table with id `{table_id}` from catalog for `{QN_STR}` task."
+                )))
+                }
                 Ok(loc) => Some(loc),
             };
 
@@ -175,7 +178,7 @@ where
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
-                        "Failed to delete table from authorizer in `{QUEUE_NAME}` task. {e}"
+                        "Failed to delete table from authorizer in `{QN_STR}` task. {e}"
                     );
                 })
                 .ok();
@@ -187,14 +190,14 @@ where
             let location = match C::drop_view(view_id, true, trx.transaction()).await {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
                     tracing::warn!(
-                        "View with id `{view_id}` not found in catalog for `{QUEUE_NAME}` task. Skipping deletion."
+                        "View with id `{view_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
                     );
                     None
                 }
                 Err(e) => {
                     return Err(e.append_detail(format!(
-                    "Failed to drop view with id `{view_id}` from catalog for `{QUEUE_NAME}` task."
-                )))
+                        "Failed to drop view with id `{view_id}` from catalog for `{QN_STR}` task."
+                    )))
                 }
                 Ok(loc) => Some(loc),
             };
@@ -204,7 +207,7 @@ where
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
-                        "Failed to delete view from authorizer in `{QUEUE_NAME}` task. {e}"
+                        "Failed to delete view from authorizer in `{QN_STR}` task. {e}"
                     );
                 })
                 .ok();
@@ -230,7 +233,7 @@ where
             .await
             .map_err(|e| {
                 e.append_detail(format!(
-                    "Failed to queue purge after `{QUEUE_NAME}` task with id `{}`.",
+                    "Failed to queue purge after `{QN_STR}` task with id `{}`.",
                     task.task_id
                 ))
             })?;
@@ -242,7 +245,7 @@ where
         .await;
 
     trx.commit().await.map_err(|e| {
-        tracing::error!("Failed to commit transaction in `{QUEUE_NAME}` task. {e}");
+        tracing::error!("Failed to commit transaction in `{QN_STR}` task. {e}");
         e
     })?;
 
@@ -268,9 +271,7 @@ mod test {
             CatalogState, PostgresCatalog, PostgresTransaction, SecretsState,
         },
         service::{
-            authz::AllowAllAuthorizer,
-            storage::MemoryProfile,
-            Catalog, ListFlags, Transaction,
+            authz::AllowAllAuthorizer, storage::MemoryProfile, Catalog, ListFlags, Transaction,
         },
     };
 

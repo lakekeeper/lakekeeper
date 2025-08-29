@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::future::BoxFuture;
 
-use crate::CancellationToken;
+use crate::{service::task_queue::TaskQueueName, CancellationToken};
 
 /// Infinitely running task worker loop function that polls tasks from a queue and
 /// processes. Accepts a cancellation token for graceful shutdown.
@@ -29,7 +29,7 @@ impl std::fmt::Debug for QueueWorkerConfig {
 /// Runner for task queues that manages the worker processes
 #[derive(Debug, Clone)]
 pub struct TaskQueuesRunner {
-    pub(super) registered_queues: Arc<HashMap<&'static str, QueueWorkerConfig>>,
+    pub(super) registered_queues: Arc<HashMap<&'static TaskQueueName, QueueWorkerConfig>>,
     pub(super) cancellation_token: CancellationToken,
 }
 
@@ -39,7 +39,7 @@ impl TaskQueuesRunner {
     pub async fn run_queue_workers(self, restart_workers: bool) {
         // Create a structure to track worker information and hold task handles
         struct WorkerInfo {
-            queue_name: &'static str,
+            queue_name: &'static TaskQueueName,
             worker_id: usize,
             handle: tokio::task::JoinHandle<()>,
         }

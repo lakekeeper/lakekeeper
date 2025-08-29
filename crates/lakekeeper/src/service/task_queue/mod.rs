@@ -2,13 +2,13 @@ use std::{fmt::Debug, marker::PhantomData, ops::Deref, sync::LazyLock, time::Dur
 
 use chrono::Utc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use strum::EnumIter;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::Catalog;
+use crate::service::{Catalog, TableId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -31,6 +31,58 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
     ]
 });
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TaskQueueName(String);
+
+impl Deref for TaskQueueName {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: AsRef<str>> From<T> for TaskQueueName {
+    fn from(name: T) -> Self {
+        Self(name.as_ref().to_string())
+    }
+}
+
+impl std::fmt::Display for TaskQueueName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TaskQueueName {
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self(name.to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum TaskEntity {
+    #[serde(rename_all = "kebab-case")]
+    Table {
+        #[schema(value_type = uuid::Uuid)]
+        table_id: TableId,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
+    },
+}
+
 /// Warehouse specific configuration for a task queue.
 pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned {
     #[must_use]
@@ -43,7 +95,7 @@ pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned {
         DEFAULT_MAX_RETRIES
     }
 
-    fn queue_name() -> &'static str;
+    fn queue_name() -> &'static TaskQueueName;
 }
 
 /// Task Payload
@@ -51,7 +103,7 @@ pub trait TaskData: Clone + Serialize + DeserializeOwned {}
 
 pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned {}
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Hash, Debug, Clone, PartialEq, Serialize, Deserialize, Copy, Eq)]
 pub struct TaskId(Uuid);
 
 impl std::fmt::Display for TaskId {
@@ -122,7 +174,7 @@ impl EntityId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     pub task_metadata: TaskMetadata,
-    pub queue_name: String,
+    pub queue_name: TaskQueueName,
     pub task_id: TaskId,
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
@@ -143,12 +195,24 @@ pub struct SpecializedTask<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> 
     execution_details: PhantomData<E>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[must_use]
 pub enum TaskCheckState {
     Stop,
     Continue,
     NotActive,
+}
+
+impl TaskCheckState {
+    #[must_use]
+    pub fn should_terminate(&self) -> bool {
+        matches!(self, TaskCheckState::Stop | TaskCheckState::NotActive)
+    }
+
+    #[must_use]
+    pub fn should_report_termination(&self) -> bool {
+        matches!(self, TaskCheckState::Stop)
+    }
 }
 
 impl Task {
@@ -195,7 +259,7 @@ impl Task {
 
 impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, E> {
     #[must_use]
-    pub fn queue_name() -> &'static str {
+    pub fn queue_name() -> &'static TaskQueueName {
         Q::queue_name()
     }
 
@@ -670,7 +734,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, EnumIter)]
+#[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -682,7 +746,7 @@ pub enum TaskStatus {
     ShouldStop,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -718,4 +782,31 @@ pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
     let dur = chrono::Duration::seconds(num);
     assert!(dur.num_microseconds().is_some());
     dur
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_task_entity_serde_table() {
+        let json = serde_json::json!({
+            "type": "table",
+            "table-id": "550e8400-e29b-41d4-a716-446655440000",
+            "warehouse-id": "550e8400-e29b-41d4-a716-446655440001"
+        });
+        let deserialized: super::TaskEntity = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            deserialized,
+            super::TaskEntity::Table {
+                table_id: super::TableId::from(
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+                ),
+                warehouse_id: super::WarehouseId::from(
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
+                ),
+            }
+        );
+
+        let serialized = serde_json::to_value(&deserialized).unwrap();
+        assert_eq!(serialized, json);
+    }
 }

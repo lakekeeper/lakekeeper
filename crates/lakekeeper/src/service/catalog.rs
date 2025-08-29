@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use iceberg::{
     spec::{TableMetadata, ViewMetadata},
@@ -22,6 +26,7 @@ use crate::{
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
+            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
@@ -36,10 +41,26 @@ use crate::{
         authn::UserId,
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
-        task_queue::{Task, TaskCheckState, TaskFilter, TaskId, TaskInput},
+        task_queue::{
+            Task, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput, TaskQueueName,
+        },
     },
     SecretIdent,
 };
+
+struct TasksCacheExpiry;
+impl<K, V> moka::Expiry<K, V> for TasksCacheExpiry {
+    fn expire_after_create(&self, _key: &K, _value: &V, _created_at: Instant) -> Option<Duration> {
+        Some(Duration::from_secs(60 * 60)) // 1 hour
+    }
+}
+static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, (TaskEntity, TaskQueueName)>> =
+    LazyLock::new(|| {
+        moka::future::Cache::builder()
+            .max_capacity(10000)
+            .expire_after(TasksCacheExpiry)
+            .build()
+    });
 
 #[async_trait::async_trait]
 pub trait Transaction<D>
@@ -396,14 +417,26 @@ where
     ///
     /// We use this function also to handle the `table_exists` endpoint.
     /// Also return Ok(None) if the warehouse is not active.
+    async fn resolve_table_ident<'a>(
+        warehouse_id: WarehouseId,
+        table: &TableIdent,
+        list_flags: ListFlags,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<TabularDetails>>;
+
     async fn table_to_id<'a>(
         warehouse_id: WarehouseId,
         table: &TableIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<TableId>>;
+    ) -> Result<Option<TableId>> {
+        Ok(
+            Self::resolve_table_ident(warehouse_id, table, list_flags, transaction)
+                .await?
+                .map(|t| t.table_id),
+        )
+    }
 
-    /// Same as `table_ident_to_id`, but for multiple tables.
     async fn table_idents_to_ids(
         warehouse_id: WarehouseId,
         tables: HashSet<&TableIdent>,
@@ -752,13 +785,6 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
-    async fn resolve_table_ident(
-        warehouse_id: WarehouseId,
-        table: &TableIdent,
-        list_flags: ListFlags,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TabularDetails>>;
-
     async fn set_tabular_protected(
         tabular_id: TabularId,
         protect: bool,
@@ -792,13 +818,74 @@ where
     /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
     /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
     async fn pick_new_task(
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
 
+    /// Resolve tasks among all known active and historical tasks.
+    /// Returns a map of task_id to (TaskEntity, queue_name).
+    /// If `warehouse_id` is `Some`, only resolve tasks for that warehouse.
+    async fn resolve_tasks_impl(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>>;
+
+    /// Resolve tasks among all known active and historical tasks.
+    /// Returns a map of task_id to (TaskEntity, queue_name).
+    /// If a task does not exist, it is not included in the map.
+    async fn resolve_tasks(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+        if task_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut cached_results = HashMap::new();
+        for id in task_ids {
+            if let Some(cached_value) = TASKS_CACHE.get(id).await {
+                cached_results.insert(*id, cached_value);
+            }
+        }
+        let not_cached_ids: Vec<TaskId> = task_ids
+            .iter()
+            .copied()
+            .filter(|id| !cached_results.contains_key(id))
+            .collect();
+        let resolve_uncached_result =
+            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, transaction).await?;
+        for (id, value) in &resolve_uncached_result {
+            cached_results.insert(*id, value.clone());
+            TASKS_CACHE.insert(*id, value.clone()).await;
+        }
+        Ok(cached_results)
+    }
+
+    async fn resolve_required_tasks(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+        let tasks = Self::resolve_tasks(warehouse_id, task_ids, transaction).await?;
+
+        for task_id in task_ids {
+            if !tasks.contains_key(task_id) {
+                return Err(ErrorModel::not_found(
+                    format!("Task with id `{task_id}` not found"),
+                    "TaskNotFound",
+                    None,
+                )
+                .into());
+            }
+        }
+
+        Ok(tasks)
+    }
+
     async fn record_task_success(
-        id: TaskId,
+        task_id: TaskId,
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
@@ -810,6 +897,42 @@ where
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
+    /// Get task details by task id.
+    /// Return Ok(None) if the task does not exist.
+    async fn get_task_details_impl(
+        warehouse_id: WarehouseId,
+        task_id: TaskId,
+        num_attempts: u16, // Number of attempts to retrieve in the task details
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<GetTaskDetailsResponse>>;
+
+    /// Get task details by task id.
+    /// Return Ok(None) if the task does not exist.
+    async fn get_task_details(
+        warehouse_id: WarehouseId,
+        task_id: TaskId,
+        num_attempts: u16,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<GetTaskDetailsResponse>> {
+        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, transaction).await
+    }
+
+    /// List tasks
+    async fn list_tasks_impl(
+        warehouse_id: WarehouseId,
+        query: ListTasksRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ListTasksResponse>;
+
+    /// List tasks
+    async fn list_tasks(
+        warehouse_id: WarehouseId,
+        query: ListTasksRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ListTasksResponse> {
+        Self::list_tasks_impl(warehouse_id, query, transaction).await
+    }
+
     /// Enqueue a batch of tasks to a task queue.
     ///
     /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
@@ -817,7 +940,7 @@ where
     ///
     /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`.
     async fn enqueue_tasks(
-        queue_name: &'static str,
+        queue_name: &'static TaskQueueName,
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>>;
@@ -827,7 +950,7 @@ where
     /// There can only be a single active task for a (entity_id, queue_name) tuple.
     /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
     async fn enqueue_task(
-        queue_name: &'static str,
+        queue_name: &'static TaskQueueName,
         task: TaskInput,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TaskId>> {
@@ -841,7 +964,7 @@ where
     /// If `cancel_running_and_should_stop` is true, also cancel tasks in the `running` and `should-stop` states.
     /// If `queue_name` is `None`, cancel tasks in all queues.
     async fn cancel_scheduled_tasks(
-        queue_name: Option<&str>,
+        queue_name: Option<&TaskQueueName>,
         filter: TaskFilter,
         cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -855,24 +978,25 @@ where
         execution_details: Option<serde_json::Value>,
     ) -> Result<TaskCheckState>;
 
-    /// Sends a stop signal to the task.
+    /// Sends stop signals to the tasks.
+    /// Only affects tasks in the `running` state.
     ///
     /// It is up to the task handler to decide if it can stop.
-    async fn stop_task(
-        task_id: TaskId,
+    async fn stop_tasks(
+        task_ids: &[TaskId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
     async fn set_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;
 }
