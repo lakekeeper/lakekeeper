@@ -27,7 +27,9 @@ fn openfga_user_type(inp: &str) -> Option<String> {
 
 /// Prepends `lakekeeper_` to the type and injects `prefix` into a full `OpenFGA` object.
 ///
-/// ```rust
+/// ```rust,ignore
+/// # // ignore: can't have doctest of private function
+///
 /// let full_object = "table:t1";
 /// let extended_object = "lakekeeper_table:wh1/t1";
 /// assert_eq!(new_v4_tuple(full_object, "wh1"), extended_object.to_string());
@@ -219,7 +221,7 @@ async fn get_all_warehouses(
         let semaphore = OPENFGA_REQ_PERMITS.clone();
 
         jobs.spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
+            let permit = semaphore.acquire().await.unwrap();
             let mut warehouses = vec![];
             let tuples = client
                 .read_all_pages(
@@ -232,7 +234,7 @@ async fn get_all_warehouses(
                     u32::MAX,
                 )
                 .await?;
-            drop(_permit);
+            drop(permit);
             for t in tuples {
                 match t.key {
                     None => {}
@@ -266,7 +268,7 @@ async fn get_all_namespaces(
             let semaphore = OPENFGA_REQ_PERMITS.clone();
 
             jobs.spawn(async move {
-                let _permit = semaphore.acquire().await.unwrap();
+                let permit = semaphore.acquire().await.unwrap();
                 let tuples = client
                     .read_all_pages(
                         Some(ReadRequestTupleKey {
@@ -278,7 +280,7 @@ async fn get_all_namespaces(
                         u32::MAX,
                     )
                     .await?;
-                drop(_permit);
+                drop(permit);
                 let children: Vec<String> = tuples
                     .into_iter()
                     .filter_map(|t| t.key.map(|k| k.object))
@@ -304,14 +306,14 @@ enum TabularType {
 }
 
 impl TabularType {
-    fn object_type(&self) -> String {
+    fn object_type(self) -> String {
         match self {
             Self::Table => "table:".to_string(),
             Self::View => "view:".to_string(),
         }
     }
 
-    fn parent_relation_string(&self) -> String {
+    fn parent_relation_string(self) -> String {
         match self {
             Self::Table => TableRelation::Parent.to_string(),
             Self::View => ViewRelation::Parent.to_string(),
@@ -340,7 +342,7 @@ async fn get_all_tabulars(
                 let object_type = tab.object_type();
                 let semaphore = OPENFGA_REQ_PERMITS.clone();
                 tabular_jobs.spawn(async move {
-                    let _permit = semaphore.acquire().await.unwrap();
+                    let permit = semaphore.acquire().await.unwrap();
                     let tuples = client
                         .read_all_pages(
                             Some(ReadRequestTupleKey {
@@ -352,7 +354,7 @@ async fn get_all_tabulars(
                             u32::MAX,
                         )
                         .await?;
-                    drop(_permit);
+                    drop(permit);
                     let tabulars: Vec<String> = tuples
                         .into_iter()
                         .filter_map(|t| t.key.map(|k| k.object))
@@ -1110,6 +1112,7 @@ mod tests {
         }
 
         #[tokio::test]
+        #[allow(clippy::too_many_lines)]
         async fn test_v4_push_down_warehouse_id() -> anyhow::Result<()> {
             let (client, store_name) = v3_client_for_empty_store().await?;
 
@@ -1392,7 +1395,7 @@ mod tests {
         /// criterion.
         #[tokio::test(flavor = "multi_thread")]
         #[test_log::test]
-        #[ignore]
+        #[ignore = "expensive benchmark, not testing functionality"]
         async fn test_v4_push_down_warehouse_id_bench() -> anyhow::Result<()> {
             const NUM_WAREHOUSES: usize = 10;
             /// equally distributed among warehouses
@@ -1403,7 +1406,7 @@ mod tests {
             let (client, store_name) = v3_client_for_empty_store().await?;
             let authorizer = OpenFGAAuthorizer {
                 client: client.clone(),
-                health: Default::default(),
+                health: Arc::default(),
             };
             let req_meta_human =
                 RequestMetadata::random_human(UserId::new_unchecked("oidc", "user"));
@@ -1656,6 +1659,7 @@ mod tests {
         // migrated to v4.
 
         #[tokio::test]
+        #[allow(clippy::too_many_lines)]
         async fn test_reuse_tabular_ids_across_warehouses() -> anyhow::Result<()> {
             let authorizer = new_v4_authorizer_for_empty_store().await?;
 
@@ -1802,8 +1806,7 @@ mod tests {
                     ]),
                     None,
                 )
-                .await
-                .unwrap();
+                .await?;
 
             // Verify that the privileges are only assigned to the table in warehouse1
             let ownership_wh1_allowed = authorizer
@@ -1812,8 +1815,7 @@ mod tests {
                     relation: TableRelation::Ownership.to_string(),
                     object: table_in_wh1.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             let select_wh1_allowed = authorizer
                 .check(CheckRequestTupleKey {
@@ -1821,8 +1823,7 @@ mod tests {
                     relation: TableRelation::Select.to_string(),
                     object: table_in_wh1.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             let ownership_wh2_allowed = authorizer
                 .check(CheckRequestTupleKey {
@@ -1830,8 +1831,7 @@ mod tests {
                     relation: TableRelation::Ownership.to_string(),
                     object: table_in_wh2.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             let select_wh2_allowed = authorizer
                 .check(CheckRequestTupleKey {
@@ -1839,8 +1839,7 @@ mod tests {
                     relation: TableRelation::Select.to_string(),
                     object: table_in_wh2.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             // Verify that the privileges are only assigned to the view in warehouse1
             let view_ownership_wh1_allowed = authorizer
@@ -1849,8 +1848,7 @@ mod tests {
                     relation: ViewRelation::Ownership.to_string(),
                     object: view_in_wh1.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             let view_select_wh1_allowed = authorizer
                 .check(CheckRequestTupleKey {
@@ -1858,8 +1856,7 @@ mod tests {
                     relation: ViewRelation::Describe.to_string(),
                     object: view_in_wh1.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             let view_ownership_wh2_allowed = authorizer
                 .check(CheckRequestTupleKey {
@@ -1867,8 +1864,7 @@ mod tests {
                     relation: ViewRelation::Ownership.to_string(),
                     object: view_in_wh2.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             let view_select_wh2_allowed = authorizer
                 .check(CheckRequestTupleKey {
@@ -1876,8 +1872,7 @@ mod tests {
                     relation: ViewRelation::Describe.to_string(),
                     object: view_in_wh2.clone(),
                 })
-                .await
-                .unwrap();
+                .await?;
 
             // Assert that privileges are only on warehouse1's table
             assert!(
