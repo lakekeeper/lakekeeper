@@ -70,6 +70,7 @@ use crate::{
     },
 };
 
+// TODO open issue that this must be configurable in case someone set lower limit on their server?
 const MAX_TUPLES_PER_WRITE: i32 = 100;
 
 static AUTH_CONFIG: LazyLock<crate::config::OpenFGAConfig> =
@@ -771,7 +772,7 @@ impl OpenFGAAuthorizer {
     /// Read all tuples for a given request
     async fn read_all(
         &self,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: Option<impl Into<ReadRequestTupleKey>>,
     ) -> OpenFGAResult<Vec<Tuple>> {
         self.client
             .read_all_pages(tuple_key, 100, 500)
@@ -1053,7 +1054,6 @@ fn suffixes_for_user(user: &FgaType) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) mod tests {
     mod openfga_integration_tests {
         use http::StatusCode;

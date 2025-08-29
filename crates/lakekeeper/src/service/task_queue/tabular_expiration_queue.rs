@@ -115,6 +115,7 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     };
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,

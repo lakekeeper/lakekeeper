@@ -158,7 +158,7 @@ pub enum NamespaceParent {
 }
 
 #[async_trait::async_trait]
-/// Interface to provide AuthZ functions to the catalog.
+/// Interface to provide `AuthZ` functions to the catalog.
 /// The provided `Actor` argument of all methods except `check_actor`
 /// are assumed to be valid. Please ensure to call `check_actor` before, preferably
 /// during Authentication.

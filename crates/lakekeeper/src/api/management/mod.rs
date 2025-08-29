@@ -172,7 +172,7 @@ pub mod v1 {
         secret_store: PhantomData<S>,
     }
 
-    /// ServerInfo
+    /// `ServerInfo`
     ///
     /// Returns basic information about the server configuration and status.
     #[utoipa::path(
@@ -1056,18 +1056,18 @@ pub mod v1 {
     /// Statistics are aggregated hourly when changes occur.
     ///
     /// We lazily create a new statistics entry every hour, in between hours, the existing entry is
-    /// being updated. If there's a change at created_at + 1 hour, a new entry is created.
+    /// being updated. If there's a change at `created_at` + 1 hour, a new entry is created.
     /// If there's been no change, no new entry is created, meaning there may be gaps.
     ///
     /// Example:
     /// - 00:16:32: warehouse created:
-    ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: null, 0 tables, 0 views
+    ///     - timestamp: 01:00:00, `created_at`: 00:16:32, `updated_at`: null, 0 tables, 0 views
     /// - 00:30:00: table created:
-    ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:30:00, 1 table, 0 views
+    ///     - timestamp: 01:00:00, `created_at`: 00:16:32, `updated_at`: 00:30:00, 1 table, 0 views
     /// - 00:45:00: view created:
     ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view
     /// - 01:00:36: table deleted:
-    ///     - timestamp: 02:00:00, created_at: 01:00:36, updated_at: null, 0 tables, 1 view
+    ///     - timestamp: 02:00:00, `created_at`: 01:00:36, `updated_at`: null, 0 tables, 1 view
     ///     - timestamp: 01:00:00, created_at: 00:16:32, updated_at: 00:45:00, 1 table, 1 view
     #[utoipa::path(
         get,
@@ -1129,14 +1129,14 @@ pub mod v1 {
     ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null}]]
     /// - 00:30:00: table created:
     ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
-    ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": null}]]
+    ///                                                  {"count": 1, "`http_route"`: "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "`status_code"`: 201, "`warehouse_id"`: "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "`warehouse_name"`: "staging", "`created_at"`: "00:30:00", "`updated_at"`: null}]]
     /// - 00:45:00: table created:
     ///     - timestamps: ["01:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
     ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}]]
     /// - 01:00:36: table deleted:
     ///     - timestamps: ["01:00:00","02:00:00"], called_endpoints: [[{"count": 1, "http_route": "POST /management/v1/warehouse", "status_code": 201, "warehouse_id": null, "warehouse_name": null, "created_at": "00:16:32", "updated_at": null},
     ///                                                  {"count": 1, "http_route": "POST /catalog/v1/{prefix}/namespaces/{namespace}/tables", "status_code": 201, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "00:30:00", "updated_at": "00:45:00"}],
-    ///                                                   [{"count": 1, "http_route": "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "status_code": 200, "warehouse_id": "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "warehouse_name": "staging", "created_at": "01:00:36", "updated_at": "null"}]]
+    ///                                                   [{"count": 1, "`http_route"`: "DELETE /catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}", "`status_code"`: 200, "`warehouse_id"`: "ff17f1d0-90ad-4e7d-bf02-be718b78c2ee", "`warehouse_name"`: "staging", "`created_at"`: "01:00:36", "`updated_at"`: "null"}]]
     #[utoipa::path(
         post,
         tag = "project",
