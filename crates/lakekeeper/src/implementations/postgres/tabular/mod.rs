@@ -398,12 +398,12 @@ pub(crate) async fn create_tabular(
         r#"SELECT EXISTS (
                SELECT 1
                FROM tabular ta
-               JOIN warehouse w ON ta.warehouse_id = w.warehouse_id
-               WHERE (fs_location = ANY($1) OR
+               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
-                      (length($3) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $3 || '/%'))
-               ) AND tabular_id != $2
+                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
+               ) AND tabular_id != $3
            ) as "exists!""#,
+        warehouse_id,
         &partial_locations,
         id,
         fs_location
