@@ -1,6 +1,6 @@
 # Changelog
 
-`MODIFIES_TUPLES` indictates whether existing tuples are modified when migrating from lower versions. If `TRUE`, modifications are done via migration functions passed to the OpenFGA model manager.
+`MODIFIES_TUPLES` indicates whether existing tuples are modified when migrating from lower versions. If `TRUE`, modifications are done via migration functions passed to the OpenFGA model manager.
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
@@ -8,7 +8,7 @@
 
 ```
 MODIFIES_TUPLES: FALSE
-ADDS_TUPLSE:     TRUE
+ADDS_TUPLES:     TRUE
 ```
 
 **If your catalog is not using the default server id, set env var `LAKEKEEPER__SERVER_ID=<server_id>` for the migration.**

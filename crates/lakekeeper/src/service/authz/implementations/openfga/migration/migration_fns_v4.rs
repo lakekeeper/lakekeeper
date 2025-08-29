@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+use anyhow::anyhow;
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference, ReadRequestTupleKey,
     TupleKey,
@@ -81,9 +82,9 @@ pub(crate) async fn v4_push_down_warehouse_id(
     let store = client
         .get_store_by_name(&state.store_name)
         .await?
-        .expect("default store should exist");
-    let curr_auth_model_id =
-        curr_auth_model_id.expect("Migration hook needs current auth model's id");
+        .ok_or_else(|| anyhow!("Store not found: {}", state.store_name))?;
+    let curr_auth_model_id = curr_auth_model_id
+        .ok_or_else(|| anyhow!("v4 migration is missing current authorization model id"))?;
     let client = client
         .into_client(&store.id, &curr_auth_model_id)
         .set_consistency(ConsistencyPreference::HigherConsistency);
@@ -125,7 +126,7 @@ pub(crate) async fn v4_push_down_warehouse_id(
 
         // Load tabulars only inside this loop (i.e. per warehouse) and drop them at the end of it.
         // This is done to mitigate the risk of OOM during the migration of a huge catalog.
-        let tabulars = get_all_tabulars(&client, &nss).await.unwrap();
+        let tabulars = get_all_tabulars(&client, &nss).await?;
         let num_tabulars_in_wh = tabulars.len();
         tracing::info!("Found {num_tabulars_in_wh} tabulars in warehouse {wh_id}");
         let mut new_tuples_to_write = vec![];
