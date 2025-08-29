@@ -16,8 +16,8 @@ DROP INDEX task_log_warehouse_id_entity_id_entity_type_idx;
 
 CREATE INDEX task_warehouse_id_entity_type_entity_id_idx ON public.task_log USING btree (
     warehouse_id,
-    entity_id,
     entity_type,
+    entity_id,
     created_at DESC
 );
 
@@ -36,8 +36,8 @@ ADD COLUMN task_created_at timestamptz NOT NULL;
 
 CREATE INDEX task_log_warehouse_id_entity_type_entity_id_idx ON public.task_log USING btree (
     warehouse_id,
-    entity_id,
     entity_type,
+    entity_id,
     task_created_at DESC
 );
 
