@@ -1092,10 +1092,7 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::1");
             let config = get_config();
-            assert_eq!(
-                config.bind_ip,
-                IpAddr::V6(Ipv6Addr::LOCALHOST)
-            );
+            assert_eq!(config.bind_ip, IpAddr::V6(Ipv6Addr::LOCALHOST));
             Ok(())
         });
     }
@@ -1105,10 +1102,7 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::");
             let config = get_config();
-            assert_eq!(
-                config.bind_ip,
-                IpAddr::V6(Ipv6Addr::UNSPECIFIED)
-            );
+            assert_eq!(config.bind_ip, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
             Ok(())
         });
     }
