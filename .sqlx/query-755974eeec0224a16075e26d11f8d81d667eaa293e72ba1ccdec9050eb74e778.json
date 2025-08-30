@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH ins as (\n                INSERT INTO task_log(\n                    task_id,\n                    warehouse_id,\n                    queue_name,\n                    task_data,\n                    status,\n                    entity_id,\n                    entity_type,\n                    message,\n                    attempt,\n                    started_at,\n                    duration,\n                    progress,\n                    execution_details,\n                    attempt_scheduled_for,\n                    last_heartbeat_at,\n                    parent_task_id,\n                    task_created_at)\n                SELECT \n                    task_id,\n                    warehouse_id,\n                    queue_name,\n                    task_data,\n                    $4,\n                    entity_id,\n                    entity_type,\n                    $2,\n                    attempt,\n                    picked_up_at,\n                    now() - picked_up_at,\n                    progress,\n                    execution_details,\n                    scheduled_for,\n                    last_heartbeat_at,\n                    parent_task_id,\n                    created_at\n                FROM task WHERE task_id = $1\n                ON CONFLICT (task_id, attempt) DO NOTHING\n                RETURNING task_id\n            )\n            UPDATE task t\n            SET \n                status = $3, \n                progress = 0.0,\n                picked_up_at = NULL,\n                execution_details = NULL\n            FROM ins\n            WHERE t.task_id = ins.task_id\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "755974eeec0224a16075e26d11f8d81d667eaa293e72ba1ccdec9050eb74e778"
+}

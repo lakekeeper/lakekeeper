@@ -2,7 +2,6 @@ use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
-use super::default_page_size;
 use crate::{
     api::{
         iceberg::{types::PageToken, v1::PaginationQuery},
@@ -105,8 +104,8 @@ pub struct ListRolesQuery {
     pub page_token: Option<String>,
     /// Signals an upper bound of the number of results that a client will receive.
     /// Default: 100
-    #[serde(default = "default_page_size")]
-    pub page_size: i64,
+    #[serde(default)]
+    pub page_size: Option<i64>,
     /// Project ID from which roles should be listed
     /// Deprecated: Please use the `x-project-id` header instead.
     #[serde(default)]
@@ -122,7 +121,7 @@ impl ListRolesQuery {
                 .page_token
                 .clone()
                 .map_or(PageToken::Empty, PageToken::Present),
-            page_size: Some(self.page_size),
+            page_size: self.page_size,
         }
     }
 }

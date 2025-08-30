@@ -393,11 +393,9 @@ pub struct GetEndpointStatisticsRequest {
 pub enum WarehouseFilter {
     /// Filter for a specific warehouse
     WarehouseId { id: Uuid },
-    /// Filter for requests that could not be associated with any warehouse, e.g. some management
-    /// endpoints
+    /// Filter for items that are not associated with a warehouse
     Unmapped,
-    /// Do not filter by warehouse and return all statistics for all warehouses and unmapped requests
-    /// for the current project.
+    /// Return all items in the current project, regardless of warehouse association
     All,
 }
 

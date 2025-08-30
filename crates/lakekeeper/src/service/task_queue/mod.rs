@@ -1,14 +1,14 @@
-use std::{fmt::Debug, ops::Deref, sync::LazyLock, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, ops::Deref, sync::LazyLock, time::Duration};
 
 use chrono::Utc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use strum::EnumIter;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::Catalog;
+use crate::service::{Catalog, TableId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -31,8 +31,60 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
     ]
 });
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TaskQueueName(String);
+
+impl Deref for TaskQueueName {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: AsRef<str>> From<T> for TaskQueueName {
+    fn from(name: T) -> Self {
+        Self(name.as_ref().to_string())
+    }
+}
+
+impl std::fmt::Display for TaskQueueName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TaskQueueName {
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self(name.to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum TaskEntity {
+    #[serde(rename_all = "kebab-case")]
+    Table {
+        #[schema(value_type = uuid::Uuid)]
+        table_id: TableId,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
+    },
+}
+
 /// Warehouse specific configuration for a task queue.
-pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
+pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned {
     #[must_use]
     fn max_time_since_last_heartbeat() -> chrono::Duration {
         DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT
@@ -43,13 +95,15 @@ pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
         DEFAULT_MAX_RETRIES
     }
 
-    fn queue_name() -> &'static str;
+    fn queue_name() -> &'static TaskQueueName;
 }
 
 /// Task Payload
 pub trait TaskData: Clone + Serialize + DeserializeOwned {}
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned {}
+
+#[derive(Hash, Debug, Clone, PartialEq, Serialize, Deserialize, Copy, Eq)]
 pub struct TaskId(Uuid);
 
 impl std::fmt::Display for TaskId {
@@ -120,7 +174,7 @@ impl EntityId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     pub task_metadata: TaskMetadata,
-    pub queue_name: String,
+    pub queue_name: TaskQueueName,
     pub task_id: TaskId,
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
@@ -130,7 +184,7 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SpecializedTask<C: QueueConfig, P: TaskData> {
+pub struct SpecializedTask<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> {
     pub task_metadata: TaskMetadata,
     pub task_id: TaskId,
     pub status: TaskStatus,
@@ -138,12 +192,27 @@ pub struct SpecializedTask<C: QueueConfig, P: TaskData> {
     pub attempt: i32,
     pub config: Option<C>,
     pub data: P,
+    execution_details: PhantomData<E>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
 pub enum TaskCheckState {
     Stop,
     Continue,
+    NotActive,
+}
+
+impl TaskCheckState {
+    #[must_use]
+    pub fn should_terminate(&self) -> bool {
+        matches!(self, TaskCheckState::Stop | TaskCheckState::NotActive)
+    }
+
+    #[must_use]
+    pub fn should_report_termination(&self) -> bool {
+        matches!(self, TaskCheckState::Stop)
+    }
 }
 
 impl Task {
@@ -168,7 +237,7 @@ impl Task {
     ///
     /// # Errors
     /// Returns an error if the task configuration cannot be deserialized into the specified type.
-    fn queue_config<T: QueueConfig>(&self) -> crate::api::Result<Option<T>> {
+    fn queue_config<T: TaskConfig>(&self) -> crate::api::Result<Option<T>> {
         Ok(self
             .config
             .as_ref()
@@ -188,9 +257,9 @@ impl Task {
     }
 }
 
-impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
+impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, E> {
     #[must_use]
-    pub fn queue_name() -> &'static str {
+    pub fn queue_name() -> &'static TaskQueueName {
         Q::queue_name()
     }
 
@@ -337,6 +406,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 attempt: task.attempt,
                 config,
                 data: state,
+                execution_details: PhantomData,
             }))
         } else {
             Ok(None)
@@ -390,6 +460,49 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 }
             }
         }
+    }
+
+    /// Heartbeat this task, while logging progress and checking for should-stop signal.
+    ///
+    /// # Errors
+    /// Returns an error if the heartbeat fails.
+    pub async fn heartbeat<C: Catalog>(
+        &self,
+        transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+        progress: f32,
+        execution_details: Option<E>,
+    ) -> Result<TaskCheckState, ErrorModel> {
+        let execution_details = execution_details
+            .map(|details| serde_json::to_value(details))
+            .transpose()
+            .map_err(|e| {
+                ErrorModel::internal(
+                    format!(
+                        "Failed to serialize execution details for `{}` task {}: {e}",
+                        Self::queue_name(),
+                        self.task_id
+                    ),
+                    "Unexpected",
+                    Some(Box::new(e)),
+                )
+            })?;
+
+        C::check_and_heartbeat_task(
+            self.task_id,
+            self.attempt,
+            transaction,
+            progress,
+            execution_details,
+        )
+        .await
+        .map_err(|e| {
+            e.append_detail(format!(
+                "Failed to heartbeat `{}` task {}.",
+                Self::queue_name(),
+                self.task_id
+            ))
+            .into()
+        })
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.
@@ -627,7 +740,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, EnumIter)]
+#[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -639,7 +752,7 @@ pub enum TaskStatus {
     ShouldStop,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -679,166 +792,27 @@ pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn test_task_entity_serde_table() {
+        let json = serde_json::json!({
+            "type": "table",
+            "table-id": "550e8400-e29b-41d4-a716-446655440000",
+            "warehouse-id": "550e8400-e29b-41d4-a716-446655440001"
+        });
+        let deserialized: super::TaskEntity = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            deserialized,
+            super::TaskEntity::Table {
+                table_id: super::TableId::from(
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+                ),
+                warehouse_id: super::WarehouseId::from(
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
+                ),
+            }
+        );
 
-    use std::time::Duration;
-
-    use sqlx::PgPool;
-    use tracing_test::traced_test;
-
-    use super::*;
-    use crate::{
-        api::{
-            iceberg::v1::PaginationQuery,
-            management::v1::{DeleteKind, TabularType},
-        },
-        implementations::postgres::{
-            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog, PostgresTransaction, SecretsState,
-        },
-        service::{
-            authz::AllowAllAuthorizer,
-            storage::MemoryProfile,
-            task_queue::{
-                tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
-            },
-            Catalog, ListFlags, Transaction,
-        },
-    };
-
-    #[sqlx::test]
-    #[traced_test]
-    async fn test_queue_expiration_queue_task(pool: PgPool) {
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let queues = crate::service::task_queue::TaskQueueRegistry::new();
-
-        let secrets =
-            crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
-        let cat = catalog_state.clone();
-        let sec = secrets.clone();
-        let auth = AllowAllAuthorizer;
-        queues
-            .register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
-                cat,
-                sec,
-                auth,
-                Duration::from_millis(100),
-            )
-            .await;
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        let runner = queues.task_queues_runner(cancellation_token.clone()).await;
-        let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
-
-        let warehouse = initialize_warehouse(
-            catalog_state.clone(),
-            Some(MemoryProfile::default().into()),
-            None,
-            None,
-            true,
-        )
-        .await;
-
-        let tab = initialize_table(
-            warehouse,
-            catalog_state.clone(),
-            false,
-            None,
-            Some("tab".to_string()),
-        )
-        .await;
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-        let _ = <PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: true,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .unwrap();
-        trx.commit().await.unwrap();
-        let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
-            .await
-            .unwrap();
-        tabular_expiration_queue::TabularExpirationTask::schedule_task::<PostgresCatalog>(
-            TaskMetadata {
-                warehouse_id: warehouse,
-                entity_id: EntityId::Tabular(tab.table_id.0),
-                parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-            },
-            TabularExpirationPayload {
-                tabular_type: TabularType::Table,
-                deletion_kind: DeleteKind::Purge,
-            },
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-
-        <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
-            tab.table_id.into(),
-            false,
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-
-        trx.commit().await.unwrap();
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        let del = <PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .unwrap()
-        .deletion_details;
-        del.unwrap();
-        trx.commit().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        assert!(<PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .is_none());
-        trx.commit().await.unwrap();
-
-        cancellation_token.cancel();
+        let serialized = serde_json::to_value(&deserialized).unwrap();
+        assert_eq!(serialized, json);
     }
 }

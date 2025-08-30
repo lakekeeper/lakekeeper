@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use typed_builder::TypedBuilder;
 use utoipa::ToSchema;
 
-use super::{default_page_size, DeleteWarehouseQuery, ProtectionResponse};
+use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
@@ -31,7 +31,7 @@ use crate::{
     service::{
         authz::{Authorizer, CatalogProjectAction, CatalogWarehouseAction},
         secrets::SecretStore,
-        task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter},
+        task_queue::{tabular_expiration_queue::TabularExpirationTask, TaskFilter, TaskQueueName},
         Catalog, ListFlags, NamespaceId, State, TableId, TabularId, Transaction,
     },
     ProjectId, WarehouseId,
@@ -49,8 +49,8 @@ pub struct ListDeletedTabularsQuery {
     pub page_token: Option<String>,
     /// Signals an upper bound of the number of results that a client will receive.
     /// Default: 100
-    #[serde(default = "default_page_size")]
-    pub page_size: i64,
+    #[serde(default)]
+    pub page_size: Option<i64>,
 }
 
 impl ListDeletedTabularsQuery {
@@ -61,7 +61,7 @@ impl ListDeletedTabularsQuery {
                 .page_token
                 .clone()
                 .map_or(PageToken::Empty, PageToken::Present),
-            page_size: Some(self.page_size),
+            page_size: self.page_size,
         }
     }
 }
@@ -958,7 +958,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
     async fn set_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: String,
+        queue_name: &TaskQueueName,
         request: SetTaskQueueConfigRequest,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -976,7 +976,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // ------------------- Business Logic -------------------
         let task_queues = context.v1_state.registered_task_queues;
 
-        if let Some(validate_config_fn) = task_queues.validate_config_fn(&queue_name).await {
+        if let Some(validate_config_fn) = task_queues.validate_config_fn(queue_name).await {
             validate_config_fn(request.queue_config.0.clone()).map_err(|e| {
                 ErrorModel::bad_request(
                     format!(
@@ -989,7 +989,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         } else {
             let mut existing_queue_names = task_queues.queue_names().await;
             existing_queue_names.sort_unstable();
-            let existing_queue_names = existing_queue_names.join(", ");
+            let existing_queue_names = existing_queue_names.iter().join(", ");
             return Err(ErrorModel::bad_request(
                 format!(
                     "Queue '{queue_name}' not found! Existing queues: [{existing_queue_names}]"
@@ -1002,20 +1002,15 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
-        C::set_task_queue_config(
-            warehouse_id,
-            queue_name.as_str(),
-            request,
-            transaction.transaction(),
-        )
-        .await?;
+        C::set_task_queue_config(warehouse_id, queue_name, request, transaction.transaction())
+            .await?;
         transaction.commit().await?;
         Ok(())
     }
 
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<GetTaskQueueConfigResponse> {
@@ -1066,7 +1061,8 @@ pub struct GetTaskQueueConfigResponse {
 pub struct QueueConfigResponse {
     #[serde(flatten)]
     pub(crate) config: serde_json::Value,
-    pub(crate) queue_name: String,
+    #[schema(value_type=String)]
+    pub(crate) queue_name: TaskQueueName,
 }
 
 impl axum::response::IntoResponse for GetTaskQueueConfigResponse {
@@ -1342,7 +1338,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 11,
+                page_size: Some(11),
                 page_token: None,
             },
             ctx.clone(),
@@ -1357,7 +1353,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 10,
+                page_size: Some(10),
                 page_token: None,
             },
             ctx.clone(),
@@ -1372,7 +1368,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 10,
+                page_size: Some(10),
                 page_token: all.next_page_token,
             },
             ctx.clone(),
@@ -1387,7 +1383,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 6,
+                page_size: Some(6),
                 page_token: None,
             },
             ctx.clone(),
@@ -1412,7 +1408,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 6,
+                page_size: Some(6),
                 page_token: first_six.next_page_token,
             },
             ctx.clone(),
@@ -1445,7 +1441,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 5,
+                page_size: Some(5),
                 page_token: None,
             },
             ctx.clone(),
@@ -1471,7 +1467,7 @@ mod test {
             warehouse.warehouse_id,
             ListDeletedTabularsQuery {
                 namespace_id: None,
-                page_size: 6,
+                page_size: Some(6),
                 page_token: page.next_page_token,
             },
             ctx.clone(),

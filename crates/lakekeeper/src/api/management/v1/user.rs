@@ -2,7 +2,6 @@ use axum::{response::IntoResponse, Json};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
-use super::default_page_size;
 use crate::{
     api::{
         iceberg::v1::{PageToken, PaginationQuery},
@@ -132,8 +131,8 @@ pub struct ListUsersQuery {
     pub page_token: Option<String>,
     /// Signals an upper bound of the number of results that a client will receive.
     /// Default: 100
-    #[serde(default = "default_page_size")]
-    pub page_size: i64,
+    #[serde(default)]
+    pub page_size: Option<i64>,
 }
 
 impl ListUsersQuery {
@@ -144,7 +143,7 @@ impl ListUsersQuery {
                 .page_token
                 .clone()
                 .map_or(PageToken::Empty, PageToken::Present),
-            page_size: Some(self.page_size),
+            page_size: self.page_size,
         }
     }
 }
