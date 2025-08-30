@@ -2,6 +2,8 @@
 
 
 
+## [0.9.6](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.9.6) (2025-08-30)
+
 ## [0.9.5](https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5) (2025-08-14)
 
 
