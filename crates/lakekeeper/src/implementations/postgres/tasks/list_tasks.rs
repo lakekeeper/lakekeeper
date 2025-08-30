@@ -6,6 +6,7 @@ use itertools::Itertools;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use super::EntityType;
 use crate::{
     api::management::v1::tasks::{
         ListTasksRequest, ListTasksResponse, Task as APITask, TaskStatus as APITaskStatus,
@@ -18,8 +19,6 @@ use crate::{
     service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId, CONFIG,
 };
-
-use super::EntityType;
 
 #[derive(sqlx::FromRow, Debug)]
 struct TaskRow {
@@ -105,7 +104,7 @@ pub(crate) async fn list_tasks(
         page_size,
     } = query;
 
-    let page_size = CONFIG.page_size_or_pagination_max(page_size);
+    let page_size = CONFIG.page_size_or_pagination_default(page_size);
     let previous_page_token = page_token.clone();
     let token = page_token.map(PaginateToken::try_from).transpose()?;
 
@@ -270,11 +269,11 @@ pub(crate) async fn list_tasks(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::Utc;
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         api::management::v1::tasks::{ListTasksRequest, TaskStatus as APITaskStatus},
         implementations::postgres::tasks::{pick_task, test::setup_warehouse},

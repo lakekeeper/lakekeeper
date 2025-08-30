@@ -4,14 +4,13 @@ use itertools::Itertools;
 use sqlx::{postgres::types::PgInterval, PgConnection};
 use uuid::Uuid;
 
+use super::EntityType;
 use crate::{
     api::management::v1::tasks::{GetTaskDetailsResponse, Task as APITask, TaskAttempt},
     implementations::postgres::dbutils::DBErrorHandler,
     service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId,
 };
-
-use super::EntityType;
 
 #[derive(sqlx::FromRow, Debug)]
 struct TaskDetailsRow {
@@ -190,7 +189,7 @@ pub(crate) async fn get_task_details(
             task_data,
             execution_details,
             case when picked_up_at is not null
-                then now() AT TIME ZONE 'UTC' - picked_up_at
+                then now() - picked_up_at
                 else null
             end as duration,
             null as message
@@ -244,15 +243,16 @@ pub(crate) async fn get_task_details(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::{TimeZone, Utc};
     use sqlx::{postgres::types::PgInterval, PgPool};
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         api::management::v1::tasks::TaskStatus as APITaskStatus,
         implementations::postgres::tasks::{
-            pick_task, record_failure, record_success, test::setup_warehouse,
+            check_and_heartbeat_task, pick_task, record_failure, record_success,
+            test::setup_warehouse,
         },
         service::task_queue::{
             EntityId, TaskCheckState, TaskEntity, TaskInput, TaskMetadata, TaskOutcome,
@@ -591,6 +591,7 @@ mod tests {
         let entity_id = EntityId::Tabular(Uuid::now_v7());
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
+        let scheduled_for = Utc::now() - chrono::Duration::minutes(1);
 
         // Queue a task
         let task_id = queue_task_helper(
@@ -599,7 +600,7 @@ mod tests {
             None,
             entity_id,
             warehouse_id,
-            None,
+            Some(scheduled_for),
             Some(payload.clone()),
         )
         .await
@@ -616,9 +617,10 @@ mod tests {
 
         // Update progress and execution details
         let execution_details = serde_json::json!({"progress": "in progress"});
-        let check_result = super::super::check_and_heartbeat_task(
+        let check_result = check_and_heartbeat_task(
             &mut conn,
             task_id,
+            task.attempt,
             0.5,
             Some(execution_details.clone()),
         )
@@ -642,6 +644,11 @@ mod tests {
         assert!((result.task.progress - 0.5).abs() < f32::EPSILON);
         assert!(result.task.last_heartbeat_at.is_some());
         assert!(result.task.parent_task_id.is_none());
+        assert_eq!(result.task.scheduled_for, scheduled_for);
+        // Check that created is now +- a few seconds
+        let now = Utc::now();
+        assert!(result.task.created_at <= now + chrono::Duration::seconds(10));
+        assert!(result.task.created_at >= now - chrono::Duration::seconds(10));
 
         // Verify entity
         let TaskEntity::Table {
@@ -817,7 +824,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let _task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -835,9 +842,10 @@ mod tests {
 
         // Update progress for the active task
         let execution_details = serde_json::json!({"current_step": "processing"});
-        let _ = super::super::check_and_heartbeat_task(
+        let _ = check_and_heartbeat_task(
             &mut conn,
             task_id,
+            task1.attempt,
             0.7,
             Some(execution_details.clone()),
         )

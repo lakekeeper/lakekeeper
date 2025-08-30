@@ -103,7 +103,7 @@ pub(crate) async fn queue_task_batch(
             $9,
             i.parent_task_id,
             i.warehouse_id,
-            coalesce(i.scheduled_for, now() AT TIME ZONE 'UTC'),
+            coalesce(i.scheduled_for, now()),
             i.payload,
             i.entity_ids,
             i.entity_types
@@ -166,11 +166,11 @@ pub(crate) async fn pick_task(
         LEFT JOIN task_config tc
             ON tc.queue_name = t.queue_name
                    AND tc.warehouse_id = t.warehouse_id
-        WHERE (t.queue_name = $1 AND scheduled_for < now() AT TIME ZONE 'UTC') 
+        WHERE (t.queue_name = $1 AND scheduled_for < now()) 
             AND (
                 (status = $3) OR 
-                (status != $3 AND (now() AT TIME ZONE 'UTC' - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
-            )           
+                (status != $3 AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
+            )
         -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
         -- transactions locked, this is our queue right there.
         FOR UPDATE OF t SKIP LOCKED
@@ -180,8 +180,8 @@ pub(crate) async fn pick_task(
     SET status = $4,
         progress = 0.0,
         execution_details = NULL,
-        picked_up_at = now() AT TIME ZONE 'UTC',
-        last_heartbeat_at = now() AT TIME ZONE 'UTC',
+        picked_up_at = now(),
+        last_heartbeat_at = now(),
         attempt = task.attempt + 1
     FROM updated_task
     WHERE task.task_id = updated_task.task_id
@@ -270,7 +270,7 @@ pub(crate) async fn record_success(
                        $2,
                        attempt,
                        picked_up_at,
-                       now() AT TIME ZONE 'UTC' - picked_up_at,
+                       now() - picked_up_at,
                        1.0000,
                        execution_details,
                        scheduled_for,
@@ -278,7 +278,10 @@ pub(crate) async fn record_success(
                        parent_task_id,
                        created_at
                 FROM task
-                WHERE task_id = $1)
+                WHERE task_id = $1
+                ON CONFLICT (task_id, attempt) DO NOTHING
+                RETURNING task_id
+                )
         DELETE FROM task
         WHERE task_id = $1
         "#,
@@ -345,7 +348,7 @@ pub(crate) async fn record_failure(
                     entity_type,
                     attempt,
                     picked_up_at,
-                    now() AT TIME ZONE 'UTC' - picked_up_at,
+                    now() - picked_up_at,
                     progress,
                     execution_details,
                     scheduled_for,
@@ -353,9 +356,11 @@ pub(crate) async fn record_failure(
                     parent_task_id,
                     created_at
                 FROM task WHERE task_id = $1
+                ON CONFLICT (task_id, attempt) DO NOTHING
+                RETURNING task_id
             )
             DELETE FROM task
-            WHERE task_id = $1
+            WHERE task_id = $1            
             "#,
             *task_id,
             TaskOutcome::Failed as _,
@@ -366,7 +371,7 @@ pub(crate) async fn record_failure(
     } else {
         sqlx::query!(
             r#"
-            WITH task_log as (
+            WITH ins as (
                 INSERT INTO task_log(
                     task_id,
                     warehouse_id,
@@ -396,7 +401,7 @@ pub(crate) async fn record_failure(
                     $2,
                     attempt,
                     picked_up_at,
-                    now() AT TIME ZONE 'UTC' - picked_up_at,
+                    now() - picked_up_at,
                     progress,
                     execution_details,
                     scheduled_for,
@@ -404,14 +409,17 @@ pub(crate) async fn record_failure(
                     parent_task_id,
                     created_at
                 FROM task WHERE task_id = $1
+                ON CONFLICT (task_id, attempt) DO NOTHING
+                RETURNING task_id
             )
-            UPDATE task
+            UPDATE task t
             SET 
                 status = $3, 
                 progress = 0.0,
                 picked_up_at = NULL,
                 execution_details = NULL
-            WHERE task_id = $1
+            FROM ins
+            WHERE t.task_id = ins.task_id
             "#,
             *task_id,
             details,
@@ -534,15 +542,24 @@ pub(crate) async fn request_tasks_stop(
 pub(crate) async fn check_and_heartbeat_task(
     transaction: &mut PgConnection,
     task_id: TaskId,
+    attempt: i32,
     progress: f32,
     execution_details: Option<serde_json::Value>,
 ) -> crate::api::Result<TaskCheckState> {
     Ok(sqlx::query!(
-        r#"WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() AT TIME ZONE 'UTC', progress = $2, execution_details = $3 WHERE task_id = $1)
-        SELECT status as "status: TaskStatus" FROM task WHERE task_id = $1"#,
+        r#"WITH heartbeat as (
+            UPDATE task 
+            SET last_heartbeat_at = now(), 
+                progress = $2, 
+                execution_details = $3 
+            WHERE task_id = $1 AND attempt = $4
+            RETURNING status
+        )
+        SELECT status as "status: TaskStatus" FROM heartbeat"#,
         *task_id,
         progress,
-        execution_details
+        execution_details,
+        attempt,
     )
     .fetch_optional(transaction)
     .await
@@ -603,7 +620,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                attempt,
                                picked_up_at,
                                case when picked_up_at is not null
-                                   then now() AT TIME ZONE 'UTC' - picked_up_at
+                                   then now() - picked_up_at
                                end,
                                 progress,
                                 execution_details,
@@ -613,6 +630,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                 created_at
                         FROM task
                         WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
+                        ON CONFLICT (task_id, attempt) DO NOTHING
                     )
                     DELETE FROM task
                     WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
@@ -638,7 +656,7 @@ pub(crate) async fn cancel_scheduled_tasks(
         }
         TaskFilter::TaskIds(task_ids) => {
             sqlx::query!(
-                r#"WITH log as (
+                r#"WITH ins as (
                         INSERT INTO task_log(task_id,
                                              warehouse_id,
                                              queue_name,
@@ -665,7 +683,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                attempt,
                                picked_up_at,
                                case when picked_up_at is not null
-                                   then now() AT TIME ZONE 'UTC' - picked_up_at
+                                   then now() - picked_up_at
                                end,
                                 progress,
                                 execution_details,
@@ -675,8 +693,9 @@ pub(crate) async fn cancel_scheduled_tasks(
                                 created_at
                         FROM task
                         WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)
+                        ON CONFLICT (task_id, attempt) DO NOTHING
                     )
-                    DELETE FROM task
+                    DELETE FROM task t
                     WHERE (status = $3 OR $6) AND (queue_name = $4 OR $5)
                     AND task_id = ANY($1)
                 "#,
@@ -1122,13 +1141,14 @@ mod test {
         let mut conn = pool.acquire().await.unwrap();
         let tq_name = generate_tq_name();
         let warehouse_id = setup_warehouse(pool.clone()).await;
+        let scheduled_for = Utc::now() + chrono::Duration::milliseconds(500);
         let id = queue_task(
             &mut conn,
             &tq_name,
             None,
             EntityId::Tabular(Uuid::now_v7()),
             warehouse_id,
-            Some(Utc::now() + chrono::Duration::milliseconds(500)),
+            Some(scheduled_for),
             None,
         )
         .await
@@ -1581,5 +1601,443 @@ mod test {
         assert_eq!(task.queue_name, other_tq_name);
         assert_eq!(task.config, None);
         assert_eq!(task.data, other_payload);
+    }
+
+    #[sqlx::test]
+    async fn test_record_success_idempotent(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = EntityId::Tabular(Uuid::now_v7());
+
+        // Queue and pick up a task
+        let task_id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"test": "data"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked_task.task_id, task_id);
+
+        // Record success first time
+        record_success(task_id, &mut conn, Some("First success"))
+            .await
+            .unwrap();
+
+        // Verify task is no longer in active tasks table
+        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap();
+        assert!(active_task.is_none());
+
+        // Record success second time - should be idempotent (no error)
+        record_success(task_id, &mut conn, Some("Second success"))
+            .await
+            .unwrap();
+
+        // Record success third time - should still be idempotent
+        record_success(task_id, &mut conn, Some("Third success"))
+            .await
+            .unwrap();
+
+        // Verify task is in task_log using get_task_details
+        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task should exist in task_log");
+
+        // Should be marked as successful
+        assert!(matches!(
+            task_details.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Success
+        ));
+        // Should have no historical attempts since it succeeded on first try
+        assert!(task_details.attempts.is_empty());
+        assert_eq!(task_details.task.attempt, 1);
+    }
+
+    #[sqlx::test]
+    async fn test_record_failure_idempotent_when_max_retries_exceeded(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = EntityId::Tabular(Uuid::now_v7());
+
+        // Queue and pick up a task
+        let task_id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"test": "failure_data"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked_task.task_id, task_id);
+
+        // Record failure with max_retries=1 (should fail permanently)
+        record_failure(&mut conn, task_id, 1, "First failure")
+            .await
+            .unwrap();
+
+        // Verify task is no longer in active tasks table
+        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap();
+        assert!(active_task.is_none());
+
+        // Record failure second time - should be idempotent (no error)
+        record_failure(&mut conn, task_id, 1, "Second failure")
+            .await
+            .unwrap();
+
+        // Record failure third time - should still be idempotent
+        record_failure(&mut conn, task_id, 1, "Third failure")
+            .await
+            .unwrap();
+
+        // Verify task is in task_log using get_task_details
+        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task should exist in task_log");
+
+        // Should be marked as failed
+        assert!(matches!(
+            task_details.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Failed
+        ));
+        // Should have no historical attempts since it failed permanently on first try
+        assert!(task_details.attempts.is_empty());
+        assert_eq!(task_details.task.attempt, 1);
+    }
+
+    #[sqlx::test]
+    async fn test_record_failure_idempotent_when_retries_available(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = EntityId::Tabular(Uuid::now_v7());
+
+        // Queue and pick up a task
+        let task_id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"test": "retry_data"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked_task.task_id, task_id);
+        assert_eq!(picked_task.attempt, 1);
+
+        // Record failure with max_retries=5 (should retry)
+        record_failure(&mut conn, task_id, 5, "First failure")
+            .await
+            .unwrap();
+
+        // Task should be back in scheduled state
+        let retry_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry_task.task_id, task_id);
+        assert_eq!(retry_task.attempt, 2);
+
+        // Record failure again for the same attempt - should be idempotent
+        record_failure(&mut conn, task_id, 5, "Second failure for same attempt")
+            .await
+            .unwrap();
+
+        // Record failure third time - should still be idempotent
+        record_failure(&mut conn, task_id, 5, "Third failure for same attempt")
+            .await
+            .unwrap();
+
+        // Task should still be available for retry
+        let final_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_task.task_id, task_id);
+        // Attempt number might vary depending on implementation, but should be at least 2
+        assert!(final_task.attempt >= 2);
+
+        // Verify we have log entries for the failures using get_task_details
+        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task should exist");
+
+        // Should have at least one historical attempt (the first failure)
+        assert!(!task_details.attempts.is_empty());
+        // Current task should be running (picked up for retry)
+        assert!(matches!(
+            task_details.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Running
+        ));
+        // Should be on attempt 2 or higher
+        assert!(task_details.task.attempt >= 2);
+    }
+
+    #[sqlx::test]
+    async fn test_cancel_scheduled_tasks_idempotent(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = EntityId::Tabular(Uuid::now_v7());
+
+        // Queue a task but don't pick it up (leave it scheduled)
+        let task_id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"test": "cancel_data"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Verify task is available
+        let scheduled_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(scheduled_task.task_id, task_id);
+
+        // Put the task back to scheduled state for cancellation test
+        sqlx::query!(
+            "UPDATE task SET status = $1, picked_up_at = NULL WHERE task_id = $2",
+            TaskStatus::Scheduled as _,
+            *task_id
+        )
+        .execute(&mut conn as &mut PgConnection)
+        .await
+        .unwrap();
+
+        // Cancel the task first time
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Verify task is no longer in active tasks table
+        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap();
+        assert!(active_task.is_none());
+
+        // Cancel the task second time - should be idempotent (no error)
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Cancel the task third time - should still be idempotent
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Verify task is in task_log using get_task_details
+        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task should exist in task_log");
+
+        // Should be marked as cancelled
+        assert!(matches!(
+            task_details.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Cancelled
+        ));
+        // Should have no historical attempts since it was cancelled while scheduled
+        assert!(task_details.attempts.is_empty());
+        assert_eq!(task_details.task.attempt, 1);
+    }
+
+    #[sqlx::test]
+    async fn test_cancel_running_tasks_idempotent_with_force_delete(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = EntityId::Tabular(Uuid::now_v7());
+
+        // Queue and pick up a task (make it running)
+        let task_id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"test": "running_cancel_data"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked_task.task_id, task_id);
+        assert!(matches!(picked_task.status, TaskStatus::Running));
+
+        // Cancel the running task with force_delete=true first time
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            true, // force_delete_running_tasks
+        )
+        .await
+        .unwrap();
+
+        // Verify task is no longer in active tasks table
+        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap();
+        assert!(active_task.is_none());
+
+        // Cancel the task second time - should be idempotent (no error)
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Cancel the task third time - should still be idempotent
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Verify task is in task_log using get_task_details
+        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task should exist in task_log");
+
+        // Should be marked as cancelled
+        assert!(matches!(
+            task_details.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Cancelled
+        ));
+        // Should have no historical attempts since it was cancelled while running
+        assert!(task_details.attempts.is_empty());
+        assert_eq!(task_details.task.attempt, 1);
+    }
+
+    #[sqlx::test]
+    async fn test_mixed_operations_idempotency(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+        let entity_id = EntityId::Tabular(Uuid::now_v7());
+
+        // Queue and pick up a task
+        let task_id = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"test": "mixed_operations"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked_task.task_id, task_id);
+
+        // Record success first
+        record_success(task_id, &mut conn, Some("Task completed"))
+            .await
+            .unwrap();
+
+        // Now try to record failure - should be idempotent (no error)
+        record_failure(&mut conn, task_id, 5, "Attempting to fail completed task")
+            .await
+            .unwrap();
+
+        // Try to cancel the already completed task - should be idempotent
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Verify task is still marked as successful using get_task_details
+        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task should exist in task_log");
+
+        // Should remain marked as successful despite later operations
+        assert!(matches!(
+            task_details.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Success
+        ));
+        // Should have no historical attempts since it succeeded on first try
+        assert!(task_details.attempts.is_empty());
+        assert_eq!(task_details.task.attempt, 1);
     }
 }

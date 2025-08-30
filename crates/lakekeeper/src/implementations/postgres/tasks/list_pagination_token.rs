@@ -18,47 +18,49 @@ impl std::str::FromStr for ListTasksPaginationToken {
     type Err = ErrorModel;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.split(':');
-        let task_id = parts
-            .next()
-            .ok_or_else(|| {
-                ErrorModel::bad_request(
-                    "Invalid page token for list tasks",
-                    "InvalidPageToken",
-                    None,
-                )
-                .append_detail("Expected format: <task_id>:<attempt>")
-            })
-            .and_then(|s| {
-                Uuid::parse_str(s).map_err(|e| {
-                    ErrorModel::bad_request(
-                        format!("Invalid UUID in page token: {e}"),
-                        "InvalidPageToken",
-                        None,
-                    )
-                })
-            })?;
-        let attempt = parts
-            .next()
-            .ok_or_else(|| {
-                ErrorModel::bad_request(
-                    "Invalid page token for list tasks",
-                    "InvalidPageToken",
-                    None,
-                )
-                .append_detail("Expected format: <task_id>:<attempt>")
-            })
-            .and_then(|s| {
-                s.parse::<i32>().map_err(|e| {
-                    ErrorModel::bad_request(
-                        format!("Invalid attempt number in page token: {e}"),
-                        "InvalidPageToken",
-                        None,
-                    )
-                })
-            })?;
+        let (task_str, rest) = s.split_once(':').ok_or_else(|| {
+            ErrorModel::bad_request(
+                "Invalid page token for list tasks",
+                "InvalidPageToken",
+                None,
+            )
+            .append_detail("Expected format: <task_id>:<attempt>")
+        })?;
+
+        // Disallow any additional ':' segments.
+        if rest.contains(':') {
+            return Err(ErrorModel::bad_request(
+                "Invalid page token for list tasks",
+                "InvalidPageToken",
+                None,
+            )
+            .append_detail("Too many segments; expected exactly one ':'"));
+        }
+
+        let task_uuid = Uuid::parse_str(task_str).map_err(|e| {
+            ErrorModel::bad_request(
+                format!("Invalid UUID in page token: {e}"),
+                "InvalidPageToken",
+                None,
+            )
+        })?;
+        let attempt = rest.parse::<i32>().map_err(|e| {
+            ErrorModel::bad_request(
+                format!("Invalid attempt number in page token: {e}"),
+                "InvalidPageToken",
+                None,
+            )
+        })?;
+        if attempt < 0 {
+            return Err(ErrorModel::bad_request(
+                "Attempt must be non-negative",
+                "InvalidPageToken",
+                None,
+            ));
+        }
+
         Ok(Self {
-            task_id: task_id.into(),
+            task_id: task_uuid.into(),
             attempt,
         })
     }

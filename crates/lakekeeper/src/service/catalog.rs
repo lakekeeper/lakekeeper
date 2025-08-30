@@ -973,6 +973,25 @@ where
     /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
     async fn check_and_heartbeat_task(
         task_id: TaskId,
+        attempt: i32,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        progress: f32,
+        execution_details: Option<serde_json::Value>,
+    ) -> Result<TaskCheckState> {
+        Self::check_and_heartbeat_task_impl(
+            task_id,
+            attempt,
+            transaction,
+            progress,
+            execution_details,
+        )
+        .await
+    }
+
+    /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
+    async fn check_and_heartbeat_task_impl(
+        task_id: TaskId,
+        attempt: i32,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         progress: f32,
         execution_details: Option<serde_json::Value>,

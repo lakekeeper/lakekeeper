@@ -487,16 +487,22 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 )
             })?;
 
-        C::check_and_heartbeat_task(self.task_id, transaction, progress, execution_details)
-            .await
-            .map_err(|e| {
-                e.append_detail(format!(
-                    "Failed to heartbeat `{}` task {}.",
-                    Self::queue_name(),
-                    self.task_id
-                ))
-                .into()
-            })
+        C::check_and_heartbeat_task(
+            self.task_id,
+            self.attempt,
+            transaction,
+            progress,
+            execution_details,
+        )
+        .await
+        .map_err(|e| {
+            e.append_detail(format!(
+                "Failed to heartbeat `{}` task {}.",
+                Self::queue_name(),
+                self.task_id
+            ))
+            .into()
+        })
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.

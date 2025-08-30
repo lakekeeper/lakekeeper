@@ -5,13 +5,12 @@ use itertools::Itertools;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use super::EntityType;
 use crate::{
     implementations::postgres::dbutils::DBErrorHandler,
     service::task_queue::{TaskEntity, TaskId, TaskQueueName},
     WarehouseId,
 };
-
-use super::EntityType;
 
 /// Resolve tasks among all known active and historical tasks.
 /// Returns a map of `task_id` to (`TaskEntity`, `queue_name`).
@@ -78,6 +77,7 @@ pub(crate) async fn resolve_tasks(
             queue_name
         FROM task_log
         WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)
+        ORDER BY task_id, attempt DESC
         "#,
         &missing_ids,
         warehouse_id,
@@ -106,10 +106,10 @@ pub(crate) async fn resolve_tasks(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         implementations::postgres::tasks::test::{setup_two_warehouses, setup_warehouse},
         service::{

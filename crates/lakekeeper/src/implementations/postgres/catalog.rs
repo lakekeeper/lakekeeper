@@ -777,13 +777,21 @@ impl Catalog for super::PostgresCatalog {
         cancel_scheduled_tasks(&mut *transaction, filter, queue_name, force).await
     }
 
-    async fn check_and_heartbeat_task(
+    async fn check_and_heartbeat_task_impl(
         task_id: TaskId,
+        attempt: i32,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         progress: f32,
         execution_details: Option<serde_json::Value>,
     ) -> Result<TaskCheckState> {
-        check_and_heartbeat_task(&mut *transaction, task_id, progress, execution_details).await
+        check_and_heartbeat_task(
+            &mut *transaction,
+            task_id,
+            attempt,
+            progress,
+            execution_details,
+        )
+        .await
     }
 
     async fn stop_tasks(

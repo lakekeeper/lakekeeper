@@ -1531,6 +1531,7 @@ pub mod v1 {
         tag = "tasks",
         path = ManagementV1Endpoint::ListTasks.path(),
         params(("warehouse_id" = Uuid,)),
+        request_body = ListTasksRequest,
         responses(
             (status = 200, body = ListTasksResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1576,6 +1577,7 @@ pub mod v1 {
         tag = "tasks",
         path = ManagementV1Endpoint::ControlTasks.path(),
         params(("warehouse_id" = Uuid,)),
+        request_body = ControlTasksRequest,
         responses(
             (status = 204, description = "All requested actions were successful"),
             (status = "4XX", body = IcebergErrorResponse),
