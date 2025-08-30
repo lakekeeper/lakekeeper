@@ -38,9 +38,8 @@ use crate::{
             v1::{
                 tables::DataAccessMode, ApiContext, CommitTableRequest, CommitTableResponse,
                 CommitTransactionRequest, CreateTableRequest, DataAccess, ErrorModel,
-                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters,
-                PaginationQuery, Prefix, RegisterTableRequest, RenameTableRequest, Result,
-                TableIdent, TableParameters,
+                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},

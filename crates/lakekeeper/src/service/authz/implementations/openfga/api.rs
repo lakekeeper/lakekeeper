@@ -1379,7 +1379,7 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/view/{table_id}/access",
+            "/permissions/view/{view_id}/access",
             get(get_view_access_by_id),
         )
         .route(

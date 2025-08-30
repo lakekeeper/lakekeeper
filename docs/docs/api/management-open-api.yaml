@@ -2682,9 +2682,7 @@ components:
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
-          description: |-
-            Profile to determine behavior upon dropping of tabulars, defaults to soft-deletion with
-            7 days expiration.
+          description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
         project-id:
           type:
             - string

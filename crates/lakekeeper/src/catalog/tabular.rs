@@ -24,7 +24,7 @@ macro_rules! list_entities {
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
             async move {
-                let query = PaginationQuery {
+                let query = crate::api::iceberg::v1::PaginationQuery {
                     page_size: Some(ps),
                     page_token: page_token.into(),
                 };

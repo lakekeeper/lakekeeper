@@ -82,8 +82,7 @@ pub struct CreateWarehouseRequest {
     /// Optional storage credential to use for the warehouse.
     #[builder(default, setter(strip_option))]
     pub storage_credential: Option<StorageCredential>,
-    /// Profile to determine behavior upon dropping of tabulars, defaults to soft-deletion with
-    /// 7 days expiration.
+    /// Profile to determine behavior upon dropping of tabulars. Default: hard deletion.
     #[serde(default)]
     #[builder(default)]
     pub delete_profile: TabularDeleteProfile,
