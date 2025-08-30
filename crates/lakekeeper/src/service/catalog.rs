@@ -860,7 +860,7 @@ where
                         TaskEntity::Table {
                             warehouse_id: wid, ..
                         } if *wid != w => continue,
-                        _ => {}
+                        TaskEntity::Table { .. } => (),
                     }
                 }
                 cached_results.insert(*id, cached_value);

@@ -547,7 +547,7 @@ async fn authorize_task_for_table_ids<A: Authorizer>(
         .join(", ");
     if !all_allowed {
         return Err(ErrorModel::forbidden(
-            "Not authorized to perform action actions on some entities.".to_string(),
+            "Not authorized to perform actions on some entities.".to_string(),
             "NotAuthorized",
             None,
         )

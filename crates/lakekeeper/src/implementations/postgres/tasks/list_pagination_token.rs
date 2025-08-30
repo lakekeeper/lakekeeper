@@ -82,4 +82,18 @@ mod tests {
         assert_eq!(token.task_id, parsed_token.task_id);
         assert_eq!(token.attempt, parsed_token.attempt);
     }
+
+    #[test]
+    fn test_token_rejects_extra_segments() {
+        assert!("00000000-0000-0000-0000-000000000000:1:2"
+            .parse::<ListTasksPaginationToken>()
+            .is_err());
+    }
+
+    #[test]
+    fn test_token_rejects_negative_attempt() {
+        let id = Uuid::nil();
+        let s = format!("{id}:-1");
+        assert!(s.parse::<ListTasksPaginationToken>().is_err());
+    }
 }

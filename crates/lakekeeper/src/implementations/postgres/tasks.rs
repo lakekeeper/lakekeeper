@@ -471,7 +471,7 @@ pub(crate) async fn get_task_queue_config(
 
 pub(crate) async fn set_task_queue_config(
     transaction: &mut PgConnection,
-    queue_name: &str,
+    queue_name: &TaskQueueName,
     warehouse_id: WarehouseId,
     config: SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
@@ -499,7 +499,7 @@ pub(crate) async fn set_task_queue_config(
         ON CONFLICT (queue_name, warehouse_id) DO UPDATE
         SET config = $3, max_time_since_last_heartbeat = COALESCE($4, task_config.max_time_since_last_heartbeat )
         "#,
-        queue_name,
+        queue_name.as_str(),
         *warehouse_id,
         serialized,
         max_time_since_last_heartbeat
@@ -622,6 +622,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                picked_up_at,
                                case when picked_up_at is not null
                                    then now() - picked_up_at
+                                   else null
                                end,
                                 progress,
                                 execution_details,
@@ -643,7 +644,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 force_delete_running_tasks,
                 queue_name_is_none
             )
-            .fetch_all(connection)
+            .execute(connection)
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -685,6 +686,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                                picked_up_at,
                                case when picked_up_at is not null
                                    then now() - picked_up_at
+                                   else null
                                end,
                                 progress,
                                 execution_details,
@@ -707,7 +709,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 queue_name_is_none,
                 force_delete_running_tasks
             )
-            .fetch_all(connection)
+            .execute(connection)
             .await
             .map_err(|e| {
                 tracing::error!(?e, "Failed to cancel Tasks for task_ids {task_ids:?}");

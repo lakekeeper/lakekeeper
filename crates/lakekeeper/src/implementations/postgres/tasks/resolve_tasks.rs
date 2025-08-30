@@ -39,7 +39,7 @@ pub(crate) async fn resolve_tasks(
         FROM task
         WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)
         "#,
-        &task_ids.iter().map(|id| **id).collect_vec(),
+        &task_ids.iter().map(|id| **id).collect::<Vec<_>>()[..],
         warehouse_id,
         warehouse_id_is_none
     )

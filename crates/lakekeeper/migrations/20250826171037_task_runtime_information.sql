@@ -1,8 +1,8 @@
-DROP INDEX idx_task_warehouse_id;
+DROP INDEX IF EXISTS idx_task_warehouse_id;
 
-DROP INDEX task_entity_type_entity_id_idx;
+DROP INDEX IF EXISTS task_entity_type_entity_id_idx;
 
-DROP INDEX task_warehouse_queue_name_idx;
+DROP INDEX IF EXISTS task_warehouse_queue_name_idx;
 
 CREATE INDEX task_warehouse_id_entity_type_entity_id_idx ON task USING btree (
     warehouse_id,
@@ -17,9 +17,9 @@ ADD COLUMN execution_details jsonb;
 
 TRUNCATE TABLE task_log;
 
-DROP INDEX task_log_warehouse_id_idx;
+DROP INDEX IF EXISTS task_log_warehouse_id_idx;
 
-DROP INDEX task_log_warehouse_id_entity_id_entity_type_idx;
+DROP INDEX IF EXISTS task_log_warehouse_id_entity_id_entity_type_idx;
 
 CREATE INDEX task_warehouse_created_at_id_idx ON task (warehouse_id, created_at DESC);
 
