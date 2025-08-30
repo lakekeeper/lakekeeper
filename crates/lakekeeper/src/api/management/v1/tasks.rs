@@ -50,7 +50,7 @@ pub struct Task {
     /// Progress of the task (0.0 to 1.0)
     pub progress: f32,
     /// Parent task ID if this is a sub-task
-    #[schema(value_type = uuid::Uuid)]
+    #[schema(value_type = Option<uuid::Uuid>)]
     pub parent_task_id: Option<TaskId>,
     /// When this task attempt was created
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -178,7 +178,7 @@ pub struct ListTasksRequest {
     pub status: Option<Vec<TaskStatus>>,
     /// Filter by queue name
     #[serde(default)]
-    #[schema(value_type = Option<String>)]
+    #[schema(value_type = Option<Vec<String>>)]
     pub queue_name: Option<Vec<TaskQueueName>>,
     /// Filter by specific entity
     #[serde(default)]

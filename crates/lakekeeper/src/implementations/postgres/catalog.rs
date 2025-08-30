@@ -52,8 +52,8 @@ use crate::{
         },
         tasks::{
             cancel_scheduled_tasks, check_and_heartbeat_task, get_task_details,
-            get_task_queue_config, list_tasks, queue_task_batch, request_tasks_stop, resolve_tasks,
-            set_task_queue_config,
+            get_task_queue_config, list_tasks, pick_task, queue_task_batch, record_failure,
+            record_success, request_tasks_stop, resolve_tasks, set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
@@ -691,15 +691,15 @@ impl Catalog for super::PostgresCatalog {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 
-    async fn pick_new_task(
+    async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
-        max_time_since_last_heartbeat: Duration,
+        default_max_time_since_last_heartbeat: Duration,
         state: Self::State,
     ) -> Result<Option<Task>> {
-        crate::implementations::postgres::tasks::pick_task(
+        pick_task(
             &state.write_pool(),
             queue_name,
-            max_time_since_last_heartbeat,
+            default_max_time_since_last_heartbeat,
         )
         .await
     }
@@ -717,7 +717,7 @@ impl Catalog for super::PostgresCatalog {
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        crate::implementations::postgres::tasks::record_success(id, transaction, message).await
+        record_success(id, transaction, message).await
     }
 
     async fn record_task_failure(
@@ -726,13 +726,7 @@ impl Catalog for super::PostgresCatalog {
         max_retries: i32,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        crate::implementations::postgres::tasks::record_failure(
-            transaction,
-            id,
-            max_retries,
-            error_details,
-        )
-        .await
+        record_failure(transaction, id, max_retries, error_details).await
     }
 
     async fn get_task_details_impl(

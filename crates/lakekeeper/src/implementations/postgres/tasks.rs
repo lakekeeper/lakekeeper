@@ -141,7 +141,8 @@ pub(crate) async fn queue_task_batch(
     .map_err(|e| e.into_error_model("failed queueing tasks"))?)
 }
 
-#[tracing::instrument]
+/// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
+/// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
 pub(crate) async fn pick_task(
     pool: &PgPool,
     queue_name: &TaskQueueName,

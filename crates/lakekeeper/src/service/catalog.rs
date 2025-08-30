@@ -815,13 +815,22 @@ where
 
     // ------------- Tasks -------------
 
-    /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
-    /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
-    async fn pick_new_task(
+    async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
         default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
+
+    /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
+    /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
+    #[tracing::instrument(name = "catalog_pick_new_task", skip(state))]
+    async fn pick_new_task(
+        queue_name: &TaskQueueName,
+        default_max_time_since_last_heartbeat: chrono::Duration,
+        state: Self::State,
+    ) -> Result<Option<Task>> {
+        Self::pick_new_task_impl(queue_name, default_max_time_since_last_heartbeat, state).await
+    }
 
     /// Resolve tasks among all known active and historical tasks.
     /// Returns a map of task_id to (TaskEntity, queue_name).
@@ -846,6 +855,14 @@ where
         let mut cached_results = HashMap::new();
         for id in task_ids {
             if let Some(cached_value) = TASKS_CACHE.get(id).await {
+                if let Some(w) = warehouse_id {
+                    match &cached_value.0 {
+                        TaskEntity::Table {
+                            warehouse_id: wid, ..
+                        } if *wid != w => continue,
+                        _ => {}
+                    }
+                }
                 cached_results.insert(*id, cached_value);
             }
         }
@@ -854,6 +871,9 @@ where
             .copied()
             .filter(|id| !cached_results.contains_key(id))
             .collect();
+        if not_cached_ids.is_empty() {
+            return Ok(cached_results);
+        }
         let resolve_uncached_result =
             Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, transaction).await?;
         for (id, value) in &resolve_uncached_result {
