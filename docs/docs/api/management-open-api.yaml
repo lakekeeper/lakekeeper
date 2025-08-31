@@ -3287,8 +3287,12 @@ components:
                 $ref: '#/components/schemas/TaskAttempt'
               description: History of past attempts
             execution-details:
+              type:
+                - object
+                - 'null'
               description: Execution details for the current attempt
             task-data:
+              type: object
               description: Task-specific data
     GetTaskQueueConfigResponse:
       type: object
@@ -4717,6 +4721,9 @@ components:
           description: How long this attempt took
           example: PT1H30M45.5S
         execution-details:
+          type:
+            - object
+            - 'null'
           description: Execution details for this attempt
         message:
           type:

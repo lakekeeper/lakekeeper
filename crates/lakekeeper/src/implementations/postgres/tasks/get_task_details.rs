@@ -592,6 +592,9 @@ mod tests {
         let tq_name = generate_tq_name();
         let payload = serde_json::json!({"test": "data"});
         let scheduled_for = Utc::now() - chrono::Duration::minutes(1);
+        // Truncate scheduled_for to seconds as postgres does not store nanoseconds
+        let scheduled_for = scheduled_for
+            - chrono::Duration::nanoseconds(scheduled_for.timestamp_subsec_nanos() as i64);
 
         // Queue a task
         let task_id = queue_task_helper(

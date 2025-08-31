@@ -65,8 +65,10 @@ pub struct GetTaskDetailsResponse {
     #[serde(flatten)]
     pub task: Task,
     /// Task-specific data
+    #[schema(value_type = Object)]
     pub task_data: serde_json::Value,
     /// Execution details for the current attempt
+    #[schema(value_type = Option<Object>)]
     pub execution_details: Option<serde_json::Value>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
@@ -94,6 +96,7 @@ pub struct TaskAttempt {
     /// Progress achieved in this attempt
     pub progress: f32,
     /// Execution details for this attempt
+    #[schema(value_type = Option<Object>)]
     pub execution_details: Option<serde_json::Value>,
 }
 

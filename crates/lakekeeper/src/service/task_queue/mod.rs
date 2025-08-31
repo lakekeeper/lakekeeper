@@ -540,7 +540,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                         Self::queue_name(),
                         self.id
                     ),
-                    "Unexpected",
+                    "TaskExecutionDetailsSerializationError",
                     Some(Box::new(e)),
                 )
             })?;
