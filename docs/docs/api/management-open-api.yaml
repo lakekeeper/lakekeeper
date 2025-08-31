@@ -2282,7 +2282,7 @@ paths:
     post:
       tags:
         - tasks
-      summary: Get the configuration for a Task Queue.
+      summary: Set the configuration for a Task Queue.
       description: These configurations are global per warehouse and shared across all instances of this kind of task.
       operationId: set_task_queue_config_tabular_expiration
       parameters:
@@ -2348,7 +2348,7 @@ paths:
     post:
       tags:
         - tasks
-      summary: Get the configuration for a Task Queue.
+      summary: Set the configuration for a Task Queue.
       description: These configurations are global per warehouse and shared across all instances of this kind of task.
       operationId: set_task_queue_config_tabular_purge
       parameters:
@@ -3135,7 +3135,7 @@ components:
               description: |-
                 Range specifier
 
-                Either for a explicit range or a page token to paginate through the results. See the docs of
+                Either for an explicit range or a page token to paginate through the results. See the docs of
                 `TimeWindowSelector` for more details.
         status-codes:
           type:

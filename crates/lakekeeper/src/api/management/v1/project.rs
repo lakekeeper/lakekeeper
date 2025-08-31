@@ -383,7 +383,7 @@ pub struct GetEndpointStatisticsRequest {
     pub status_codes: Option<Vec<u16>>,
     /// Range specifier
     ///
-    /// Either for a explicit range or a page token to paginate through the results. See the docs of
+    /// Either for an explicit range or a page token to paginate through the results. See the docs of
     /// `TimeWindowSelector` for more details.
     pub range_specifier: Option<TimeWindowSelector>,
 }

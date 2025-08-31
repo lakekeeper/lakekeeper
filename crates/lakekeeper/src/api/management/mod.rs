@@ -1466,7 +1466,7 @@ pub mod v1 {
         .await
     }
 
-    /// Get the configuration for a Task Queue.
+    /// Set the configuration for a Task Queue.
     ///
     /// These configurations are global per warehouse and shared across all instances of this kind of task.
     #[utoipa::path(

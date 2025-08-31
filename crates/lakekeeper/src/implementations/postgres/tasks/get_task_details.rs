@@ -227,7 +227,7 @@ pub(crate) async fn get_task_details(
     )
     .fetch_all(&mut *transaction)
     .await
-    .map_err(|e| e.into_error_model("Failed to get active task details"))?;
+    .map_err(|e| e.into_error_model("Failed to get task details"))?;
 
     let result = parse_task_details(task_id, warehouse_id, records)?;
 

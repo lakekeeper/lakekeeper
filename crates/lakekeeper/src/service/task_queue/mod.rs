@@ -33,6 +33,7 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
 });
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
 pub struct TaskQueueName(String);
 
 impl Deref for TaskQueueName {
