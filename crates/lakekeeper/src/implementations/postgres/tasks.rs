@@ -8,7 +8,7 @@ use crate::{
         GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest,
     },
     implementations::postgres::dbutils::DBErrorHandler,
-    service::task_queue::{Task, TaskFilter, TaskQueueName, TaskStatus},
+    service::task_queue::{Task, TaskAttemptId, TaskFilter, TaskQueueName, TaskStatus},
     WarehouseId,
 };
 
@@ -78,14 +78,31 @@ pub(crate) async fn queue_task_batch(
     Ok(sqlx::query!(
         r#"WITH input_rows AS (
             SELECT
-                unnest($1::uuid[]) as task_id,
-                $2 as queue_name,
-                unnest($3::uuid[]) as parent_task_id,
-                unnest($4::uuid[]) as warehouse_id,
-                unnest($5::timestamptz[]) as scheduled_for,
-                unnest($6::jsonb[]) as payload,
-                unnest($7::uuid[]) as entity_ids,
-                unnest($8::entity_type[]) as entity_types
+                task_id,
+                parent_task_id,
+                warehouse_id,
+                scheduled_for,
+                payload,
+                entity_ids,
+                entity_types,
+                $2 as queue_name
+            FROM unnest(
+                $1::uuid[],
+                $3::uuid[],
+                $4::uuid[],
+                $5::timestamptz[],
+                $6::jsonb[],
+                $7::uuid[],
+                $8::entity_type[]
+            ) AS t(
+                task_id,
+                parent_task_id,
+                warehouse_id,
+                scheduled_for,
+                payload,
+                entity_ids,
+                entity_types
+            )
         )
         INSERT INTO task(
                 task_id,
@@ -161,45 +178,46 @@ pub(crate) async fn pick_task(
             ))?,
     };
     let x = sqlx::query!(
-        r#"WITH updated_task AS (
+        r#"
+        WITH updated_task AS (
         SELECT task_id, t.warehouse_id, config
         FROM task t
         LEFT JOIN task_config tc
             ON tc.queue_name = t.queue_name
-                   AND tc.warehouse_id = t.warehouse_id
+                AND tc.warehouse_id = t.warehouse_id
         WHERE (t.queue_name = $1 AND scheduled_for < now()) 
             AND (
                 (status = $3) OR 
                 (status != $3 AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
             )
         -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
-        -- transactions locked, this is our queue right there.
+        -- transactions locked
         FOR UPDATE OF t SKIP LOCKED
         LIMIT 1
-    )
-    UPDATE task
-    SET status = $4,
-        progress = 0.0,
-        execution_details = NULL,
-        picked_up_at = now(),
-        last_heartbeat_at = now(),
-        attempt = task.attempt + 1
-    FROM updated_task
-    WHERE task.task_id = updated_task.task_id
-    RETURNING
-        task.task_id,
-        task.entity_id,
-        task.entity_type as "entity_type: EntityType",
-        task.warehouse_id,
-        task.task_data,
-        task.scheduled_for,
-        task.status as "status: TaskStatus",
-        task.picked_up_at,
-        task.attempt,
-        task.parent_task_id,
-        task.queue_name,
-        (select config from updated_task)
-    "#,
+        )
+        UPDATE task
+        SET status = $4,
+            progress = 0.0,
+            execution_details = NULL,
+            picked_up_at = now(),
+            last_heartbeat_at = now(),
+            attempt = task.attempt + 1
+        FROM updated_task
+        WHERE task.task_id = updated_task.task_id
+        RETURNING
+            task.task_id,
+            task.entity_id,
+            task.entity_type as "entity_type: EntityType",
+            task.warehouse_id,
+            task.task_data,
+            task.scheduled_for,
+            task.status as "status: TaskStatus",
+            task.picked_up_at,
+            task.attempt,
+            task.parent_task_id,
+            task.queue_name,
+            (select config from updated_task)
+            "#,
         queue_name,
         max_time_since_last_heartbeat,
         TaskStatus::Scheduled as _,
@@ -224,11 +242,13 @@ pub(crate) async fn pick_task(
                 schedule_for: Some(task.scheduled_for),
             },
             config: task.config,
-            task_id: task.task_id.into(),
+            id: TaskAttemptId {
+                task_id: task.task_id.into(),
+                attempt: task.attempt,
+            },
             status: task.status,
             queue_name: task.queue_name.into(),
             picked_up_at: task.picked_up_at,
-            attempt: task.attempt,
             data: task.task_data,
         }));
     }
@@ -237,142 +257,146 @@ pub(crate) async fn pick_task(
 }
 
 pub(crate) async fn record_success(
-    task_id: TaskId,
+    id: impl AsRef<TaskAttemptId>,
     pool: &mut PgConnection,
     message: Option<&str>,
 ) -> Result<(), IcebergErrorResponse> {
-    let _ = sqlx::query!(
+    let TaskAttemptId { task_id, attempt } = *id.as_ref();
+    let inserted = sqlx::query!(
         r#"
-        WITH history as (
-            INSERT INTO task_log(task_id,
-                                 warehouse_id,
-                                 queue_name,
-                                 task_data,
-                                 status,
-                                 entity_id,
-                                 entity_type,
-                                 message,
-                                 attempt,
-                                 started_at,
-                                 duration,
-                                 progress,
-                                 execution_details,
-                                 attempt_scheduled_for,
-                                 last_heartbeat_at,
-                                 parent_task_id,
-                                 task_created_at)
-                SELECT task_id,
-                       warehouse_id,
-                       queue_name,
-                       task_data,
-                       $3,
-                       entity_id,
-                       entity_type,
-                       $2,
-                       attempt,
-                       picked_up_at,
-                       now() - picked_up_at,
-                       1.0000,
-                       execution_details,
-                       scheduled_for,
-                       last_heartbeat_at,
-                       parent_task_id,
-                       created_at
-                FROM task
-                WHERE task_id = $1
-                ON CONFLICT (task_id, attempt) DO NOTHING
-                RETURNING task_id
-                )
-        DELETE FROM task
-        WHERE task_id = $1
+        WITH moved AS (
+            DELETE FROM task WHERE task_id = $1 AND attempt = $4 RETURNING *
+        )
+        INSERT INTO task_log(
+            task_id,
+            warehouse_id,
+            queue_name,
+            task_data,
+            status,
+            entity_id,
+            entity_type,
+            message,
+            attempt,
+            started_at,
+            duration,
+            progress,
+            execution_details,
+            attempt_scheduled_for,
+            last_heartbeat_at,
+            parent_task_id,
+            task_created_at
+        )
+        SELECT task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                $3,
+                entity_id,
+                entity_type,
+                $2,
+                attempt,
+                picked_up_at,
+                now() - picked_up_at,
+                1.0000,
+                execution_details,
+                scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                created_at
+        FROM moved
+        ON CONFLICT (task_id, attempt) DO NOTHING
+        RETURNING task_id
         "#,
         *task_id,
         message,
         TaskOutcome::Success as _,
+        attempt
     )
-    .execute(pool)
+    .fetch_optional(pool)
     .await
-    .map_err(|e| e.into_error_model("failed to record task success"))?;
+    .map_err(|e| e.into_error_model("Error recording task success."))?;
+
+    if inserted.is_none() {
+        return Err(ErrorModel::not_found(
+            format!("Task {task_id} with attempt {attempt} not found in active tasks."),
+            "TaskNotFound",
+            None,
+        )
+        .append_detail("Error recording task success.")
+        .into());
+    }
+
     Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn record_failure(
-    conn: &mut PgConnection,
-    task_id: TaskId,
+    id: impl AsRef<TaskAttemptId>,
     max_retries: i32,
     details: &str,
+    conn: &mut PgConnection,
 ) -> Result<(), IcebergErrorResponse> {
-    let should_fail = sqlx::query_scalar!(
-        r#"
-        SELECT attempt >= $1 as "should_fail!"
-        FROM task
-        WHERE task_id = $2
-        "#,
-        max_retries,
-        *task_id
-    )
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(|e| e.into_error_model("failed to check if task should fail"))?
-    .unwrap_or(false);
-
-    if should_fail {
-        sqlx::query!(
+    let TaskAttemptId { task_id, attempt } = *id.as_ref();
+    let max_retries_exceeded = attempt >= max_retries;
+    let found = if max_retries_exceeded {
+        sqlx::query_scalar!(
             r#"
-            WITH history as (
-                INSERT INTO task_log(
-                    task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    status,
-                    entity_id,
-                    entity_type,
-                    attempt,
-                    started_at,
-                    duration,
-                    progress,
-                    execution_details,
-                    attempt_scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    task_created_at
-                )
-                SELECT
-                    task_id,
-                    warehouse_id,
-                    queue_name,
-                    task_data,
-                    $2,
-                    entity_id,
-                    entity_type,
-                    attempt,
-                    picked_up_at,
-                    now() - picked_up_at,
-                    progress,
-                    execution_details,
-                    scheduled_for,
-                    last_heartbeat_at,
-                    parent_task_id,
-                    created_at
-                FROM task WHERE task_id = $1
-                ON CONFLICT (task_id, attempt) DO NOTHING
-                RETURNING task_id
+            WITH moved AS (
+                DELETE FROM task WHERE task_id = $1 AND attempt = $3 RETURNING *
             )
-            DELETE FROM task
-            WHERE task_id = $1            
+            INSERT INTO task_log(
+                task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                status,
+                entity_id,
+                entity_type,
+                attempt,
+                started_at,
+                duration,
+                progress,
+                execution_details,
+                attempt_scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                task_created_at
+            )
+            SELECT
+                task_id,
+                warehouse_id,
+                queue_name,
+                task_data,
+                $2,
+                entity_id,
+                entity_type,
+                attempt,
+                picked_up_at,
+                now() - picked_up_at,
+                progress,
+                execution_details,
+                scheduled_for,
+                last_heartbeat_at,
+                parent_task_id,
+                created_at
+            FROM moved
+            ON CONFLICT (task_id, attempt) DO NOTHING
+            RETURNING task_id
             "#,
             *task_id,
             TaskOutcome::Failed as _,
+            attempt
         )
-        .execute(conn)
+        .fetch_optional(conn)
         .await
-        .map_err(|e| e.into_error_model("failed to log and delete failed task"))?;
+        .map_err(|e| e.into_error_model("Error recording task attempt failure."))
     } else {
-        sqlx::query!(
+        sqlx::query_scalar!(
             r#"
-            WITH ins as (
+            WITH locked AS (
+                SELECT * FROM task WHERE task_id = $1 AND attempt = $5 FOR UPDATE
+            ),
+            ins as (
                 INSERT INTO task_log(
                     task_id,
                     warehouse_id,
@@ -390,7 +414,8 @@ pub(crate) async fn record_failure(
                     attempt_scheduled_for,
                     last_heartbeat_at,
                     parent_task_id,
-                    task_created_at)
+                    task_created_at
+                )
                 SELECT 
                     task_id,
                     warehouse_id,
@@ -409,9 +434,8 @@ pub(crate) async fn record_failure(
                     last_heartbeat_at,
                     parent_task_id,
                     created_at
-                FROM task WHERE task_id = $1
+                FROM locked
                 ON CONFLICT (task_id, attempt) DO NOTHING
-                RETURNING task_id
             )
             UPDATE task t
             SET 
@@ -419,17 +443,29 @@ pub(crate) async fn record_failure(
                 progress = 0.0,
                 picked_up_at = NULL,
                 execution_details = NULL
-            FROM ins
-            WHERE t.task_id = ins.task_id
+            FROM locked
+            RETURNING t.task_id
             "#,
             *task_id,
             details,
             TaskStatus::Scheduled as _,
             TaskOutcome::Failed as _,
+            attempt
         )
-        .execute(conn)
+        .fetch_optional(conn)
         .await
-        .map_err(|e| e.into_error_model("failed to update task status"))?;
+        .map_err(|e| e.into_error_model("Error marking task as failed."))
+    }
+    .map_err(|e| e.append_detail(format!("Task ID: {task_id}, Attempt: {attempt}")))?;
+
+    if found.is_none() {
+        return Err(ErrorModel::not_found(
+            format!("Task {task_id} with attempt {attempt} not found in active tasks."),
+            "TaskNotFound",
+            None,
+        )
+        .append_detail("Error recording task attempt failure.")
+        .into());
     }
 
     Ok(())
@@ -542,11 +578,11 @@ pub(crate) async fn request_tasks_stop(
 
 pub(crate) async fn check_and_heartbeat_task(
     transaction: &mut PgConnection,
-    task_id: TaskId,
-    attempt: i32,
+    id: impl AsRef<TaskAttemptId>,
     progress: f32,
     execution_details: Option<serde_json::Value>,
 ) -> crate::api::Result<TaskCheckState> {
+    let TaskAttemptId { task_id, attempt } = *id.as_ref();
     Ok(sqlx::query!(
         r#"WITH heartbeat as (
             UPDATE task 
@@ -870,14 +906,14 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        record_failure(&mut pool.acquire().await.unwrap(), id, 5, "test details")
+        record_failure(&task, 5, "test details", &mut pool.acquire().await.unwrap())
             .await
             .unwrap();
 
@@ -885,14 +921,14 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 2);
+        assert_eq!(task.attempt(), 2);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        record_failure(&mut pool.acquire().await.unwrap(), id, 2, "test")
+        record_failure(&task, 2, "test", &mut pool.acquire().await.unwrap())
             .await
             .unwrap();
 
@@ -928,14 +964,14 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        record_success(id, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
 
@@ -973,15 +1009,15 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
-        record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
 
@@ -1003,9 +1039,9 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task.task_id, id2);
+        assert_eq!(task.task_id(), id2);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1060,9 +1096,9 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id2);
+        assert_eq!(task.task_id(), id2);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1095,22 +1131,17 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
         assert_eq!(task.data, serde_json::json!({"a": "a"}));
 
-        record_failure(
-            &mut pool.acquire().await.unwrap(),
-            task.task_id,
-            1,
-            "failed",
-        )
-        .await
-        .unwrap();
+        record_failure(&task, 1, "failed", &mut pool.acquire().await.unwrap())
+            .await
+            .unwrap();
 
         let id2 = queue_task(
             &mut conn,
@@ -1130,9 +1161,9 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task.task_id, id2);
+        assert_eq!(task.task_id(), id2);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1172,9 +1203,9 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1203,9 +1234,9 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1217,9 +1248,9 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 2);
+        assert_eq!(task.attempt(), 2);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1272,24 +1303,24 @@ mod test {
             "There are no tasks left, something is wrong."
         );
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        assert_eq!(task2.task_id, id2);
+        assert_eq!(task2.task_id(), id2);
         assert!(matches!(task2.status, TaskStatus::Running));
-        assert_eq!(task2.attempt, 1);
+        assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, &tq_name);
 
-        record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
-        record_success(id2, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
     }
@@ -1345,24 +1376,24 @@ mod test {
             "There are no tasks left, something is wrong."
         );
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        assert_eq!(task2.task_id, id2);
+        assert_eq!(task2.task_id(), id2);
         assert!(matches!(task2.status, TaskStatus::Running));
-        assert_eq!(task2.attempt, 1);
+        assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, &tq_name);
 
-        record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
-        record_success(id2, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task2, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
     }
@@ -1419,16 +1450,16 @@ mod test {
             "There are no tasks left, something is wrong."
         );
 
-        assert_eq!(task.task_id, id);
+        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        assert_eq!(task2.task_id, id2);
+        assert_eq!(task2.task_id(), id2);
         assert!(matches!(task2.status, TaskStatus::Running));
-        assert_eq!(task2.attempt, 1);
+        assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
         assert!(task2.task_metadata.parent_task_id.is_none());
         assert_eq!(&task2.queue_name, &tq_name);
@@ -1460,10 +1491,10 @@ mod test {
 
         // move both old tasks to done which will clear them from task table and move them into
         // task_log
-        record_success(id, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
-        record_success(id2, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task2, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
 
@@ -1480,11 +1511,6 @@ mod test {
         .unwrap();
 
         assert_eq!(ids_third.len(), 1);
-        let id = ids_third[0].task_id;
-
-        record_success(id, &mut pool.acquire().await.unwrap(), Some(""))
-            .await
-            .unwrap();
 
         // pick one new task, one re-inserted task
         let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
@@ -1492,9 +1518,9 @@ mod test {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, new_id);
+        assert_eq!(task.task_id(), new_id);
         assert!(matches!(task.status, TaskStatus::Running));
-        assert_eq!(task.attempt, 1);
+        assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
@@ -1507,7 +1533,7 @@ mod test {
             "There should be no tasks left, something is wrong."
         );
 
-        record_success(task.task_id, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
     }
@@ -1607,7 +1633,7 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_record_success_idempotent(pool: PgPool) {
+    async fn test_record_success_attempt(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
@@ -1631,10 +1657,17 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(picked_task.task_id, task_id);
+        assert_eq!(picked_task.task_id(), task_id);
+
+        // Record success for non-existant attempt
+        let mut id = picked_task.id();
+        id.attempt += 1;
+        record_success(id, &mut conn, Some("First success"))
+            .await
+            .unwrap_err();
 
         // Record success first time
-        record_success(task_id, &mut conn, Some("First success"))
+        record_success(&picked_task, &mut conn, Some("First success"))
             .await
             .unwrap();
 
@@ -1644,15 +1677,10 @@ mod test {
             .unwrap();
         assert!(active_task.is_none());
 
-        // Record success second time - should be idempotent (no error)
-        record_success(task_id, &mut conn, Some("Second success"))
+        // Record success second time - should fail
+        record_success(&picked_task, &mut conn, Some("Second success"))
             .await
-            .unwrap();
-
-        // Record success third time - should still be idempotent
-        record_success(task_id, &mut conn, Some("Third success"))
-            .await
-            .unwrap();
+            .unwrap_err();
 
         // Verify task is in task_log using get_task_details
         let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
@@ -1671,7 +1699,7 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_record_failure_idempotent_when_max_retries_exceeded(pool: PgPool) {
+    async fn test_record_failure_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
@@ -1695,10 +1723,17 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(picked_task.task_id, task_id);
+        assert_eq!(picked_task.task_id(), task_id);
+
+        // Record failure for non-existant attempt
+        let mut id = picked_task.id();
+        id.attempt += 1;
+        record_failure(id, 2, "First failure", &mut conn)
+            .await
+            .unwrap_err();
 
         // Record failure with max_retries=1 (should fail permanently)
-        record_failure(&mut conn, task_id, 1, "First failure")
+        record_failure(&picked_task, 1, "First failure", &mut conn)
             .await
             .unwrap();
 
@@ -1708,21 +1743,18 @@ mod test {
             .unwrap();
         assert!(active_task.is_none());
 
-        // Record failure second time - should be idempotent (no error)
-        record_failure(&mut conn, task_id, 1, "Second failure")
+        // Record failure second time
+        record_failure(&picked_task, 1, "Second failure", &mut conn)
             .await
-            .unwrap();
-
-        // Record failure third time - should still be idempotent
-        record_failure(&mut conn, task_id, 1, "Third failure")
-            .await
-            .unwrap();
+            .unwrap_err();
 
         // Verify task is in task_log using get_task_details
         let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
             .await
             .unwrap()
             .expect("Task should exist in task_log");
+
+        assert_eq!(task_details.attempts.len(), 0); // No retries, so no historical attempts
 
         // Should be marked as failed
         assert!(matches!(
@@ -1732,83 +1764,6 @@ mod test {
         // Should have no historical attempts since it failed permanently on first try
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt, 1);
-    }
-
-    #[sqlx::test]
-    async fn test_record_failure_idempotent_when_retries_available(pool: PgPool) {
-        let mut conn = pool.acquire().await.unwrap();
-        let warehouse_id = setup_warehouse(pool.clone()).await;
-        let tq_name = generate_tq_name();
-        let entity_id = EntityId::Tabular(Uuid::now_v7());
-
-        // Queue and pick up a task
-        let task_id = queue_task(
-            &mut conn,
-            &tq_name,
-            None,
-            entity_id,
-            warehouse_id,
-            None,
-            Some(serde_json::json!({"test": "retry_data"})),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(picked_task.task_id, task_id);
-        assert_eq!(picked_task.attempt, 1);
-
-        // Record failure with max_retries=5 (should retry)
-        record_failure(&mut conn, task_id, 5, "First failure")
-            .await
-            .unwrap();
-
-        // Task should be back in scheduled state
-        let retry_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(retry_task.task_id, task_id);
-        assert_eq!(retry_task.attempt, 2);
-
-        // Record failure again for the same attempt - should be idempotent
-        record_failure(&mut conn, task_id, 5, "Second failure for same attempt")
-            .await
-            .unwrap();
-
-        // Record failure third time - should still be idempotent
-        record_failure(&mut conn, task_id, 5, "Third failure for same attempt")
-            .await
-            .unwrap();
-
-        // Task should still be available for retry
-        let final_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(final_task.task_id, task_id);
-        // Attempt number might vary depending on implementation, but should be at least 2
-        assert!(final_task.attempt >= 2);
-
-        // Verify we have log entries for the failures using get_task_details
-        let task_details = get_task_details(warehouse_id, task_id, 10, &mut conn)
-            .await
-            .unwrap()
-            .expect("Task should exist");
-
-        // Should have at least one historical attempt (the first failure)
-        assert!(!task_details.attempts.is_empty());
-        // Current task should be running (picked up for retry)
-        assert!(matches!(
-            task_details.task.status,
-            crate::api::management::v1::tasks::TaskStatus::Running
-        ));
-        // Should be on attempt 2 or higher
-        assert!(task_details.task.attempt >= 2);
     }
 
     #[sqlx::test]
@@ -1837,7 +1792,7 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(scheduled_task.task_id, task_id);
+        assert_eq!(scheduled_task.task_id(), task_id);
 
         // Put the task back to scheduled state for cancellation test
         sqlx::query!(
@@ -1926,7 +1881,7 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(picked_task.task_id, task_id);
+        assert_eq!(picked_task.task_id(), task_id);
         assert!(matches!(picked_task.status, TaskStatus::Running));
 
         // Cancel the running task with force_delete=true first time
@@ -1982,7 +1937,7 @@ mod test {
     }
 
     #[sqlx::test]
-    async fn test_mixed_operations_idempotency(pool: PgPool) {
+    async fn test_mixed_operations(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let tq_name = generate_tq_name();
@@ -2006,17 +1961,32 @@ mod test {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(picked_task.task_id, task_id);
+        assert_eq!(picked_task.task_id(), task_id);
 
         // Record success first
-        record_success(task_id, &mut conn, Some("Task completed"))
+        record_success(&picked_task, &mut conn, Some("Task completed"))
             .await
             .unwrap();
 
-        // Now try to record failure - should be idempotent (no error)
-        record_failure(&mut conn, task_id, 5, "Attempting to fail completed task")
-            .await
-            .unwrap();
+        // Now try to record failure - success was already recorded, so this should error
+        record_failure(
+            &picked_task,
+            5,
+            "Attempting to fail completed task",
+            &mut conn,
+        )
+        .await
+        .unwrap_err();
+
+        // Try to cancel the already completed task - should be idempotent
+        cancel_scheduled_tasks(
+            &mut conn,
+            TaskFilter::TaskIds(vec![task_id]),
+            Some(&tq_name),
+            true,
+        )
+        .await
+        .unwrap();
 
         // Try to cancel the already completed task - should be idempotent
         cancel_scheduled_tasks(

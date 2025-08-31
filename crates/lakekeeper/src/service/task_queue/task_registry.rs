@@ -67,10 +67,13 @@ impl RegisteredTaskQueues {
             .collect()
     }
 
-    /// Get the names of all registered queues
+    /// Get the names of all registered queues.
+    /// Results are sorted by name for consistency.
     #[must_use]
     pub async fn queue_names(&self) -> Vec<&'static TaskQueueName> {
-        self.queues.read().await.keys().copied().collect()
+        let mut v: Vec<_> = self.queues.read().await.keys().copied().collect();
+        v.sort_unstable();
+        v
     }
 }
 

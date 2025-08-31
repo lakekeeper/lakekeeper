@@ -97,8 +97,8 @@ pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
             deletion_kind = ?task.data.deletion_kind,
-            attempt = %task.attempt,
-            task_id = %task.task_id,
+            attempt = %task.attempt(),
+            task_id = %task.task_id(),
         );
 
         instrumented_expire::<C, A>(catalog_state.clone(), authorizer.clone(), tabular_id, &task)
@@ -221,7 +221,7 @@ where
                 TaskMetadata {
                     entity_id: task.task_metadata.entity_id,
                     warehouse_id: task.task_metadata.warehouse_id,
-                    parent_task_id: Some(task.task_id),
+                    parent_task_id: Some(task.task_id()),
                     schedule_for: None,
                 },
                 TabularPurgePayload {
@@ -234,7 +234,7 @@ where
             .map_err(|e| {
                 e.append_detail(format!(
                     "Failed to queue purge after `{QN_STR}` task with id `{}`.",
-                    task.task_id
+                    task.id
                 ))
             })?;
         }

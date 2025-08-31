@@ -131,7 +131,7 @@ pub(crate) async fn insert_partition_specs(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, partition_spec)
-               SELECT UNNEST($1::INT[]), $2, UNNEST($3::JSONB[])"#,
+               SELECT sid, $2, s FROM UNNEST($1::INT[], $3::JSONB[]) u(sid, s)"#,
         &spec_ids,
         tabular_id,
         &specs
@@ -209,7 +209,7 @@ pub(crate) async fn insert_sort_orders(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_sort_order(sort_order_id, table_id, sort_order)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::JSONB[])"#,
+           SELECT sid, $2, s FROM UNNEST($1::BIGINT[], $3::JSONB[]) u(sid, s)"#,
         &sort_order_ids,
         tabular_id,
         &sort_orders
@@ -295,7 +295,7 @@ pub(crate) async fn insert_snapshot_log(
     })?;
     let _ = sqlx::query!(
         r#"INSERT INTO table_snapshot_log(table_id, snapshot_id, timestamp)
-           SELECT $2, UNNEST($1::BIGINT[]), UNNEST($3::BIGINT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,
+           SELECT $2, sid, ts FROM UNNEST($1::BIGINT[], $3::BIGINT[], $4::BIGINT[]) u(sid, ts, seq) ORDER BY seq ASC"#,
         &snap,
         &tabular_id,
         &stamp,
@@ -368,7 +368,7 @@ pub(super) async fn insert_metadata_log(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_metadata_log(table_id, timestamp, metadata_file)
-           SELECT $1, UNNEST($2::BIGINT[]), UNNEST($3::TEXT[]) ORDER BY UNNEST($4::BIGINT[]) ASC"#,
+           SELECT $1, ts, mf FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::BIGINT[]) u (ts, mf, seq) ORDER BY seq ASC"#,
         tabular_id,
         &timestamps,
         &metadata_files,
@@ -406,13 +406,13 @@ pub(super) async fn insert_snapshot_refs(
     let _ = sqlx::query!(
         r#"
         WITH deleted AS (
-            DELETE FROM table_refs WHERE table_id = $1 AND table_ref_name not in (select unnest($2::TEXT[]))
+            DELETE FROM table_refs WHERE table_id = $1 AND table_ref_name not in (SELECT UNNEST($2::TEXT[]))
         )
         INSERT INTO table_refs(table_id,
                               table_ref_name,
                               snapshot_id,
                               retention)
-        SELECT $1, unnest($2::TEXT[]), unnest($3::BIGINT[]), unnest($4::JSONB[])
+        SELECT $1, u.* FROM UNNEST($2::TEXT[], $3::BIGINT[], $4::JSONB[]) u
         ON CONFLICT (table_id, table_ref_name)
         DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
         table_metadata.uuid(),
@@ -532,7 +532,7 @@ pub(crate) async fn set_table_properties(
     sqlx::query!(
         r#"WITH drop as (DELETE FROM table_properties WHERE table_id = $1)
            INSERT INTO table_properties (table_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
+           SELECT $1, u.* FROM UNNEST($2::text[], $3::text[]) u
            ON CONFLICT (key, table_id) DO UPDATE SET value = EXCLUDED.value;"#,
         table_id,
         &keys,
@@ -565,8 +565,8 @@ pub(super) async fn insert_partition_statistics(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO partition_statistics(snapshot_id, table_id, statistics_path, file_size_in_bytes)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::TEXT[]), UNNEST($4::BIGINT[])"#,
+        r#"INSERT INTO partition_statistics(table_id, snapshot_id, statistics_path, file_size_in_bytes)
+           SELECT $2, u.* FROM UNNEST($1::BIGINT[], $3::TEXT[], $4::BIGINT[]) u"#,
         &snapshot_ids,
         tabular_id,
         &paths,
@@ -634,8 +634,8 @@ pub(super) async fn insert_table_statistics(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_statistics(snapshot_id, table_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
-           SELECT UNNEST($1::BIGINT[]), $2, UNNEST($3::TEXT[]), UNNEST($4::BIGINT[]), UNNEST($5::BIGINT[]), UNNEST($6::TEXT[]), UNNEST($7::JSONB[])"#,
+        r#"INSERT INTO table_statistics(table_id, snapshot_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
+           SELECT $2, u.* FROM UNNEST($1::BIGINT[], $3::TEXT[], $4::BIGINT[], $5::BIGINT[], $6::TEXT[], $7::JSONB[]) u"#,
         &snapshot_ids,
         tabular_id,
         &paths,

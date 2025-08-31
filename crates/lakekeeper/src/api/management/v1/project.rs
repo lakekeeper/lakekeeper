@@ -384,7 +384,7 @@ pub struct GetEndpointStatisticsRequest {
     /// Range specifier
     ///
     /// Either for a explicit range or a page token to paginate through the results. See the docs of
-    /// `RangeSpecifier` for more details.
+    /// `TimeWindowSelector` for more details.
     pub range_specifier: Option<TimeWindowSelector>,
 }
 

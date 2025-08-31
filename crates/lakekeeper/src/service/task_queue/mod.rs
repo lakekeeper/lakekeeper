@@ -132,6 +132,24 @@ impl Deref for TaskId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAttemptId {
+    pub task_id: TaskId,
+    pub attempt: i32,
+}
+
+impl std::fmt::Display for TaskAttemptId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (attempt {})", self.task_id, self.attempt)
+    }
+}
+
+impl AsRef<TaskAttemptId> for TaskAttemptId {
+    fn as_ref(&self) -> &TaskAttemptId {
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskFilter {
     WarehouseId(WarehouseId),
@@ -175,24 +193,36 @@ impl EntityId {
 pub struct Task {
     pub task_metadata: TaskMetadata,
     pub queue_name: TaskQueueName,
-    pub task_id: TaskId,
+    pub id: TaskAttemptId,
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub attempt: i32,
     pub(crate) config: Option<serde_json::Value>,
     pub(crate) data: serde_json::Value,
+}
+
+impl AsRef<TaskAttemptId> for Task {
+    fn as_ref(&self) -> &TaskAttemptId {
+        &self.id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpecializedTask<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> {
     pub task_metadata: TaskMetadata,
-    pub task_id: TaskId,
+    pub id: TaskAttemptId,
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub attempt: i32,
     pub config: Option<C>,
     pub data: P,
     execution_details: PhantomData<E>,
+}
+
+impl<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> AsRef<TaskAttemptId>
+    for SpecializedTask<C, P, E>
+{
+    fn as_ref(&self) -> &TaskAttemptId {
+        &self.id
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -216,6 +246,21 @@ impl TaskCheckState {
 }
 
 impl Task {
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    #[must_use]
+    pub fn id(&self) -> TaskAttemptId {
+        self.id
+    }
+
     /// Extracts the task state from the task.
     ///
     /// # Errors
@@ -225,7 +270,7 @@ impl Task {
             crate::api::ErrorModel::internal(
                 format!(
                     "Failed to deserialize task data for task {} in queue `{}`: {e}",
-                    self.task_id, self.queue_name
+                    self.id, self.queue_name
                 ),
                 "TaskStateDeserializationError",
                 Some(Box::new(e)),
@@ -261,6 +306,21 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     #[must_use]
     pub fn queue_name() -> &'static TaskQueueName {
         Q::queue_name()
+    }
+
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    #[must_use]
+    pub fn id(&self) -> TaskAttemptId {
+        self.id
     }
 
     /// Schedule a single task.
@@ -379,7 +439,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Err(err) => {
                     Self::report_deserialization_failure::<C>(
                         catalog_state,
-                        task.task_id,
+                        task.id,
                         &err.to_string(),
                     )
                     .await;
@@ -391,7 +451,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Err(err) => {
                     Self::report_deserialization_failure::<C>(
                         catalog_state,
-                        task.task_id,
+                        task.id,
                         &err.to_string(),
                     )
                     .await;
@@ -400,10 +460,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             };
             Ok(Some(Self {
                 task_metadata: task.task_metadata,
-                task_id: task.task_id,
+                id: task.id,
                 status: task.status,
                 picked_up_at: task.picked_up_at,
-                attempt: task.attempt,
                 config,
                 data: state,
                 execution_details: PhantomData,
@@ -455,7 +514,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                         }
                     };
 
-                    tracing::debug!("Picked up `{}` task {}.", task.task_id, Q::queue_name());
+                    tracing::debug!("Picked up `{}` task {}.", task.id, Q::queue_name());
                     return Some(task);
                 }
             }
@@ -480,29 +539,23 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     format!(
                         "Failed to serialize execution details for `{}` task {}: {e}",
                         Self::queue_name(),
-                        self.task_id
+                        self.id
                     ),
                     "Unexpected",
                     Some(Box::new(e)),
                 )
             })?;
 
-        C::check_and_heartbeat_task(
-            self.task_id,
-            self.attempt,
-            transaction,
-            progress,
-            execution_details,
-        )
-        .await
-        .map_err(|e| {
-            e.append_detail(format!(
-                "Failed to heartbeat `{}` task {}.",
-                Self::queue_name(),
-                self.task_id
-            ))
-            .into()
-        })
+        C::check_and_heartbeat_task(self.id, transaction, progress, execution_details)
+            .await
+            .map_err(|e| {
+                e.append_detail(format!(
+                    "Failed to heartbeat `{}` task {}.",
+                    Self::queue_name(),
+                    self.id
+                ))
+                .into()
+            })
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.
@@ -521,7 +574,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Ok(()) => {
                     tracing::debug!(
                         "Successfully recorded error for task {} in queue '{}' on attempt {attempt}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
                     return;
@@ -529,7 +582,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Err(e) => {
                     tracing::warn!(
                         "Failed to record error for task {} in queue '{}' on attempt {attempt}/5: {e}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
 
@@ -538,7 +591,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     } else {
                         tracing::error!(
                             "Failed to record error for task {} in queue '{}' after 5 attempts. {e}. Original Error: {error}",
-                            self.task_id,
+                            self.id,
                             Self::queue_name()
                         );
                     }
@@ -562,7 +615,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Ok(()) => {
                     tracing::debug!(
                         "Successfully recorded success for task {} in queue '{}' on attempt {attempt}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
                     return;
@@ -570,7 +623,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 Err(e) => {
                     tracing::warn!(
                         "Failed to record success for task {} in queue '{}' on attempt {attempt}/5: {e}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
 
@@ -579,7 +632,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     } else {
                         tracing::error!(
                             "Failed to record success for task {} in queue '{}' after 5 attempts. {e}. Original Success Details: {}",
-                            self.task_id,
+                            self.id,
                             Self::queue_name(),
                             details.unwrap_or("No details provided")
                         );
@@ -607,14 +660,14 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             Ok(()) => {
                 tracing::debug!(
                     "Successfully recorded success for task {} in queue '{}'",
-                    self.task_id,
+                    self.id,
                     Self::queue_name(),
                 );
             }
             Err(e) => {
                 tracing::error!(
                     "Failed to record success for task {} in queue '{}': {e}. Original Success Details: {}",
-                    self.task_id,
+                    self.id,
                     Self::queue_name(),
                     details.unwrap_or("No details provided")
                 );
@@ -624,16 +677,16 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 
     async fn report_deserialization_failure<C: Catalog>(
         catalog_state: C::State,
-        task_id: TaskId,
+        id: TaskAttemptId,
         error: &str,
     ) {
-        tracing::error!("{error}. TaskID: {task_id}");
+        tracing::error!("{error}. TaskID: {id}");
 
         let mut trx = match C::Transaction::begin_write(catalog_state).await {
             Ok(trx) => trx,
             Err(e) => {
                 tracing::error!(
-                    "Failed to start DB transaction to record deserialization failure for `{}` task {task_id}: {e}. Original Error: {error}",
+                    "Failed to start DB transaction to record deserialization failure for `{}` task {id}: {e}. Original Error: {error}",
                     Q::queue_name()
                 );
                 return;
@@ -641,7 +694,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         };
 
         let r = C::record_task_failure(
-            task_id,
+            id,
             format!("Failed to deserialize task data: {error}").as_str(),
             Q::max_retries(),
             &mut trx.transaction(),
@@ -649,7 +702,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         .await
         .map_err(|e| {
             e.append_detail(format!(
-                "Failed to record deserialization failure for `{task_id}` task {}.",
+                "Failed to record deserialization failure for `{id}` task {}.",
                 Q::queue_name()
             ))
             .append_detail(format!("Original Error: {error}"))
@@ -657,7 +710,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 
         if let Err(e) = r {
             tracing::error!(
-                "Failed to record deserialization failure for `{task_id}` task {}: {e}. Original Error: {error}",
+                "Failed to record deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
                 Q::queue_name()
             );
             return;
@@ -665,7 +718,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 
         if let Err(e) = trx.commit().await {
             tracing::error!(
-                "Failed to commit transaction for recording deserialization failure for `{task_id}` task {}: {e}. Original Error: {error}",
+                "Failed to commit transaction for recording deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
                 Q::queue_name()
             );
         };
@@ -682,7 +735,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 return Err(e
                     .append_detail(format!(
                     "Failed to start DB transaction to record status for task {} in queue `{}`.",
-                    self.task_id, Self::queue_name()
+                    self.id, Self::queue_name()
                 ))
                     .append_detail(format!("Task Status that failed to record: `{result}`")));
             }
@@ -694,7 +747,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         transaction.commit().await.map_err(|e| {
             e.append_detail(format!(
                 "Failed to commit DB transaction to record status for task {} in queue `{}`.",
-                self.task_id,
+                self.id,
                 Self::queue_name()
             ))
             .append_detail(format!("Task Status that failed to commit: `{result}`"))
@@ -709,29 +762,27 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
         mut transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
     ) -> Result<(), IcebergErrorResponse> {
         match result {
-            Status::Success(details) => {
-                C::record_task_success(self.task_id, details, &mut transaction)
-                    .await
-                    .map_err(|e| {
-                        e.append_detail(format!(
-                            "Failed to record success for `{}` task {}.",
-                            Self::queue_name(),
-                            self.task_id,
-                        ))
-                        .append_detail(format!(
-                            "Original Success Details: `{}`",
-                            details.unwrap_or("No details provided")
-                        ))
-                    })
-            }
+            Status::Success(details) => C::record_task_success(self.id, details, &mut transaction)
+                .await
+                .map_err(|e| {
+                    e.append_detail(format!(
+                        "Failed to record success for `{}` task {}.",
+                        Self::queue_name(),
+                        self.id,
+                    ))
+                    .append_detail(format!(
+                        "Original Success Details: `{}`",
+                        details.unwrap_or("No details provided")
+                    ))
+                }),
             Status::Failure(details, max_retries) => {
-                C::record_task_failure(self.task_id, details, max_retries, &mut transaction)
+                C::record_task_failure(self.id, details, max_retries, &mut transaction)
                     .await
                     .map_err(|e| {
                         e.append_detail(format!(
                             "Failed to record failure for `{}` task {}.",
                             Self::queue_name(),
-                            self.task_id
+                            self.id
                         ))
                         .append_detail(format!("Original Error Details: `{details}`"))
                     })

@@ -613,19 +613,14 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(task.task_id, task_id);
+        assert_eq!(task.task_id(), task_id);
 
         // Update progress and execution details
         let execution_details = serde_json::json!({"progress": "in progress"});
-        let check_result = check_and_heartbeat_task(
-            &mut conn,
-            task_id,
-            task.attempt,
-            0.5,
-            Some(execution_details.clone()),
-        )
-        .await
-        .unwrap();
+        let check_result =
+            check_and_heartbeat_task(&mut conn, &task, 0.5, Some(execution_details.clone()))
+                .await
+                .unwrap();
         assert_eq!(check_result, TaskCheckState::Continue);
 
         // Get task details
@@ -689,13 +684,13 @@ mod tests {
         .unwrap();
 
         // Pick up the task
-        let _task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
 
         // Complete the task successfully
-        record_success(task_id, &mut conn, Some("Task completed successfully"))
+        record_success(&task, &mut conn, Some("Task completed successfully"))
             .await
             .unwrap();
 
@@ -747,9 +742,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task1.attempt, 1);
+        assert_eq!(task1.attempt(), 1);
 
-        record_failure(&mut conn, task_id, 5, "First attempt failed")
+        record_failure(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -758,9 +753,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task2.attempt, 2);
+        assert_eq!(task2.attempt(), 2);
 
-        record_failure(&mut conn, task_id, 5, "Second attempt failed")
+        record_failure(&task2, 5, "Second attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -769,9 +764,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task3.attempt, 3);
+        assert_eq!(task3.attempt(), 3);
 
-        record_success(task_id, &mut conn, Some("Third attempt succeeded"))
+        record_success(&task3, &mut conn, Some("Third attempt succeeded"))
             .await
             .unwrap();
 
@@ -829,7 +824,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        record_failure(&mut conn, task_id, 5, "First attempt failed")
+        record_failure(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
@@ -838,19 +833,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task2.attempt, 2);
+        assert_eq!(task2.attempt(), 2);
 
         // Update progress for the active task
         let execution_details = serde_json::json!({"current_step": "processing"});
-        let _ = check_and_heartbeat_task(
-            &mut conn,
-            task_id,
-            task1.attempt,
-            0.7,
-            Some(execution_details.clone()),
-        )
-        .await
-        .unwrap();
+        let _ = check_and_heartbeat_task(&mut conn, &task2, 0.7, Some(execution_details.clone()))
+            .await
+            .unwrap();
 
         // Get task details
         let result = get_task_details(warehouse_id, task_id, 10, &mut conn)
@@ -897,23 +886,23 @@ mod tests {
 
         // Create 5 failed attempts
         for i in 1..=5 {
-            let _task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .unwrap();
 
-            record_failure(&mut conn, task_id, 10, &format!("Attempt {i} failed"))
+            record_failure(&task, 10, &format!("Attempt {i} failed"), &mut conn)
                 .await
                 .unwrap();
         }
 
         // 6th attempt succeeds
-        let _task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
 
-        record_success(task_id, &mut conn, Some("Final attempt succeeded"))
+        record_success(&task, &mut conn, Some("Final attempt succeeded"))
             .await
             .unwrap();
 

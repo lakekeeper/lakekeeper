@@ -42,16 +42,18 @@ use crate::{
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
-            Task, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
+            TaskQueueName,
         },
     },
     SecretIdent,
 };
 
 struct TasksCacheExpiry;
+const TASKS_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 impl<K, V> moka::Expiry<K, V> for TasksCacheExpiry {
     fn expire_after_create(&self, _key: &K, _value: &V, _created_at: Instant) -> Option<Duration> {
-        Some(Duration::from_secs(60 * 60)) // 1 hour
+        Some(TASKS_CACHE_TTL)
     }
 }
 static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, (TaskEntity, TaskQueueName)>> =
@@ -823,7 +825,10 @@ where
 
     /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
     /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
-    #[tracing::instrument(name = "catalog_pick_new_task", skip(state))]
+    #[tracing::instrument(
+        name = "catalog_pick_new_task",
+        skip(state, default_max_time_since_last_heartbeat)
+    )]
     async fn pick_new_task(
         queue_name: &TaskQueueName,
         default_max_time_since_last_heartbeat: chrono::Duration,
@@ -876,9 +881,9 @@ where
         }
         let resolve_uncached_result =
             Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, transaction).await?;
-        for (id, value) in &resolve_uncached_result {
-            cached_results.insert(*id, value.clone());
-            TASKS_CACHE.insert(*id, value.clone()).await;
+        for (id, value) in resolve_uncached_result {
+            cached_results.insert(id, value.clone());
+            TASKS_CACHE.insert(id, value).await;
         }
         Ok(cached_results)
     }
@@ -904,18 +909,35 @@ where
         Ok(tasks)
     }
 
-    async fn record_task_success(
-        task_id: TaskId,
+    async fn record_task_success_impl(
+        id: TaskAttemptId,
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
-    async fn record_task_failure(
-        id: TaskId,
+    async fn record_task_success(
+        id: TaskAttemptId,
+        message: Option<&str>,
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        Self::record_task_success_impl(id, message, transaction).await
+    }
+
+    async fn record_task_failure_impl(
+        id: TaskAttemptId,
         error_details: &str,
         max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
+
+    async fn record_task_failure(
+        id: TaskAttemptId,
+        error_details: &str,
+        max_retries: i32,
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        Self::record_task_failure_impl(id, error_details, max_retries, transaction).await
+    }
 
     /// Get task details by task id.
     /// Return Ok(None) if the task does not exist.
@@ -992,26 +1014,17 @@ where
 
     /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
     async fn check_and_heartbeat_task(
-        task_id: TaskId,
-        attempt: i32,
+        id: TaskAttemptId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         progress: f32,
         execution_details: Option<serde_json::Value>,
     ) -> Result<TaskCheckState> {
-        Self::check_and_heartbeat_task_impl(
-            task_id,
-            attempt,
-            transaction,
-            progress,
-            execution_details,
-        )
-        .await
+        Self::check_and_heartbeat_task_impl(id, transaction, progress, execution_details).await
     }
 
     /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
     async fn check_and_heartbeat_task_impl(
-        task_id: TaskId,
-        attempt: i32,
+        id: TaskAttemptId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         progress: f32,
         execution_details: Option<serde_json::Value>,

@@ -63,7 +63,8 @@ use crate::{
         authn::UserId,
         storage::StorageProfile,
         task_queue::{
-            Task, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput, TaskQueueName,
+            Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
+            TaskQueueName,
         },
         Catalog, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
         CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
@@ -712,21 +713,21 @@ impl Catalog for super::PostgresCatalog {
         resolve_tasks(warehouse_id, task_ids, transaction).await
     }
 
-    async fn record_task_success(
-        id: TaskId,
+    async fn record_task_success_impl(
+        id: TaskAttemptId,
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        record_success(id, transaction, message).await
+        record_success(&&id, transaction, message).await
     }
 
-    async fn record_task_failure(
-        id: TaskId,
+    async fn record_task_failure_impl(
+        id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        record_failure(transaction, id, max_retries, error_details).await
+        record_failure(&id, max_retries, error_details, transaction).await
     }
 
     async fn get_task_details_impl(
@@ -772,20 +773,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn check_and_heartbeat_task_impl(
-        task_id: TaskId,
-        attempt: i32,
+        id: TaskAttemptId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
         progress: f32,
         execution_details: Option<serde_json::Value>,
     ) -> Result<TaskCheckState> {
-        check_and_heartbeat_task(
-            &mut *transaction,
-            task_id,
-            attempt,
-            progress,
-            execution_details,
-        )
-        .await
+        check_and_heartbeat_task(&mut *transaction, &id, progress, execution_details).await
     }
 
     async fn stop_tasks(

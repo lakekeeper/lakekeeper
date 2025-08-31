@@ -111,7 +111,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        implementations::postgres::tasks::test::{setup_two_warehouses, setup_warehouse},
+        implementations::postgres::tasks::{
+            pick_task, record_failure, record_success,
+            test::{setup_two_warehouses, setup_warehouse},
+        },
         service::{
             task_queue::{
                 EntityId, TaskInput, TaskMetadata, TaskQueueName,
@@ -221,16 +224,14 @@ mod tests {
         .unwrap();
 
         // Pick up the tasks to make them active
-        let _task1 =
-            super::super::pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        let _task2 =
-            super::super::pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+        let _task1 = pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        let _task2 = pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Resolve both tasks
         let task_ids = vec![task_id1, task_id2];
@@ -300,21 +301,19 @@ mod tests {
         .unwrap();
 
         // Pick up and complete both tasks
-        let _task1 =
-            super::super::pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_success(task_id1, &mut conn, Some("Task 1 completed"))
+        let task1 = pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_success(&task1, &mut conn, Some("Task 1 completed"))
             .await
             .unwrap();
 
-        let _task2 =
-            super::super::pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_failure(&mut conn, task_id2, 1, "Task 2 failed")
+        let task2 = pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_failure(&task2, 1, "Task 2 failed", &mut conn)
             .await
             .unwrap();
 
@@ -399,20 +398,18 @@ mod tests {
         .unwrap();
 
         // Complete task2, pick up task1 (leave task3 scheduled)
-        let _task2 =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_success(task_id2, &mut conn, Some("Task 2 completed"))
+        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_success(&task2, &mut conn, Some("Task 2 completed"))
             .await
             .unwrap();
 
-        let _task1 =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+        let _task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Resolve all three tasks
         let task_ids = vec![task_id1, task_id2, task_id3];
@@ -620,21 +617,19 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let _task1 =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_failure(&mut conn, task_id, 5, "First attempt failed")
+        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_failure(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
         // Second attempt - pick and keep running
-        let _task2 =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+        let _task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Resolve the task (should find it in active tasks, not task_log)
         let task_ids = vec![task_id];
@@ -682,20 +677,17 @@ mod tests {
         }
 
         // Complete half of the tasks to have them in task_log
-        for (i, &task_id) in task_ids.iter().enumerate().take(10) {
-            let _task =
-                super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                    .await
-                    .unwrap()
-                    .unwrap();
+        for (i, _) in task_ids.iter().enumerate().take(10) {
+            let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .unwrap();
             if i % 2 == 0 {
-                super::super::record_success(task_id, &mut conn, Some("Completed"))
+                record_success(&task, &mut conn, Some("Completed"))
                     .await
                     .unwrap();
             } else {
-                super::super::record_failure(&mut conn, task_id, 1, "Failed")
-                    .await
-                    .unwrap();
+                record_failure(&task, 1, "Failed", &mut conn).await.unwrap();
             }
         }
 

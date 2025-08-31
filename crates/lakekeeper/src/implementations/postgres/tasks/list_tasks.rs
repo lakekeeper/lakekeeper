@@ -143,8 +143,9 @@ pub(crate) async fn list_tasks(
     let tasks = sqlx::query_as!(
         TaskRow,
         r#"
-        WITH selected_entities as (
-            SELECT unnest($10::uuid[]) as entity_id, unnest($11::entity_type[]) as entity_type
+        WITH selected_entities AS (
+            SELECT entity_id, entity_type
+            FROM unnest($10::uuid[], $11::entity_type[]) AS t(entity_id, entity_type)
         ),
         active_tasks AS (
             SELECT
@@ -276,7 +277,9 @@ mod tests {
     use super::*;
     use crate::{
         api::management::v1::tasks::{ListTasksRequest, TaskStatus as APITaskStatus},
-        implementations::postgres::tasks::{pick_task, test::setup_warehouse},
+        implementations::postgres::tasks::{
+            pick_task, record_failure, record_success, test::setup_warehouse,
+        },
         service::task_queue::{
             EntityId, TaskEntity, TaskInput, TaskMetadata, TaskOutcome, TaskQueueName, TaskStatus,
             DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
@@ -697,30 +700,24 @@ mod tests {
 
         // Complete some tasks (first 4)
         for &task_id in &task_ids[0..4] {
-            let picked_task =
-                super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(picked_task.task_id, task_id);
-            super::super::record_success(
-                picked_task.task_id,
-                &mut conn,
-                Some("Completed successfully"),
-            )
-            .await
-            .unwrap();
+            let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(picked_task.task_id(), task_id);
+            record_success(&picked_task, &mut conn, Some("Completed successfully"))
+                .await
+                .unwrap();
         }
 
         // Fail some tasks (next 2)
         for &task_id in &task_ids[4..6] {
-            let picked_task =
-                super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(picked_task.task_id, task_id);
-            super::super::record_failure(&mut conn, picked_task.task_id, 1, "Task failed")
+            let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(picked_task.task_id(), task_id);
+            record_failure(&picked_task, 1, "Task failed", &mut conn)
                 .await
                 .unwrap();
         }
@@ -819,14 +816,13 @@ mod tests {
             task_ids.push(task_id);
 
             // Pick up and complete immediately
-            let picked_task =
-                super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(picked_task.task_id, task_id);
-            super::super::record_success(
-                picked_task.task_id,
+            let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(picked_task.task_id(), task_id);
+            record_success(
+                &picked_task,
                 &mut conn,
                 Some(&format!("Completed task {i}")),
             )
@@ -901,39 +897,38 @@ mod tests {
         }
 
         // Task 0: Success on first try
-        let task0 = super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task0 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        super::super::record_success(task0.task_id, &mut conn, Some("Success on first try"))
+        record_success(&task0, &mut conn, Some("Success on first try"))
             .await
             .unwrap();
 
         // Task 1: Fail once, then succeed
-        let task1 = super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        super::super::record_failure(&mut conn, task1.task_id, 5, "First attempt failed")
+        record_failure(&task1, 2, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
-        let task1_retry =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        assert_eq!(task1_retry.task_id, task1.task_id);
-        super::super::record_success(task1_retry.task_id, &mut conn, Some("Success on retry"))
+        let task1_retry = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task1_retry.task_id(), task1.task_id());
+        record_success(&task1_retry, &mut conn, Some("Success on retry"))
             .await
             .unwrap();
 
         // Task 2: Fail multiple times, eventually fail permanently
-        let task2 = super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        super::super::record_failure(&mut conn, task2.task_id, 1, "Failed permanently")
+        record_failure(&task2, 1, "Failed permanently", &mut conn)
             .await
             .unwrap();
 
@@ -948,11 +943,10 @@ mod tests {
         .unwrap();
 
         // Task 4: Pick up and leave running
-        let _task4_running =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+        let _task4_running = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Tasks 5,6,7: Leave as scheduled
 
@@ -1055,22 +1049,20 @@ mod tests {
         }
 
         // Complete some tasks from queue 1
-        let task_q1_1 =
-            super::super::pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_success(task_q1_1.task_id, &mut conn, Some("Queue 1 completed"))
+        let task_q1_1 = pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_success(&task_q1_1, &mut conn, Some("Queue 1 completed"))
             .await
             .unwrap();
 
         // Fail a task from queue 2
-        let task_q2_1 =
-            super::super::pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_failure(&mut conn, task_q2_1.task_id, 1, "Queue 2 failed")
+        let task_q2_1 = pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_failure(&task_q2_1, 1, "Queue 2 failed", &mut conn)
             .await
             .unwrap();
 
@@ -1129,14 +1121,13 @@ mod tests {
             .unwrap();
 
         // Pick up the task
-        let _picked_task =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Complete the task successfully
-        super::super::record_success(task_id, &mut conn, Some("Task completed"))
+        record_success(&picked_task, &mut conn, Some("Task completed"))
             .await
             .unwrap();
 
@@ -1172,21 +1163,19 @@ mod tests {
             .unwrap();
 
         // Complete first task
-        let picked_task1 =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
-        super::super::record_success(picked_task1.task_id, &mut conn, Some("Completed"))
+        let picked_task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_success(&picked_task1, &mut conn, Some("Completed"))
             .await
             .unwrap();
 
         // Pick up second task (keep it running)
-        let _picked_task2 =
-            super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-                .await
-                .unwrap()
-                .unwrap();
+        let _picked_task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
 
         // Third task remains scheduled
 
@@ -1230,20 +1219,20 @@ mod tests {
             .unwrap();
 
         // First attempt - pick and fail
-        let task1 = super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        super::super::record_failure(&mut conn, task1.task_id, 5, "First attempt failed")
+        record_failure(&task1, 5, "First attempt failed", &mut conn)
             .await
             .unwrap();
 
         // Second attempt - pick and succeed
-        let task2 = super::super::pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        super::super::record_success(task2.task_id, &mut conn, Some("Second attempt succeeded"))
+        record_success(&task2, &mut conn, Some("Second attempt succeeded"))
             .await
             .unwrap();
 

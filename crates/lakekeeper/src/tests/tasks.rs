@@ -83,10 +83,10 @@ mod test {
                         .await
                         .unwrap()
                         .unwrap();
-                        let config = task.config.unwrap();
+                        let config = task.config.clone().unwrap();
                         assert_eq!(config.some_val, "test_value");
 
-                        assert_eq!(task_id, task.task_id);
+                        assert_eq!(task_id, task.task_id());
 
                         let task = task.data;
                         assert_eq!(task, task_state);

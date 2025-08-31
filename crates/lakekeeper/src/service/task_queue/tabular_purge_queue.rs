@@ -79,8 +79,8 @@ pub(crate) async fn tabular_purge_worker<C: Catalog, S: SecretStore>(
             location = %task.data.tabular_location,
             warehouse_id = %task.task_metadata.warehouse_id,
             tabular_type = %task.data.tabular_type,
-            attempt = %task.attempt,
-            task_id = %task.task_id,
+            attempt = %task.attempt(),
+            task_id = %task.task_id(),
         );
 
         instrumented_purge::<_, C>(catalog_state.clone(), &secret_state, &task)
