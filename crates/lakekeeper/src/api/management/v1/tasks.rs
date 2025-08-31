@@ -179,7 +179,7 @@ pub struct ListTasksRequest {
     /// Filter by task status
     #[serde(default)]
     pub status: Option<Vec<TaskStatus>>,
-    /// Filter by queue name
+    /// Filter by one or more queue names
     #[serde(default)]
     #[schema(value_type = Option<Vec<String>>)]
     pub queue_name: Option<Vec<TaskQueueName>>,
@@ -208,6 +208,7 @@ pub struct ListTasksRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GetTaskDetailsQuery {
     /// Number of attempts to retrieve (default: 5)
+    #[param(default = 5)]
     pub num_attempts: Option<u16>,
 }
 

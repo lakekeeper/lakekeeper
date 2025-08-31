@@ -2401,6 +2401,7 @@ paths:
               - integer
               - 'null'
             format: int32
+            default: 5
             minimum: 0
       responses:
         '200':
@@ -3472,7 +3473,7 @@ components:
             - 'null'
           items:
             type: string
-          description: Filter by queue name
+          description: Filter by one or more queue names
         status:
           type:
             - array
