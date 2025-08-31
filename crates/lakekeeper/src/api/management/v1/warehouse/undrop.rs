@@ -33,7 +33,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     authorizer: &A,
     tabs: &[TabularId],
 ) -> api::Result<bool> {
-    let mut futs = vec![];
+    let mut futs = Vec::with_capacity(tabs.len());
 
     for t in tabs {
         match t {

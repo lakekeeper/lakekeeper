@@ -12,8 +12,6 @@ use crate::{
     WarehouseId,
 };
 
-mod list_pagination_token;
-
 mod get_task_details;
 mod list_tasks;
 mod resolve_tasks;
@@ -42,6 +40,7 @@ impl From<EntityId> for EntityType {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn queue_task_batch(
     conn: &mut PgConnection,
     queue_name: &TaskQueueName,
@@ -180,20 +179,20 @@ pub(crate) async fn pick_task(
     let x = sqlx::query!(
         r#"
         WITH updated_task AS (
-        SELECT task_id, t.warehouse_id, config
-        FROM task t
-        LEFT JOIN task_config tc
-            ON tc.queue_name = t.queue_name
-                AND tc.warehouse_id = t.warehouse_id
-        WHERE (t.queue_name = $1 AND scheduled_for < now()) 
-            AND (
-                (status = $3) OR 
-                (status != $3 AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
-            )
-        -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
-        -- transactions locked
-        FOR UPDATE OF t SKIP LOCKED
-        LIMIT 1
+            SELECT task_id, t.warehouse_id, config
+            FROM task t
+            LEFT JOIN task_config tc
+                ON tc.queue_name = t.queue_name
+                    AND tc.warehouse_id = t.warehouse_id
+            WHERE (t.queue_name = $1 AND scheduled_for < now()) 
+                AND (
+                    (status = $3) OR 
+                    (status != $3 AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
+                )
+            -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
+            -- transactions locked
+            FOR UPDATE OF t SKIP LOCKED
+            LIMIT 1
         )
         UPDATE task
         SET status = $4,
@@ -444,6 +443,7 @@ pub(crate) async fn record_failure(
                 picked_up_at = NULL,
                 execution_details = NULL
             FROM locked
+                WHERE t.task_id = locked.task_id AND t.attempt = locked.attempt
             RETURNING t.task_id
             "#,
             *task_id,
@@ -630,48 +630,49 @@ pub(crate) async fn cancel_scheduled_tasks(
     match filter {
         TaskFilter::WarehouseId(warehouse_id) => {
             sqlx::query!(
-                r#"WITH log as (
-                        INSERT INTO task_log(task_id,
-                                             warehouse_id,
-                                             queue_name,
-                                             task_data,
-                                             entity_id,
-                                             entity_type,
-                                             status,
-                                             attempt,
-                                             started_at,
-                                             duration,
-                                             progress,
-                                             execution_details,
-                                             attempt_scheduled_for,
-                                             last_heartbeat_at,
-                                             parent_task_id,
-                                             task_created_at)
-                        SELECT task_id,
-                               warehouse_id,
-                               queue_name,
-                               task_data,
-                               entity_id,
-                               entity_type,
-                               $4,
-                               attempt,
-                               picked_up_at,
-                               case when picked_up_at is not null
-                                   then now() - picked_up_at
-                                   else null
-                               end,
-                                progress,
-                                execution_details,
-                                scheduled_for,
-                                last_heartbeat_at,
-                                parent_task_id,
-                                created_at
-                        FROM task
-                        WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
-                        ON CONFLICT (task_id, attempt) DO NOTHING
-                    )
+                r#"
+                WITH deleted as (
                     DELETE FROM task
                     WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
+                    RETURNING *
+                )
+                INSERT INTO task_log(task_id,
+                                        warehouse_id,
+                                        queue_name,
+                                        task_data,
+                                        entity_id,
+                                        entity_type,
+                                        status,
+                                        attempt,
+                                        started_at,
+                                        duration,
+                                        progress,
+                                        execution_details,
+                                        attempt_scheduled_for,
+                                        last_heartbeat_at,
+                                        parent_task_id,
+                                        task_created_at)
+                SELECT task_id,
+                        warehouse_id,
+                        queue_name,
+                        task_data,
+                        entity_id,
+                        entity_type,
+                        $4,
+                        attempt,
+                        picked_up_at,
+                        case when picked_up_at is not null
+                            then now() - picked_up_at
+                            else null
+                        end,
+                        progress,
+                        execution_details,
+                        scheduled_for,
+                        last_heartbeat_at,
+                        parent_task_id,
+                        created_at
+                FROM deleted
+                ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
                 *warehouse_id,
                 queue_name,
@@ -694,49 +695,49 @@ pub(crate) async fn cancel_scheduled_tasks(
         }
         TaskFilter::TaskIds(task_ids) => {
             sqlx::query!(
-                r#"WITH ins as (
-                        INSERT INTO task_log(task_id,
-                                             warehouse_id,
-                                             queue_name,
-                                             task_data,
-                                             status,
-                                             entity_id,
-                                             entity_type,
-                                             attempt,
-                                             started_at,
-                                             duration,
-                                             progress,
-                                             execution_details,
-                                             attempt_scheduled_for,
-                                             last_heartbeat_at,
-                                             parent_task_id,
-                                             task_created_at)
-                        SELECT task_id,
-                               warehouse_id,
-                               queue_name,
-                               task_data,
-                               $2,
-                               entity_id,
-                               entity_type,
-                               attempt,
-                               picked_up_at,
-                               case when picked_up_at is not null
-                                   then now() - picked_up_at
-                                   else null
-                               end,
-                                progress,
-                                execution_details,
-                                scheduled_for,
-                                last_heartbeat_at,
-                                parent_task_id,
-                                created_at
-                        FROM task
-                        WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)
-                        ON CONFLICT (task_id, attempt) DO NOTHING
-                    )
-                    DELETE FROM task t
-                    WHERE (status = $3 OR $6) AND (queue_name = $4 OR $5)
-                    AND task_id = ANY($1)
+                r#"
+                WITH deleted as (
+                    DELETE FROM task
+                    WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)
+                    RETURNING *
+                )
+                INSERT INTO task_log(task_id,
+                                        warehouse_id,
+                                        queue_name,
+                                        task_data,
+                                        status,
+                                        entity_id,
+                                        entity_type,
+                                        attempt,
+                                        started_at,
+                                        duration,
+                                        progress,
+                                        execution_details,
+                                        attempt_scheduled_for,
+                                        last_heartbeat_at,
+                                        parent_task_id,
+                                        task_created_at)
+                SELECT task_id,
+                        warehouse_id,
+                        queue_name,
+                        task_data,
+                        $2,
+                        entity_id,
+                        entity_type,
+                        attempt,
+                        picked_up_at,
+                        case when picked_up_at is not null
+                            then now() - picked_up_at
+                            else null
+                        end,
+                        progress,
+                        execution_details,
+                        scheduled_for,
+                        last_heartbeat_at,
+                        parent_task_id,
+                        created_at
+                FROM deleted
+                ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
                 &task_ids.iter().map(|s| **s).collect_vec(),
                 TaskOutcome::Cancelled as _,

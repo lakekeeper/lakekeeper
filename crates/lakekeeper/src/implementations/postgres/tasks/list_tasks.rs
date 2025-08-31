@@ -14,7 +14,6 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
-        // tasks::list_pagination_token::ListTasksPaginationToken,
     },
     service::task_queue::{TaskEntity, TaskId, TaskOutcome, TaskStatus},
     WarehouseId, CONFIG,
@@ -72,7 +71,9 @@ fn parse_api_task(row: TaskRow) -> Result<APITask, IcebergErrorResponse> {
     })
 }
 
-fn split_task_status(status: &[APITaskStatus]) -> (HashSet<TaskStatus>, HashSet<TaskOutcome>) {
+fn categorize_task_statuses(
+    status: &[APITaskStatus],
+) -> (HashSet<TaskStatus>, HashSet<TaskOutcome>) {
     let (task_status_filter, task_log_status_filter) = status
         .iter()
         .map(APITaskStatus::split)
@@ -126,7 +127,7 @@ pub(crate) async fn list_tasks(
 
     let status_filter_is_none = status.is_none();
     let status_filter = status.unwrap_or_default();
-    let (task_status_filter, task_log_status_filter) = split_task_status(&status_filter);
+    let (task_status_filter, task_log_status_filter) = categorize_task_statuses(&status_filter);
 
     let entities_filter_is_none = entities.is_none();
     let (entity_ids, entity_types) = entities
@@ -289,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_split_task_status() {
-        let (i_status, f_status) = split_task_status(&[
+        let (i_status, f_status) = categorize_task_statuses(&[
             APITaskStatus::Failed,
             APITaskStatus::Scheduled,
             APITaskStatus::Running,
@@ -305,15 +306,15 @@ mod tests {
             HashSet::from([TaskOutcome::Failed, TaskOutcome::Success])
         );
 
-        let (i_status, f_status) = split_task_status(&[APITaskStatus::Scheduled]);
+        let (i_status, f_status) = categorize_task_statuses(&[APITaskStatus::Scheduled]);
         assert_eq!(i_status, HashSet::from([TaskStatus::Scheduled]));
         assert!(f_status.is_empty());
 
-        let (i_status, f_status) = split_task_status(&[APITaskStatus::Success]);
+        let (i_status, f_status) = categorize_task_statuses(&[APITaskStatus::Success]);
         assert!(i_status.is_empty());
         assert_eq!(f_status, HashSet::from([TaskOutcome::Success]));
 
-        let (i_status, f_status) = split_task_status(&[]);
+        let (i_status, f_status) = categorize_task_statuses(&[]);
         assert!(i_status.is_empty());
         assert!(f_status.is_empty());
     }

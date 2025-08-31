@@ -25,7 +25,7 @@ pub(crate) async fn resolve_tasks(
     }
 
     let warehouse_id_is_none = warehouse_id.is_none();
-    let warehouse_id = warehouse_id.map_or(Uuid::nil(), |id| *id);
+    let warehouse_id = warehouse_id.map_or_else(Uuid::nil, |id| *id);
 
     // Query both active tasks and historical tasks (task_log)
     let active_tasks = sqlx::query!(
@@ -96,9 +96,7 @@ pub(crate) async fn resolve_tasks(
             },
         };
         let queue_name = TaskQueueName::from(record.queue_name);
-        result
-            .entry(task_id)
-            .or_insert_with(|| (entity, queue_name));
+        result.entry(task_id).or_insert((entity, queue_name));
     }
 
     Ok(result)
@@ -152,7 +150,7 @@ mod tests {
         .map(|x| x.task_id))
     }
 
-    fn generate_tq_name() -> TaskQueueName {
+    fn generate_test_queue_name() -> TaskQueueName {
         TaskQueueName::from(format!("test-{}", Uuid::now_v7()))
     }
 
@@ -193,8 +191,8 @@ mod tests {
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity1 = EntityId::Tabular(Uuid::now_v7());
         let entity2 = EntityId::Tabular(Uuid::now_v7());
-        let tq_name1 = generate_tq_name();
-        let tq_name2 = generate_tq_name();
+        let tq_name1 = generate_test_queue_name();
+        let tq_name2 = generate_test_queue_name();
 
         // Queue two tasks
         let task_id1 = queue_task_helper(
@@ -270,8 +268,8 @@ mod tests {
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity1 = EntityId::Tabular(Uuid::now_v7());
         let entity2 = EntityId::Tabular(Uuid::now_v7());
-        let tq_name1 = generate_tq_name();
-        let tq_name2 = generate_tq_name();
+        let tq_name1 = generate_test_queue_name();
+        let tq_name2 = generate_test_queue_name();
 
         // Queue and complete two tasks
         let task_id1 = queue_task_helper(
@@ -355,7 +353,7 @@ mod tests {
         let entity1 = EntityId::Tabular(Uuid::now_v7());
         let entity2 = EntityId::Tabular(Uuid::now_v7());
         let entity3 = EntityId::Tabular(Uuid::now_v7());
-        let tq_name = generate_tq_name();
+        let tq_name = generate_test_queue_name();
 
         // Queue three tasks
         let task_id1 = queue_task_helper(
@@ -439,7 +437,7 @@ mod tests {
         let (warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Tabular(Uuid::now_v7());
         let entity2 = EntityId::Tabular(Uuid::now_v7());
-        let tq_name = generate_tq_name();
+        let tq_name = generate_test_queue_name();
 
         // Queue tasks in different warehouses
         let task_id1 = queue_task_helper(
@@ -494,7 +492,7 @@ mod tests {
         let (warehouse_id1, warehouse_id2) = setup_two_warehouses(pool.clone()).await;
         let entity1 = EntityId::Tabular(Uuid::now_v7());
         let entity2 = EntityId::Tabular(Uuid::now_v7());
-        let tq_name = generate_tq_name();
+        let tq_name = generate_test_queue_name();
 
         // Queue tasks in different warehouses
         let task_id1 = queue_task_helper(
@@ -554,7 +552,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Tabular(Uuid::now_v7());
-        let tq_name = generate_tq_name();
+        let tq_name = generate_test_queue_name();
 
         // Queue one task
         let existing_task_id = queue_task_helper(
@@ -600,7 +598,7 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
         let entity = EntityId::Tabular(Uuid::now_v7());
-        let tq_name = generate_tq_name();
+        let tq_name = generate_test_queue_name();
 
         // Queue a task that will be retried
         let task_id = queue_task_helper(
@@ -655,7 +653,7 @@ mod tests {
     async fn test_resolve_tasks_performance_with_many_tasks(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
-        let tq_name = generate_tq_name();
+        let tq_name = generate_test_queue_name();
 
         // Create a moderate number of tasks for performance testing
         let mut task_ids = Vec::new();

@@ -100,12 +100,30 @@ impl TaskQueuesRunner {
                     worker.queue_name,
                     worker.worker_id
                 ),
-                Err(e) => tracing::error!(
-                    ?e,
-                    "Task queue {} worker {} panicked: {e}. {log_msg_suffix}",
-                    worker.queue_name,
-                    worker.worker_id
-                ),
+                Err(e) => {
+                    if e.is_panic() {
+                        tracing::error!(
+                            ?e,
+                            "Task queue {} worker {} panicked. {log_msg_suffix}",
+                            worker.queue_name,
+                            worker.worker_id
+                        );
+                    } else if e.is_cancelled() {
+                        tracing::warn!(
+                            ?e,
+                            "Task queue {} worker {} was cancelled.",
+                            worker.queue_name,
+                            worker.worker_id
+                        );
+                    } else {
+                        tracing::error!(
+                            ?e,
+                            "Task queue {} worker {} failed to join. {log_msg_suffix}",
+                            worker.queue_name,
+                            worker.worker_id
+                        );
+                    }
+                }
             }
 
             // Restart the worker only if cancellation hasn't been requested

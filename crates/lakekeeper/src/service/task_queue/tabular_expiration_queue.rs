@@ -68,6 +68,10 @@ impl TaskConfig for ExpirationQueueConfig {
     fn queue_name() -> &'static TaskQueueName {
         &QUEUE_NAME
     }
+
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(120)
+    }
 }
 
 pub(crate) async fn tabular_expiration_worker<C: Catalog, A: Authorizer>(
@@ -224,10 +228,7 @@ where
                     parent_task_id: Some(task.task_id()),
                     schedule_for: None,
                 },
-                TabularPurgePayload {
-                    tabular_type: task.data.tabular_type,
-                    tabular_location,
-                },
+                TabularPurgePayload::new(tabular_location, task.data.tabular_type),
                 trx.transaction(),
             )
             .await
@@ -386,7 +387,33 @@ mod test {
         .deletion_details;
         del.unwrap();
         trx.commit().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
+                .await
+                .unwrap();
+            let gone = <PostgresCatalog as Catalog>::list_tabulars(
+                warehouse,
+                None,
+                ListFlags {
+                    include_active: false,
+                    include_staged: false,
+                    include_deleted: true,
+                },
+                trx.transaction(),
+                PaginationQuery::empty(),
+            )
+            .await
+            .unwrap()
+            .remove(&tab.table_id.into())
+            .is_none();
+            trx.commit().await.unwrap();
+            if gone || std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
 
         let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
             .await

@@ -48,6 +48,10 @@ impl TaskConfig for PurgeQueueConfig {
     fn queue_name() -> &'static TaskQueueName {
         &QUEUE_NAME
     }
+
+    fn max_time_since_last_heartbeat() -> chrono::Duration {
+        chrono::Duration::seconds(3600)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -153,13 +153,15 @@ impl TaskQueueRegistry {
             )),
         };
 
-        self.registered_queues.write().await.insert(
+        if let Some(_prev) = self.registered_queues.write().await.insert(
             queue_name,
             RegisteredQueue {
                 api_config,
                 schema_validator_fn,
             },
-        );
+        ) {
+            tracing::warn!("Overwriting registration for queue `{queue_name}`");
+        }
 
         self.task_workers.write().await.insert(
             queue_name,
@@ -328,6 +330,10 @@ mod test {
             fn queue_name() -> &'static TaskQueueName {
                 &FIRST_QUEUE_NAME
             }
+
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(300)
+            }
         }
 
         // Register another queue and verify both instances see it
@@ -339,6 +345,10 @@ mod test {
         impl TaskConfig for SecondTestQueueConfig {
             fn queue_name() -> &'static TaskQueueName {
                 &SECOND_QUEUE_NAME
+            }
+
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(300)
             }
         }
 

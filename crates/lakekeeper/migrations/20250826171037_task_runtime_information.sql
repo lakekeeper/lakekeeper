@@ -45,8 +45,8 @@ CREATE INDEX IF NOT EXISTS task_log_warehouse_created_at_id_attempt_idx ON task_
 
 CREATE INDEX IF NOT EXISTS task_log_warehouse_queue_created_at_idx ON task_log (warehouse_id, queue_name, task_created_at DESC);
 
-ALTER TYPE api_endpoints ADD VALUE 'management-v1-control-tasks';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-control-tasks';
 
-ALTER TYPE api_endpoints ADD VALUE 'management-v1-get-task-details';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-get-task-details';
 
-ALTER TYPE api_endpoints ADD VALUE 'management-v1-list-tasks';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-list-tasks';

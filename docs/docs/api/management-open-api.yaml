@@ -3136,7 +3136,7 @@ components:
                 Range specifier
 
                 Either for a explicit range or a page token to paginate through the results. See the docs of
-                `RangeSpecifier` for more details.
+                `TimeWindowSelector` for more details.
         status-codes:
           type:
             - array
@@ -3464,8 +3464,10 @@ components:
             Stop iterating when no more items are returned in a page.
         queue-name:
           type:
-            - string
+            - array
             - 'null'
+          items:
+            type: string
           description: Filter by queue name
         status:
           type:
@@ -4632,7 +4634,6 @@ components:
         - scheduled-for
         - attempt
         - progress
-        - parent-task-id
         - created-at
       properties:
         attempt:
@@ -4653,7 +4654,9 @@ components:
           format: date-time
           description: Last heartbeat timestamp for running tasks
         parent-task-id:
-          type: string
+          type:
+            - string
+            - 'null'
           format: uuid
           description: Parent task ID if this is a sub-task
         picked-up-at:

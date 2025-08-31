@@ -19,8 +19,9 @@ pub use task_registry::{
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 
+#[cfg(test)]
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
-    valid_max_time_since_last_heartbeat(3600);
+    chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -84,11 +85,9 @@ pub enum TaskEntity {
 }
 
 /// Warehouse specific configuration for a task queue.
-pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned {
+pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned + Clone + Send + Sync {
     #[must_use]
-    fn max_time_since_last_heartbeat() -> chrono::Duration {
-        DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT
-    }
+    fn max_time_since_last_heartbeat() -> chrono::Duration;
 
     #[must_use]
     fn max_retries() -> i32 {
@@ -99,9 +98,9 @@ pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned {
 }
 
 /// Task Payload
-pub trait TaskData: Clone + Serialize + DeserializeOwned {}
+pub trait TaskData: Clone + Serialize + DeserializeOwned + Send + Sync {}
 
-pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned {}
+pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned + Send + Sync {}
 
 #[derive(Hash, Debug, Clone, PartialEq, Serialize, Deserialize, Copy, Eq)]
 pub struct TaskId(Uuid);
@@ -828,17 +827,6 @@ impl std::fmt::Display for Status<'_> {
             Status::Failure(details, _) => write!(f, "failure ({details})"),
         }
     }
-}
-
-#[must_use]
-pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
-    assert!(
-        num > 0,
-        "max_seconds_since_last_heartbeat must be greater than 0"
-    );
-    let dur = chrono::Duration::seconds(num);
-    assert!(dur.num_microseconds().is_some());
-    dur
 }
 
 #[cfg(test)]

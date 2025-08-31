@@ -52,6 +52,10 @@ mod test {
             fn queue_name() -> &'static TaskQueueName {
                 &QUEUE_NAME
             }
+
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(120)
+            }
         }
         let setup = super::setup_tasks_test(pool).await;
         let ctx = setup.ctx.clone();

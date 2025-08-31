@@ -1503,7 +1503,7 @@ pub mod v1 {
     #[utoipa::path(
         get,
         tag = "tasks",
-        path = ManagementV1Endpoint::SetTaskQueueConfig.path(),
+        path = ManagementV1Endpoint::GetTaskQueueConfig.path(),
         params(("warehouse_id" = Uuid,),("queue_name" = String,)),
         responses(
             (status = 200, body = GetTaskQueueConfigResponse),

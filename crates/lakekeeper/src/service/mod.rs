@@ -505,3 +505,9 @@ impl Deref for TabularDetails {
         &self.table_id
     }
 }
+
+impl AsRef<TableId> for TabularDetails {
+    fn as_ref(&self) -> &TableId {
+        &self.table_id
+    }
+}

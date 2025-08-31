@@ -223,7 +223,7 @@ pub(crate) async fn get_task_details(
         "#,
         *warehouse_id,
         *task_id,
-        i32::from(num_attempts) // Plus one in query to account for no active task. We need to load one additional history entry.
+        i32::from(num_attempts) // Query limit is num_attempts + 1 to handle the case where there's an active task plus historical attempts
     )
     .fetch_all(&mut *transaction)
     .await
