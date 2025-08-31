@@ -4062,7 +4062,6 @@ dependencies = [
  "tryhard",
  "typed-builder 0.21.0",
  "url",
- "utoipa",
  "uuid",
  "veil",
 ]

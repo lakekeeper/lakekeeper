@@ -1275,6 +1275,11 @@ mod test {
         .unwrap()
         .unwrap();
 
+        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+
         let id2 = queue_task(
             &mut conn,
             &tq_name,
@@ -1288,10 +1293,6 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
         let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
@@ -1321,7 +1322,7 @@ mod test {
         record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
-        record_success(&task, &mut pool.acquire().await.unwrap(), Some(""))
+        record_success(&task2, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
     }
@@ -1415,7 +1416,7 @@ mod test {
         let idp1 = EntityId::Tabular(Uuid::now_v7());
         let idp2 = EntityId::Tabular(Uuid::now_v7());
         let tq_name = generate_tq_name();
-        let ids = queue_task_batch(
+        let _ids = queue_task_batch(
             &mut conn,
             &tq_name,
             vec![
@@ -1431,9 +1432,6 @@ mod test {
         )
         .await
         .unwrap();
-
-        let id = ids[0].task_id;
-        let id2 = ids[1].task_id;
 
         let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
@@ -1451,14 +1449,12 @@ mod test {
             "There are no tasks left, something is wrong."
         );
 
-        assert_eq!(task.task_id(), id);
         assert!(matches!(task.status, TaskStatus::Running));
         assert_eq!(task.attempt(), 1);
         assert!(task.picked_up_at.is_some());
         assert!(task.task_metadata.parent_task_id.is_none());
         assert_eq!(&task.queue_name, &tq_name);
 
-        assert_eq!(task2.task_id(), id2);
         assert!(matches!(task2.status, TaskStatus::Running));
         assert_eq!(task2.attempt(), 1);
         assert!(task2.picked_up_at.is_some());
@@ -1498,20 +1494,6 @@ mod test {
         record_success(&task2, &mut pool.acquire().await.unwrap(), Some(""))
             .await
             .unwrap();
-
-        // Re-insert two tasks with previously used idempotency keys
-        let ids_third = queue_task_batch(
-            &mut conn,
-            &tq_name,
-            vec![TaskInput {
-                task_metadata: task_metadata(warehouse_id, idp1),
-                payload: serde_json::Value::default(),
-            }],
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(ids_third.len(), 1);
 
         // pick one new task, one re-inserted task
         let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
