@@ -185,7 +185,7 @@ pub(crate) async fn pick_task(
             LEFT JOIN task_config tc
                 ON tc.queue_name = t.queue_name
                     AND tc.warehouse_id = t.warehouse_id
-            WHERE (t.queue_name = $1 AND scheduled_for < now()) 
+            WHERE (t.queue_name = $1 AND scheduled_for <= now()) 
                 AND (
                     (status = 'scheduled') OR 
                     (status != 'scheduled' AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))

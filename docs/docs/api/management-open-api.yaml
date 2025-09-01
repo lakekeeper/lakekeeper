@@ -2420,7 +2420,7 @@ paths:
     post:
       tags:
         - tasks
-      summary: Cancel or stop tasks.
+      summary: Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
       description: Accepts at most 100 task IDs in one request.
       operationId: control_tasks
       parameters:
@@ -2742,7 +2742,7 @@ components:
           description: |-
             Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
             Affects only tasks in `Scheduled` or `Stopping` state.
-            Timestamps must be in FRC 3339 format.
+            Timestamps must be in RFC 3339 format.
           required:
             - scheduled_for
             - action
