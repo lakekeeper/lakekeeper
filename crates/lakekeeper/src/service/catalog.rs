@@ -744,6 +744,7 @@ where
     ) -> Result<()>;
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,

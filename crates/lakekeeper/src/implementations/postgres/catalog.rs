@@ -565,11 +565,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<crate::implementations::postgres::tabular::view::ViewMetadataWithLocation> {
-        load_view(view_id, include_deleted, &mut *transaction).await
+        load_view(warehouse_id, view_id, include_deleted, &mut *transaction).await
     }
 
     async fn list_views<'a>(

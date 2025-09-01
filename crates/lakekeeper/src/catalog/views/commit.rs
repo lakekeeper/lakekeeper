@@ -100,6 +100,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     loop {
         let result = try_commit_view::<C, A, S>(
             CommitViewContext {
+                warehouse_id,
                 namespace_id,
                 view_id,
                 identifier: &identifier,
@@ -154,6 +155,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
 
 // Context structure to hold static parameters for retry function
 struct CommitViewContext<'a> {
+    warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     view_id: ViewId,
     identifier: &'a TableIdent,
@@ -176,7 +178,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     let ViewMetadataWithLocation {
         metadata_location: previous_metadata_location,
         metadata: before_update_metadata,
-    } = C::load_view(ctx.view_id, false, t.transaction()).await?;
+    } = C::load_view(ctx.warehouse_id, ctx.view_id, false, t.transaction()).await?;
     let previous_view_location = parse_view_location(before_update_metadata.location())?;
     let previous_metadata_location = parse_view_location(&previous_metadata_location)?;
 

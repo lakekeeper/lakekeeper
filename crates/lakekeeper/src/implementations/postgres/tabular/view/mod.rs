@@ -797,7 +797,9 @@ pub(crate) mod tests {
         assert_eq!(view.table_ident.name, "myview");
 
         let mut conn = state.read_pool().acquire().await.unwrap();
-        let metadata = load_view(view_uuid, false, &mut conn).await.unwrap();
+        let metadata = load_view(warehouse_id, view_uuid, false, &mut conn)
+            .await
+            .unwrap();
         assert_eq!(metadata.metadata, request.clone());
     }
 
@@ -816,6 +818,7 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -839,6 +842,7 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -894,6 +898,7 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             true,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -914,6 +919,7 @@ pub(crate) mod tests {
         tx.commit().await.unwrap();
 
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             true,
             &mut state.write_pool().acquire().await.unwrap(),
