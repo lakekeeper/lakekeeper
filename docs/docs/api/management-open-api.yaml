@@ -2708,10 +2708,54 @@ components:
           type: boolean
           description: Whether the action is allowed.
     ControlTaskAction:
-      type: string
-      enum:
-        - stop
-        - cancel
+      oneOf:
+        - type: object
+          description: Stop the task (can be retried if attempts not exhausted)
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - stop
+        - type: object
+          description: Cancel the task permanently (no retries)
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - cancel
+        - type: object
+          description: |-
+            Run the task immediately, moving the `scheduled_for` time to now.
+            Requires the task to be in `Scheduled` or `Stopping` state.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - run-now
+        - type: object
+          description: |-
+            Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
+            Requires the task to be in `Scheduled` or `Stopping` state.
+            Timestamps must be in FRC 3339 format.
+          required:
+            - scheduled_for
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - run-at
+            scheduled_for:
+              type: string
+              format: date-time
+              description: The time to run the task at
+              example: 2025-12-31T23:59:59Z
     ControlTasksRequest:
       type: object
       required:

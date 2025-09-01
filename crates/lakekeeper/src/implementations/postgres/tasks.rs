@@ -576,6 +576,42 @@ pub(crate) async fn request_tasks_stop(
     Ok(())
 }
 
+// If scheduled_for is None, run immediately
+pub(crate) async fn run_tasks_at(
+    transaction: &mut PgConnection,
+    task_ids: &[TaskId],
+    scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
+) -> crate::api::Result<()> {
+    let run_now = scheduled_for.is_none();
+    let scheduled_not_null = scheduled_for.unwrap_or_else(chrono::Utc::now);
+    sqlx::query!(
+        r#"
+        UPDATE task
+        SET scheduled_for = (CASE WHEN $5 THEN now() ELSE $4 END), status = $2
+        WHERE task_id = ANY($1) 
+            AND status IN ($2, $3)
+        "#,
+        &task_ids.iter().map(|s| **s).collect_vec(),
+        TaskStatus::Scheduled as _,
+        TaskStatus::ShouldStop as _,
+        scheduled_not_null,
+        run_now
+    )
+    .execute(transaction)
+    .await
+    .map_err(|e| {
+        tracing::error!(?e, "Failed to reschedule tasks");
+        let time_str = if let Some(scheduled_for) = scheduled_for {
+            format!("to run at {scheduled_for}")
+        } else {
+            "to run now".to_string()
+        };
+        e.into_error_model(format!("Failed to reschedule tasks {time_str}."))
+    })?;
+
+    Ok(())
+}
+
 pub(crate) async fn check_and_heartbeat_task(
     transaction: &mut PgConnection,
     id: impl AsRef<TaskAttemptId>,
@@ -1995,5 +2031,112 @@ mod test {
         // Should have no historical attempts since it succeeded on first try
         assert!(task_details.attempts.is_empty());
         assert_eq!(task_details.task.attempt, 1);
+    }
+
+    #[sqlx::test]
+    async fn test_run_tasks_at_with_and_without_scheduled_for(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let warehouse_id = setup_warehouse(pool.clone()).await;
+        let tq_name = generate_tq_name();
+
+        // Test 1: run_tasks_at with None (should run immediately)
+        let entity_id1 = EntityId::Tabular(Uuid::now_v7());
+        let future_time = Utc::now() + chrono::Duration::hours(2);
+
+        let task_id1 = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id1,
+            warehouse_id,
+            Some(future_time), // Schedule for 2 hours in the future
+            Some(serde_json::json!({"test": "run_now"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Verify task is scheduled for future (not pickable now)
+        let task_before = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap();
+        assert!(task_before.is_none(), "Task should not be pickable yet");
+
+        // Use run_tasks_at with None to run immediately
+        run_tasks_at(&mut conn, &[task_id1], None).await.unwrap();
+
+        // Now the task should be pickable immediately
+        let task_after = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task_after.task_id(), task_id1);
+
+        // Test 2: run_tasks_at with specific time
+        let entity_id2 = EntityId::Tabular(Uuid::now_v7());
+        let specific_time = Utc::now() + chrono::Duration::minutes(30);
+
+        let task_id2 = queue_task(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id2,
+            warehouse_id,
+            Some(future_time), // Schedule for 2 hours in the future
+            Some(serde_json::json!({"test": "run_at_specific_time"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Use run_tasks_at with specific time
+        run_tasks_at(&mut conn, &[task_id2], Some(specific_time))
+            .await
+            .unwrap();
+
+        // Verify the task's scheduled_for was updated to the specific time
+        let details2 = get_task_details(warehouse_id, task_id2, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task 2 should exist");
+
+        // The scheduled_for should be close to our specific_time (within a few seconds tolerance)
+        let time_diff = (details2.task.scheduled_for - specific_time)
+            .num_seconds()
+            .abs();
+        assert!(
+            time_diff <= 5,
+            "Task should be scheduled for the specified time (within 5 second tolerance)"
+        );
+
+        // Test 3: Verify using get_task_details shows the updated scheduling
+        let details1 = get_task_details(warehouse_id, task_id1, 10, &mut conn)
+            .await
+            .unwrap()
+            .expect("Task 1 should exist");
+
+        assert!(matches!(
+            details1.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Running // Task was picked up
+        ));
+        assert!(matches!(
+            details2.task.status,
+            crate::api::management::v1::tasks::TaskStatus::Scheduled
+        ));
+
+        // Task 2 should be scheduled for the specific time we set
+        let task2_scheduled_diff = (details2.task.scheduled_for - specific_time)
+            .num_seconds()
+            .abs();
+        assert!(
+            task2_scheduled_diff <= 10,
+            "Task 2 should be scheduled for the specific time"
+        );
+
+        // Test 4: Test with tasks that don't exist (should not error)
+        let non_existent_task_id = TaskId::from(Uuid::now_v7());
+        run_tasks_at(&mut conn, &[non_existent_task_id], None)
+            .await
+            .unwrap();
     }
 }
