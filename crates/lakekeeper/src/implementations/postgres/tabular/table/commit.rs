@@ -48,6 +48,7 @@ pub(crate) async fn commit_table_transaction(
             } = c;
             (
                 TableMetadataTransition {
+                    warehouse_id,
                     previous_metadata_location,
                     new_metadata,
                     new_metadata_location,
@@ -99,6 +100,7 @@ pub(crate) async fn commit_table_transaction(
 }
 
 struct TableMetadataTransition {
+    warehouse_id: WarehouseId,
     previous_metadata_location: Option<Location>,
     new_metadata: TableMetadata,
     new_metadata_location: Location,
@@ -144,6 +146,7 @@ fn build_table_and_tabular_update_queries(
     for (
         i,
         TableMetadataTransition {
+            warehouse_id,
             previous_metadata_location,
             new_metadata,
             new_metadata_location,
@@ -153,6 +156,8 @@ fn build_table_and_tabular_update_queries(
         let (fs_protocol, fs_location) = split_location(new_metadata.location())?;
 
         query_builder_table.push("(");
+        query_builder_table.push_bind(warehouse_id);
+        query_builder_table.push(", ");
         query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");
         query_builder_table.push_bind(match new_metadata.format_version() {
@@ -170,6 +175,8 @@ fn build_table_and_tabular_update_queries(
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
+        query_builder_tabular.push_bind(warehouse_id);
+        query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(new_metadata.uuid());
         query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(new_metadata_location.to_string());
@@ -188,9 +195,9 @@ fn build_table_and_tabular_update_queries(
     }
 
     query_builder_table
-        .push(") as c(table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.table_id = t.table_id");
+        .push(") as c(warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.table_id");
     query_builder_tabular.push(
-        ") as c(table_id, new_metadata_location, fs_location, fs_protocol, old_metadata_location) WHERE c.table_id = t.tabular_id AND t.typ = 'table' AND t.metadata_location IS NOT DISTINCT FROM c.old_metadata_location",
+        ") as c(warehouse_id, table_id, new_metadata_location, fs_location, fs_protocol, old_metadata_location) WHERE c.warehouse_id = t.warehouse_id AND c.table_id = t.tabular_id AND t.typ = 'table' AND t.metadata_location IS NOT DISTINCT FROM c.old_metadata_location",
     );
 
     query_builder_table.push(" RETURNING t.table_id");

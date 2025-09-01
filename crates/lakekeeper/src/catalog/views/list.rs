@@ -4,7 +4,7 @@ use itertools::Itertools;
 
 use crate::{
     api::{
-        iceberg::v1::{ListTablesQuery, NamespaceParameters, PaginationQuery},
+        iceberg::v1::{ListTablesQuery, NamespaceParameters},
         ApiContext, Result,
     },
     catalog::{

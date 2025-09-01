@@ -1,14 +1,14 @@
-use std::{fmt::Debug, ops::Deref, sync::LazyLock, time::Duration};
+use std::{fmt::Debug, marker::PhantomData, ops::Deref, sync::LazyLock, time::Duration};
 
 use chrono::Utc;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use strum::EnumIter;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{Transaction, WarehouseId};
-use crate::service::Catalog;
+use crate::service::{Catalog, TableId};
 
 mod task_queues_runner;
 mod task_registry;
@@ -19,8 +19,9 @@ pub use task_registry::{
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 
+#[cfg(test)]
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
-    valid_max_time_since_last_heartbeat(3600);
+    chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -31,25 +32,78 @@ pub static BUILT_IN_API_CONFIGS: LazyLock<Vec<QueueApiConfig>> = LazyLock::new(|
     ]
 });
 
-/// Warehouse specific configuration for a task queue.
-pub trait QueueConfig: ToSchema + Serialize + DeserializeOwned {
-    #[must_use]
-    fn max_time_since_last_heartbeat() -> chrono::Duration {
-        DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct TaskQueueName(String);
+
+impl Deref for TaskQueueName {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
+}
+
+impl<T: AsRef<str>> From<T> for TaskQueueName {
+    fn from(name: T) -> Self {
+        Self(name.as_ref().to_string())
+    }
+}
+
+impl std::fmt::Display for TaskQueueName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TaskQueueName {
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self(name.to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum TaskEntity {
+    #[serde(rename_all = "kebab-case")]
+    Table {
+        #[schema(value_type = uuid::Uuid)]
+        table_id: TableId,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
+    },
+}
+
+/// Warehouse specific configuration for a task queue.
+pub trait TaskConfig: ToSchema + Serialize + DeserializeOwned + Clone + Send + Sync {
+    #[must_use]
+    fn max_time_since_last_heartbeat() -> chrono::Duration;
 
     #[must_use]
     fn max_retries() -> i32 {
         DEFAULT_MAX_RETRIES
     }
 
-    fn queue_name() -> &'static str;
+    fn queue_name() -> &'static TaskQueueName;
 }
 
 /// Task Payload
-pub trait TaskData: Clone + Serialize + DeserializeOwned {}
+pub trait TaskData: Clone + Serialize + DeserializeOwned + Send + Sync {}
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned + Send + Sync {}
+
+#[derive(Hash, Debug, Clone, PartialEq, Serialize, Deserialize, Copy, Eq)]
 pub struct TaskId(Uuid);
 
 impl std::fmt::Display for TaskId {
@@ -75,6 +129,24 @@ impl Deref for TaskId {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAttemptId {
+    pub task_id: TaskId,
+    pub attempt: i32,
+}
+
+impl std::fmt::Display for TaskAttemptId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (attempt {})", self.task_id, self.attempt)
+    }
+}
+
+impl AsRef<TaskAttemptId> for TaskAttemptId {
+    fn as_ref(&self) -> &TaskAttemptId {
+        self
     }
 }
 
@@ -120,33 +192,75 @@ impl EntityId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     pub task_metadata: TaskMetadata,
-    pub queue_name: String,
-    pub task_id: TaskId,
+    pub queue_name: TaskQueueName,
+    pub id: TaskAttemptId,
     pub status: TaskStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub attempt: i32,
     pub(crate) config: Option<serde_json::Value>,
     pub(crate) data: serde_json::Value,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpecializedTask<C: QueueConfig, P: TaskData> {
-    pub task_metadata: TaskMetadata,
-    pub task_id: TaskId,
-    pub status: TaskStatus,
-    pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub attempt: i32,
-    pub config: Option<C>,
-    pub data: P,
+impl AsRef<TaskAttemptId> for Task {
+    fn as_ref(&self) -> &TaskAttemptId {
+        &self.id
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecializedTask<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> {
+    pub task_metadata: TaskMetadata,
+    pub id: TaskAttemptId,
+    pub status: TaskStatus,
+    pub picked_up_at: Option<chrono::DateTime<Utc>>,
+    pub config: Option<C>,
+    pub data: P,
+    execution_details: PhantomData<E>,
+}
+
+impl<C: TaskConfig, P: TaskData, E: TaskExecutionDetails> AsRef<TaskAttemptId>
+    for SpecializedTask<C, P, E>
+{
+    fn as_ref(&self) -> &TaskAttemptId {
+        &self.id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
 pub enum TaskCheckState {
     Stop,
     Continue,
+    NotActive,
+}
+
+impl TaskCheckState {
+    #[must_use]
+    pub fn should_terminate(&self) -> bool {
+        matches!(self, TaskCheckState::Stop | TaskCheckState::NotActive)
+    }
+
+    #[must_use]
+    pub fn should_report_termination(&self) -> bool {
+        matches!(self, TaskCheckState::Stop)
+    }
 }
 
 impl Task {
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    #[must_use]
+    pub fn id(&self) -> TaskAttemptId {
+        self.id
+    }
+
     /// Extracts the task state from the task.
     ///
     /// # Errors
@@ -156,7 +270,7 @@ impl Task {
             crate::api::ErrorModel::internal(
                 format!(
                     "Failed to deserialize task data for task {} in queue `{}`: {e}",
-                    self.task_id, self.queue_name
+                    self.id, self.queue_name
                 ),
                 "TaskStateDeserializationError",
                 Some(Box::new(e)),
@@ -168,7 +282,7 @@ impl Task {
     ///
     /// # Errors
     /// Returns an error if the task configuration cannot be deserialized into the specified type.
-    fn queue_config<T: QueueConfig>(&self) -> crate::api::Result<Option<T>> {
+    fn queue_config<T: TaskConfig>(&self) -> crate::api::Result<Option<T>> {
         Ok(self
             .config
             .as_ref()
@@ -188,10 +302,25 @@ impl Task {
     }
 }
 
-impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
+impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, E> {
     #[must_use]
-    pub fn queue_name() -> &'static str {
+    pub fn queue_name() -> &'static TaskQueueName {
         Q::queue_name()
+    }
+
+    #[must_use]
+    pub fn task_id(&self) -> TaskId {
+        self.id.task_id
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> i32 {
+        self.id.attempt
+    }
+
+    #[must_use]
+    pub fn id(&self) -> TaskAttemptId {
+        self.id
     }
 
     /// Schedule a single task.
@@ -310,7 +439,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 Err(err) => {
                     Self::report_deserialization_failure::<C>(
                         catalog_state,
-                        task.task_id,
+                        task.id,
                         &err.to_string(),
                     )
                     .await;
@@ -322,7 +451,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 Err(err) => {
                     Self::report_deserialization_failure::<C>(
                         catalog_state,
-                        task.task_id,
+                        task.id,
                         &err.to_string(),
                     )
                     .await;
@@ -331,12 +460,12 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
             };
             Ok(Some(Self {
                 task_metadata: task.task_metadata,
-                task_id: task.task_id,
+                id: task.id,
                 status: task.status,
                 picked_up_at: task.picked_up_at,
-                attempt: task.attempt,
                 config,
                 data: state,
+                execution_details: PhantomData,
             }))
         } else {
             Ok(None)
@@ -385,11 +514,48 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                         }
                     };
 
-                    tracing::debug!("Picked up `{}` task {}.", task.task_id, Q::queue_name());
+                    tracing::debug!("Picked up `{}` task {}.", task.id, Q::queue_name());
                     return Some(task);
                 }
             }
         }
+    }
+
+    /// Heartbeat this task, while logging progress and checking for should-stop signal.
+    ///
+    /// # Errors
+    /// Returns an error if the heartbeat fails.
+    pub async fn heartbeat<C: Catalog>(
+        &self,
+        transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
+        progress: f32,
+        execution_details: Option<E>,
+    ) -> Result<TaskCheckState, ErrorModel> {
+        let execution_details = execution_details
+            .map(|details| serde_json::to_value(details))
+            .transpose()
+            .map_err(|e| {
+                ErrorModel::internal(
+                    format!(
+                        "Failed to serialize execution details for `{}` task {}: {e}",
+                        Self::queue_name(),
+                        self.id
+                    ),
+                    "TaskExecutionDetailsSerializationError",
+                    Some(Box::new(e)),
+                )
+            })?;
+
+        C::check_and_heartbeat_task(self.id, transaction, progress, execution_details)
+            .await
+            .map_err(|e| {
+                e.append_detail(format!(
+                    "Failed to heartbeat `{}` task {}.",
+                    Self::queue_name(),
+                    self.id
+                ))
+                .into()
+            })
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.
@@ -408,7 +574,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 Ok(()) => {
                     tracing::debug!(
                         "Successfully recorded error for task {} in queue '{}' on attempt {attempt}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
                     return;
@@ -416,7 +582,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to record error for task {} in queue '{}' on attempt {attempt}/5: {e}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
 
@@ -425,7 +591,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                     } else {
                         tracing::error!(
                             "Failed to record error for task {} in queue '{}' after 5 attempts. {e}. Original Error: {error}",
-                            self.task_id,
+                            self.id,
                             Self::queue_name()
                         );
                     }
@@ -449,7 +615,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 Ok(()) => {
                     tracing::debug!(
                         "Successfully recorded success for task {} in queue '{}' on attempt {attempt}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
                     return;
@@ -457,7 +623,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to record success for task {} in queue '{}' on attempt {attempt}/5: {e}",
-                        self.task_id,
+                        self.id,
                         Self::queue_name(),
                     );
 
@@ -466,7 +632,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                     } else {
                         tracing::error!(
                             "Failed to record success for task {} in queue '{}' after 5 attempts. {e}. Original Success Details: {}",
-                            self.task_id,
+                            self.id,
                             Self::queue_name(),
                             details.unwrap_or("No details provided")
                         );
@@ -494,14 +660,14 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
             Ok(()) => {
                 tracing::debug!(
                     "Successfully recorded success for task {} in queue '{}'",
-                    self.task_id,
+                    self.id,
                     Self::queue_name(),
                 );
             }
             Err(e) => {
                 tracing::error!(
                     "Failed to record success for task {} in queue '{}': {e}. Original Success Details: {}",
-                    self.task_id,
+                    self.id,
                     Self::queue_name(),
                     details.unwrap_or("No details provided")
                 );
@@ -511,16 +677,16 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
 
     async fn report_deserialization_failure<C: Catalog>(
         catalog_state: C::State,
-        task_id: TaskId,
+        id: TaskAttemptId,
         error: &str,
     ) {
-        tracing::error!("{error}. TaskID: {task_id}");
+        tracing::error!("{error}. TaskID: {id}");
 
         let mut trx = match C::Transaction::begin_write(catalog_state).await {
             Ok(trx) => trx,
             Err(e) => {
                 tracing::error!(
-                    "Failed to start DB transaction to record deserialization failure for `{}` task {task_id}: {e}. Original Error: {error}",
+                    "Failed to start DB transaction to record deserialization failure for `{}` task {id}: {e}. Original Error: {error}",
                     Q::queue_name()
                 );
                 return;
@@ -528,7 +694,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
         };
 
         let r = C::record_task_failure(
-            task_id,
+            id,
             format!("Failed to deserialize task data: {error}").as_str(),
             Q::max_retries(),
             &mut trx.transaction(),
@@ -536,7 +702,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
         .await
         .map_err(|e| {
             e.append_detail(format!(
-                "Failed to record deserialization failure for `{task_id}` task {}.",
+                "Failed to record deserialization failure for `{id}` task {}.",
                 Q::queue_name()
             ))
             .append_detail(format!("Original Error: {error}"))
@@ -544,7 +710,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
 
         if let Err(e) = r {
             tracing::error!(
-                "Failed to record deserialization failure for `{task_id}` task {}: {e}. Original Error: {error}",
+                "Failed to record deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
                 Q::queue_name()
             );
             return;
@@ -552,7 +718,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
 
         if let Err(e) = trx.commit().await {
             tracing::error!(
-                "Failed to commit transaction for recording deserialization failure for `{task_id}` task {}: {e}. Original Error: {error}",
+                "Failed to commit transaction for recording deserialization failure for `{id}` task {}: {e}. Original Error: {error}",
                 Q::queue_name()
             );
         };
@@ -569,7 +735,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
                 return Err(e
                     .append_detail(format!(
                     "Failed to start DB transaction to record status for task {} in queue `{}`.",
-                    self.task_id, Self::queue_name()
+                    self.id, Self::queue_name()
                 ))
                     .append_detail(format!("Task Status that failed to record: `{result}`")));
             }
@@ -581,7 +747,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
         transaction.commit().await.map_err(|e| {
             e.append_detail(format!(
                 "Failed to commit DB transaction to record status for task {} in queue `{}`.",
-                self.task_id,
+                self.id,
                 Self::queue_name()
             ))
             .append_detail(format!("Task Status that failed to commit: `{result}`"))
@@ -596,29 +762,27 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
         mut transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
     ) -> Result<(), IcebergErrorResponse> {
         match result {
-            Status::Success(details) => {
-                C::record_task_success(self.task_id, details, &mut transaction)
-                    .await
-                    .map_err(|e| {
-                        e.append_detail(format!(
-                            "Failed to record success for `{}` task {}.",
-                            Self::queue_name(),
-                            self.task_id,
-                        ))
-                        .append_detail(format!(
-                            "Original Success Details: `{}`",
-                            details.unwrap_or("No details provided")
-                        ))
-                    })
-            }
+            Status::Success(details) => C::record_task_success(self.id, details, &mut transaction)
+                .await
+                .map_err(|e| {
+                    e.append_detail(format!(
+                        "Failed to record success for `{}` task {}.",
+                        Self::queue_name(),
+                        self.id,
+                    ))
+                    .append_detail(format!(
+                        "Original Success Details: `{}`",
+                        details.unwrap_or("No details provided")
+                    ))
+                }),
             Status::Failure(details, max_retries) => {
-                C::record_task_failure(self.task_id, details, max_retries, &mut transaction)
+                C::record_task_failure(self.id, details, max_retries, &mut transaction)
                     .await
                     .map_err(|e| {
                         e.append_detail(format!(
                             "Failed to record failure for `{}` task {}.",
                             Self::queue_name(),
-                            self.task_id
+                            self.id
                         ))
                         .append_detail(format!("Original Error Details: `{details}`"))
                     })
@@ -627,7 +791,7 @@ impl<Q: QueueConfig, D: TaskData> SpecializedTask<Q, D> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, EnumIter)]
+#[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -639,7 +803,7 @@ pub enum TaskStatus {
     ShouldStop,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -666,180 +830,29 @@ impl std::fmt::Display for Status<'_> {
     }
 }
 
-#[must_use]
-pub const fn valid_max_time_since_last_heartbeat(num: i64) -> chrono::Duration {
-    assert!(
-        num > 0,
-        "max_seconds_since_last_heartbeat must be greater than 0"
-    );
-    let dur = chrono::Duration::seconds(num);
-    assert!(dur.num_microseconds().is_some());
-    dur
-}
-
 #[cfg(test)]
 mod test {
+    #[test]
+    fn test_task_entity_serde_table() {
+        let json = serde_json::json!({
+            "type": "table",
+            "table-id": "550e8400-e29b-41d4-a716-446655440000",
+            "warehouse-id": "550e8400-e29b-41d4-a716-446655440001"
+        });
+        let deserialized: super::TaskEntity = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            deserialized,
+            super::TaskEntity::Table {
+                table_id: super::TableId::from(
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()
+                ),
+                warehouse_id: super::WarehouseId::from(
+                    uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()
+                ),
+            }
+        );
 
-    use std::time::Duration;
-
-    use sqlx::PgPool;
-    use tracing_test::traced_test;
-
-    use super::*;
-    use crate::{
-        api::{
-            iceberg::v1::PaginationQuery,
-            management::v1::{DeleteKind, TabularType},
-        },
-        implementations::postgres::{
-            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
-            CatalogState, PostgresCatalog, PostgresTransaction, SecretsState,
-        },
-        service::{
-            authz::AllowAllAuthorizer,
-            storage::MemoryProfile,
-            task_queue::{
-                tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
-            },
-            Catalog, ListFlags, Transaction,
-        },
-    };
-
-    #[sqlx::test]
-    #[traced_test]
-    async fn test_queue_expiration_queue_task(pool: PgPool) {
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let queues = crate::service::task_queue::TaskQueueRegistry::new();
-
-        let secrets =
-            crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
-        let cat = catalog_state.clone();
-        let sec = secrets.clone();
-        let auth = AllowAllAuthorizer;
-        queues
-            .register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
-                cat,
-                sec,
-                auth,
-                Duration::from_millis(100),
-            )
-            .await;
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        let runner = queues.task_queues_runner(cancellation_token.clone()).await;
-        let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
-
-        let warehouse = initialize_warehouse(
-            catalog_state.clone(),
-            Some(MemoryProfile::default().into()),
-            None,
-            None,
-            true,
-        )
-        .await;
-
-        let tab = initialize_table(
-            warehouse,
-            catalog_state.clone(),
-            false,
-            None,
-            Some("tab".to_string()),
-        )
-        .await;
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-        let _ = <PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: true,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .unwrap();
-        trx.commit().await.unwrap();
-        let mut trx = <PostgresCatalog as Catalog>::Transaction::begin_write(catalog_state.clone())
-            .await
-            .unwrap();
-        tabular_expiration_queue::TabularExpirationTask::schedule_task::<PostgresCatalog>(
-            TaskMetadata {
-                warehouse_id: warehouse,
-                entity_id: EntityId::Tabular(tab.table_id.0),
-                parent_task_id: None,
-                schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-            },
-            TabularExpirationPayload {
-                tabular_type: TabularType::Table,
-                deletion_kind: DeleteKind::Purge,
-            },
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-
-        <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
-            warehouse,
-            tab.table_id.into(),
-            false,
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-
-        trx.commit().await.unwrap();
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        let del = <PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .unwrap()
-        .deletion_details;
-        del.unwrap();
-        trx.commit().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        assert!(<PostgresCatalog as Catalog>::list_tabulars(
-            warehouse,
-            None,
-            ListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&tab.table_id.into())
-        .is_none());
-        trx.commit().await.unwrap();
-
-        cancellation_token.cancel();
+        let serialized = serde_json::to_value(&deserialized).unwrap();
+        assert_eq!(serialized, json);
     }
 }

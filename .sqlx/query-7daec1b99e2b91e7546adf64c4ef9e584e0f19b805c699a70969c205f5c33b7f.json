@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH moved AS (\n                DELETE FROM task WHERE task_id = $1 AND attempt = $3 RETURNING *\n            )\n            INSERT INTO task_log(\n                task_id,\n                warehouse_id,\n                queue_name,\n                task_data,\n                status,\n                entity_id,\n                entity_type,\n                attempt,\n                started_at,\n                duration,\n                progress,\n                execution_details,\n                attempt_scheduled_for,\n                last_heartbeat_at,\n                parent_task_id,\n                task_created_at\n            )\n            SELECT\n                task_id,\n                warehouse_id,\n                queue_name,\n                task_data,\n                $2,\n                entity_id,\n                entity_type,\n                attempt,\n                picked_up_at,\n                now() - picked_up_at,\n                progress,\n                execution_details,\n                scheduled_for,\n                last_heartbeat_at,\n                parent_task_id,\n                created_at\n            FROM moved\n            ON CONFLICT (task_id, attempt) DO NOTHING\n            RETURNING task_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        },
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7daec1b99e2b91e7546adf64c4ef9e584e0f19b805c699a70969c205f5c33b7f"
+}

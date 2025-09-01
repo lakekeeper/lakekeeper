@@ -223,7 +223,10 @@ generate_endpoints! {
         DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
         RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
         SetTaskQueueConfig(POST, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
-        GetTaskQueueConfig(GET, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config")
+        GetTaskQueueConfig(GET, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
+        ListTasks(POST, "/management/v1/{warehouse_id}/task/list"),
+        GetTaskDetails(GET, "/management/v1/{warehouse_id}/task/by-id/{task_id}"),
+        ControlTasks(POST, "/management/v1/{warehouse_id}/task/control"),
     }
 
     enum PermissionV1 {

@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE task\n        SET status = $2\n        WHERE task_id = ANY($1) \n            AND status = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9fd8c14811fc9e3ebcbc0c209e51dbb81ebc748c77bc911f8a58eaed953bf68c"
+}

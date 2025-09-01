@@ -38,9 +38,8 @@ use crate::{
             v1::{
                 tables::DataAccessMode, ApiContext, CommitTableRequest, CommitTableResponse,
                 CommitTransactionRequest, CreateTableRequest, DataAccess, ErrorModel,
-                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters,
-                PaginationQuery, Prefix, RegisterTableRequest, RenameTableRequest, Result,
-                TableIdent, TableParameters,
+                ListTablesQuery, ListTablesResponse, LoadTableResult, NamespaceParameters, Prefix,
+                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
             },
         },
         management::v1::{warehouse::TabularDeleteProfile, DeleteKind, TabularType},
@@ -1017,10 +1016,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
                 CatalogTableAction::CanWriteData,
             ),
         )?;
+        let can_read = read_access.into_inner();
+        let can_write = write_access.into_inner();
 
-        let storage_permissions = if write_access {
+        let storage_permissions = if can_write {
             Some(StoragePermissions::ReadWriteDelete)
-        } else if read_access {
+        } else if can_read {
             Some(StoragePermissions::Read)
         } else {
             None

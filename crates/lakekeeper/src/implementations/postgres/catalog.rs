@@ -31,6 +31,7 @@ use crate::{
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
+            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
             warehouse::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
@@ -49,9 +50,10 @@ use crate::{
             table::{commit_table_transaction, create_table, load_storage_profile},
             view::{create_view, drop_view, list_views, load_view, rename_view, view_ident_to_id},
         },
-        task_queues::{
-            cancel_scheduled_tasks, check_task, get_task_queue_config, queue_task_batch,
-            set_task_queue_config, stop_task,
+        tasks::{
+            cancel_scheduled_tasks, check_and_heartbeat_task, get_task_details,
+            get_task_queue_config, list_tasks, pick_task, queue_task_batch, record_failure,
+            record_success, request_tasks_stop, resolve_tasks, set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
@@ -60,7 +62,10 @@ use crate::{
     service::{
         authn::UserId,
         storage::StorageProfile,
-        task_queue::{Task, TaskCheckState, TaskFilter, TaskId, TaskInput},
+        task_queue::{
+            Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
+            TaskQueueName,
+        },
         Catalog, CreateNamespaceRequest, CreateNamespaceResponse, CreateOrUpdateUserResponse,
         CreateTableResponse, GetNamespaceResponse, GetProjectResponse, GetTableMetadataResponse,
         GetWarehouseResponse, ListFlags, ListNamespacesQuery, LoadTableResponse, NamespaceDropInfo,
@@ -181,15 +186,13 @@ impl Catalog for super::PostgresCatalog {
         .await
     }
 
-    async fn table_to_id<'a>(
+    async fn resolve_table_ident<'a>(
         warehouse_id: WarehouseId,
         table: &TableIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<TableId>> {
-        resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction)
-            .await
-            .map(|x| x.map(|x| x.table_id))
+    ) -> Result<Option<crate::service::TabularDetails>> {
+        resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction).await
     }
 
     async fn table_idents_to_ids(
@@ -665,15 +668,6 @@ impl Catalog for super::PostgresCatalog {
         load_storage_profile(warehouse_id, tabular_id, transaction).await
     }
 
-    async fn resolve_table_ident(
-        warehouse_id: WarehouseId,
-        table: &TableIdent,
-        list_flags: ListFlags,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<crate::service::TabularDetails>> {
-        resolve_table_ident(warehouse_id, table, list_flags, &mut **transaction).await
-    }
-
     async fn set_tabular_protected(
         tabular_id: TabularId,
         protect: bool,
@@ -712,45 +706,64 @@ impl Catalog for super::PostgresCatalog {
         set_warehouse_protection(warehouse_id, protect, transaction).await
     }
 
-    async fn pick_new_task(
-        queue_name: &str,
-        max_time_since_last_heartbeat: Duration,
+    async fn pick_new_task_impl(
+        queue_name: &TaskQueueName,
+        default_max_time_since_last_heartbeat: Duration,
         state: Self::State,
     ) -> Result<Option<Task>> {
-        crate::implementations::postgres::task_queues::pick_task(
+        pick_task(
             &state.write_pool(),
             queue_name,
-            max_time_since_last_heartbeat,
+            default_max_time_since_last_heartbeat,
         )
         .await
     }
 
-    async fn record_task_success(
-        id: TaskId,
+    async fn resolve_tasks_impl(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+        resolve_tasks(warehouse_id, task_ids, transaction).await
+    }
+
+    async fn record_task_success_impl(
+        id: TaskAttemptId,
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        crate::implementations::postgres::task_queues::record_success(id, transaction, message)
-            .await
+        record_success(&&id, transaction, message).await
     }
 
-    async fn record_task_failure(
-        id: TaskId,
+    async fn record_task_failure_impl(
+        id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        crate::implementations::postgres::task_queues::record_failure(
-            transaction,
-            id,
-            max_retries,
-            error_details,
-        )
-        .await
+        record_failure(&id, max_retries, error_details, transaction).await
+    }
+
+    async fn get_task_details_impl(
+        warehouse_id: WarehouseId,
+        task_id: TaskId,
+        num_attempts: u16,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<Option<GetTaskDetailsResponse>> {
+        get_task_details(warehouse_id, task_id, num_attempts, &mut *transaction).await
+    }
+
+    /// List tasks
+    async fn list_tasks_impl(
+        warehouse_id: WarehouseId,
+        query: ListTasksRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ListTasksResponse> {
+        list_tasks(warehouse_id, query, &mut *transaction).await
     }
 
     async fn enqueue_tasks(
-        queue_name: &'static str,
+        queue_name: &'static TaskQueueName,
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>> {
@@ -765,7 +778,7 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn cancel_scheduled_tasks(
-        queue_name: Option<&str>,
+        queue_name: Option<&TaskQueueName>,
         filter: TaskFilter,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -773,23 +786,25 @@ impl Catalog for super::PostgresCatalog {
         cancel_scheduled_tasks(&mut *transaction, filter, queue_name, force).await
     }
 
-    async fn check_and_heartbeat_task(
-        task_id: TaskId,
+    async fn check_and_heartbeat_task_impl(
+        id: TaskAttemptId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskCheckState>> {
-        check_task(&mut *transaction, task_id).await
+        progress: f32,
+        execution_details: Option<serde_json::Value>,
+    ) -> Result<TaskCheckState> {
+        check_and_heartbeat_task(&mut *transaction, &id, progress, execution_details).await
     }
 
-    async fn stop_task(
-        task_id: TaskId,
+    async fn stop_tasks(
+        task_ids: &[TaskId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        stop_task(&mut *transaction, task_id).await
+        request_tasks_stop(&mut *transaction, task_ids).await
     }
 
     async fn set_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
@@ -798,7 +813,7 @@ impl Catalog for super::PostgresCatalog {
 
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<GetTaskQueueConfigResponse>> {
         get_task_queue_config(transaction, warehouse_id, queue_name).await

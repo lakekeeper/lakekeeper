@@ -142,7 +142,7 @@ pub(crate) async fn insert_partition_specs(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_partition_spec(partition_spec_id, table_id, warehouse_id, partition_spec)
-           SELECT UNNEST($1::INT[]), $2, $3, UNNEST($4::JSONB[])"#,
+               SELECT sid, $2, $3, s FROM UNNEST($1::INT[], $4::JSONB[]) u(sid, s)"#,
         &spec_ids,
         tabular_id,
         *warehouse_id,
@@ -228,7 +228,7 @@ pub(crate) async fn insert_sort_orders(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_sort_order(sort_order_id, table_id, warehouse_id, sort_order)
-           SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::JSONB[])"#,
+           SELECT sid, $2, $3, s FROM UNNEST($1::BIGINT[], $4::JSONB[]) u(sid, s)"#,
         &sort_order_ids,
         tabular_id,
         *warehouse_id,
@@ -325,8 +325,7 @@ pub(crate) async fn insert_snapshot_log(
     })?;
     let _ = sqlx::query!(
         r#"INSERT INTO table_snapshot_log(warehouse_id, table_id, snapshot_id, timestamp)
-           SELECT $2, $3, UNNEST($1::BIGINT[]), UNNEST($4::BIGINT[])
-               ORDER BY UNNEST($5::BIGINT[]) ASC"#,
+           SELECT $2, $3, sid, ts FROM UNNEST($1::BIGINT[], $4::BIGINT[], $5::BIGINT[]) u(sid, ts, seq) ORDER BY seq ASC"#,
         &snap,
         *warehouse_id,
         &tabular_id,
@@ -407,8 +406,7 @@ pub(super) async fn insert_metadata_log(
 
     let _ = sqlx::query!(
         r#"INSERT INTO table_metadata_log(warehouse_id, table_id, timestamp, metadata_file)
-           SELECT $1, $2, UNNEST($3::BIGINT[]), UNNEST($4::TEXT[])
-               ORDER BY UNNEST($5::BIGINT[]) ASC"#,
+           SELECT $1, $2, ts, mf FROM UNNEST($3::BIGINT[], $4::TEXT[], $5::BIGINT[]) u (ts, mf, seq) ORDER BY seq ASC"#,
         *warehouse_id,
         tabular_id,
         &timestamps,
@@ -457,7 +455,7 @@ pub(super) async fn insert_snapshot_refs(
                               table_ref_name,
                               snapshot_id,
                               retention)
-        SELECT $1, $2, unnest($3::TEXT[]), unnest($4::BIGINT[]), unnest($5::JSONB[])
+        SELECT $1, $2, u.* FROM UNNEST($3::TEXT[], $4::BIGINT[], $5::JSONB[]) u
         ON CONFLICT (warehouse_id, table_id, table_ref_name)
         DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id, retention = EXCLUDED.retention"#,
         *warehouse_id,
@@ -589,7 +587,7 @@ pub(crate) async fn set_table_properties(
     sqlx::query!(
         r#"WITH drop as (DELETE FROM table_properties WHERE warehouse_id = $1 AND table_id = $2)
            INSERT INTO table_properties (warehouse_id, table_id, key, value)
-           VALUES ($1, $2, UNNEST($3::text[]), UNNEST($4::text[]))
+           SELECT $1, $2, u.* FROM UNNEST($3::text[], $4::text[]) u
            ON CONFLICT (key, table_id, warehouse_id) DO UPDATE SET value = EXCLUDED.value;"#,
         *warehouse_id,
         table_id,
@@ -624,8 +622,8 @@ pub(super) async fn insert_partition_statistics(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO partition_statistics(snapshot_id, table_id, warehouse_id, statistics_path, file_size_in_bytes)
-           SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::TEXT[]), UNNEST($5::BIGINT[])"#,
+        r#"INSERT INTO partition_statistics(table_id, warehouse_id, snapshot_id, statistics_path, file_size_in_bytes)
+           SELECT $2, $3, u.* FROM UNNEST($1::BIGINT[], $4::TEXT[], $5::BIGINT[]) u"#,
         &snapshot_ids,
         tabular_id,
         *warehouse_id,
@@ -698,8 +696,8 @@ pub(super) async fn insert_table_statistics(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_statistics(snapshot_id, table_id, warehouse_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
-           SELECT UNNEST($1::BIGINT[]), $2, $3, UNNEST($4::TEXT[]), UNNEST($5::BIGINT[]), UNNEST($6::BIGINT[]), UNNEST($7::TEXT[]), UNNEST($8::JSONB[])"#,
+        r#"INSERT INTO table_statistics(table_id, warehouse_id, snapshot_id, statistics_path, file_size_in_bytes, file_footer_size_in_bytes, key_metadata, blob_metadata)
+           SELECT $2, $3, u.* FROM UNNEST($1::BIGINT[], $4::TEXT[], $5::BIGINT[], $6::BIGINT[], $7::TEXT[], $8::JSONB[]) u"#,
         &snapshot_ids,
         tabular_id,
         *warehouse_id,
