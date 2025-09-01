@@ -176,7 +176,6 @@ struct TableQueryStruct {
     table_name: String,
     namespace_name: Vec<String>,
     namespace_id: Uuid,
-    warehouse_id: Uuid,
     table_ref_names: Option<Vec<String>>,
     table_ref_snapshot_ids: Option<Vec<i64>>,
     table_ref_retention: Option<Vec<Json<SnapshotRetention>>>,
@@ -468,7 +467,6 @@ pub(crate) async fn load_tables(
         r#"
         SELECT
             t."table_id",
-            t.warehouse_id,
             t.last_sequence_number,
             t.last_column_id,
             t.last_updated_ms,
