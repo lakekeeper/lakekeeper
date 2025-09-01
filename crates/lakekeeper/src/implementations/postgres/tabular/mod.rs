@@ -88,12 +88,12 @@ pub(crate) async fn set_tabular_protected(
 }
 
 pub(crate) async fn get_tabular_protected(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
     tracing::debug!(
-        "Getting tabular protection status for {} ({})",
-        tabular_id,
+        "Getting tabular protection status for {tabular_id} ({}) in {warehouse_id}",
         tabular_id.typ_str()
     );
 
@@ -101,8 +101,9 @@ pub(crate) async fn get_tabular_protected(
         r#"
         SELECT protected, updated_at
         FROM tabular
-        WHERE tabular_id = $1
+        WHERE warehouse_id = $1 AND tabular_id = $2
         "#,
+        *warehouse_id,
         *tabular_id
     )
     .fetch_one(&mut **transaction)

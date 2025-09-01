@@ -679,10 +679,11 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
-        get_tabular_protected(tabular_id, transaction).await
+        get_tabular_protected(warehouse_id, tabular_id, transaction).await
     }
 
     async fn set_namespace_protected(

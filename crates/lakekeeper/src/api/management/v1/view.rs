@@ -51,7 +51,7 @@ where
 
     async fn get_view_protection(
         view_id: ViewId,
-        _warehouse_id: WarehouseId,
+        warehouse_id: WarehouseId,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ProtectionResponse> {
@@ -66,7 +66,8 @@ where
                 CatalogViewAction::CanGetMetadata,
             )
             .await?;
-        let status = C::get_tabular_protected(view_id.into(), t.transaction()).await?;
+        let status =
+            C::get_tabular_protected(warehouse_id, view_id.into(), t.transaction()).await?;
         t.commit().await?;
         Ok(status)
     }

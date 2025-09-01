@@ -802,6 +802,7 @@ where
     ) -> Result<ProtectionResponse>;
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
