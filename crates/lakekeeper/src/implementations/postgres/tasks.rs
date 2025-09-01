@@ -675,7 +675,8 @@ pub(crate) async fn reschedule_tasks_for(
             scheduled_for = (CASE WHEN $3 THEN now() ELSE $2 END),
             status = 'scheduled',
             progress = 0.0,
-            execution_details = NULL
+            execution_details = NULL,
+            picked_up_at = NULL
         FROM reschedule_tasks r
         WHERE task.task_id = r.task_id AND task.attempt = r.attempt
         "#,
