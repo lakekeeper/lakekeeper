@@ -670,11 +670,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
-        set_tabular_protected(tabular_id, protect, transaction).await
+        set_tabular_protected(warehouse_id, tabular_id, protect, transaction).await
     }
 
     async fn get_tabular_protected(

@@ -20,7 +20,7 @@ where
 {
     async fn set_view_protection(
         view_id: ViewId,
-        _warehouse_id: WarehouseId,
+        warehouse_id: WarehouseId,
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -38,8 +38,13 @@ where
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let status =
-            C::set_tabular_protected(TabularId::View(*view_id), protected, t.transaction()).await?;
+        let status = C::set_tabular_protected(
+            warehouse_id,
+            TabularId::View(*view_id),
+            protected,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
         Ok(status)
     }

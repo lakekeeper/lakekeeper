@@ -795,6 +795,7 @@ where
     ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,

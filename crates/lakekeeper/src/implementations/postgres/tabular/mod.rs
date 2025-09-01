@@ -42,6 +42,7 @@ pub(crate) enum TabularType {
 }
 
 pub(crate) async fn set_tabular_protected(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -55,10 +56,11 @@ pub(crate) async fn set_tabular_protected(
     let row = sqlx::query!(
         r#"
         UPDATE tabular
-        SET protected = $2
-        WHERE tabular_id = $1
+        SET protected = $3
+        WHERE warehouse_id = $1 AND tabular_id = $2
         RETURNING protected, updated_at
         "#,
+        *warehouse_id,
         *tabular_id,
         protected
     )

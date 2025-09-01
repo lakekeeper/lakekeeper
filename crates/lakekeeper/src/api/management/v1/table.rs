@@ -20,7 +20,7 @@ where
 {
     async fn set_table_protection(
         table_id: TableId,
-        _warehouse_id: WarehouseId,
+        warehouse_id: WarehouseId,
         protected: bool,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -37,9 +37,13 @@ where
             )
             .await?;
 
-        let status =
-            C::set_tabular_protected(TabularId::Table(*table_id), protected, t.transaction())
-                .await?;
+        let status = C::set_tabular_protected(
+            warehouse_id,
+            TabularId::Table(*table_id),
+            protected,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
         Ok(status)
     }

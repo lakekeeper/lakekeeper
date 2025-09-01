@@ -1274,6 +1274,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         set_tabular_protected(
+            warehouse_id,
             TabularId::Table(*tab.table_id),
             true,
             transaction.transaction(),
