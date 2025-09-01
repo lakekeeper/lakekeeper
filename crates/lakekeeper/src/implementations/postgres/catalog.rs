@@ -53,7 +53,8 @@ use crate::{
         tasks::{
             cancel_scheduled_tasks, check_and_heartbeat_task, get_task_details,
             get_task_queue_config, list_tasks, pick_task, queue_task_batch, record_failure,
-            record_success, request_tasks_stop, resolve_tasks, run_tasks_at, set_task_queue_config,
+            record_success, request_tasks_stop, reschedule_tasks_for, resolve_tasks,
+            set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
@@ -793,7 +794,7 @@ impl Catalog for super::PostgresCatalog {
         scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        run_tasks_at(&mut *transaction, task_ids, scheduled_for).await
+        reschedule_tasks_for(&mut *transaction, task_ids, scheduled_for).await
     }
 
     async fn set_task_queue_config(

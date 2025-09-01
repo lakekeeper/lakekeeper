@@ -227,16 +227,16 @@ pub struct ControlTasksRequest {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case", tag = "action")]
 pub enum ControlTaskAction {
-    /// Stop the task (can be retried if attempts not exhausted)
+    /// Stop the task gracefully. The task will be retried.
     Stop,
-    /// Cancel the task permanently (no retries)
+    /// Cancel the task permanently. The task is not retried.
     Cancel,
     /// Run the task immediately, moving the `scheduled_for` time to now.
-    /// Requires the task to be in `Scheduled` or `Stopping` state.
+    /// Affects only tasks in `Scheduled` or `Stopping` state.
     RunNow,
     /// Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
-    /// Requires the task to be in `Scheduled` or `Stopping` state.
-    /// Timestamps must be in FRC 3339 format.
+    /// Affects only tasks in `Scheduled` or `Stopping` state.
+    /// Timestamps must be in RFC 3339 format.
     RunAt {
         /// The time to run the task at
         #[schema(example = "2025-12-31T23:59:59Z")]

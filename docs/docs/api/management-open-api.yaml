@@ -2710,7 +2710,7 @@ components:
     ControlTaskAction:
       oneOf:
         - type: object
-          description: Stop the task (can be retried if attempts not exhausted)
+          description: Stop the task gracefully. The task will be retried.
           required:
             - action
           properties:
@@ -2719,7 +2719,7 @@ components:
               enum:
                 - stop
         - type: object
-          description: Cancel the task permanently (no retries)
+          description: Cancel the task permanently. The task is not retried.
           required:
             - action
           properties:
@@ -2730,7 +2730,7 @@ components:
         - type: object
           description: |-
             Run the task immediately, moving the `scheduled_for` time to now.
-            Requires the task to be in `Scheduled` or `Stopping` state.
+            Affects only tasks in `Scheduled` or `Stopping` state.
           required:
             - action
           properties:
@@ -2741,7 +2741,7 @@ components:
         - type: object
           description: |-
             Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
-            Requires the task to be in `Scheduled` or `Stopping` state.
+            Affects only tasks in `Scheduled` or `Stopping` state.
             Timestamps must be in FRC 3339 format.
           required:
             - scheduled_for
