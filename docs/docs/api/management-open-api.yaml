@@ -1171,7 +1171,9 @@ paths:
             Default: 100
           required: false
           schema:
-            type: integer
+            type:
+              - integer
+              - 'null'
             format: int64
         - name: projectId
           in: query
@@ -1384,7 +1386,9 @@ paths:
             Default: 100
           required: false
           schema:
-            type: integer
+            type:
+              - integer
+              - 'null'
             format: int64
       responses:
         '200':
@@ -1745,7 +1749,9 @@ paths:
             Default: 100
           required: false
           schema:
-            type: integer
+            type:
+              - integer
+              - 'null'
             format: int64
       responses:
         '200':
@@ -2238,8 +2244,9 @@ paths:
   /management/v1/{warehouse_id}/task-queue/tabular_expiration/config:
     get:
       tags:
-        - warehouse
-      summary: Get task-queue config
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
       operationId: get_task_queue_config_tabular_expiration
       parameters:
         - name: warehouse_id
@@ -2274,8 +2281,9 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
-        - warehouse
-      summary: Set task-queue config
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
       operationId: set_task_queue_config_tabular_expiration
       parameters:
         - name: warehouse_id
@@ -2302,8 +2310,9 @@ paths:
   /management/v1/{warehouse_id}/task-queue/tabular_purge/config:
     get:
       tags:
-        - warehouse
-      summary: Get task-queue config
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
       operationId: get_task_queue_config_tabular_purge
       parameters:
         - name: warehouse_id
@@ -2338,8 +2347,9 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
     post:
       tags:
-        - warehouse
-      summary: Set task-queue config
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
       operationId: set_task_queue_config_tabular_purge
       parameters:
         - name: warehouse_id
@@ -2357,6 +2367,110 @@ paths:
       responses:
         '204':
           description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/{warehouse_id}/task/by-id/{task_id}:
+    get:
+      tags:
+        - tasks
+      summary: Get Details about a specific task by its ID.
+      operationId: get_task_details
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: numAttempts
+          in: query
+          description: 'Number of attempts to retrieve (default: 5)'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int32
+            default: 5
+            minimum: 0
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTaskDetailsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/{warehouse_id}/task/control:
+    post:
+      tags:
+        - tasks
+      summary: Cancel or stop tasks.
+      description: Accepts at most 100 task IDs in one request.
+      operationId: control_tasks
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlTasksRequest'
+        required: true
+      responses:
+        '204':
+          description: All requested actions were successful
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/{warehouse_id}/task/list:
+    post:
+      tags:
+        - tasks
+      summary: List active and historic tasks.
+      operationId: list_tasks
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListTasksRequest'
+        required: true
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
         4XX:
           description: ''
           content:
@@ -2593,6 +2707,26 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
+    ControlTaskAction:
+      type: string
+      enum:
+        - stop
+        - cancel
+    ControlTasksRequest:
+      type: object
+      required:
+        - action
+        - task-ids
+      properties:
+        action:
+          $ref: '#/components/schemas/ControlTaskAction'
+          description: The action to perform on the task
+        task-ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Tasks to apply the action to
     CreateProjectRequest:
       type: object
       required:
@@ -2682,9 +2816,7 @@ components:
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
-          description: |-
-            Profile to determine behavior upon dropping of tabulars, defaults to soft-deletion with
-            7 days expiration.
+          description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
         project-id:
           type:
             - string
@@ -3004,8 +3136,8 @@ components:
               description: |-
                 Range specifier
 
-                Either for a explicit range or a page token to paginate through the results. See the docs of
-                `RangeSpecifier` for more details.
+                Either for an explicit range or a page token to paginate through the results. See the docs of
+                `TimeWindowSelector` for more details.
         status-codes:
           type:
             - array
@@ -3141,6 +3273,28 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTaskDetailsResponse:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+          description: Most recent task information
+        - type: object
+          required:
+            - task-data
+            - attempts
+          properties:
+            attempts:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskAttempt'
+              description: History of past attempts
+            execution-details:
+              type:
+                - object
+                - 'null'
+              description: Execution details for the current attempt
+            task-data:
+              type: object
+              description: Task-specific data
     GetTaskQueueConfigResponse:
       type: object
       required:
@@ -3275,6 +3429,73 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+    ListTasksRequest:
+      type: object
+      properties:
+        created-after:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter tasks created after this timestamp
+          example: 2025-12-31T23:59:59Z
+        created-before:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Filter tasks created before this timestamp
+          example: 2025-12-31T23:59:59Z
+        entities:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/TaskEntity'
+          description: Filter by specific entity
+        page-size:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Number of results per page
+        page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Next page token, re-use the same request as for the original request,
+            but set this to the `next_page_token` from the previous response.
+            Stop iterating when no more items are returned in a page.
+        queue-name:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: Filter by one or more queue names
+        status:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/TaskStatus'
+          description: Filter by task status
+    ListTasksResponse:
+      type: object
+      required:
+        - tasks
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: Token for the next page of results
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+          description: List of tasks
     ListUsersResponse:
       type: object
       required:
@@ -4407,6 +4628,153 @@ components:
       enum:
         - table
         - view
+    Task:
+      type: object
+      required:
+        - task-id
+        - warehouse-id
+        - queue-name
+        - entity
+        - status
+        - scheduled-for
+        - attempt
+        - progress
+        - created-at
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Current attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this task attempt was created
+        entity:
+          $ref: '#/components/schemas/TaskEntity'
+          description: Type of entity this task operates on
+        last-heartbeat-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Last heartbeat timestamp for running tasks
+        parent-task-id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+          description: Parent task ID if this is a sub-task
+        picked-up-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the latest attempt of the task was picked up for processing by a worker.
+        progress:
+          type: number
+          format: float
+          description: Progress of the task (0.0 to 1.0)
+        queue-name:
+          type: string
+          description: Name of the queue processing this task
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When the latest attempt of the task is scheduled for
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Current status of the task
+        task-id:
+          type: string
+          format: uuid
+          description: Unique identifier for the task
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When the task was last updated
+        warehouse-id:
+          type: string
+          format: uuid
+          description: Warehouse ID associated with the task
+    TaskAttempt:
+      type: object
+      required:
+        - attempt
+        - status
+        - scheduled-for
+        - created-at
+        - progress
+      properties:
+        attempt:
+          type: integer
+          format: int32
+          description: Attempt number
+        created-at:
+          type: string
+          format: date-time
+          description: When this attempt was created
+        duration:
+          type:
+            - string
+            - 'null'
+          description: How long this attempt took
+          example: PT1H30M45.5S
+        execution-details:
+          type:
+            - object
+            - 'null'
+          description: Execution details for this attempt
+        message:
+          type:
+            - string
+            - 'null'
+          description: Message associated with this attempt
+        progress:
+          type: number
+          format: float
+          description: Progress achieved in this attempt
+        scheduled-for:
+          type: string
+          format: date-time
+          description: When this attempt was scheduled for
+        started-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: When this attempt started
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+          description: Status of this attempt
+    TaskEntity:
+      oneOf:
+        - type: object
+          required:
+            - table-id
+            - warehouse-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+            warehouse-id:
+              type: string
+              format: uuid
+    TaskStatus:
+      type: string
+      enum:
+        - RUNNING
+        - SCHEDULED
+        - STOPPING
+        - CANCELLED
+        - SUCCESS
+        - FAILED
     TimeWindowSelector:
       oneOf:
         - type: object
@@ -4875,9 +5243,7 @@ components:
               enum:
                 - warehouse-id
         - type: object
-          description: |-
-            Filter for requests that could not be associated with any warehouse, e.g. some management
-            endpoints
+          description: Filter for items that are not associated with a warehouse
           required:
             - type
           properties:
@@ -4886,9 +5252,7 @@ components:
               enum:
                 - unmapped
         - type: object
-          description: |-
-            Do not filter by warehouse and return all statistics for all warehouses and unmapped requests
-            for the current project.
+          description: Return all items in the current project, regardless of warehouse association
           required:
             - type
           properties:
@@ -4975,6 +5339,8 @@ tags:
     description: Manage Projects
   - name: warehouse
     description: Manage Warehouses
+  - name: tasks
+    description: View & Manage Tasks
   - name: user
     description: Manage Users
   - name: role

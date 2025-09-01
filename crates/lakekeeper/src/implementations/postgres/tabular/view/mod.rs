@@ -269,7 +269,7 @@ pub(crate) async fn set_view_properties(
         .unzip();
     sqlx::query!(
         r#"INSERT INTO view_properties (warehouse_id, view_id, key, value)
-           VALUES ($1, $2, UNNEST($3::text[]), UNNEST($4::text[]))
+           SELECT $1, $2, u.* FROM UNNEST($3::text[], $4::text[]) u
               ON CONFLICT (warehouse_id, view_id, key)
                 DO UPDATE SET value = EXCLUDED.value
            ;"#,

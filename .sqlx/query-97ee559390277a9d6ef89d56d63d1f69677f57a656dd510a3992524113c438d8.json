@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() WHERE task_id = $1)\n        SELECT status as \"status: TaskStatus\" FROM task WHERE task_id = $1",
+  "query": "WITH heartbeat as (\n            UPDATE task \n            SET last_heartbeat_at = now(), \n                progress = $2, \n                execution_details = $3 \n            WHERE task_id = $1 AND attempt = $4\n            RETURNING status\n        )\n        SELECT status as \"status: TaskStatus\" FROM heartbeat",
   "describe": {
     "columns": [
       {
@@ -22,12 +22,15 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Float4",
+        "Jsonb",
+        "Int4"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "11b7b61f52c7361261f2599bb9e0874402979ce2bbd43ee28140993369cbc2c9"
+  "hash": "97ee559390277a9d6ef89d56d63d1f69677f57a656dd510a3992524113c438d8"
 }

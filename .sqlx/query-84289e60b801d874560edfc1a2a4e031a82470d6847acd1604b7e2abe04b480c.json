@@ -1,11 +1,10 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        WITH heartbeat as (UPDATE task SET last_heartbeat_at = now() WHERE task_id = $1)\n        UPDATE task\n        SET status = $2\n        WHERE task_id = $1\n        ",
+  "query": "UPDATE task SET status = $1, picked_up_at = NULL WHERE task_id = $2",
   "describe": {
     "columns": [],
     "parameters": {
       "Left": [
-        "Uuid",
         {
           "Custom": {
             "name": "task_intermediate_status",
@@ -17,10 +16,11 @@
               ]
             }
           }
-        }
+        },
+        "Uuid"
       ]
     },
     "nullable": []
   },
-  "hash": "333653f674934d91f75b067d3cfd3b4765f143ab8fd5044bdae7722f95ee4de5"
+  "hash": "84289e60b801d874560edfc1a2a4e031a82470d6847acd1604b7e2abe04b480c"
 }

@@ -546,6 +546,12 @@ impl DynAppConfig {
             i.clamp(1, self.pagination_size_max.into())
         })
     }
+
+    pub fn page_size_or_pagination_default(&self, page_size: Option<i64>) -> i64 {
+        page_size
+            .unwrap_or(self.pagination_size_default.into())
+            .clamp(1, self.pagination_size_max.into())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]

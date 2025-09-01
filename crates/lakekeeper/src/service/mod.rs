@@ -497,3 +497,17 @@ pub struct TabularDetails {
     pub table_id: TableId,
     pub location: String,
 }
+
+impl Deref for TabularDetails {
+    type Target = TableId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.table_id
+    }
+}
+
+impl AsRef<TableId> for TabularDetails {
+    fn as_ref(&self) -> &TableId {
+        &self.table_id
+    }
+}

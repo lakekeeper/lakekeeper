@@ -81,7 +81,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 warehouse_id,
                 CatalogWarehouseAction::CanListEverything,
             )
-            .await?;
+            .await?
+            .into_inner();
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
 
@@ -101,7 +102,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         namespace_id,
                         CatalogNamespaceAction::CanListEverything,
                     )
-                    .await?;
+                    .await?
+                    .into_inner();
         }
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -137,10 +139,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         authorizer
                             .are_allowed_namespace_actions(
                                 &request_metadata,
-                                ids.clone(),
-                                vec![CatalogNamespaceAction::CanGetMetadata; ids.len()],
+                                ids.iter()
+                                    .map(|id| (*id, CatalogNamespaceAction::CanGetMetadata))
+                                    .collect(),
                             )
                             .await?
+                            .into_inner()
                     };
 
                     let (next_namespaces, next_uuids, next_page_tokens, mask): (
