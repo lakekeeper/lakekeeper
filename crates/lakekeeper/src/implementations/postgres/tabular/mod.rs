@@ -146,10 +146,10 @@ where
         r#"
         SELECT t.tabular_id, t.typ as "typ: TabularType", fs_protocol, fs_location
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE n.namespace_name = $1 AND t.name = $2
-        AND n.warehouse_id = $3
+        INNER JOIN namespace n
+            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+        WHERE t.warehouse_id = $3 AND n.namespace_name = $1 AND t.name = $2
         AND w.status = 'active'
         AND t.typ = $4
         AND (t.deleted_at IS NULL OR $5)
@@ -235,9 +235,10 @@ where
                t.name as tabular_name,
                t.typ as "typ: TabularType"
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.status = 'active' and n."warehouse_id" = $1
+        INNER JOIN namespace n
+            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+        WHERE t.warehouse_id = $1 AND w.status = 'active'
             AND (t.deleted_at is NULL OR $2)
             AND (t.metadata_location is not NULL OR $3) "#,
         *warehouse_id,
@@ -473,11 +474,11 @@ where
             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN namespace n
+            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
-        WHERE (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND n.warehouse_id = $1
+        WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
             AND (namespace_name = $2 OR $2 IS NULL)
             AND (n.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
@@ -588,7 +589,7 @@ pub(crate) async fn rename_tabular(
             r#"
             UPDATE tabular ti
             SET name = $1
-            WHERE tabular_id = $2 AND typ = $3
+            WHERE warehouse_id = $4 AND tabular_id = $2 AND typ = $3
                 AND metadata_location IS NOT NULL
                 AND ti.deleted_at IS NULL
                 AND $4 IN (
@@ -622,7 +623,8 @@ pub(crate) async fn rename_tabular(
             UPDATE tabular ti
             SET name = $1, namespace_id = ns_id.namespace_id
             FROM ns_id
-            WHERE tabular_id = $4 AND typ = $5 AND metadata_location IS NOT NULL
+            WHERE warehouse_id = $2 AND tabular_id = $4 AND typ = $5
+                AND metadata_location IS NOT NULL
                 AND ti.name = $6
                 AND ti.deleted_at IS NULL
                 AND ns_id.namespace_id IS NOT NULL
@@ -778,7 +780,7 @@ pub(crate) async fn mark_tabular_as_deleted(
             SET deleted_at = $3
             WHERE warehouse_id = $1 AND tabular_id = $2
                 AND ((NOT protected) OR $4)
-            RETURNING warehouse_id, tabular_id
+            RETURNING tabular_id
         )
         SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
         "#,
@@ -798,14 +800,17 @@ pub(crate) async fn mark_tabular_as_deleted(
             )
         } else {
             tracing::warn!("Error marking tabular as deleted: {}", e);
-            e.into_error_model(format!("Error marking {} as deleted", tabular_id.typ_str()))
+            e.into_error_model(format!(
+                "Error marking {} in {warehouse_id} as deleted",
+                tabular_id.typ_str()
+            ))
         }
     })?;
 
     if r.protected && !force {
         return Err(ErrorModel::conflict(
             format!(
-                "{} is protected and cannot be deleted",
+                "{} in warehouse {warehouse_id} is protected and cannot be deleted",
                 tabular_id.typ_str()
             ),
             "ProtectedTabularError",
