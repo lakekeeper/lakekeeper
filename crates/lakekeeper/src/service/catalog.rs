@@ -109,7 +109,6 @@ pub struct CreateTableResponse {
 pub struct LoadTableResponse {
     pub table_id: TableId,
     pub namespace_id: NamespaceId,
-    pub warehouse_id: WarehouseId,
     pub table_metadata: TableMetadata,
     pub metadata_location: Option<Location>,
     pub storage_secret_ident: Option<SecretIdent>,

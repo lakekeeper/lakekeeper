@@ -621,7 +621,6 @@ pub(crate) async fn load_tables(
             }
         };
         let namespace_id = table.namespace_id.into();
-        let warehouse_id = table.warehouse_id.into();
         let storage_secret_ident = table.storage_secret_id.map(SecretIdent::from);
         let storage_profile = table.storage_profile.deref().clone();
 
@@ -638,7 +637,6 @@ pub(crate) async fn load_tables(
             LoadTableResponse {
                 table_id,
                 namespace_id,
-                warehouse_id,
                 table_metadata,
                 metadata_location,
                 storage_secret_ident,

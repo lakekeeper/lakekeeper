@@ -532,7 +532,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let CatalogLoadTableResult {
             table_id,
             namespace_id: _,
-            warehouse_id: _,
             table_metadata,
             metadata_location,
             storage_secret_ident,
