@@ -585,7 +585,7 @@ pub(crate) async fn load_tables(
                           ARRAY_AGG(blob_metadata) as blob_metadatas
                     FROM table_statistics WHERE warehouse_id = $1 AND table_id = ANY($2)
                     GROUP BY table_id) tstat ON tstat.table_id = t.table_id
-        WHERE w.warehouse_id = $1
+        WHERE t.warehouse_id = $1
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
             AND t."table_id" = ANY($2)
