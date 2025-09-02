@@ -339,6 +339,15 @@ ALTER TABLE table_statistics
     ADD CONSTRAINT table_statistics_pkey
     PRIMARY KEY (warehouse_id, table_id, snapshot_id);
 
+-- Update indices to include warehouse_id
+DROP INDEX view_representation_view_id_version_id_idx;
+CREATE INDEX view_representation_view_id_version_id_idx
+    ON view_representation USING btree (warehouse_id, view_id, view_version_id);
+
+DROP INDEX view_version_log_view_id_version_id_idx;
+CREATE INDEX view_version_log_view_id_version_id_idx
+    ON view_version_log USING btree (warehouse_id, view_id, version_id);
+
 -- =================================================================================================
 -- 6: Re-add all Foreign Key constraints with composite keys.
 -- =================================================================================================
