@@ -2,6 +2,7 @@
 -- tables to composite keys including 'warehouse_id'. This allows re-using IDs
 -- across different warehouses.
 --
+-- 0. Cleanup some indices and FK constraints that are not needed anymore.
 -- 1. Drop all Foreign Keys that will be affected by Primary Key changes.
 -- 2. Migrate 'tabular' and 'view' tables to use composite keys.
 -- 3. Migrate all 'view_*' related tables to include 'warehouse_id'.
@@ -9,6 +10,28 @@
 -- 5. Update all Primary Keys to their new composite form.
 -- 6. Re-establish all Foreign Keys to reference the new composite keys.
 -- 7. Recreate views
+
+-- =================================================================================================
+-- 0: Drop all Foreign Key constraints that will be affected by Primary Key changes.
+-- =================================================================================================
+DROP INDEX tabular_namespace_id_idx;
+DROP INDEX tabular_typ_tabular_id_idx;
+DROP INDEX idx_task_warehouse_id;
+
+ALTER TABLE table_current_schema
+    DROP CONSTRAINT table_current_schema_table_id_fkey;
+ALTER TABLE table_default_partition_spec
+    DROP CONSTRAINT table_default_partition_spec_table_id_fkey;
+ALTER TABLE table_default_sort_order
+    DROP CONSTRAINT table_default_sort_order_table_id_fkey;
+ALTER TABLE table_snapshot
+    DROP CONSTRAINT table_snapshot_table_id_fkey;
+ALTER TABLE table_statistics
+    DROP CONSTRAINT table_statistics_table_id_fkey;
+ALTER TABLE view_representation
+    DROP CONSTRAINT view_representation_view_id_fkey;
+ALTER TABLE view_version
+    DROP CONSTRAINT view_version_view_id_fkey;
 
 -- =================================================================================================
 -- 1: Drop all Foreign Key constraints that will be affected by Primary Key changes.
@@ -23,12 +46,8 @@ ALTER TABLE current_view_metadata_version
     DROP CONSTRAINT current_view_metadata_version_view_id_fkey;
 ALTER TABLE view_properties
     DROP CONSTRAINT view_properties_view_id_fkey;
-ALTER TABLE view_representation
-    DROP CONSTRAINT view_representation_view_id_fkey;
 ALTER TABLE view_schema
     DROP CONSTRAINT view_schema_view_id_fkey;
-ALTER TABLE view_version
-    DROP CONSTRAINT view_version_view_id_fkey;
 
 -- FKs referencing 'view_schema'
 ALTER TABLE view_version
@@ -43,12 +62,6 @@ ALTER TABLE view_version_log
     DROP CONSTRAINT view_version_log_view_id_version_id_fkey;
 
 -- FKs referencing 'table'
-ALTER TABLE table_current_schema
-    DROP CONSTRAINT table_current_schema_table_id_fkey;
-ALTER TABLE table_default_partition_spec
-    DROP CONSTRAINT table_default_partition_spec_table_id_fkey;
-ALTER TABLE table_default_sort_order
-    DROP CONSTRAINT table_default_sort_order_table_id_fkey;
 ALTER TABLE table_metadata_log
     DROP CONSTRAINT table_metadata_log_table_id_fkey;
 ALTER TABLE table_partition_spec
@@ -59,14 +72,10 @@ ALTER TABLE table_refs
     DROP CONSTRAINT table_refs_table_id_fkey;
 ALTER TABLE table_schema
     DROP CONSTRAINT table_schema_table_id_fkey;
-ALTER TABLE table_snapshot
-    DROP CONSTRAINT table_snapshot_table_id_fkey;
 ALTER TABLE table_snapshot_log
     DROP CONSTRAINT table_snapshot_log_table_id_fkey;
 ALTER TABLE table_sort_order
     DROP CONSTRAINT table_sort_order_table_id_fkey;
-ALTER TABLE table_statistics
-    DROP CONSTRAINT table_statistics_table_id_fkey;
 ALTER TABLE partition_statistics
     DROP CONSTRAINT partition_statistics_table_id_fkey;
 
@@ -346,14 +355,10 @@ ALTER TABLE "table" ADD CONSTRAINT tabular_ident_fk
 -- Add FKs for 'view_*' tables
 ALTER TABLE view_schema ADD CONSTRAINT view_schema_view_id_fkey
     FOREIGN KEY (warehouse_id, view_id) REFERENCES "view"(warehouse_id, view_id) ON DELETE CASCADE;
-ALTER TABLE view_version ADD CONSTRAINT view_version_view_id_fkey
-    FOREIGN KEY (warehouse_id, view_id) REFERENCES "view"(warehouse_id, view_id) ON DELETE CASCADE;
 ALTER TABLE view_version ADD CONSTRAINT view_version_view_id_schema_id_fkey
     FOREIGN KEY (warehouse_id, view_id, schema_id)
     REFERENCES view_schema(warehouse_id, view_id, schema_id) ON DELETE CASCADE;
 ALTER TABLE view_properties ADD CONSTRAINT view_properties_view_id_fkey
-    FOREIGN KEY (warehouse_id, view_id) REFERENCES "view"(warehouse_id, view_id) ON DELETE CASCADE;
-ALTER TABLE view_representation ADD CONSTRAINT view_representation_view_id_fkey
     FOREIGN KEY (warehouse_id, view_id) REFERENCES "view"(warehouse_id, view_id) ON DELETE CASCADE;
 ALTER TABLE view_representation ADD CONSTRAINT view_representation_view_id_view_version_id_fkey
     FOREIGN KEY (warehouse_id, view_id, view_version_id)
@@ -369,13 +374,6 @@ ADD CONSTRAINT current_view_metadata_version_view_id_version_id_fkey
     REFERENCES view_version(warehouse_id, view_id, version_id) ON DELETE CASCADE;
 
 -- Add FKs for 'table_*' tables
-ALTER TABLE table_current_schema ADD CONSTRAINT table_current_schema_table_id_fkey
-    FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
-ALTER TABLE table_default_partition_spec
-ADD CONSTRAINT table_default_partition_spec_table_id_fkey
-    FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
-ALTER TABLE table_default_sort_order ADD CONSTRAINT table_default_sort_order_table_id_fkey
-    FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
 ALTER TABLE table_metadata_log ADD CONSTRAINT table_metadata_log_table_id_fkey
     FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
 ALTER TABLE table_partition_spec ADD CONSTRAINT table_partition_spec_table_id_fkey
@@ -386,13 +384,9 @@ ALTER TABLE table_refs ADD CONSTRAINT table_refs_table_id_fkey
     FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
 ALTER TABLE table_schema ADD CONSTRAINT table_schema_table_id_fkey
     FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
-ALTER TABLE table_snapshot ADD CONSTRAINT table_snapshot_table_id_fkey
-    FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
 ALTER TABLE table_snapshot_log ADD CONSTRAINT table_snapshot_log_table_id_fkey
     FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
 ALTER TABLE table_sort_order ADD CONSTRAINT table_sort_order_table_id_fkey
-    FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
-ALTER TABLE table_statistics ADD CONSTRAINT table_statistics_table_id_fkey
     FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
 ALTER TABLE partition_statistics ADD CONSTRAINT partition_statistics_table_id_fkey
     FOREIGN KEY (warehouse_id, table_id) REFERENCES "table"(warehouse_id, table_id) ON DELETE CASCADE;
