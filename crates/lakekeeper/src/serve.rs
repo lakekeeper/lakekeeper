@@ -45,7 +45,7 @@ pub type RegisterBackgroundServiceFn<A, C, S> = std::sync::Arc<
 >;
 
 pub type RegisterTaskQueueFn<A, C, S> = std::sync::Arc<
-    dyn Fn(&TaskQueueRegistry, ApiContext<State<A, C, S>>) -> BoxFuture<'_, anyhow::Result<()>>,
+    dyn Fn(TaskQueueRegistry, ApiContext<State<A, C, S>>) -> BoxFuture<'static, anyhow::Result<()>>,
 >;
 
 /// Helper function to process the result of a service task completion
@@ -378,7 +378,7 @@ async fn serve_inner<
     };
 
     for register_fn in register_additional_task_queues_fn {
-        register_fn(&task_queue_registry, state.clone()).await?;
+        register_fn(task_queue_registry.clone(), state.clone()).await?;
     }
 
     // Router

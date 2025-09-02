@@ -525,7 +525,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     ///
     /// # Errors
     /// Returns an error if the heartbeat fails.
-    pub async fn heartbeat<C: Catalog>(
+    pub async fn heartbeat_in_transaction<C: Catalog>(
         &self,
         transaction: <C::Transaction as Transaction<C::State>>::Transaction<'_>,
         progress: f32,
@@ -556,6 +556,37 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                 ))
                 .into()
             })
+    }
+
+    /// Identical to `heartbeat`, but accepts a catalog state and creates a transaction internally.
+    pub async fn heartbeat<C: Catalog>(
+        &self,
+        catalog_state: C::State,
+        progress: f32,
+        execution_details: Option<E>,
+    ) -> Result<TaskCheckState, ErrorModel> {
+        let mut transaction: C::Transaction =
+            Transaction::begin_write(catalog_state).await.map_err(|e| {
+                e.append_detail(format!(
+                    "Failed to start DB transaction to heartbeat `{}` task {}.",
+                    Self::queue_name(),
+                    self.id
+                ))
+            })?;
+
+        let state = self
+            .heartbeat_in_transaction::<C>(transaction.transaction(), progress, execution_details)
+            .await?;
+
+        transaction.commit().await.map_err(|e| {
+            e.append_detail(format!(
+                "Failed to commit DB transaction to heartbeat `{}` task {}.",
+                Self::queue_name(),
+                self.id
+            ))
+        })?;
+
+        Ok(state)
     }
 
     /// Records an failure for a task in the catalog, updating its status and retry count.
