@@ -7,13 +7,12 @@
 -- 2. Migrate 'tabular' and 'view' tables to use composite keys.
 -- 3. Migrate all 'view_*' related tables to include 'warehouse_id'.
 -- 4. Migrate the 'table' table and all 'table_*' related tables.
--- 5. Update all Primary Keys to their new composite form.
+-- 5. Update all Primary Keys and indices to their new composite form.
 -- 6. Re-establish all Foreign Keys to reference the new composite keys.
 -- 7. Recreate views
 
 -- =================================================================================================
--- 0: Drop all Foreign Key constraints that will be affected by Primary Key changes.
--- =================================================================================================
+-- 0: Cleanup some indices and FK constraints that are not needed anymore.-- =================================================================================================
 DROP INDEX tabular_namespace_id_idx;
 DROP INDEX tabular_typ_tabular_id_idx;
 DROP INDEX idx_task_warehouse_id;
@@ -224,7 +223,7 @@ FROM "table" t WHERE ps.table_id = t.table_id;
 ALTER TABLE partition_statistics ALTER COLUMN warehouse_id SET NOT NULL;
 
 -- =================================================================================================
--- 5: Modify all Primary Keys to include 'warehouse_id'.
+-- 5: Modify all Primary Keys and indices to include 'warehouse_id'.
 -- =================================================================================================
 
 -- Drop and Add PK for 'tabular'
@@ -247,6 +246,10 @@ ALTER TABLE current_view_metadata_version
 ALTER TABLE view_properties DROP CONSTRAINT view_properties_pkey;
 ALTER TABLE view_properties ADD CONSTRAINT view_properties_pkey
     PRIMARY KEY (warehouse_id, view_id, key);
+
+ALTER TABLE view_representation DROP CONSTRAINT view_representation_pkey;
+ALTER TABLE view_representation ADD CONSTRAINT view_representation_pkey
+    PRIMARY KEY (warehouse_id, view_representation_id);
 
 ALTER TABLE view_schema DROP CONSTRAINT unique_schema_per_view;
 ALTER TABLE view_schema ADD CONSTRAINT unique_schema_per_view
