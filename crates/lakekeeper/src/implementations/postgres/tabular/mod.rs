@@ -695,15 +695,18 @@ pub(crate) async fn clear_tabular_deleted_at(
         r#"WITH validation AS (
                 SELECT NOT EXISTS (
                     SELECT 1 FROM unnest($1::uuid[]) AS id
-                    WHERE id NOT IN (SELECT tabular_id FROM tabular)
+                    WHERE id NOT IN
+                        (SELECT tabular_id FROM tabular WHERE warehouse_id = $2)
                 ) AS all_found
             )
             UPDATE tabular
             SET deleted_at = NULL
-            FROM tabular t JOIN namespace n ON t.namespace_id = n.namespace_id
-            LEFT JOIN task ta ON t.tabular_id = ta.entity_id AND ta.entity_type = 'tabular' AND ta.warehouse_id = $2
-            WHERE tabular.namespace_id = n.namespace_id
-                AND n.warehouse_id = $2
+            FROM tabular t
+            JOIN namespace n ON t.namespace_id = n.namespace_id AND n.warehouse_id = $2
+            LEFT JOIN task ta ON t.tabular_id = ta.entity_id
+                AND ta.entity_type = 'tabular'
+                AND ta.warehouse_id = $2
+            WHERE t.warehouse_id = $2
                 AND tabular.tabular_id = ANY($1::uuid[])
                 AND ta.queue_name = 'tabular_expiration'
             RETURNING
@@ -720,18 +723,14 @@ pub(crate) async fn clear_tabular_deleted_at(
     .map_err(|e| {
         tracing::warn!("Error marking tabular as undeleted: {e}");
         match &e {
-            sqlx::Error::Database(db_err) => {
-                match db_err.constraint() {
-                    Some("unique_name_per_namespace_id") => {
-                        ErrorModel::bad_request(
-                            "Tabular with the same name already exists in the namespace.",
-                            "TabularNameAlreadyExists",
-                            Some(Box::new(e)),
-                        )
-                    }
-                    _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
-                }
-            }
+            sqlx::Error::Database(db_err) => match db_err.constraint() {
+                Some("unique_name_per_namespace_id") => ErrorModel::bad_request(
+                    "Tabular with the same name already exists in the namespace.",
+                    "TabularNameAlreadyExists",
+                    Some(Box::new(e)),
+                ),
+                _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
+            },
             _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
         }
     })?;
@@ -835,16 +834,22 @@ pub(crate) async fn drop_tabular(
                    protected
                FROM tabular
                WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = $3
-                   AND (warehouse_id, tabular_id) IN
-                       (SELECT warehouse_id, tabular_id FROM active_tabulars)
+                   AND EXISTS (
+                       SELECT 1 FROM active_tabulars at
+                       WHERE at.warehouse_id = tabular.warehouse_id
+                       AND at.tabular_id = tabular.tabular_id
+                   )
            ),
            deleted as (
            DELETE FROM tabular
                WHERE warehouse_id = $1
                    AND tabular_id = $2
                    AND typ = $3
-                   AND (warehouse_id, tabular_id) IN
-                       (SELECT warehouse_id, tabular_id FROM active_tabulars)
+                   AND EXISTS (
+                       SELECT 1 FROM active_tabulars at
+                       WHERE at.warehouse_id = tabular.warehouse_id
+                       AND at.tabular_id = tabular.tabular_id
+                   )
                    AND ((NOT protected) OR $4)
               RETURNING metadata_location, fs_location, fs_protocol)
               SELECT protected as "protected!",
