@@ -559,6 +559,10 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
     }
 
     /// Identical to `heartbeat`, but accepts a catalog state and creates a transaction internally.
+    ///
+    /// # Errors
+    /// * If the transaction cannot be started or committed.
+    /// * If the heartbeat fails.
     pub async fn heartbeat<C: Catalog>(
         &self,
         catalog_state: C::State,
@@ -573,7 +577,6 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
                     self.id
                 ))
             })?;
-
         let state = self
             .heartbeat_in_transaction::<C>(transaction.transaction(), progress, execution_details)
             .await?;
