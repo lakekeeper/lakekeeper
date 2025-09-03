@@ -983,11 +983,18 @@ pub(crate) mod tests {
         pub(crate) table_ident: TableIdent,
     }
 
+    /// Creates a table in the given warehouse.
+    ///
+    /// Parameters:
+    ///
+    /// * `namespace`: If provided creates the table in that namespace, otherwise creates new one.
+    /// * `table_id`: If provided uses this as the table's id, otherwise creates a random id.
     pub(crate) async fn initialize_table(
         warehouse_id: WarehouseId,
         state: CatalogState,
         staged: bool,
         namespace: Option<NamespaceIdent>,
+        table_id: Option<TableId>,
         table_name: Option<String>,
     ) -> InitializedTable {
         // my_namespace_<uuid>
@@ -1006,7 +1013,7 @@ pub(crate) mod tests {
             namespace: namespace.clone(),
             name: request.name.clone(),
         };
-        let table_id = Uuid::now_v7().into();
+        let table_id = table_id.unwrap_or_else(|| Uuid::now_v7().into());
 
         let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
         let schema = table_metadata.current_schema_id();
@@ -1266,7 +1273,7 @@ pub(crate) mod tests {
         assert!(exists.is_none());
         drop(table_ident);
 
-        let table = initialize_table(warehouse_id, state.clone(), true, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
 
         // Table is staged - no result if include_staged is false
         let exists = resolve_table_ident(
@@ -1316,7 +1323,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(exists.len() == 1 && exists.get(&table_ident).unwrap().is_none());
 
-        let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
+        let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
         let mut tables = HashSet::new();
         tables.insert(&table_1.table_ident);
 
@@ -1350,7 +1357,7 @@ pub(crate) mod tests {
         );
 
         // Second Table
-        let table_2 = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table_2 = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
         tables.insert(&table_2.table_ident);
 
         let exists = table_idents_to_ids(
@@ -1395,7 +1402,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_table_ident = TableIdent {
             namespace: table.namespace.clone(),
@@ -1441,7 +1448,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &new_namespace, None).await;
@@ -1489,7 +1496,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let new_namespace = NamespaceIdent::from_vec(vec!["new_namespace".to_string()]).unwrap();
 
@@ -1531,7 +1538,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(tables.len(), 0);
 
-        let table1 = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table1 = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let tables = list_tables(
             warehouse_id,
@@ -1548,7 +1555,7 @@ pub(crate) mod tests {
             table1.table_ident
         );
 
-        let table2 = initialize_table(warehouse_id, state.clone(), true, None, None).await;
+        let table2 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
         let tables = list_tables(
             warehouse_id,
             &table2.namespace,
@@ -1601,6 +1608,7 @@ pub(crate) mod tests {
             state.clone(),
             false,
             Some(namespace.clone()),
+            None,
             Some("t1".into()),
         )
         .await;
@@ -1609,6 +1617,7 @@ pub(crate) mod tests {
             state.clone(),
             true,
             Some(namespace.clone()),
+            None,
             Some("t2".into()),
         )
         .await;
@@ -1617,6 +1626,7 @@ pub(crate) mod tests {
             state.clone(),
             true,
             Some(namespace.clone()),
+            None,
             Some("t3".into()),
         )
         .await;
@@ -1689,7 +1699,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let metadata = get_table_metadata_by_id(
             warehouse_id,
@@ -1775,7 +1785,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
         let mut transaction = pool.begin().await.expect("Failed to start transaction");
         set_warehouse_status(warehouse_id, WarehouseStatus::Inactive, &mut transaction)
             .await
@@ -1798,7 +1808,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let table = initialize_table(warehouse_id, state.clone(), false, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), false, None, None, None).await;
 
         let mut transaction = pool.begin().await.unwrap();
 
