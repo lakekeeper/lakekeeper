@@ -546,6 +546,12 @@ impl DynAppConfig {
             i.clamp(1, self.pagination_size_max.into())
         })
     }
+
+    pub fn page_size_or_pagination_default(&self, page_size: Option<i64>) -> i64 {
+        page_size
+            .unwrap_or(self.pagination_size_default.into())
+            .clamp(1, self.pagination_size_max.into())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -558,6 +564,7 @@ pub enum PgSslMode {
     VerifyFull,
 }
 
+#[cfg(feature = "sqlx-postgres")]
 impl From<PgSslMode> for sqlx::postgres::PgSslMode {
     fn from(value: PgSslMode) -> Self {
         match value {
@@ -576,12 +583,12 @@ impl FromStr for PgSslMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_ref() {
-            "disabled" => Ok(Self::Disable),
+            "disabled" | "disable" => Ok(Self::Disable),
             "allow" => Ok(Self::Allow),
             "prefer" => Ok(Self::Prefer),
             "require" => Ok(Self::Require),
-            "verifyca" => Ok(Self::VerifyCa),
-            "verifyfull" => Ok(Self::VerifyFull),
+            "verifyca" | "verify-ca" | "verify_ca" => Ok(Self::VerifyCa),
+            "verifyfull" | "verify-full" | "verify_full" => Ok(Self::VerifyFull),
             _ => Err(anyhow!("PgSslMode not supported: '{}'", s)),
         }
     }
@@ -776,7 +783,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, io::Write as _, net::Ipv6Addr};
+    use std::net::Ipv6Addr;
 
     #[allow(unused_imports)]
     use super::*;
@@ -799,6 +806,18 @@ mod test {
         });
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disable");
+            let config = get_config();
+            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "Disable");
             let config = get_config();
             assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
             Ok(())
@@ -1163,7 +1182,7 @@ mod test {
                     sasl_oauthbearer_client_secret: None,
                     ssl_key_password: None,
                     ssl_keystore_password: None,
-                    conf: HashMap::from_iter([
+                    conf: std::collections::HashMap::from_iter([
                         (
                             "bootstrap.servers".to_string(),
                             "host1:port,host2:port".to_string()
@@ -1180,13 +1199,12 @@ mod test {
     #[test]
     fn test_kafka_config_file() {
         let named_tmp_file = tempfile::NamedTempFile::new().unwrap();
-        named_tmp_file
-            .as_file()
-            .write_all(
-                r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#.as_bytes(),
-            )
+        std::io::Write::write_all(&mut named_tmp_file
+            .as_file(), r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#.as_bytes())
             .unwrap();
         figment::Jail::expect_with(|jail| {
+            use std::collections::HashMap;
+
             jail.set_env("LAKEKEEPER_TEST__KAFKA_TOPIC", "test_topic");
             jail.set_env(
                 "LAKEKEEPER_TEST__KAFKA_CONFIG_FILE",

@@ -8,7 +8,7 @@ use iceberg::{
     spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef},
     NamespaceIdent,
 };
-use iceberg_ext::configs::Location;
+use lakekeeper_io::Location;
 pub(crate) use load::load_view;
 use serde::Deserialize;
 use sqlx::{FromRow, Postgres, Transaction};
@@ -125,7 +125,7 @@ pub(crate) async fn create_view(
         let ViewVersionResponse {
             version_id,
             view_id,
-        } = create_view_version(view_id, view_version.clone(), transaction).await?;
+        } = create_view_version(namespace_id, view_id, view_version.clone(), transaction).await?;
 
         tracing::debug!(
             "Inserted view version with id: '{}' for view_id: '{}'",
@@ -244,7 +244,7 @@ pub(crate) async fn set_view_properties(
         .unzip();
     sqlx::query!(
         r#"INSERT INTO view_properties (view_id, key, value)
-           VALUES ($1, UNNEST($2::text[]), UNNEST($3::text[]))
+           SELECT $1, u.* FROM UNNEST($2::text[], $3::text[]) u
               ON CONFLICT (view_id, key)
                 DO UPDATE SET value = EXCLUDED.value
            ;"#,
@@ -303,8 +303,13 @@ struct ViewVersionResponse {
     view_id: Uuid,
 }
 
+/// Creates a `view_version` in the namespace specified by `namespace_id`.
+///
+/// Note that `namespace_id` is not the view's default namespace. Instead the default namespace is
+/// specified separately via `view_version_request`.
 #[allow(clippy::too_many_lines)]
 async fn create_view_version(
+    namespace_id: NamespaceId,
     view_id: Uuid,
     view_version_request: ViewVersionRef,
     transaction: &mut Transaction<'_, Postgres>,
@@ -312,15 +317,26 @@ async fn create_view_version(
     let view_version = view_version_request;
     let version_id = view_version.version_id();
     let schema_id = view_version.schema_id();
+
+    // According to the [iceberg spec] `view_version.default_namespace` is a required field. However
+    // some query engines (e.g. Spark) may send an empty string for `default_namespace`. We
+    // represent this by NULL in the `default_namespace_id` column.
+    //
+    // While the [iceberg spec] specifies `default_namespace` as namespace identifier, we store
+    // the corresponding namespace's id as surrogate key for performance reasons.
+    //
+    // [iceberg spec]: https://iceberg.apache.org/view-spec/#view-metadata
     let default_ns = view_version.default_namespace();
     let default_ns = default_ns.clone().inner();
     let default_namespace_id: Option<Uuid> = sqlx::query_scalar!(
         r#"
         SELECT namespace_id
-        FROM namespace
+        FROM namespace n
         WHERE namespace_name = $1
+        AND warehouse_id in (SELECT warehouse_id FROM namespace WHERE namespace_id = $2)
         "#,
-        &default_ns
+        &default_ns,
+        *namespace_id
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -526,7 +542,8 @@ pub(crate) mod tests {
         spec::{ViewMetadata, ViewMetadataBuilder},
         NamespaceIdent, TableIdent,
     };
-    use iceberg_ext::configs::{Location, ParseFromStr};
+    use iceberg_ext::configs::ParseFromStr;
+    use lakekeeper_io::Location;
     use serde_json::json;
     use sqlx::PgPool;
     use uuid::Uuid;
@@ -541,9 +558,10 @@ pub(crate) mod tests {
         },
         service::{
             task_queue::{
-                tabular_expiration_queue::TabularExpirationPayload, EntityId, TaskMetadata,
+                tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+                EntityId, TaskMetadata,
             },
-            Catalog, TabularId, ViewId,
+            TabularId, ViewId,
         },
         WarehouseId,
     };
@@ -803,7 +821,7 @@ pub(crate) mod tests {
         let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        let _ = PostgresCatalog::queue_tabular_expiration(
+        let _ = TabularExpirationTask::schedule_task::<PostgresCatalog>(
             TaskMetadata {
                 entity_id: EntityId::Tabular(created_meta.uuid()),
                 warehouse_id,
@@ -811,7 +829,7 @@ pub(crate) mod tests {
                 schedule_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
             },
             TabularExpirationPayload {
-                tabular_type: crate::api::management::v1::TabularType::Table,
+                tabular_type: crate::api::management::v1::TabularType::View,
                 deletion_kind: DeleteKind::Purge,
             },
             &mut tx,

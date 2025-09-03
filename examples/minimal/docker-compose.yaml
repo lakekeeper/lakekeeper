@@ -40,6 +40,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
     networks:
       iceberg_net:
     ports:
@@ -91,6 +93,8 @@ services:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
+      createbuckets:
+        condition: service_completed_successfully
     restart: "no"
     command:
       - -w
@@ -112,11 +116,9 @@ services:
       iceberg_net:
 
   db:
-    image: bitnami/postgresql:16.3.0
+    image: postgres:16
     environment:
-      - POSTGRESQL_USERNAME=postgres
-      - POSTGRESQL_PASSWORD=postgres
-      - POSTGRESQL_DATABASE=postgres
+      - POSTGRES_PASSWORD=postgres
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
       interval: 2s
@@ -127,16 +129,13 @@ services:
       iceberg_net:
 
   minio:
-    image: bitnami/minio:2025.4.22
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-      - MINIO_API_PORT_NUMBER=9000
-      - MINIO_CONSOLE_PORT_NUMBER=9001
-      - MINIO_SCHEME=http
-      - MINIO_DEFAULT_BUCKETS=examples
+    command: [ "server", "--console-address", ":9001", "/data" ]
     healthcheck:
-      test: [ "CMD", "mc", "ls", "local", "|", "grep", "examples" ]
+      test: [ "CMD", "mc", "ready", "local" ]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -146,7 +145,23 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-  
+
+  createbuckets:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: on-failure
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set dockerminio http://minio:9000 minio-root-user minio-root-password;
+      /usr/bin/mc mb dockerminio/examples;
+      exit 0;
+      "
+    networks:
+      iceberg_net:
+
   trino:
     image: trinodb/trino:467
     environment:

@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "router")]
 use axum::{
     extract::{Path, Query, Request, State},
     middleware::Next,
@@ -19,6 +20,7 @@ use uuid::Uuid;
 
 use crate::{api::endpoints::Endpoint, request_metadata::RequestMetadata, ProjectId, WarehouseId};
 
+#[cfg(feature = "router")]
 /// Middleware for tracking endpoint statistics.
 ///
 /// This middleware forwards information about the called endpoint to the receiver of

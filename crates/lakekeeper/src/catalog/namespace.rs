@@ -3,8 +3,9 @@ use std::{collections::HashMap, ops::Deref};
 use futures::FutureExt;
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _, Location};
+use iceberg_ext::configs::{namespace::NamespaceProperties, ConfigProperty as _};
 use itertools::Itertools;
+use lakekeeper_io::Location;
 
 use super::{require_warehouse_id, CatalogServer, UnfilteredPage};
 use crate::{
@@ -24,7 +25,8 @@ use crate::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogWarehouseAction, NamespaceParent},
         secrets::SecretStore,
         task_queue::{
-            tabular_purge_queue::TabularPurgePayload, EntityId, TaskFilter, TaskMetadata,
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+            EntityId, TaskFilter, TaskMetadata,
         },
         Catalog, GetWarehouseResponse, NamespaceId, State, TabularId, Transaction,
     },
@@ -79,7 +81,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 warehouse_id,
                 CatalogWarehouseAction::CanListEverything,
             )
-            .await?;
+            .await?
+            .into_inner();
         if let Some(parent) = parent {
             let namespace_id = C::namespace_to_id(warehouse_id, parent, t.transaction()).await; // Cannot fail before authz
 
@@ -99,7 +102,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         namespace_id,
                         CatalogNamespaceAction::CanListEverything,
                     )
-                    .await?;
+                    .await?
+                    .into_inner();
         }
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -135,10 +139,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         authorizer
                             .are_allowed_namespace_actions(
                                 &request_metadata,
-                                ids.clone(),
-                                vec![CatalogNamespaceAction::CanGetMetadata; ids.len()],
+                                ids.iter()
+                                    .map(|id| (*id, CatalogNamespaceAction::CanGetMetadata))
+                                    .collect(),
                             )
                             .await?
+                            .into_inner()
                     };
 
                     let (next_namespaces, next_uuids, next_page_tokens, mask): (
@@ -476,8 +482,13 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
 
         // cancel pending tasks
-        C::cancel_tabular_expiration(TaskFilter::TaskIds(drop_info.open_tasks), t.transaction())
-            .await?;
+        C::cancel_scheduled_tasks(
+            None,
+            TaskFilter::TaskIds(drop_info.open_tasks),
+            false,
+            t.transaction(),
+        )
+        .await?;
 
         if flags.purge {
             for (tabular_id, tabular_location) in drop_info.child_tables {
@@ -485,7 +496,7 @@ async fn try_recursive_drop<A: Authorizer, C: Catalog, S: SecretStore>(
                     TabularId::Table(id) => (id, TabularType::Table),
                     TabularId::View(id) => (id, TabularType::View),
                 };
-                C::queue_tabular_purge(
+                TabularPurgeTask::schedule_task::<C>(
                     TaskMetadata {
                         warehouse_id,
                         entity_id: EntityId::Tabular(tabular_id),
@@ -762,7 +773,7 @@ mod tests {
         ApiContext<State<HidingAuthorizer, PostgresCatalog, SecretsState>>,
         Option<Prefix>,
     ) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden namespaces from becoming visible through `can_list_everything`.
@@ -821,7 +832,7 @@ mod tests {
 
     #[sqlx::test]
     async fn cannot_drop_protected_namespace(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
         let (ctx, warehouse) = crate::catalog::test::setup(
             pool.clone(),
             prof,
@@ -919,7 +930,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_list_namespaces(pool: PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
 
@@ -1003,7 +1014,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_ns_pagination(pool: sqlx::PgPool) {
-        let prof = crate::catalog::test::test_io_profile();
+        let prof = crate::catalog::test::memory_io_profile();
 
         let authz = HidingAuthorizer::new();
         // Prevent hidden namespaces from becoming visible through `can_list_everything`.

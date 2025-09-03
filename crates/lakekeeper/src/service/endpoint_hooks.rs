@@ -9,19 +9,17 @@ use iceberg::{
     spec::{TableMetadata, ViewMetadata},
     TableIdent,
 };
-use iceberg_ext::{
-    catalog::rest::{
-        CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
-        RegisterTableRequest, RenameTableRequest,
-    },
-    configs::Location,
+use iceberg_ext::catalog::rest::{
+    CommitTransactionRequest, CommitViewRequest, CreateTableRequest, CreateViewRequest,
+    RegisterTableRequest, RenameTableRequest,
 };
+use lakekeeper_io::Location;
 
 use crate::{
     api::{
         iceberg::{
             types::DropParams,
-            v1::{DataAccess, NamespaceParameters, TableParameters, ViewParameters},
+            v1::{DataAccessMode, NamespaceParameters, TableParameters, ViewParameters},
         },
         management::v1::warehouse::UndropTabularsRequest,
         RequestMetadata,
@@ -74,21 +72,29 @@ pub struct ViewCommit {
     pub new_metadata_location: Location,
 }
 
+/// Function type used by hooks to resolve a `TableIdent` to its `TableId`.
+/// Implementations should be cheap and non-blocking.
+/// Note: Hooks receive this as a borrowed reference valid only for the duration of the call.
+/// Do not store it for use outside the async method invocation.
+pub type TableIdentToIdFn = dyn Fn(&TableIdent) -> Option<TableId> + Send + Sync;
+
 impl EndpointHookCollection {
-    pub(crate) async fn commit_transaction(
+    // Strict bounds on H needed as this is used in the `table_ident_to_id_fn` closure which is shared between threads
+    pub(crate) async fn commit_transaction<H: ::std::hash::BuildHasher + 'static + Send + Sync>(
         &self,
         warehouse_id: WarehouseId,
         request: Arc<CommitTransactionRequest>,
         commits: Arc<Vec<CommitContext>>,
-        table_ident_map: Arc<HashMap<TableIdent, TableId>>,
+        table_ident_map: Arc<HashMap<TableIdent, TableId, H>>,
         request_metadata: Arc<RequestMetadata>,
     ) {
+        let table_ident_to_id_fn = move |ident: &TableIdent| table_ident_map.get(ident).copied();
         futures::future::join_all(self.0.iter().map(|hook| {
             hook.commit_transaction(
                 warehouse_id,
                 request.clone(),
                 commits.clone(),
-                table_ident_map.clone(),
+                &table_ident_to_id_fn,
                 request_metadata.clone(),
             )
             .map_err(|e| {
@@ -163,7 +169,7 @@ impl EndpointHookCollection {
         request: Arc<CreateTableRequest>,
         metadata: Arc<TableMetadata>,
         metadata_location: Option<Arc<Location>>,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -218,7 +224,7 @@ impl EndpointHookCollection {
         request: Arc<CreateViewRequest>,
         metadata: Arc<ViewMetadata>,
         metadata_location: Arc<Location>,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -247,7 +253,7 @@ impl EndpointHookCollection {
         parameters: ViewParameters,
         request: Arc<CommitViewRequest>,
         view_commit: Arc<ViewCommit>,
-        data_access: DataAccess,
+        data_access: DataAccessMode,
         request_metadata: Arc<RequestMetadata>,
     ) {
         futures::future::join_all(self.0.iter().map(|hook| {
@@ -366,7 +372,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _warehouse_id: WarehouseId,
         _request: Arc<CommitTransactionRequest>,
         _commits: Arc<Vec<CommitContext>>,
-        _table_ident_map: Arc<HashMap<TableIdent, TableId>>,
+        _table_ident_to_id_fn: &TableIdentToIdFn,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -402,7 +408,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _request: Arc<CreateTableRequest>,
         _metadata: Arc<TableMetadata>,
         _metadata_location: Option<Arc<Location>>,
-        _data_access: DataAccess,
+        _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -426,7 +432,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _request: Arc<CreateViewRequest>,
         _metadata: Arc<ViewMetadata>,
         _metadata_location: Arc<Location>,
-        _data_access: DataAccess,
+        _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -439,7 +445,7 @@ pub trait EndpointHook: Send + Sync + Debug + Display {
         _parameters: ViewParameters,
         _request: Arc<CommitViewRequest>,
         _view_commit: Arc<ViewCommit>,
-        _data_access: DataAccess,
+        _data_access: DataAccessMode,
         _request_metadata: Arc<RequestMetadata>,
     ) -> anyhow::Result<()> {
         Ok(())

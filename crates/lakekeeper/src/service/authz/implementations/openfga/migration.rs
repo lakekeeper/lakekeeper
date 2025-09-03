@@ -92,7 +92,6 @@ pub(crate) async fn migrate(
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod tests {
-    use needs_env_var::needs_env_var;
     use openfga_client::client::ConsistencyPreference;
 
     use super::{
@@ -120,8 +119,7 @@ pub(crate) mod tests {
         (client, authorizer)
     }
 
-    #[needs_env_var(TEST_OPENFGA = 1)]
-    mod openfga {
+    mod openfga_integration_tests {
         use openfga_client::client::ReadAuthorizationModelsRequest;
 
         use super::super::*;

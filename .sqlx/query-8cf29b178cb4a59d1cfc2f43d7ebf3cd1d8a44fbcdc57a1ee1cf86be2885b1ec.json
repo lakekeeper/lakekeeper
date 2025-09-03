@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH drop as (DELETE FROM table_properties WHERE table_id = $1)\n           INSERT INTO table_properties (table_id, key, value)\n           SELECT $1, u.* FROM UNNEST($2::text[], $3::text[]) u\n           ON CONFLICT (key, table_id) DO UPDATE SET value = EXCLUDED.value;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8cf29b178cb4a59d1cfc2f43d7ebf3cd1d8a44fbcdc57a1ee1cf86be2885b1ec"
+}

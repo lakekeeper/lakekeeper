@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE task\n        SET status = 'should-stop'\n        WHERE task_id = ANY($1) \n            AND status = 'running'\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6072df0b0cecdda31b9dcf546024123cf6fd1b7dc21b6358120dd589125b059b"
+}

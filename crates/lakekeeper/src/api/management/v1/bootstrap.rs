@@ -203,13 +203,11 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             aws_system_identities_enabled: CONFIG.enable_aws_system_credentials,
             azure_system_identities_enabled: CONFIG.enable_azure_system_credentials,
             gcp_system_identities_enabled: CONFIG.enable_gcp_system_credentials,
-            queues: state
-                .v1_state
-                .registered_task_queues
-                .queue_names()
-                .into_iter()
-                .map(ToString::to_string)
-                .collect(),
+            queues: {
+                let mut names = state.v1_state.registered_task_queues.queue_names().await;
+                names.sort_unstable();
+                names.into_iter().map(ToString::to_string).collect()
+            },
         })
     }
 }

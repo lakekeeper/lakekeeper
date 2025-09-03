@@ -4,20 +4,18 @@ use iceberg::{
     spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder},
     TableIdent,
 };
-use iceberg_ext::{
-    catalog::{rest::ViewUpdate, ViewRequirement},
-    configs::Location,
-};
+use iceberg_ext::catalog::{rest::ViewUpdate, ViewRequirement};
+use lakekeeper_io::Location;
 use uuid::Uuid;
 
 use crate::{
     api::iceberg::v1::{
-        ApiContext, CommitViewRequest, DataAccess, ErrorModel, LoadViewResult, Result,
+        ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
         ViewParameters,
     },
     catalog::{
         compression_codec::CompressionCodec,
-        io::{remove_all, write_metadata_file},
+        io::{remove_all, write_file},
         require_warehouse_id,
         tables::{
             determine_table_ident, extract_count_from_metadata_location, require_active_warehouse,
@@ -44,9 +42,10 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     parameters: ViewParameters,
     request: CommitViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: DataAccess,
+    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
+    let data_access = data_access.into();
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(parameters.prefix.clone())?;
 
@@ -140,8 +139,13 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
                 tracing::info!(
                     "Concurrent update detected (attempt {attempt}/{MAX_RETRIES_ON_CONCURRENT_UPDATE}), retrying view commit operation",
                 );
-                // Short delay before retry to reduce contention
-                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                // Short jittered exponential backoff to reduce contention
+                // First delay: 50ms, then 100ms, 200ms, ..., up to 3200ms (50*2^6)
+                let exp = u32::try_from(attempt.saturating_sub(1).min(6)).unwrap_or(6); // cap growth explicitly
+                let base = 50u64.saturating_mul(1u64 << exp);
+                let jitter = fastrand::u64(..base / 2);
+                tracing::debug!(attempt, base, jitter, "Concurrent update backoff");
+                tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
             }
             Err(e) => return Err(e),
         }
@@ -156,7 +160,7 @@ struct CommitViewContext<'a> {
     storage_profile: &'a StorageProfile,
     storage_secret_id: Option<SecretIdent>,
     request: &'a CommitViewRequest,
-    data_access: DataAccess,
+    data_access: DataAccessMode,
 }
 
 // Core commit logic that may be retried
@@ -232,11 +236,11 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     // Write metadata file
     let file_io = ctx.storage_profile.file_io(storage_secret.as_ref()).await?;
-    write_metadata_file(
+    write_file(
+        &file_io,
         &metadata_location,
         &requested_update_metadata,
         CompressionCodec::try_from_metadata(&requested_update_metadata)?,
-        &file_io,
     )
     .await?;
 
@@ -359,7 +363,7 @@ fn build_new_metadata(
             ViewUpdate::SetCurrentViewVersion { view_version_id } => {
                 m.set_current_version_id(view_version_id).map_err(|e| {
                     ErrorModel::bad_request(
-                        "Error setting current view version: {e}",
+                        format!("Error setting current view version: {e}"),
                         "SetCurrentViewVersionError",
                         Some(Box::new(e)),
                     )
@@ -401,18 +405,18 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
         let prefix = whi.to_string();
         let view_name = "myview";
-        let view = create_view(
+        let view = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             create_view_request(Some(view_name), None),
             Some(prefix.clone()),
-        )
+        ))
         .await
         .unwrap();
 
         let rq: CommitViewRequest = spark_commit_update_request(Some(view.metadata.uuid()));
 
-        let res = super::commit_view(
+        let res = Box::pin(super::commit_view(
             views::ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(
@@ -427,7 +431,7 @@ mod test {
                 remote_signing: false,
             },
             crate::request_metadata::RequestMetadata::new_unauthenticated(),
-        )
+        ))
         .await
         .unwrap();
 
@@ -454,18 +458,18 @@ mod test {
         let (api_context, namespace, whi) = setup(pool, None).await;
         let prefix = whi.to_string();
         let view_name = "myview";
-        let _ = create_view(
+        let _ = Box::pin(create_view(
             api_context.clone(),
             namespace.clone(),
             create_view_request(Some(view_name), None),
             Some(prefix.clone()),
-        )
+        ))
         .await
         .unwrap();
 
         let rq: CommitViewRequest = spark_commit_update_request(Some(Uuid::now_v7()));
 
-        let err = super::commit_view(
+        let err = Box::pin(super::commit_view(
             ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(
@@ -480,7 +484,7 @@ mod test {
                 remote_signing: false,
             },
             crate::request_metadata::RequestMetadata::new_unauthenticated(),
-        )
+        ))
         .await
         .expect_err("This unexpectedly didn't fail the uuid assertion.");
         assert_eq!(err.error.code, 400);

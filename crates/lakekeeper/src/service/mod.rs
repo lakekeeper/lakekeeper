@@ -28,6 +28,7 @@ pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 use http::StatusCode;
 pub use secrets::{SecretIdent, SecretStore};
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
 pub(crate) use tabular_idents::TabularIdentBorrowed;
 pub use tabular_idents::{TabularId, TabularIdentOwned};
 use task_queue::RegisteredTaskQueues;
@@ -200,6 +201,7 @@ impl ProjectId {
         &self.0
     }
 
+    #[cfg(feature = "sqlx")]
     pub(crate) fn from_db_unchecked(id: String) -> Self {
         Self(id)
     }
@@ -489,7 +491,23 @@ impl TryFrom<Prefix> for WarehouseId {
 }
 
 #[derive(Debug, Clone)]
+/// Metadata for a tabular dataset, including its unique `table_id` and
+/// the storage `location` where its data lives.
 pub struct TabularDetails {
-    pub ident: TableId,
+    pub table_id: TableId,
     pub location: String,
+}
+
+impl Deref for TabularDetails {
+    type Target = TableId;
+
+    fn deref(&self) -> &Self::Target {
+        &self.table_id
+    }
+}
+
+impl AsRef<TableId> for TabularDetails {
+    fn as_ref(&self) -> &TableId {
+        &self.table_id
+    }
 }

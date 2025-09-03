@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO partition_statistics(table_id, snapshot_id, statistics_path, file_size_in_bytes)\n           SELECT $2, u.* FROM UNNEST($1::BIGINT[], $3::TEXT[], $4::BIGINT[]) u",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Uuid",
+        "TextArray",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b7f5e20f95de77d3339c35142122b33fab017a89690f552557ad3f179f82399f"
+}

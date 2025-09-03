@@ -242,7 +242,7 @@ impl std::fmt::Debug for SecretsState {
             .field("vault_client", &"VaultClient")
             .field("secret_mount", &self.secret_mount)
             .field("vault_user", &self.vault_user)
-            .field("vault_password", &"REDACTED")
+            .field("vault_password", &"<REDACTED>")
             .field("health", &self.health)
             .finish()
     }
@@ -254,10 +254,7 @@ fn secret_ident_to_key(secret_id: SecretIdent) -> String {
 
 #[cfg(test)]
 mod tests {
-    use needs_env_var::needs_env_var;
-
-    #[needs_env_var(TEST_KV2 = 1)]
-    mod kv2 {
+    mod kv2_integration_tests {
         use super::super::*;
         use crate::{
             service::storage::{s3::S3AccessKeyCredential, S3Credential, StorageCredential},
