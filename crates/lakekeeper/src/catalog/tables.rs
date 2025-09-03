@@ -2041,12 +2041,20 @@ pub(crate) mod test {
             },
             ApiContext,
         },
-        catalog::{tables::validate_table_properties, test::impl_pagination_tests, CatalogServer},
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        catalog::{
+            tables::validate_table_properties, test::impl_pagination_tests, Catalog, CatalogServer,
+        },
+        implementations::{
+            postgres::{
+                tabular::table::tests::{get_namespace_id, initialize_table},
+                PostgresCatalog, SecretsState,
+            },
+            CatalogState,
+        },
         request_metadata::RequestMetadata,
         service::{
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
-            State, UserId,
+            ListFlags, NamespaceId, State, TableId, UserId,
         },
         tests::random_request_metadata,
         WarehouseId,
@@ -2920,6 +2928,54 @@ pub(crate) mod test {
         (ctx, ns, ns_params, base_loc)
     }
 
+    /// Setups up `num_warehouses` in the same project Each warehouse has one namespace.
+    /// TODO(mooori): move to tabular.rs
+    async fn tabular_test_multi_warehouse_setup(
+        pool: PgPool,
+        num_warehouses: usize,
+        delete_profile: TabularDeleteProfile,
+    ) -> (
+        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        Vec<(WarehouseId, NamespaceId, NamespaceParameters)>,
+        String,
+    ) {
+        let prof = crate::catalog::test::memory_io_profile();
+        let base_loc = prof.base_location().unwrap().to_string();
+        let (ctx, res) = crate::tests::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer,
+            delete_profile,
+            None,
+            num_warehouses,
+        )
+        .await;
+
+        let mut wh_ids = Vec::with_capacity(num_warehouses);
+        wh_ids.push(res.warehouse_id);
+        for (wh_id, _) in res.additional_warehouses.iter() {
+            wh_ids.push(*wh_id);
+        }
+        assert_eq!(wh_ids.len(), num_warehouses);
+
+        let mut wh_ns_data = Vec::with_capacity(num_warehouses);
+        for wh_id in wh_ids.into_iter() {
+            let ns =
+                crate::catalog::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
+                    .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(wh_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let state = CatalogState::from_pools(pool.clone(), pool.clone());
+            let ns_id = get_namespace_id(state.clone(), wh_id, &ns.namespace).await;
+            wh_ns_data.push((wh_id, ns_id, ns_params));
+        }
+
+        (ctx, wh_ns_data, base_loc)
+    }
+
     #[sqlx::test]
     async fn test_can_create_tables_with_same_prefix_1(pool: PgPool) {
         let (ctx, _, ns_params, base_location) = table_test_setup(pool).await;
@@ -3687,5 +3743,204 @@ pub(crate) mod test {
         // The loaded table should have the UUID and content of the second table
         assert_eq!(loaded_table.metadata.uuid(), second_table.metadata.uuid());
         assert_ne!(loaded_table.metadata.uuid(), initial_table.metadata.uuid());
+    }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_table_ids_hard_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Hard {};
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let t_id = TableId::new_random();
+        let t_name = "t1".to_string();
+        let list_flags = ListFlags::all();
+
+        // Create tables with the same table ID across different warehouses.
+        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+            let _inited_table = initialize_table(
+                *wh_id,
+                ctx.v1_state.catalog.clone(),
+                false,
+                Some(ns_params.namespace.clone()),
+                Some(t_id),
+                Some(t_name.clone()),
+            )
+            .await;
+
+            // Verify table creation.
+            let _meta = PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should exist");
+        }
+
+        // Hard delete one of the tables.
+        let deleted_table_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: deleted_table_data.2.prefix.clone(),
+                table: TableIdent {
+                    namespace: deleted_table_data.2.namespace.clone(),
+                    name: t_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Deleted table cannot be accessed anymore.
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_none(), "Table should be deleted");
+
+        // Tables in other warehouses are still there.
+        assert!(wh_ns_data.len() > 0);
+        for (wh_id, _ns_id, _ns_params) in wh_ns_data.iter() {
+            PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+        }
+
+        // As the delete was hard, the table can be recreated in the warehouse.
+        let _inited_table = initialize_table(
+            deleted_table_data.0,
+            ctx.v1_state.catalog.clone(),
+            false,
+            Some(deleted_table_data.2.namespace.clone()),
+            Some(t_id),
+            Some(t_name.clone()),
+        )
+        .await;
+        let _meta = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("table and metadata should exist");
+    }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(1000),
+        };
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let t_id = TableId::new_random();
+        let t_name = "t1".to_string();
+        let list_flags_active = ListFlags::default();
+
+        // Create tables with the same table ID across different warehouses.
+        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+            let _inited_table = initialize_table(
+                *wh_id,
+                ctx.v1_state.catalog.clone(),
+                false,
+                Some(ns_params.namespace.clone()),
+                Some(t_id),
+                Some(t_name.clone()),
+            )
+            .await;
+
+            // Verify table creation.
+            let _meta = PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags_active,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should exist");
+        }
+
+        // Soft delete one of the tables.
+        let deleted_table_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_table(
+            TableParameters {
+                prefix: deleted_table_data.2.prefix.clone(),
+                table: TableIdent {
+                    namespace: deleted_table_data.2.namespace.clone(),
+                    name: t_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Check availability depending on list flags.
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            list_flags_active,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_none(), "Table should be soft deleted");
+        let deleted_res = PostgresCatalog::get_table_metadata_by_id(
+            deleted_table_data.0,
+            t_id,
+            ListFlags::all(), // include soft deleted
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(deleted_res.is_some(), "Table should be only soft deleted");
+
+        // Tables in other warehouses are still there.
+        assert!(wh_ns_data.len() > 0);
+        for (wh_id, _ns_id, _ns_params) in wh_ns_data.iter() {
+            PostgresCatalog::get_table_metadata_by_id(
+                *wh_id,
+                t_id,
+                list_flags_active,
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap()
+            .expect("table and metadata should still exist");
+        }
     }
 }
