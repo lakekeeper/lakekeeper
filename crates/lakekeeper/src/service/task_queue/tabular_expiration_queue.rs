@@ -328,6 +328,7 @@ mod test {
             catalog_state.clone(),
             false,
             None,
+            None,
             Some("tab".to_string()),
         )
         .await;

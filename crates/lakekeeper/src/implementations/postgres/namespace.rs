@@ -903,7 +903,7 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
-        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -931,7 +931,7 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
-        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1266,6 +1266,7 @@ pub(crate) mod tests {
             state.clone(),
             false,
             Some(outer_namespace),
+            None,
             None,
         )
         .await;
