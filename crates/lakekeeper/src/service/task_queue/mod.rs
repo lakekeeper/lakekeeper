@@ -558,7 +558,7 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
             })
     }
 
-    /// Identical to `heartbeat`, but accepts a catalog state and creates a transaction internally.
+    /// Identical to `heartbeat_in_transaction`, but accepts a catalog state and creates a transaction internally.
     ///
     /// # Errors
     /// * If the transaction cannot be started or committed.
