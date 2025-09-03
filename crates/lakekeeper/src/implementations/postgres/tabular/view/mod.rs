@@ -602,7 +602,7 @@ pub(crate) mod tests {
         WarehouseId,
     };
 
-    fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
+    pub(crate) fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
         serde_json::from_value(json!({
   "format-version": 1,
   "view-uuid": view_id.unwrap_or_else(Uuid::now_v7).to_string(),

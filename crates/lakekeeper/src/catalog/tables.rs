@@ -2930,7 +2930,7 @@ pub(crate) mod test {
 
     /// Setups up `num_warehouses` in the same project Each warehouse has one namespace.
     /// TODO(mooori): move to tabular.rs
-    async fn tabular_test_multi_warehouse_setup(
+    pub(crate) async fn tabular_test_multi_warehouse_setup(
         pool: PgPool,
         num_warehouses: usize,
         delete_profile: TabularDeleteProfile,
