@@ -3,10 +3,7 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use aws_config::SdkConfig;
-use aws_sdk_sts::{
-    config::{ProvideCredentials as _},
-    types::Tag,
-};
+use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
