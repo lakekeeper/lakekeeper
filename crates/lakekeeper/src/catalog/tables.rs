@@ -2954,13 +2954,13 @@ pub(crate) mod test {
 
         let mut wh_ids = Vec::with_capacity(num_warehouses);
         wh_ids.push(res.warehouse_id);
-        for (wh_id, _) in res.additional_warehouses.iter() {
+        for (wh_id, _) in &res.additional_warehouses {
             wh_ids.push(*wh_id);
         }
         assert_eq!(wh_ids.len(), num_warehouses);
 
         let mut wh_ns_data = Vec::with_capacity(num_warehouses);
-        for wh_id in wh_ids.into_iter() {
+        for wh_id in wh_ids {
             let ns =
                 crate::catalog::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
                     .await;
@@ -3760,7 +3760,7 @@ pub(crate) mod test {
         let list_flags = ListFlags::all();
 
         // Create tables with the same table ID across different warehouses.
-        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
             let _inited_table = initialize_table(
                 *wh_id,
                 ctx.v1_state.catalog.clone(),
@@ -3815,8 +3815,8 @@ pub(crate) mod test {
         assert!(deleted_res.is_none(), "Table should be deleted");
 
         // Tables in other warehouses are still there.
-        assert!(wh_ns_data.len() > 0);
-        for (wh_id, _ns_id, _ns_params) in wh_ns_data.iter() {
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
             PostgresCatalog::get_table_metadata_by_id(
                 *wh_id,
                 t_id,
@@ -3866,7 +3866,7 @@ pub(crate) mod test {
         let list_flags_active = ListFlags::default();
 
         // Create tables with the same table ID across different warehouses.
-        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
             let _inited_table = initialize_table(
                 *wh_id,
                 ctx.v1_state.catalog.clone(),
@@ -3930,8 +3930,8 @@ pub(crate) mod test {
         assert!(deleted_res.is_some(), "Table should be only soft deleted");
 
         // Tables in other warehouses are still there.
-        assert!(wh_ns_data.len() > 0);
-        for (wh_id, _ns_id, _ns_params) in wh_ns_data.iter() {
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, _ns_params) in &wh_ns_data {
             PostgresCatalog::get_table_metadata_by_id(
                 *wh_id,
                 t_id,

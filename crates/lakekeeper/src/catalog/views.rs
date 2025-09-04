@@ -288,7 +288,7 @@ mod test {
         let v_name = "v1".to_string();
 
         // Create views with the same table ID across different warehouses.
-        for (wh_id, ns_id, ns_params) in wh_ns_data.iter() {
+        for (wh_id, ns_id, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
             let meta = view_request(Some(*v_id), &location);
             let ident = TableIdent {
@@ -355,8 +355,8 @@ mod test {
         .await;
 
         // Views in other warehouses are still there.
-        assert!(wh_ns_data.len() > 0);
-        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
             assert_view_exists(
                 ctx.clone(),
                 *wh_id,
@@ -418,7 +418,7 @@ mod test {
         let v_name = "v1".to_string();
 
         // Create views with the same table ID across different warehouses.
-        for (wh_id, ns_id, ns_params) in wh_ns_data.iter() {
+        for (wh_id, ns_id, ns_params) in &wh_ns_data {
             let (location, meta_location) = new_random_location();
             let meta = view_request(Some(*v_id), &location);
             let ident = TableIdent {
@@ -495,8 +495,8 @@ mod test {
         .await;
 
         // Views in other warehouses are still there.
-        assert!(wh_ns_data.len() > 0);
-        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+        assert!(!wh_ns_data.is_empty());
+        for (wh_id, _ns_id, ns_params) in &wh_ns_data {
             assert_view_exists(
                 ctx.clone(),
                 *wh_id,
