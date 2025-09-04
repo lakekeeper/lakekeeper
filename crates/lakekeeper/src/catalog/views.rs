@@ -218,6 +218,62 @@ mod test {
         assert!(validate_view_properties(properties.iter()).is_ok());
     }
 
+    async fn assert_view_exists(
+        ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        warehouse_id: WarehouseId,
+        view_id: ViewId,
+        namespace: &NamespaceIdent,
+        include_deleted: bool,
+        expected_num_views: usize,
+        assert_msg: &str,
+    ) {
+        let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
+        let views = PostgresCatalog::list_views(
+            warehouse_id,
+            namespace,
+            include_deleted,
+            &mut read_tx,
+            PaginationQuery::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            views.len(),
+            expected_num_views,
+            "unexpected number of views"
+        );
+        assert!(views.get(&view_id).is_some(), "{assert_msg}");
+        read_tx.commit().await.unwrap();
+    }
+
+    async fn assert_view_doesnt_exist(
+        ctx: ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        warehouse_id: WarehouseId,
+        view_id: ViewId,
+        namespace: &NamespaceIdent,
+        include_deleted: bool,
+        expected_num_views: usize,
+        assert_msg: &str,
+    ) {
+        let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
+        let views = PostgresCatalog::list_views(
+            warehouse_id,
+            namespace,
+            include_deleted,
+            &mut read_tx,
+            PaginationQuery::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            views.len(),
+            expected_num_views,
+            "unexpected number of views"
+        );
+        assert!(views.get(&view_id).is_none(), "{assert_msg}");
+        read_tx.commit().await.unwrap();
+    }
+
     // Reasons for using a mix of PostgresCatalog and CatalogServer:
     //
     // - PostgresCatalog: required for specifying id of table to be created
@@ -254,19 +310,16 @@ mod test {
             tx.commit().await.unwrap();
 
             // Verify view creation.
-            let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
-            let views = PostgresCatalog::list_views(
+            assert_view_exists(
+                ctx.clone(),
                 *wh_id,
+                v_id,
                 &ns_params.namespace,
                 false,
-                &mut read_tx,
-                PaginationQuery::empty(),
+                1,
+                "view should be created",
             )
-            .await
-            .unwrap();
-            assert_eq!(views.len(), 1);
-            assert!(views.get(&v_id).is_some(), "view should be created");
-            read_tx.commit().await.unwrap();
+            .await;
         }
 
         // Hard delete one of the views.
@@ -290,35 +343,30 @@ mod test {
         .unwrap();
 
         // Deleted view cannot be accessed anymore.
-        let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
-        let views = PostgresCatalog::list_views(
+        assert_view_doesnt_exist(
+            ctx.clone(),
             deleted_view_data.0,
+            v_id,
             &deleted_view_data.2.namespace,
             true,
-            &mut read_tx,
-            PaginationQuery::empty(),
+            0,
+            "view should be deleted",
         )
-        .await
-        .unwrap();
-        assert!(views.is_empty(), "view should be deleted");
-        read_tx.commit().await.unwrap();
+        .await;
 
         // Views in other warehouses are still there.
         assert!(wh_ns_data.len() > 0);
         for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
-            let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
-            let views = PostgresCatalog::list_views(
+            assert_view_exists(
+                ctx.clone(),
                 *wh_id,
+                v_id,
                 &ns_params.namespace,
                 false,
-                &mut read_tx,
-                PaginationQuery::empty(),
+                1,
+                "view should still exist",
             )
-            .await
-            .unwrap();
-            assert_eq!(views.len(), 1);
-            assert!(views.get(&v_id).is_some(), "view should still exist");
-            read_tx.commit().await.unwrap();
+            .await;
         }
 
         // As the delete was hard, the view can be recreated in the warehouse.
@@ -342,18 +390,15 @@ mod test {
         .expect("Should create view");
         tx.commit().await.unwrap();
 
-        let mut read_tx = ctx.v1_state.catalog.read_pool().begin().await.unwrap();
-        let views = PostgresCatalog::list_views(
+        assert_view_exists(
+            ctx.clone(),
             deleted_view_data.0,
+            v_id,
             &deleted_view_data.2.namespace,
-            true,
-            &mut read_tx,
-            PaginationQuery::empty(),
+            false,
+            1,
+            "view should be recreated",
         )
-        .await
-        .unwrap();
-        assert_eq!(views.len(), 1);
-        assert!(views.get(&v_id).is_some(), "view should be recreated");
-        read_tx.commit().await.unwrap();
+        .await;
     }
 }
