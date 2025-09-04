@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Simplify Task interface, extend SpecializedTask interface ([#1310](https://github.com/lakekeeper/lakekeeper/issues/1310))
+* Move to Lakekeeper IO based on hyperscaler SDKs ([#1285](https://github.com/lakekeeper/lakekeeper/issues/1285))
+
+### Features
+
+* Add `RunNow` and `RunAt` to Controls for Tasks ([#1322](https://github.com/lakekeeper/lakekeeper/issues/1322)) ([75f771e](https://github.com/lakekeeper/lakekeeper/commit/75f771e6b22008ebff1c266db4c308fb77d463eb))
+* Add tasks heartbeat with Catalog state ([#1324](https://github.com/lakekeeper/lakekeeper/issues/1324)) ([f13bd8a](https://github.com/lakekeeper/lakekeeper/commit/f13bd8ae7781d910cf9e8704780f792c3996d5ce))
+* Enable write.metadata.delete-after-commit.enabled by default ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Improve authorizer `are_allowed_*` batch check signature ([#1315](https://github.com/lakekeeper/lakekeeper/issues/1315)) ([9f901c1](https://github.com/lakekeeper/lakekeeper/commit/9f901c1592f0d05cacef317f66f5fadad337683d))
+* Introduce `RequestMetadata` for Internal Principals which bypass AuthZ ([#1306](https://github.com/lakekeeper/lakekeeper/issues/1306)) ([c3c45ce](https://github.com/lakekeeper/lakekeeper/commit/c3c45ce2f6f972e665bdd1f365e51b5f4b0585e4))
+* Move to Lakekeeper IO based on hyperscaler SDKs ([#1285](https://github.com/lakekeeper/lakekeeper/issues/1285)) ([1658ae6](https://github.com/lakekeeper/lakekeeper/commit/1658ae612e0d218431b16fcb160b95fb7da2660c))
+* Provide `ApiContext` to externally registered tasks ([#1307](https://github.com/lakekeeper/lakekeeper/issues/1307)) ([7977b45](https://github.com/lakekeeper/lakekeeper/commit/7977b454ecb2fef107ce76ad493b29867a0d45d0))
+* Return Error Stacks for non-internal errors ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Simplify Task interface, extend SpecializedTask interface ([#1310](https://github.com/lakekeeper/lakekeeper/issues/1310)) ([8ffb3f3](https://github.com/lakekeeper/lakekeeper/commit/8ffb3f3b1ed54bfab3ac1d14d1145e8461f3a4f5))
+* Simplify task interface, re-exports ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Task Management APIs ([1ee7bf2](https://github.com/lakekeeper/lakekeeper/commit/1ee7bf28bfc48df59dff0a13bdffbabfc7799b21))
+
+
+### Bug Fixes
+
+* accept "disable" as PG sslmode as documented ([#1303](https://github.com/lakekeeper/lakekeeper/issues/1303)) ([8cc32a6](https://github.com/lakekeeper/lakekeeper/commit/8cc32a6df597613a5cd055cbdb33894c4cac5cb4))
+
+
+### Miscellaneous Chores
+
+* **authz:** Enforce use of AuthZ decisions with #[must_use] ([#1317](https://github.com/lakekeeper/lakekeeper/issues/1317)) ([e16f834](https://github.com/lakekeeper/lakekeeper/commit/e16f83451e66a17842bfe762b99201bc2feb94e0))
+* Move to parallel `unnests` in postgres ([1ee7bf2](https://github.com/lakekeeper/lakekeeper/commit/1ee7bf28bfc48df59dff0a13bdffbabfc7799b21))
+* **test:** use nextest filterset instead of needs_env_var ([#1304](https://github.com/lakekeeper/lakekeeper/issues/1304)) ([51d310d](https://github.com/lakekeeper/lakekeeper/commit/51d310dffd4c100afd1a50b28886f0cd7f4942a4))
+
 ## [0.9.5](https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5) (2025-08-14)
 
 
