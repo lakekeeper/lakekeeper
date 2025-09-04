@@ -455,7 +455,7 @@ pub(crate) async fn set_current_view_metadata_version(
         r#"
         INSERT INTO current_view_metadata_version (version_id, view_id, warehouse_id)
         VALUES ($1, $2, $3)
-        ON CONFLICT (view_id, warehouse_id)
+        ON CONFLICT (warehouse_id, view_id)
         DO UPDATE SET version_id = $1
         WHERE current_view_metadata_version.view_id = $2
         AND current_view_metadata_version.warehouse_id = $3

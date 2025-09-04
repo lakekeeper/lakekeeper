@@ -167,7 +167,7 @@ pub(crate) async fn set_default_partition_spec(
     let _ = sqlx::query!(
         r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, warehouse_id)
            VALUES ($1, $2, $3)
-           ON CONFLICT (table_id, warehouse_id)
+           ON CONFLICT (warehouse_id, table_id)
            DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec_id,
         tabular_id,
