@@ -4118,6 +4118,13 @@ components:
             Optional role ARN to assume for sts vended-credentials.
             If not provided, `assume_role_arn` is used.
             Either `assume_role_arn` or `sts_role_arn` must be provided if `sts_enabled` is true.
+        sts-session-tags:
+          type: object
+          description: Optional session tags for STS assume role operations.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
         sts-token-validity-seconds:
           type: integer
           format: int64
