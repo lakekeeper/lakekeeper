@@ -149,7 +149,7 @@ mod test {
             ApiContext, RequestMetadata,
         },
         catalog::{
-            tables::test::tabular_test_multi_warehouse_setup, views::validate_view_properties,
+            test::tabular_test_multi_warehouse_setup, views::validate_view_properties,
             CatalogServer,
         },
         implementations::postgres::{

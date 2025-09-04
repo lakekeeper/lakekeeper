@@ -2042,19 +2042,17 @@ pub(crate) mod test {
             ApiContext,
         },
         catalog::{
-            tables::validate_table_properties, test::impl_pagination_tests, Catalog, CatalogServer,
+            tables::validate_table_properties,
+            test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
+            Catalog, CatalogServer,
         },
-        implementations::{
-            postgres::{
-                tabular::table::tests::{get_namespace_id, initialize_table},
-                PostgresCatalog, SecretsState,
-            },
-            CatalogState,
+        implementations::postgres::{
+            tabular::table::tests::initialize_table, PostgresCatalog, SecretsState,
         },
         request_metadata::RequestMetadata,
         service::{
             authz::{tests::HidingAuthorizer, AllowAllAuthorizer},
-            ListFlags, NamespaceId, State, TableId, UserId,
+            ListFlags, State, TableId, UserId,
         },
         tests::random_request_metadata,
         WarehouseId,
@@ -2926,54 +2924,6 @@ pub(crate) mod test {
             namespace: ns.namespace.clone(),
         };
         (ctx, ns, ns_params, base_loc)
-    }
-
-    /// Setups up `num_warehouses` in the same project Each warehouse has one namespace.
-    /// TODO(mooori): move to tabular.rs
-    pub(crate) async fn tabular_test_multi_warehouse_setup(
-        pool: PgPool,
-        num_warehouses: usize,
-        delete_profile: TabularDeleteProfile,
-    ) -> (
-        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
-        Vec<(WarehouseId, NamespaceId, NamespaceParameters)>,
-        String,
-    ) {
-        let prof = crate::catalog::test::memory_io_profile();
-        let base_loc = prof.base_location().unwrap().to_string();
-        let (ctx, res) = crate::tests::setup(
-            pool.clone(),
-            prof,
-            None,
-            AllowAllAuthorizer,
-            delete_profile,
-            None,
-            num_warehouses,
-        )
-        .await;
-
-        let mut wh_ids = Vec::with_capacity(num_warehouses);
-        wh_ids.push(res.warehouse_id);
-        for (wh_id, _) in &res.additional_warehouses {
-            wh_ids.push(*wh_id);
-        }
-        assert_eq!(wh_ids.len(), num_warehouses);
-
-        let mut wh_ns_data = Vec::with_capacity(num_warehouses);
-        for wh_id in wh_ids {
-            let ns =
-                crate::catalog::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
-                    .await;
-            let ns_params = NamespaceParameters {
-                prefix: Some(Prefix(wh_id.to_string())),
-                namespace: ns.namespace.clone(),
-            };
-            let state = CatalogState::from_pools(pool.clone(), pool.clone());
-            let ns_id = get_namespace_id(state.clone(), wh_id, &ns.namespace).await;
-            wh_ns_data.push((wh_id, ns_id, ns_params));
-        }
-
-        (ctx, wh_ns_data, base_loc)
     }
 
     #[sqlx::test]
