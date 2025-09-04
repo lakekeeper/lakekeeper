@@ -401,4 +401,112 @@ mod test {
         )
         .await;
     }
+
+    // Reasons for using a mix of PostgresCatalog and CatalogServer:
+    //
+    // - PostgresCatalog: required for specifying id of table to be created
+    // - CatalogServer: required for taking TabularDeleteProfile into account
+    #[sqlx::test]
+    async fn test_reuse_view_ids_soft_delete(pool: PgPool) {
+        let delete_profile = TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(10),
+        };
+        let (ctx, mut wh_ns_data, _base_loc) =
+            tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
+
+        let v_id = ViewId::new_random();
+        let v_name = "v1".to_string();
+
+        // Create views with the same table ID across different warehouses.
+        for (wh_id, ns_id, ns_params) in wh_ns_data.iter() {
+            let (location, meta_location) = new_random_location();
+            let meta = view_request(Some(*v_id), &location);
+            let ident = TableIdent {
+                namespace: ns_params.namespace.clone(),
+                name: v_name.clone(),
+            };
+            let mut tx = ctx.v1_state.catalog.write_pool().begin().await.unwrap();
+            PostgresCatalog::create_view(
+                *wh_id,
+                *ns_id,
+                &ident,
+                meta,
+                &meta_location,
+                &location,
+                &mut tx,
+            )
+            .await
+            .expect("Should create view");
+            tx.commit().await.unwrap();
+
+            // Verify view creation.
+            assert_view_exists(
+                ctx.clone(),
+                *wh_id,
+                v_id,
+                &ns_params.namespace,
+                false,
+                1,
+                "view should be created",
+            )
+            .await;
+        }
+
+        // Soft delete one of the views.
+        let deleted_view_data = wh_ns_data.pop().unwrap();
+        CatalogServer::drop_view(
+            ViewParameters {
+                prefix: deleted_view_data.2.prefix.clone(),
+                view: TableIdent {
+                    namespace: deleted_view_data.2.namespace.clone(),
+                    name: v_name.clone(),
+                },
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .unwrap();
+
+        // Whether the view is still available depends on query params.
+        assert_view_doesnt_exist(
+            ctx.clone(),
+            deleted_view_data.0,
+            v_id,
+            &deleted_view_data.2.namespace,
+            false,
+            0,
+            "soft deleted view should not be shown",
+        )
+        .await;
+        assert_view_exists(
+            ctx.clone(),
+            deleted_view_data.0,
+            v_id,
+            &deleted_view_data.2.namespace,
+            true,
+            1,
+            "soft deleted view should be shown",
+        )
+        .await;
+
+        // Views in other warehouses are still there.
+        assert!(wh_ns_data.len() > 0);
+        for (wh_id, _ns_id, ns_params) in wh_ns_data.iter() {
+            assert_view_exists(
+                ctx.clone(),
+                *wh_id,
+                v_id,
+                &ns_params.namespace,
+                false,
+                1,
+                "view should still exist",
+            )
+            .await;
+        }
+    }
 }

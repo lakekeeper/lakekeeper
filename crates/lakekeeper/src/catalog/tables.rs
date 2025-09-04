@@ -3856,7 +3856,7 @@ pub(crate) mod test {
     #[sqlx::test]
     async fn test_reuse_table_ids_soft_delete(pool: PgPool) {
         let delete_profile = TabularDeleteProfile::Soft {
-            expiration_seconds: chrono::Duration::seconds(1000),
+            expiration_seconds: chrono::Duration::seconds(10),
         };
         let (ctx, mut wh_ns_data, _base_loc) =
             tabular_test_multi_warehouse_setup(pool.clone(), 3, delete_profile).await;
