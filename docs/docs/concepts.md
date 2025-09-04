@@ -165,8 +165,13 @@ DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 
 Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
 
+## Upgrades & Migration
+Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.
 
-## Migration
-Migration is a crucial step that must be performed before starting the Lakekeeper. It initializes the persistent backend storage and, if enabled, the authorization system. 
+**Migration is required before each Lakekeeper upgrade.** You must run the migration before starting the `lakekeeper serve` command to ensure all system components are properly updated and configured. Without running the migration first, the `lakekeeper serve` command will fail to start with the error: "Database is not up to date with binary, make sure to run the migrate command before starting the server." Migrations are designed to be resilient - you can safely skip intermediate versions and migrate directly to your target version. If the system is already up to date, the migration command will exit immediately without making any changes.
 
-For each Lakekeeper update, migration must be executed before the `serve` command can be called. This ensures that all necessary updates and configurations are applied to the system. It is possible to skip Lakekeeper versions during migration.
+**All migrations run within a transaction,** ensuring that either the entire migration completes successfully or the database remains unchanged. This prevents partial migrations that could leave your system in an inconsistent state.
+
+**Always create a backup of your Postgres database before running migrations.** While migrations are designed to be safe, having a backup ensures you can restore your system to a known good state if needed.
+
+When using the Lakekeeper Helm Chart, migrations are handled automatically through a dedicated job during deployment.

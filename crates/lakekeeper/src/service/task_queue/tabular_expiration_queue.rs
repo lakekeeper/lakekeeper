@@ -26,12 +26,12 @@ const QN_STR: &str = "tabular_expiration";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
     queue_name: &QUEUE_NAME,
-    utoipa_type_name: ExpirationQueueConfig::name(),
-    utoipa_schema: ExpirationQueueConfig::schema(),
+    utoipa_type_name: TabularExpirationQueueConfig::name(),
+    utoipa_schema: TabularExpirationQueueConfig::schema(),
 });
 
 pub type TabularExpirationTask = SpecializedTask<
-    ExpirationQueueConfig,
+    TabularExpirationQueueConfig,
     TabularExpirationPayload,
     TabularExpirationExecutionDetails,
 >;
@@ -61,10 +61,10 @@ pub struct TabularExpirationExecutionDetails {}
 impl TaskExecutionDetails for TabularExpirationExecutionDetails {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
-/// Warehouse-specific configuration for the expiration queue.
-pub struct ExpirationQueueConfig {}
+/// Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
+pub struct TabularExpirationQueueConfig {}
 
-impl TaskConfig for ExpirationQueueConfig {
+impl TaskConfig for TabularExpirationQueueConfig {
     fn queue_name() -> &'static TaskQueueName {
         &QUEUE_NAME
     }
