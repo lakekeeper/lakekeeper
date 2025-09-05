@@ -121,7 +121,7 @@ pub(crate) async fn create_view(
     tracing::debug!("Inserted base view and tabular.");
     for schema in metadata.schemas_iter() {
         let schema_id =
-            create_view_schema(*warehouse_id, view_id, schema.clone(), transaction).await?;
+            create_view_schema(warehouse_id, view_id, schema.clone(), transaction).await?;
         tracing::debug!("Inserted schema with id: '{}'", schema_id);
     }
 
@@ -148,16 +148,16 @@ pub(crate) async fn create_view(
     }
 
     set_current_view_metadata_version(
-        metadata.current_version_id(),
+        warehouse_id,
         metadata.uuid(),
-        *warehouse_id,
+        metadata.current_version_id(),
         transaction,
     )
     .await?;
 
     for history in metadata.history() {
         insert_view_version_log(
-            *warehouse_id,
+            warehouse_id,
             view_id,
             history.version_id(),
             Some(history.timestamp().map_err(|e| {
@@ -172,7 +172,7 @@ pub(crate) async fn create_view(
         .await?;
     }
 
-    set_view_properties(metadata.properties(), view_id, *warehouse_id, transaction).await?;
+    set_view_properties(warehouse_id, view_id, metadata.properties(), transaction).await?;
 
     tracing::debug!("Inserted view properties for view",);
 
@@ -218,7 +218,7 @@ pub(crate) async fn rename_view(
 
 // TODO: do we wanna do this via a trigger?
 async fn insert_view_version_log(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     view_id: Uuid,
     version_id: ViewVersionId,
     timestamp_ms: Option<DateTime<Utc>>,
@@ -230,7 +230,7 @@ async fn insert_view_version_log(
         INSERT INTO view_version_log (warehouse_id, view_id, version_id, timestamp)
         VALUES ($1, $2, $3, $4)
         "#,
-            warehouse_id,
+            *warehouse_id,
             view_id,
             version_id,
             ts
@@ -241,7 +241,7 @@ async fn insert_view_version_log(
         INSERT INTO view_version_log (warehouse_id, view_id, version_id)
         VALUES ($1, $2, $3)
         "#,
-            warehouse_id,
+            *warehouse_id,
             view_id,
             version_id,
         )
@@ -258,9 +258,9 @@ async fn insert_view_version_log(
 }
 
 pub(crate) async fn set_view_properties(
-    properties: &HashMap<String, String>,
+    warehouse_id: WarehouseId,
     view_id: Uuid,
-    warehouse_id: Uuid,
+    properties: &HashMap<String, String>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<()> {
     let (keys, vals): (Vec<String>, Vec<String>) = properties
@@ -273,7 +273,7 @@ pub(crate) async fn set_view_properties(
               ON CONFLICT (warehouse_id, view_id, key)
                 DO UPDATE SET value = EXCLUDED.value
            ;"#,
-        warehouse_id,
+        *warehouse_id,
         view_id,
         &keys,
         &vals
@@ -289,7 +289,7 @@ pub(crate) async fn set_view_properties(
 }
 
 pub(crate) async fn create_view_schema(
-    warehouse_id: Uuid,
+    warehouse_id: WarehouseId,
     view_id: Uuid,
     schema: SchemaRef,
     transaction: &mut Transaction<'_, Postgres>,
@@ -308,7 +308,7 @@ pub(crate) async fn create_view_schema(
         VALUES ($1, $2, $3, $4)
         RETURNING schema_id
         "#,
-        warehouse_id,
+        *warehouse_id,
         view_id,
         schema.schema_id(),
         schema_as_value
@@ -446,23 +446,23 @@ async fn create_view_version(
 }
 
 pub(crate) async fn set_current_view_metadata_version(
-    version_id: ViewVersionId,
+    warehouse_id: WarehouseId,
     view_id: Uuid,
-    warehouse_id: Uuid,
+    version_id: ViewVersionId,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<()> {
     sqlx::query!(
         r#"
-        INSERT INTO current_view_metadata_version (version_id, view_id, warehouse_id)
+        INSERT INTO current_view_metadata_version (warehouse_id, view_id, version_id)
         VALUES ($1, $2, $3)
         ON CONFLICT (warehouse_id, view_id)
-        DO UPDATE SET version_id = $1
+        DO UPDATE SET version_id = $3
         WHERE current_view_metadata_version.view_id = $2
-        AND current_view_metadata_version.warehouse_id = $3
+        AND current_view_metadata_version.warehouse_id = $1
         "#,
-        version_id,
+        *warehouse_id,
         view_id,
-        warehouse_id,
+        version_id,
     )
     .execute(&mut **transaction)
     .await
