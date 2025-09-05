@@ -508,7 +508,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             listen_port: 8181,
-            bind_ip: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
             kv2: None,
             authz_backend: AuthZBackend::AllowAll,
@@ -1078,7 +1078,7 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "0.0.0.0");
             let config = get_config();
-            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
             Ok(())
         });
     }
@@ -1088,7 +1088,7 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "127.0.0.1");
             let config = get_config();
-            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            assert_eq!(config.bind_ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
             Ok(())
         });
     }
@@ -1098,10 +1098,7 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::1");
             let config = get_config();
-            assert_eq!(
-                config.bind_ip,
-                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))
-            );
+            assert_eq!(config.bind_ip, IpAddr::V6(Ipv6Addr::LOCALHOST));
             Ok(())
         });
     }
@@ -1111,10 +1108,7 @@ mod test {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__BIND_IP", "::");
             let config = get_config();
-            assert_eq!(
-                config.bind_ip,
-                IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))
-            );
+            assert_eq!(config.bind_ip, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
             Ok(())
         });
     }

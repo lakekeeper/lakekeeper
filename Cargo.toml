@@ -117,6 +117,7 @@ sqlx = { version = "0.8.5", default-features = false, features = [
     "uuid",
     "chrono",
 ] }
+test-log = "0.2.18"
 thiserror = "2.0.0"
 tokio = { version = "1.41", default-features = false, features = [
     "signal",
@@ -159,6 +160,10 @@ maplit = "1.0.2"
 limes = { version = "0.2.2", features = ["kubernetes", "axum", "rustls-tls"] }
 middle = { version = "0.3", features = ["tonic"] }
 fastrand = "2.3.0"
+
+[patch.crates-io]
+# TODO remove the patch once new version was released
+openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "refs/pull/16/head", features = ["auth-middle"] }
 
 [profile.dev]
 opt-level = 1

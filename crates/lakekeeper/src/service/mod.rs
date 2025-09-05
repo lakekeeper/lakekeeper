@@ -122,6 +122,7 @@ impl ViewId {
     PartialOrd,
     Ord,
     strum_macros::Display,
+    strum_macros::EnumIter,
     serde::Serialize,
     serde::Deserialize,
     utoipa::ToSchema,
