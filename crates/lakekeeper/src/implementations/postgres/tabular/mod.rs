@@ -216,7 +216,7 @@ where
         return Ok(HashMap::new());
     }
 
-    if batch_tables.len() > (MAX_PARAMETERS / 2) {
+    if batch_tables.len() > (MAX_PARAMETERS / 3) {
         return Err(ErrorModel::bad_request(
             "Too many tables or views to fetch",
             "TooManyTablesOrViews",

@@ -52,7 +52,7 @@ pub(crate) async fn get_namespace(
         sqlx::Error::RowNotFound => ErrorModel::builder()
             .code(StatusCode::NOT_FOUND.into())
             .message(format!(
-                "Namespace with id {warehouse_id} not found in warehouse {namespace_id}"
+                "Namespace with id {namespace_id} not found in warehouse {warehouse_id}"
             ))
             .r#type("NamespaceNotFound".to_string())
             .build(),

@@ -243,7 +243,7 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
 }
 
 fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
-    if commits.len() > (MAX_PARAMETERS / 4) {
+    if commits.len() > (MAX_PARAMETERS / 7) {
         return Err(ErrorModel::bad_request(
             "Too many updates in single commit",
             "TooManyTablesForCommit".to_string(),
