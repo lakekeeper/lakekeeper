@@ -52,7 +52,7 @@ pub(crate) async fn get_namespace(
         sqlx::Error::RowNotFound => ErrorModel::builder()
             .code(StatusCode::NOT_FOUND.into())
             .message(format!(
-                "Namespace with id {warehouse_id} not found in warehouse {namespace_id}"
+                "Namespace with id {namespace_id} not found in warehouse {warehouse_id}"
             ))
             .r#type("NamespaceNotFound".to_string())
             .build(),
@@ -355,7 +355,7 @@ pub(crate) async fn drop_namespace(
         tabulars AS (
             SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
             FROM tabular ta
-            WHERE namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+            WHERE warehouse_id = $1 AND (namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
             SELECT t.task_id, t.status as task_status from task t
@@ -903,7 +903,7 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
-        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -931,7 +931,7 @@ pub(crate) mod tests {
 
         let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
         let staged = false;
-        let table = initialize_table(warehouse_id, state.clone(), staged, None, None).await;
+        let table = initialize_table(warehouse_id, state.clone(), staged, None, None, None).await;
 
         let mut transaction = PostgresTransaction::begin_write(state.clone())
             .await
@@ -1267,6 +1267,7 @@ pub(crate) mod tests {
             false,
             Some(outer_namespace),
             None,
+            None,
         )
         .await;
 
@@ -1274,6 +1275,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         set_tabular_protected(
+            warehouse_id,
             TabularId::Table(*tab.table_id),
             true,
             transaction.transaction(),

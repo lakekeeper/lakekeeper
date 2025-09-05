@@ -156,7 +156,7 @@ fn build_table_and_tabular_update_queries(
         let (fs_protocol, fs_location) = split_location(new_metadata.location())?;
 
         query_builder_table.push("(");
-        query_builder_table.push_bind(warehouse_id);
+        query_builder_table.push_bind(warehouse_id.to_uuid());
         query_builder_table.push(", ");
         query_builder_table.push_bind(new_metadata.uuid());
         query_builder_table.push(", ");
@@ -175,7 +175,7 @@ fn build_table_and_tabular_update_queries(
         query_builder_table.push(")");
 
         query_builder_tabular.push("(");
-        query_builder_tabular.push_bind(warehouse_id);
+        query_builder_tabular.push_bind(warehouse_id.to_uuid());
         query_builder_tabular.push(", ");
         query_builder_tabular.push_bind(new_metadata.uuid());
         query_builder_tabular.push(", ");
@@ -213,7 +213,7 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
         updated_tabulars_ids,
     } = verification_data;
 
-    // Update for "table" table filters on `tabular_id`
+    // Update for "table" table filters on `(warehouse_id, tabular_id)`
     if tabular_ids_in_commit != updated_tables_ids {
         let missing_ids = tabular_ids_in_commit
             .difference(&updated_tables_ids)
@@ -226,7 +226,7 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
         .into());
     }
 
-    // Update for `tabular` table filters on `table_id` and `metadata_location`.
+    // Update for `tabular` table filters on `(warehouse_id, table_id, metadata_location)`.
     if tabular_ids_in_commit != updated_tabulars_ids {
         let missing_ids = tabular_ids_in_commit
             .difference(&updated_tabulars_ids)
@@ -243,7 +243,7 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
 }
 
 fn validate_commit_count(commits: &[TableCommit]) -> api::Result<()> {
-    if commits.len() > (MAX_PARAMETERS / 4) {
+    if commits.len() > (MAX_PARAMETERS / 7) {
         return Err(ErrorModel::bad_request(
             "Too many updates in single commit",
             "TooManyTablesForCommit".to_string(),
@@ -499,7 +499,7 @@ async fn apply_metadata_changes(
     }
 
     // Must run after remove_snapshots, and remove_partition_specs and remove_sort_orders
-    if !&diffs.removed_schemas.is_empty() {
+    if !diffs.removed_schemas.is_empty() {
         common::remove_schemas(
             warehouse_id,
             new_metadata.uuid(),

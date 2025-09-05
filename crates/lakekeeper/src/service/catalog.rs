@@ -109,7 +109,6 @@ pub struct CreateTableResponse {
 pub struct LoadTableResponse {
     pub table_id: TableId,
     pub namespace_id: NamespaceId,
-    pub warehouse_id: WarehouseId,
     pub table_metadata: TableMetadata,
     pub metadata_location: Option<Location>,
     pub storage_secret_ident: Option<SecretIdent>,
@@ -745,6 +744,7 @@ where
     ) -> Result<()>;
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -795,12 +795,14 @@ where
     ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
@@ -1043,6 +1045,26 @@ where
     /// It is up to the task handler to decide if it can stop.
     async fn stop_tasks(
         task_ids: &[TaskId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    /// Reschedule tasks to run at a specific time by setting `scheduled_for` to the provided timestamp.
+    /// If no `scheduled_for` is `None`, the tasks will be scheduled to run immediately.
+    /// Only affects tasks in the `Scheduled` or `Stopping` state.
+    async fn run_tasks_at(
+        task_ids: &[TaskId],
+        scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        Self::run_tasks_at_impl(task_ids, scheduled_for, transaction).await
+    }
+
+    /// Reschedule tasks to run at a specific time by setting `scheduled_for` to the provided timestamp.
+    /// If no `scheduled_for` is `None`, the tasks will be scheduled to run immediately.
+    /// Only affects tasks in the `Scheduled` or `Stopping` state.
+    async fn run_tasks_at_impl(
+        task_ids: &[TaskId],
+        scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 

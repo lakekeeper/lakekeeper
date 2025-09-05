@@ -1569,7 +1569,7 @@ pub mod v1 {
             .await
     }
 
-    /// Cancel or stop tasks.
+    /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
     ///
     /// Accepts at most 100 task IDs in one request.
     #[utoipa::path(

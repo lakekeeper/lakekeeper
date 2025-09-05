@@ -53,7 +53,8 @@ use crate::{
         tasks::{
             cancel_scheduled_tasks, check_and_heartbeat_task, get_task_details,
             get_task_queue_config, list_tasks, pick_task, queue_task_batch, record_failure,
-            record_success, request_tasks_stop, resolve_tasks, set_task_queue_config,
+            record_success, request_tasks_stop, reschedule_tasks_for, resolve_tasks,
+            set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
         warehouse::{get_warehouse_stats, set_warehouse_protection},
@@ -565,11 +566,12 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<crate::implementations::postgres::tabular::view::ViewMetadataWithLocation> {
-        load_view(view_id, include_deleted, &mut *transaction).await
+        load_view(warehouse_id, view_id, include_deleted, &mut *transaction).await
     }
 
     async fn list_views<'a>(
@@ -669,18 +671,20 @@ impl Catalog for super::PostgresCatalog {
     }
 
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
-        set_tabular_protected(tabular_id, protect, transaction).await
+        set_tabular_protected(warehouse_id, tabular_id, protect, transaction).await
     }
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse> {
-        get_tabular_protected(tabular_id, transaction).await
+        get_tabular_protected(warehouse_id, tabular_id, transaction).await
     }
 
     async fn set_namespace_protected(
@@ -800,6 +804,14 @@ impl Catalog for super::PostgresCatalog {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         request_tasks_stop(&mut *transaction, task_ids).await
+    }
+
+    async fn run_tasks_at_impl(
+        task_ids: &[TaskId],
+        scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        reschedule_tasks_for(&mut *transaction, task_ids, scheduled_for).await
     }
 
     async fn set_task_queue_config(

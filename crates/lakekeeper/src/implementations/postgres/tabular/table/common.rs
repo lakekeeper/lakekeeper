@@ -167,7 +167,7 @@ pub(crate) async fn set_default_partition_spec(
     let _ = sqlx::query!(
         r#"INSERT INTO table_default_partition_spec(partition_spec_id, table_id, warehouse_id)
            VALUES ($1, $2, $3)
-           ON CONFLICT (table_id, warehouse_id)
+           ON CONFLICT (warehouse_id, table_id)
            DO UPDATE SET partition_spec_id = EXCLUDED.partition_spec_id"#,
         default_spec_id,
         tabular_id,
@@ -588,7 +588,7 @@ pub(crate) async fn set_table_properties(
         r#"WITH drop as (DELETE FROM table_properties WHERE warehouse_id = $1 AND table_id = $2)
            INSERT INTO table_properties (warehouse_id, table_id, key, value)
            SELECT $1, $2, u.* FROM UNNEST($3::text[], $4::text[]) u
-           ON CONFLICT (key, table_id, warehouse_id) DO UPDATE SET value = EXCLUDED.value;"#,
+           ON CONFLICT (warehouse_id, table_id, key) DO UPDATE SET value = EXCLUDED.value;"#,
         *warehouse_id,
         table_id,
         &keys,

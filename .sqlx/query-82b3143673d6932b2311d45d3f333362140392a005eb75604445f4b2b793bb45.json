@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH moved AS (\n            DELETE FROM task WHERE task_id = $1 AND attempt = $3 RETURNING *\n        )\n        INSERT INTO task_log(\n            task_id,\n            warehouse_id,\n            queue_name,\n            task_data,\n            status,\n            entity_id,\n            entity_type,\n            message,\n            attempt,\n            started_at,\n            duration,\n            progress,\n            execution_details,\n            attempt_scheduled_for,\n            last_heartbeat_at,\n            parent_task_id,\n            task_created_at\n        )\n        SELECT task_id,\n                warehouse_id,\n                queue_name,\n                task_data,\n                'success',\n                entity_id,\n                entity_type,\n                $2,\n                attempt,\n                picked_up_at,\n                now() - picked_up_at,\n                1.0000,\n                execution_details,\n                scheduled_for,\n                last_heartbeat_at,\n                parent_task_id,\n                created_at\n        FROM moved\n        ON CONFLICT (task_id, attempt) DO NOTHING\n        RETURNING task_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "82b3143673d6932b2311d45d3f333362140392a005eb75604445f4b2b793bb45"
+}

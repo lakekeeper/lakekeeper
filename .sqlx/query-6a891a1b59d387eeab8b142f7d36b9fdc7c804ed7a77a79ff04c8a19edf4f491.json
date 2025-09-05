@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT t.tabular_id,\n               n.namespace_name as \"namespace\",\n               t.name as tabular_name,\n               t.typ as \"typ: TabularType\"\n        FROM tabular t\n        INNER JOIN namespace n ON t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        WHERE w.status = 'active' and n.\"warehouse_id\" = $1\n            AND (t.deleted_at is NULL OR $2)\n            AND (t.metadata_location is not NULL OR $3) ",
+  "query": "\n        SELECT t.tabular_id,\n               n.namespace_name as \"namespace\",\n               t.name as tabular_name,\n               t.typ as \"typ: TabularType\"\n        FROM tabular t\n        INNER JOIN namespace n\n            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id\n        WHERE t.warehouse_id = $1 AND w.status = 'active'\n            AND (t.deleted_at is NULL OR $2)\n            AND (t.metadata_location is not NULL OR $3) ",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       false
     ]
   },
-  "hash": "384024b34f73ada1c5b706c761bb8e5fe5ed3a5874822e3582103728ecb2d2b5"
+  "hash": "6a891a1b59d387eeab8b142f7d36b9fdc7c804ed7a77a79ff04c8a19edf4f491"
 }

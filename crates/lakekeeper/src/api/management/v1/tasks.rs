@@ -225,12 +225,23 @@ pub struct ControlTasksRequest {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", tag = "action")]
 pub enum ControlTaskAction {
-    /// Stop the task (can be retried if attempts not exhausted)
+    /// Stop the task gracefully. The task will be retried.
     Stop,
-    /// Cancel the task permanently (no retries)
+    /// Cancel the task permanently. The task is not retried.
     Cancel,
+    /// Run the task immediately, moving the `scheduled_for` time to now.
+    /// Affects only tasks in `Scheduled` or `Stopping` state.
+    RunNow,
+    /// Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
+    /// Affects only tasks in `Scheduled` or `Stopping` state.
+    /// Timestamps must be in RFC 3339 format.
+    RunAt {
+        /// The time to run the task at
+        #[schema(example = "2025-12-31T23:59:59Z")]
+        scheduled_for: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 // -------------------- SERVICE TRAIT --------------------
@@ -439,6 +450,10 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                     t.transaction(),
                 )
                 .await?;
+            }
+            ControlTaskAction::RunNow => C::run_tasks_at(&task_ids, None, t.transaction()).await?,
+            ControlTaskAction::RunAt { scheduled_for } => {
+                C::run_tasks_at(&task_ids, Some(scheduled_for), t.transaction()).await?;
             }
         }
         t.commit().await?;
