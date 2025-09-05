@@ -121,7 +121,7 @@ pub(crate) async fn migrate(
     store_name: Option<String>,
 ) -> OpenFGAResult<()> {
     if let Some(configured_model) = *super::CONFIGURED_MODEL_VERSION {
-        tracing::info!("Skipping OpenFGA Migration because a model version is explicitly is configured. Version: {configured_model}");
+        tracing::info!("Skipping OpenFGA Migration because a model version is explicitly configured. Version: {configured_model}");
         return Ok(());
     }
     let store_name = store_name.unwrap_or(AUTH_CONFIG.store_name.clone());

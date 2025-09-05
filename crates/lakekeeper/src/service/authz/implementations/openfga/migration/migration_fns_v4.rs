@@ -130,7 +130,6 @@ pub(crate) async fn v4_push_down_warehouse_id(
         let num_tabulars_in_wh = tabulars.len();
         tracing::info!("Found {num_tabulars_in_wh} tabulars in warehouse {wh_id}");
         let mut new_tuples_to_write = vec![];
-        let wh_id = extract_id_from_full_object(&wh)?;
 
         for tab in tabulars {
             let c1 = client.clone();
@@ -1651,7 +1650,7 @@ mod tests {
                 .get_ref()
                 .tuples
                 .clone();
-            assert!(!sentinel.is_empty(), "There should be a sentinel tupel");
+            assert!(!sentinel.is_empty(), "There should be a sentinel tuple");
 
             Ok(())
         }
