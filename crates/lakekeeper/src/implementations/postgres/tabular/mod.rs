@@ -702,11 +702,13 @@ pub(crate) async fn clear_tabular_deleted_at(
             UPDATE tabular
             SET deleted_at = NULL
             FROM tabular t
-            JOIN namespace n ON t.namespace_id = n.namespace_id AND n.warehouse_id = $2
+            JOIN namespace n ON t.namespace_id = n.namespace_id
             LEFT JOIN task ta ON t.tabular_id = ta.entity_id
                 AND ta.entity_type = 'tabular'
                 AND ta.warehouse_id = $2
             WHERE t.warehouse_id = $2
+                AND tabular.warehouse_id = t.warehouse_id
+                AND tabular.tabular_id = t.tabular_id
                 AND t.tabular_id = ANY($1::uuid[])
                 AND ta.queue_name = 'tabular_expiration'
             RETURNING
