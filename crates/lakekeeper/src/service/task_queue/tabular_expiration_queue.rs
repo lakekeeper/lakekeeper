@@ -141,6 +141,7 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     };
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
@@ -160,7 +161,13 @@ where
     let tabular_location = match task.data.tabular_type {
         TabularType::Table => {
             let table_id = TableId::from(tabular_id);
-            let drop_result = C::drop_table(table_id, true, trx.transaction()).await;
+            let drop_result = C::drop_table(
+                task.task_metadata.warehouse_id,
+                table_id,
+                true,
+                trx.transaction(),
+            )
+            .await;
 
             let location = match drop_result {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
@@ -191,7 +198,14 @@ where
         TabularType::View => {
             let view_id = ViewId::from(tabular_id);
 
-            let location = match C::drop_view(view_id, true, trx.transaction()).await {
+            let location = match C::drop_view(
+                task.task_metadata.warehouse_id,
+                view_id,
+                true,
+                trx.transaction(),
+            )
+            .await
+            {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
                     tracing::warn!(
                         "View with id `{view_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
@@ -314,6 +328,7 @@ mod test {
             catalog_state.clone(),
             false,
             None,
+            None,
             Some("tab".to_string()),
         )
         .await;
@@ -356,6 +371,7 @@ mod test {
         .unwrap();
 
         <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
+            warehouse,
             tab.table_id.into(),
             false,
             trx.transaction(),

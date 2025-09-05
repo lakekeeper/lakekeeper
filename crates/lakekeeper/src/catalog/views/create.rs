@@ -121,6 +121,7 @@ pub(crate) async fn create_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     })?;
 
     C::create_view(
+        warehouse_id,
         namespace_id,
         &view,
         metadata.metadata.clone(),

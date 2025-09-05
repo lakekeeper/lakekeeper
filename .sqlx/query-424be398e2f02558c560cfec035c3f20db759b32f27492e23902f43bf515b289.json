@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH validation AS (\n                SELECT NOT EXISTS (\n                    SELECT 1 FROM unnest($1::uuid[]) AS id\n                    WHERE id NOT IN\n                        (SELECT tabular_id FROM tabular WHERE warehouse_id = $2)\n                ) AS all_found\n            )\n            UPDATE tabular\n            SET deleted_at = NULL\n            FROM tabular t\n            JOIN namespace n ON t.namespace_id = n.namespace_id\n            LEFT JOIN task ta ON t.tabular_id = ta.entity_id\n                AND ta.entity_type = 'tabular'\n                AND ta.warehouse_id = $2\n            WHERE t.warehouse_id = $2\n                AND tabular.warehouse_id = t.warehouse_id\n                AND tabular.tabular_id = t.tabular_id\n                AND t.tabular_id = ANY($1::uuid[])\n                AND ta.queue_name = 'tabular_expiration'\n            RETURNING\n                tabular.name,\n                tabular.tabular_id,\n                ta.task_id,\n                n.namespace_name,\n                (SELECT all_found FROM validation) as \"all_found!\";",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "all_found!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "424be398e2f02558c560cfec035c3f20db759b32f27492e23902f43bf515b289"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM table_partition_spec\n           WHERE warehouse_id = $1 AND table_id = $2 AND partition_spec_id = ANY($3::INT[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "017952754d856de83252a1a37265a3e6cb3d10b76815fccdc3bc2dbc7ef79ac1"
+}

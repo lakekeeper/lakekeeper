@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_sort_order(sort_order_id, table_id, warehouse_id, sort_order)\n           SELECT sid, $2, $3, s FROM UNNEST($1::BIGINT[], $4::JSONB[]) u(sid, s)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Uuid",
+        "Uuid",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f214bc3e587ec6fabcf5f91ced0f7b35f97d2368ff4b9d461e3730aac654eba"
+}

@@ -178,6 +178,7 @@ pub struct TableCommit {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit<'a> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub view_id: ViewId,
     pub view_ident: &'a TableIdent,
@@ -189,6 +190,7 @@ pub struct ViewCommit<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub table_ident: &'c TableIdent,
     pub metadata_location: Option<&'c Location>,
@@ -492,6 +494,7 @@ where
     ///
     /// Returns the table location
     async fn drop_table<'a>(
+        warehouse_id: WarehouseId,
         table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -508,6 +511,7 @@ where
     ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
+        warehouse_id: WarehouseId,
         table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -730,6 +734,7 @@ where
     ) -> Result<Option<ViewId>>;
 
     async fn create_view<'a>(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,
@@ -739,6 +744,7 @@ where
     ) -> Result<()>;
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -760,6 +766,7 @@ where
     /// Returns location of the dropped view.
     /// Used for cleanup
     async fn drop_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -788,12 +795,14 @@ where
     ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
