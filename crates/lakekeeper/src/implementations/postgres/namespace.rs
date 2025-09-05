@@ -355,7 +355,7 @@ pub(crate) async fn drop_namespace(
         tabulars AS (
             SELECT ta.tabular_id, fs_location, fs_protocol, ta.typ, protected, deleted_at
             FROM tabular ta
-            WHERE warehouse_id = $1 AND namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces))
+            WHERE warehouse_id = $1 AND (namespace_id = $2 AND metadata_location IS NOT NULL OR (namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
             SELECT t.task_id, t.status as task_status from task t

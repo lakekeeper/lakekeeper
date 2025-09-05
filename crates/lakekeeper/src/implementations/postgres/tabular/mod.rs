@@ -707,7 +707,7 @@ pub(crate) async fn clear_tabular_deleted_at(
                 AND ta.entity_type = 'tabular'
                 AND ta.warehouse_id = $2
             WHERE t.warehouse_id = $2
-                AND tabular.tabular_id = ANY($1::uuid[])
+                AND t.tabular_id = ANY($1::uuid[])
                 AND ta.queue_name = 'tabular_expiration'
             RETURNING
                 tabular.name,

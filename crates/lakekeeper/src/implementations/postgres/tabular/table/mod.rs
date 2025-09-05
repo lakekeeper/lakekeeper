@@ -596,7 +596,7 @@ pub(crate) async fn load_tables(
     )
     .fetch_all(&mut **transaction)
     .await
-    .unwrap();
+    .map_err(|e| e.into_error_model("Error fetching tables".to_string()))?;
 
     let mut tables = HashMap::new();
     let mut failed_to_fetch = HashSet::new();
@@ -678,10 +678,10 @@ pub(crate) async fn get_table_metadata_by_id(
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.warehouse_id = $1 AND t."table_id" = $2
+        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+        WHERE t.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
         "#,
@@ -747,10 +747,10 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              w.storage_profile as "storage_profile: Json<StorageProfile>",
              w."storage_secret_id"
          FROM "table" t
-         INNER JOIN tabular ti ON t.table_id = ti.tabular_id
+         INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
          INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-         INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-         WHERE w.warehouse_id = $1
+         INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+         WHERE t.warehouse_id = $1
              AND ti.fs_location = ANY($2)
              AND LENGTH(ti.fs_location) <= $3
              AND w.status = 'active'

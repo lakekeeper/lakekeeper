@@ -111,7 +111,6 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             },
             &state,
             &request_metadata,
-            warehouse_id,
         )
         .await;
 
@@ -170,7 +169,6 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
-    warehouse_id: WarehouseId,
 ) -> Result<(LoadViewResult, crate::service::endpoint_hooks::ViewCommit)> {
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
@@ -210,7 +208,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
 
     C::update_view_metadata(
         ViewCommit {
-            warehouse_id,
+            warehouse_id: ctx.warehouse_id,
             namespace_id: ctx.namespace_id,
             view_id: ctx.view_id,
             view_ident: ctx.identifier,
@@ -258,7 +256,7 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
             &metadata_location,
             StoragePermissions::ReadWriteDelete,
             request_metadata,
-            warehouse_id,
+            ctx.warehouse_id,
             ctx.view_id.into(),
         )
         .await?;
