@@ -1686,7 +1686,7 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let openfga_server = authorizer.openfga_server();
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &openfga_server)
+                get_relations(authorizer.clone(), None, openfga_server)
                     .await
                     .unwrap();
             assert!(
@@ -1709,7 +1709,7 @@ mod tests {
                 .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &openfga_server)
+                get_relations(authorizer.clone(), None, openfga_server)
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 1);
@@ -1829,7 +1829,7 @@ mod tests {
             let actor = Actor::Principal(user_id.clone());
             let openfga_server = authorizer.openfga_server();
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1848,7 +1848,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1867,7 +1867,7 @@ mod tests {
                 assumed_role: role_id,
             };
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1886,7 +1886,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
+                get_allowed_actions(authorizer.clone(), &actor, openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1918,7 +1918,7 @@ mod tests {
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
                 &actor,
-                &openfga_server,
+                openfga_server,
                 Some(&role_id.into()),
             )
             .await
@@ -1941,7 +1941,7 @@ mod tests {
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
                 &actor,
-                &openfga_server,
+                openfga_server,
                 Some(&role_id.into()),
             )
             .await
@@ -1978,13 +1978,13 @@ mod tests {
                 &Actor::Principal(user1_id.clone()),
                 vec![ServerAssignment::Admin(user2_id.into())],
                 vec![],
-                &openfga_server,
+                openfga_server,
             )
             .await
             .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &openfga_server)
+                get_relations(authorizer.clone(), None, openfga_server)
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 2);

@@ -102,7 +102,7 @@ pub struct OpenFGAAuthorizer {
 
 impl OpenFGAAuthorizer {
     pub fn new(client: BasicOpenFgaClient, server_id: uuid::Uuid) -> Self {
-        let openfga_server = format!("server:{}", server_id);
+        let openfga_server = format!("server:{server_id}");
         Self {
             client,
             health: Arc::new(RwLock::new(vec![])),
