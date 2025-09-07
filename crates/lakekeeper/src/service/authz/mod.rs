@@ -993,6 +993,7 @@ pub(crate) mod tests {
         pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
+        server_id: uuid::Uuid,
     }
 
     impl HidingAuthorizer {
@@ -1000,6 +1001,7 @@ pub(crate) mod tests {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
+                server_id: uuid::Uuid::new_v4(),
             }
         }
 
@@ -1049,7 +1051,7 @@ pub(crate) mod tests {
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
         fn server_id(&self) -> uuid::Uuid {
-            unimplemented!()
+            self.server_id
         }
 
         fn api_doc() -> utoipa::openapi::OpenApi {
