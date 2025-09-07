@@ -164,7 +164,7 @@ mod test {
         NamespaceIdent,
         WarehouseId,
     ) {
-        let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer).await;
+        let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
         let state = api_context.v1_state.catalog.clone();
         let warehouse_id = initialize_warehouse(
             state.clone(),

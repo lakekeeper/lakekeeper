@@ -650,7 +650,7 @@ async fn setup_stats_test(
         pool.clone(),
         prof,
         None,
-        AllowAllAuthorizer,
+        AllowAllAuthorizer::default(),
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         number_of_warehouses,

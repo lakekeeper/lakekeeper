@@ -196,6 +196,9 @@ pub trait Authorizer
 where
     Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
+    /// The server ID that was passed to the authorizer during initialization.
+    fn server_id(&self) -> uuid::Uuid;
+
     /// API Doc
     fn api_doc() -> utoipa::openapi::OpenApi;
 
@@ -1045,6 +1048,10 @@ pub(crate) mod tests {
     }
     #[async_trait::async_trait]
     impl Authorizer for HidingAuthorizer {
+        fn server_id(&self) -> uuid::Uuid {
+            unimplemented!()
+        }
+
         fn api_doc() -> utoipa::openapi::OpenApi {
             AllowAllAuthorizer::api_doc()
         }

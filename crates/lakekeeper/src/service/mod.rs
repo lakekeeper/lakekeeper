@@ -53,6 +53,12 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
 
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}
 
+impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> State<A, C, S> {
+    pub fn server_id(&self) -> uuid::Uuid {
+        self.authz.server_id()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]

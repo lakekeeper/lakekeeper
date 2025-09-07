@@ -31,7 +31,6 @@ use super::{
         ViewRelation as AllViewRelations, WarehouseAssignment,
         WarehouseRelation as AllWarehouseRelation,
     },
-    OPENFGA_SERVER,
 };
 use crate::{
     api::ApiContext,
@@ -366,10 +365,11 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
+    let server_id = authorizer.openfga_server();
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
-        &OPENFGA_SERVER,
+        server_id.as_str(),
         query.principal.as_ref(),
     )
     .await?;
@@ -797,14 +797,15 @@ async fn get_server_assignments<C: Catalog, S: SecretStore>(
     Query(query): Query<GetServerAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
+    let server_id = authorizer.openfga_server();
     authorizer
         .require_action(
             &metadata,
             AllServerAction::CanReadAssignments,
-            &OPENFGA_SERVER,
+            server_id.as_str(),
         )
         .await?;
-    let assignments = get_relations(authorizer, query.relations, &OPENFGA_SERVER).await?;
+    let assignments = get_relations(authorizer, query.relations, server_id.as_str()).await?;
 
     Ok((
         StatusCode::OK,
@@ -1035,12 +1036,13 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateServerAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
+    let server_id = authorizer.openfga_server();
     checked_write(
         authorizer,
         metadata.actor(),
         request.writes,
         request.deletes,
-        &OPENFGA_SERVER,
+        server_id.as_str(),
     )
     .await?;
 
@@ -1686,9 +1688,9 @@ mod tests {
         #[tracing_test::traced_test]
         async fn test_get_relations() {
             let (_, authorizer) = authorizer_for_empty_store().await;
-
+            let openfga_server = authorizer.openfga_server();
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
+                get_relations(authorizer.clone(), None, openfga_server.as_str())
                     .await
                     .unwrap();
             assert!(
@@ -1702,7 +1704,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1711,7 +1713,7 @@ mod tests {
                 .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
+                get_relations(authorizer.clone(), None, openfga_server.as_str())
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 1);
@@ -1829,8 +1831,9 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Principal(user_id.clone());
+            let openfga_server = authorizer.openfga_server();
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1840,7 +1843,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1849,7 +1852,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1860,6 +1863,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_as_role() {
             let (_, authorizer) = authorizer_for_empty_store().await;
+            let openfga_server = authorizer.openfga_server();
             let role_id = RoleId::new(Uuid::now_v7());
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let actor = Actor::Role {
@@ -1867,7 +1871,7 @@ mod tests {
                 assumed_role: role_id,
             };
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
                     .await
                     .unwrap();
             assert!(access.is_empty());
@@ -1877,7 +1881,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1886,7 +1890,7 @@ mod tests {
                 .unwrap();
 
             let access: Vec<ServerAction> =
-                get_allowed_actions(authorizer.clone(), &actor, &OPENFGA_SERVER, None)
+                get_allowed_actions(authorizer.clone(), &actor, &openfga_server, None)
                     .await
                     .unwrap();
             for action in ServerAction::iter() {
@@ -1897,6 +1901,7 @@ mod tests {
         #[tokio::test]
         async fn test_get_allowed_actions_for_other_principal() {
             let (_, authorizer) = authorizer_for_empty_store().await;
+            let openfga_server = authorizer.openfga_server();
             let user_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let role_id = RoleId::new(Uuid::now_v7());
             let actor = Actor::Principal(user_id.clone());
@@ -1906,7 +1911,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1917,7 +1922,7 @@ mod tests {
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
                 &actor,
-                &OPENFGA_SERVER,
+                &openfga_server,
                 Some(&role_id.into()),
             )
             .await
@@ -1929,7 +1934,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1940,7 +1945,7 @@ mod tests {
             let access: Vec<ServerAction> = get_allowed_actions(
                 authorizer.clone(),
                 &actor,
-                &OPENFGA_SERVER,
+                &openfga_server,
                 Some(&role_id.into()),
             )
             .await
@@ -1957,12 +1962,14 @@ mod tests {
             let user1_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
             let user2_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
 
+            let openfga_server = authorizer.openfga_server();
+
             authorizer
                 .write(
                     Some(vec![TupleKey {
                         user: user1_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: OPENFGA_SERVER.to_string(),
+                        object: openfga_server.clone(),
                         condition: None,
                     }]),
                     None,
@@ -1975,13 +1982,13 @@ mod tests {
                 &Actor::Principal(user1_id.clone()),
                 vec![ServerAssignment::Admin(user2_id.into())],
                 vec![],
-                &OPENFGA_SERVER,
+                &openfga_server,
             )
             .await
             .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, &OPENFGA_SERVER)
+                get_relations(authorizer.clone(), None, &openfga_server)
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 2);

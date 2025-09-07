@@ -287,7 +287,7 @@ mod test {
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
         let cat = catalog_state.clone();
         let sec = secrets.clone();
-        let auth = AllowAllAuthorizer;
+        let auth = AllowAllAuthorizer::default();
         queues
             .register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
                 cat,

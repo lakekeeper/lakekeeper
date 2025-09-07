@@ -19,7 +19,9 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Default)]
-pub struct AllowAllAuthorizer;
+pub struct AllowAllAuthorizer {
+    pub server_id: uuid::Uuid,
+}
 
 #[async_trait]
 impl HealthExt for AllowAllAuthorizer {
@@ -37,6 +39,10 @@ pub(super) struct ApiDoc;
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
+    fn server_id(&self) -> uuid::Uuid {
+        self.server_id
+    }
+
     fn api_doc() -> utoipa::openapi::OpenApi {
         ApiDoc::openapi()
     }

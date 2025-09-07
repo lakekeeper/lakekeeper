@@ -37,7 +37,7 @@ Project, Server, User and Roles are entities unknown to the Iceberg Rest Specifi
 1. The Lakekeeper Management API is served at endpoints prefixed with `/management`. It is used to configure Lakekeeper and manage entities that are not part of the Iceberg REST Catalog specification, such as permissions.
 
 ### Server
-The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` must not be changed after the initial [bootstrapping](./bootstrap.md) or permissions might not work.
+The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). The Server ID is generated randomly on first startup and stored in the Database Backend.
 
 ### Project
 For single-company setups, we recommend using a single Project setup, which is the default. Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](./bootstrap.md) with the nil UUID.

@@ -219,7 +219,27 @@ pub enum ServerInfo {
         server_id: uuid::Uuid,
         /// Whether the terms have been accepted
         terms_accepted: bool,
+        /// Whether the catalog is open for re-bootstrap,
+        /// i.e. to recover admin access.
+        open_for_bootstrap: bool,
     },
+}
+
+impl ServerInfo {
+    /// Returns the server ID if the catalog is bootstrapped.
+    #[must_use]
+    pub fn server_id(&self) -> Option<uuid::Uuid> {
+        match self {
+            ServerInfo::NotBootstrapped => None,
+            ServerInfo::Bootstrapped { server_id, .. } => Some(*server_id),
+        }
+    }
+
+    /// Returns true if the catalog is bootstrapped.
+    #[must_use]
+    pub fn is_bootstrapped(&self) -> bool {
+        matches!(self, ServerInfo::Bootstrapped { .. })
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -283,6 +303,17 @@ where
     type Transaction: Transaction<Self::State>;
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
+    async fn determine_server_id(state: Self::State) -> anyhow::Result<uuid::Uuid> {
+        let server_info = Self::get_server_info(state.clone()).await?;
+        let previous_server_id = match server_info {
+            ServerInfo::Bootstrapped { server_id, .. } => Some(server_id),
+            ServerInfo::NotBootstrapped => None,
+        };
+
+        let server_id = previous_server_id.unwrap_or_else(uuid::Uuid::now_v7);
+        Ok(server_id)
+    }
+
     /// Get data required for startup validations and server info endpoint
     async fn get_server_info(
         catalog_state: Self::State,
@@ -295,6 +326,7 @@ where
     /// If the catalog is already bootstrapped, return Ok(false).
     async fn bootstrap<'a>(
         terms_accepted: bool,
+        server_id: uuid::Uuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
 
