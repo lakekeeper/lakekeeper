@@ -4239,7 +4239,6 @@ components:
       required:
         - version
         - bootstrapped
-        - server-id
         - authz-backend
         - aws-system-identities-enabled
         - azure-system-identities-enabled
@@ -4272,9 +4271,13 @@ components:
             type: string
           description: List of queues that are registered for the server.
         server-id:
-          type: string
+          type:
+            - string
+            - 'null'
           format: uuid
-          description: ID of the server.
+          description: |-
+            ID of the server.
+            Returns null if the catalog has not been bootstrapped.
         version:
           type: string
           description: Version of the server.
