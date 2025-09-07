@@ -18,9 +18,18 @@ use crate::{
     },
 };
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AllowAllAuthorizer {
     pub server_id: uuid::Uuid,
+}
+
+#[cfg(test)]
+impl std::default::Default for AllowAllAuthorizer {
+    fn default() -> Self {
+        Self {
+            server_id: uuid::Uuid::now_v7(),
+        }
+    }
 }
 
 #[async_trait]

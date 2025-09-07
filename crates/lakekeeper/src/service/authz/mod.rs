@@ -197,6 +197,7 @@ where
     Self: Send + Sync + 'static + HealthExt + Clone + std::fmt::Debug,
 {
     /// The server ID that was passed to the authorizer during initialization.
+    /// Must remain stable for the lifetime of the running process (typically generated at startup).
     fn server_id(&self) -> uuid::Uuid;
 
     /// API Doc

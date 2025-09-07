@@ -96,6 +96,20 @@ pub struct OpenFGAAuthorizer {
     client: BasicOpenFgaClient,
     health: Arc<RwLock<Vec<Health>>>,
     server_id: uuid::Uuid,
+    // Pre-formatted "server:<uuid>" for OpenFGA object ids
+    openfga_server: String,
+}
+
+impl OpenFGAAuthorizer {
+    pub fn new(client: BasicOpenFgaClient, server_id: uuid::Uuid) -> Self {
+        let openfga_server = format!("server:{}", server_id);
+        Self {
+            client,
+            health: Arc::new(RwLock::new(vec![])),
+            server_id,
+            openfga_server,
+        }
+    }
 }
 
 /// Implements batch checks for the `are_allowed_x_actions` methods.
@@ -188,7 +202,7 @@ impl Authorizer for OpenFGAAuthorizer {
             Some(vec![TupleKey {
                 user: user.to_openfga(),
                 relation: relation.to_string(),
-                object: self.openfga_server(),
+                object: self.openfga_server().to_string(),
                 condition: None,
             }]),
             None,
@@ -248,7 +262,7 @@ impl Authorizer for OpenFGAAuthorizer {
             };
         }
 
-        let server_id = self.openfga_server();
+        let server_id = self.openfga_server().to_string();
         match action {
             // Currently, given a user-id, all information about a user can be retrieved.
             // For multi-tenant setups, we need to restrict this to a tenant.
@@ -257,7 +271,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 self.check(CheckRequestTupleKey {
                     user: actor.to_openfga(),
                     relation: CatalogServerAction::CanUpdateUsers.to_string(),
-                    object: server_id,
+                    object: server_id.clone(),
                 })
                 .await
             }
@@ -281,7 +295,7 @@ impl Authorizer for OpenFGAAuthorizer {
         self.check(CheckRequestTupleKey {
             user: metadata.actor().to_openfga(),
             relation: action.to_string(),
-            object: self.openfga_server(),
+            object: self.openfga_server().to_string(),
         })
         .await
         .map_err(Into::into)
@@ -476,7 +490,7 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(project_id).await?;
-        let server = self.openfga_server();
+        let server = self.openfga_server().to_string();
         let this_id = project_id.to_openfga();
         self.write(
             Some(vec![
@@ -706,10 +720,9 @@ impl Authorizer for OpenFGAAuthorizer {
 }
 
 impl OpenFGAAuthorizer {
-    #[inline]
     #[must_use]
-    fn openfga_server(&self) -> String {
-        format!("server:{}", self.server_id)
+    fn openfga_server(&self) -> &str {
+        &self.openfga_server
     }
 
     async fn list_projects_internal(&self, actor: &Actor) -> Result<ListProjectsResponse> {
@@ -717,7 +730,7 @@ impl OpenFGAAuthorizer {
             .check(CheckRequestTupleKey {
                 user: actor.to_openfga(),
                 relation: ServerRelation::CanListAllProjects.to_string(),
-                object: self.openfga_server(),
+                object: self.openfga_server().to_string(),
             })
             .await?;
 

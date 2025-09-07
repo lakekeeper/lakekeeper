@@ -304,7 +304,9 @@ where
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
     async fn determine_server_id(state: Self::State) -> anyhow::Result<uuid::Uuid> {
-        let server_info = Self::get_server_info(state.clone()).await?;
+        let server_info = Self::get_server_info(state.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!(e).context("Failed to determine server id"))?;
         let previous_server_id = match server_info {
             ServerInfo::Bootstrapped { server_id, .. } => Some(server_id),
             ServerInfo::NotBootstrapped => None,
@@ -320,10 +322,9 @@ where
     ) -> std::result::Result<ServerInfo, ErrorModel>;
 
     /// Bootstrap the catalog.
-    /// Use this hook to store the current `CONFIG.server_id`.
-    /// Must not update anything if the catalog is already bootstrapped.
-    /// If bootstrapped succeeded, return Ok(true).
-    /// If the catalog is already bootstrapped, return Ok(false).
+    /// Use this hook to persist the provided `server_id`.
+    /// Must return Ok(false) if the catalog is not open for bootstrap.
+    /// If bootstrapping succeeds, return Ok(true).
     async fn bootstrap<'a>(
         terms_accepted: bool,
         server_id: uuid::Uuid,

@@ -183,18 +183,19 @@ async fn check_server(
     for_principal: &mut Option<UserOrRole>,
     action: &APIServerAction,
 ) -> Result<(String, String)> {
+    let openfga_server = authorizer.openfga_server().to_string();
     if for_principal.is_some() {
         authorizer
             .require_action(
                 metadata,
                 AllServerAction::CanReadAssignments,
-                &authorizer.openfga_server(),
+                &openfga_server,
             )
             .await?;
     } else {
         authorizer.check_actor(metadata.actor()).await?;
     }
-    Ok((action.to_openfga().to_string(), authorizer.openfga_server()))
+    Ok((action.to_openfga().to_string(), openfga_server))
 }
 
 async fn check_namespace<C: Catalog, S: SecretStore>(

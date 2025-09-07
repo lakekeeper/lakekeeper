@@ -112,5 +112,12 @@ mod test {
             .await
             .unwrap();
         assert!(!success);
+
+        // Different server_id must also fail
+        let other_id = uuid::Uuid::new_v4();
+        let success = bootstrap(true, other_id, &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert!(!success);
     }
 }

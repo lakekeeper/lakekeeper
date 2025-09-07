@@ -141,7 +141,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         }
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-        let success = C::bootstrap(request.accept_terms_of_use, server_id, t.transaction()).await?;
+        let success = C::bootstrap(accept_terms_of_use, server_id, t.transaction()).await?;
         if !success {
             return Err(ErrorModel::bad_request(
                 "Concurrent bootstrap detected, catalog already bootstrapped",

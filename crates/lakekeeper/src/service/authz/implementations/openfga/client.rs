@@ -1,11 +1,8 @@
 //! Get `OpenFGA` clients
 
-use std::sync::Arc;
-
 use openfga_client::client::{
     BasicOpenFgaClient, BasicOpenFgaServiceClient, ConsistencyPreference,
 };
-use tokio::sync::RwLock;
 
 use super::{OpenFGAAuthorizer, OpenFGAError, OpenFGAResult, AUTH_CONFIG};
 use crate::{
@@ -98,9 +95,5 @@ pub(crate) async fn new_authorizer(
     let client = BasicOpenFgaClient::new(service_client, &store.id, &auth_model_id)
         .set_consistency(consistency);
 
-    Ok(OpenFGAAuthorizer {
-        client,
-        health: Arc::new(RwLock::new(vec![])),
-        server_id,
-    })
+    Ok(OpenFGAAuthorizer::new(client, server_id))
 }

@@ -365,11 +365,11 @@ async fn get_server_access<C: Catalog, S: SecretStore>(
 ) -> Result<(StatusCode, Json<GetServerAccessResponse>)> {
     let authorizer = api_context.v1_state.authz;
     let query = ParsedAccessQuery::try_from(query)?;
-    let server_id = authorizer.openfga_server();
+    let openfga_server = authorizer.openfga_server().to_string();
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
-        server_id.as_str(),
+        &openfga_server,
         query.principal.as_ref(),
     )
     .await?;
@@ -797,15 +797,11 @@ async fn get_server_assignments<C: Catalog, S: SecretStore>(
     Query(query): Query<GetServerAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetServerAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let server_id = authorizer.openfga_server();
+    let server_id = authorizer.openfga_server().to_string();
     authorizer
-        .require_action(
-            &metadata,
-            AllServerAction::CanReadAssignments,
-            server_id.as_str(),
-        )
+        .require_action(&metadata, AllServerAction::CanReadAssignments, &server_id)
         .await?;
-    let assignments = get_relations(authorizer, query.relations, server_id.as_str()).await?;
+    let assignments = get_relations(authorizer, query.relations, &server_id).await?;
 
     Ok((
         StatusCode::OK,
@@ -1036,13 +1032,13 @@ async fn update_server_assignments<C: Catalog, S: SecretStore>(
     Json(request): Json<UpdateServerAssignmentsRequest>,
 ) -> Result<StatusCode> {
     let authorizer = api_context.v1_state.authz;
-    let server_id = authorizer.openfga_server();
+    let server_id = authorizer.openfga_server().to_string();
     checked_write(
         authorizer,
         metadata.actor(),
         request.writes,
         request.deletes,
-        server_id.as_str(),
+        &server_id,
     )
     .await?;
 
@@ -1690,7 +1686,7 @@ mod tests {
             let (_, authorizer) = authorizer_for_empty_store().await;
             let openfga_server = authorizer.openfga_server();
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, openfga_server.as_str())
+                get_relations(authorizer.clone(), None, &openfga_server)
                     .await
                     .unwrap();
             assert!(
@@ -1704,7 +1700,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.clone(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -1713,7 +1709,7 @@ mod tests {
                 .unwrap();
 
             let relations: Vec<ServerAssignment> =
-                get_relations(authorizer.clone(), None, openfga_server.as_str())
+                get_relations(authorizer.clone(), None, &openfga_server)
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 1);
@@ -1843,7 +1839,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.clone(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -1881,7 +1877,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.clone(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -1911,7 +1907,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.clone(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -1934,7 +1930,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: role_id.into_assignees().to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.clone(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
@@ -1969,7 +1965,7 @@ mod tests {
                     Some(vec![TupleKey {
                         user: user1_id.to_openfga(),
                         relation: ServerRelation::Admin.to_openfga().to_string(),
-                        object: openfga_server.clone(),
+                        object: openfga_server.to_string(),
                         condition: None,
                     }]),
                     None,
