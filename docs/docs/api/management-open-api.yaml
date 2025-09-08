@@ -4123,10 +4123,8 @@ components:
           description: Optional session tags for STS assume role operations.
           additionalProperties:
             type: string
-            maxLength: 256
           propertyNames:
             type: string
-            maxLength: 128
         sts-token-validity-seconds:
           type: integer
           format: int64
