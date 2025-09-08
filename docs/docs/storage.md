@@ -266,7 +266,7 @@ The optional `sts-session-tags` setting can be used to provide Session Tags when
     "Statement": [
         {
             "Sid": "AllowAssumeRole",
-            "Effect": "AllowAssumeRole",
+            "Effect": "Allow",
             "Principal": {
                 "AWS": "arn:aws:iam::123:user/lakekeeper-system-identity"
             },
@@ -314,7 +314,7 @@ If wanting to use a session tag in an ABAC policy, one can reference that tag vi
             "Condition": {
                 "StringLike": {
                     "s3:prefix": [
-                        "<bucket-name>/${aws:PrincipalTag/tenant}/*",
+                        "${aws:PrincipalTag/tenant}/*",
                     ]
                 }
             }
