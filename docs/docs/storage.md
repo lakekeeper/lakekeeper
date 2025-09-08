@@ -224,7 +224,7 @@ The role also needs S3 access, so attach a policy like this:
             "Effect": "Allow",
             "Resource": [
                 "arn:aws:s3:::<bucket-name>",
-                "arn:aws:s3:::<bucket-name>/"
+                "arn:aws:s3:::<bucket-name>/*"
             ]
         }
     ]
@@ -314,7 +314,7 @@ If wanting to use a session tag in an ABAC policy, one can reference that tag vi
             "Condition": {
                 "StringLike": {
                     "s3:prefix": [
-                        "${aws:PrincipalTag/tenant}/*",
+                        "${aws:PrincipalTag/tenant}/*"
                     ]
                 }
             }
