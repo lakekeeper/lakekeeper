@@ -94,7 +94,7 @@ impl std::fmt::Debug for RegisteredTaskQueueWorker {
 }
 
 /// Task queue registry used for registering and starting task queues
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TaskQueueRegistry {
     // Mapping of queue names to their configurations
     registered_queues: Arc<RwLock<HashMap<&'static TaskQueueName, RegisteredQueue>>>,
@@ -183,25 +183,27 @@ impl TaskQueueRegistry {
         use super::{tabular_expiration_queue, tabular_purge_queue};
 
         let catalog_state_clone = catalog_state.clone();
-        self.register_queue::<tabular_expiration_queue::ExpirationQueueConfig>(QueueRegistration {
-            queue_name: &tabular_expiration_queue::QUEUE_NAME,
-            worker_fn: Arc::new(move |cancellation_token| {
-                let authorizer = authorizer.clone();
-                let catalog_state_clone = catalog_state_clone.clone();
-                Box::pin({
-                    async move {
-                        tabular_expiration_queue::tabular_expiration_worker::<C, A>(
-                            catalog_state_clone.clone(),
-                            authorizer.clone(),
-                            poll_interval,
-                            cancellation_token,
-                        )
-                        .await;
-                    }
-                })
-            }),
-            num_workers: 2,
-        })
+        self.register_queue::<tabular_expiration_queue::TabularExpirationQueueConfig>(
+            QueueRegistration {
+                queue_name: &tabular_expiration_queue::QUEUE_NAME,
+                worker_fn: Arc::new(move |cancellation_token| {
+                    let authorizer = authorizer.clone();
+                    let catalog_state_clone = catalog_state_clone.clone();
+                    Box::pin({
+                        async move {
+                            tabular_expiration_queue::tabular_expiration_worker::<C, A>(
+                                catalog_state_clone.clone(),
+                                authorizer.clone(),
+                                poll_interval,
+                                cancellation_token,
+                            )
+                            .await;
+                        }
+                    })
+                }),
+                num_workers: 2,
+            },
+        )
         .await;
 
         self.register_queue::<tabular_purge_queue::PurgeQueueConfig>(QueueRegistration {

@@ -2272,7 +2272,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ExpirationQueueConfig'
+                $ref: '#/components/schemas/TabularExpirationQueueConfig'
         4XX:
           description: ''
           content:
@@ -2296,7 +2296,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ExpirationQueueConfig'
+              $ref: '#/components/schemas/TabularExpirationQueueConfig'
         required: true
       responses:
         '204':
@@ -3063,9 +3063,6 @@ components:
         type:
           type: string
           description: Internal type definition of the error
-    ExpirationQueueConfig:
-      type: object
-      description: Warehouse-specific configuration for the expiration queue.
     GcsCredential:
       oneOf:
         - type: object
@@ -4621,6 +4618,9 @@ components:
               type: string
               enum:
                 - soft
+    TabularExpirationQueueConfig:
+      type: object
+      description: Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
     TabularIdentOrUuid:
       oneOf:
         - type: object
