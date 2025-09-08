@@ -10,7 +10,7 @@ use crate::{
             openfga::{OpenFGAError, OpenFGAResult},
             FgaType,
         },
-        NamespaceId, RoleId, TableId, ViewId,
+        NamespaceId, RoleId, TableId, TableIdInWarehouse, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -33,6 +33,13 @@ pub(super) trait ParseOpenFgaEntity: Sized {
 }
 
 pub(super) trait OpenFgaEntity: Sized {
+    fn to_openfga(&self) -> String;
+
+    fn openfga_type(&self) -> FgaType;
+}
+
+pub(super) trait OpenFgaEntityWithPrefix: Sized {
+    // TODO(mooori) make fn take prefix param
     fn to_openfga(&self) -> String;
 
     fn openfga_type(&self) -> FgaType;
@@ -207,13 +214,27 @@ impl OpenFgaEntity for WarehouseId {
     }
 }
 
-impl OpenFgaEntity for TableId {
+impl OpenFgaEntityWithPrefix for TableId {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
     }
 
     fn openfga_type(&self) -> FgaType {
         FgaType::Table
+    }
+}
+
+impl OpenFgaEntity for TableIdInWarehouse {
+    fn to_openfga(&self) -> String {
+        format!(
+            "{}/{}",
+            self.warehouse_id.to_openfga(),
+            self.table_id.to_openfga()
+        )
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        self.table_id.openfga_type()
     }
 }
 

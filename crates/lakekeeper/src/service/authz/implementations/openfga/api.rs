@@ -38,7 +38,8 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::implementations::openfga::{
-            entities::OpenFgaEntity, OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
+            entities::{OpenFgaEntity, OpenFgaEntityWithPrefix},
+            OpenFGAAuthorizer, OpenFGAError, OpenFGAResult,
         },
         Actor, Catalog, NamespaceId, Result, RoleId, SecretStore, State, TableId, UserId, ViewId,
     },

@@ -77,6 +77,12 @@ pub struct NamespaceId(uuid::Uuid);
 #[serde(transparent)]
 pub struct TableId(uuid::Uuid);
 
+#[derive(Debug)]
+pub struct TableIdInWarehouse {
+    warehouse_id: WarehouseId,
+    table_id: TableId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
@@ -94,6 +100,14 @@ impl TableId {
     #[must_use]
     pub fn new_random() -> Self {
         Self(uuid::Uuid::now_v7())
+    }
+
+    // TODO(mooori) pass in whid as param, no random generation
+    pub fn to_prefixed(self) -> TableIdInWarehouse {
+        TableIdInWarehouse {
+            warehouse_id: WarehouseId::new_random(),
+            table_id: self,
+        }
     }
 }
 

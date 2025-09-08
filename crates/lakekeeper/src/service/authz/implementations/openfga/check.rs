@@ -23,7 +23,10 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     service::{
-        authz::{implementations::openfga::entities::OpenFgaEntity, Authorizer},
+        authz::{
+            implementations::openfga::entities::{OpenFgaEntity, OpenFgaEntityWithPrefix},
+            Authorizer,
+        },
         Catalog, ListFlags, NamespaceId, Result, SecretStore, State, TableId, Transaction, ViewId,
     },
     ProjectId, WarehouseId,

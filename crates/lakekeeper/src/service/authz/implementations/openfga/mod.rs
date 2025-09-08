@@ -44,7 +44,7 @@ pub(crate) use client::{new_authorizer_from_config, new_client_from_config};
 pub use client::{
     BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
 };
-use entities::{OpenFgaEntity, ParseOpenFgaEntity as _};
+use entities::{OpenFgaEntity, OpenFgaEntityWithPrefix, ParseOpenFgaEntity as _};
 pub(crate) use error::{OpenFGAError, OpenFGAResult};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
@@ -627,7 +627,7 @@ impl Authorizer for OpenFGAAuthorizer {
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
-        self.require_no_relations(&table_id).await?;
+        self.require_no_relations(&table_id.to_prefixed()).await?;
 
         self.write(
             Some(vec![
@@ -657,7 +657,7 @@ impl Authorizer for OpenFGAAuthorizer {
     }
 
     async fn delete_table(&self, table_id: TableId) -> Result<()> {
-        self.delete_all_relations(&table_id).await
+        self.delete_all_relations(&table_id.to_prefixed()).await
     }
 
     async fn create_view(
