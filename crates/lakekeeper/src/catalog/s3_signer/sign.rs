@@ -22,7 +22,8 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, TableIdInWarehouse,
+        Transaction,
     },
     WarehouseId,
 };
@@ -163,7 +164,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // First check - fail fast if requested table is not allowed.
         // We also need to check later if the path matches the table location.
-        authorize_operation::<A>(operation, &request_metadata, table_id, authorizer).await?;
+        authorize_operation::<A>(
+            operation,
+            &request_metadata,
+            table_id.to_prefixed(warehouse_id),
+            authorizer,
+        )
+        .await?;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
@@ -408,7 +415,7 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn authorize_operation<A: Authorizer>(
     method: Operation,
     metadata: &RequestMetadata,
-    table_id: TableId,
+    table_id: TableIdInWarehouse,
     authorizer: A,
 ) -> Result<()> {
     // First check - fail fast if requested table is not allowed.

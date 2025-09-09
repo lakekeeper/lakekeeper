@@ -677,9 +677,10 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/{table_id}/access",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access",
     params(
         GetAccessQuery,
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
         ("table_id" = Uuid, Path, description = "Table ID")
     ),
     responses(
@@ -687,6 +688,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
+    Path(warehouse_id): Path<WarehouseId>,
     Path(table_id): Path<TableId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -697,7 +699,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
-        &table_id.to_openfga(),
+        &table_id.to_openfga(&warehouse_id),
         query.principal.as_ref(),
     )
     .await?;
@@ -960,9 +962,10 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     get,
     tag = "permissions",
-    path = "/management/v1/permissions/table/{table_id}/assignments",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
     params(
         GetTableAssignmentsQuery,
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
         ("table_id" = Uuid, Path, description = "Table ID"),
     ),
     responses(
@@ -970,13 +973,14 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
+    Path(warehouse_id): Path<WarehouseId>,
     Path(table_id): Path<TableId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetTableAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let object = table_id.to_openfga();
+    let object = table_id.to_openfga(&warehouse_id);
     authorizer
         .require_action(&metadata, AllTableRelations::CanReadAssignments, &object)
         .await?;
@@ -1179,9 +1183,10 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
 #[utoipa::path(
     post,
     tag = "permissions",
-    path = "/management/v1/permissions/table/{table_id}/assignments",
+    path = "/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
     request_body = UpdateTableAssignmentsRequest,
     params(
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
         ("table_id" = Uuid, Path, description = "Table ID"),
     ),
     responses(
@@ -1189,6 +1194,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
+    Path(warehouse_id): Path<WarehouseId>,
     Path(table_id): Path<TableId>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
@@ -1200,7 +1206,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
         metadata.actor(),
         request.writes,
         request.deletes,
-        &table_id.to_openfga(),
+        &table_id.to_openfga(&warehouse_id),
     )
     .await?;
 

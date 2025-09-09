@@ -39,8 +39,7 @@ pub(super) trait OpenFgaEntity: Sized {
 }
 
 pub(super) trait OpenFgaEntityWithPrefix: Sized {
-    // TODO(mooori) make fn take prefix param
-    fn to_openfga(&self) -> String;
+    fn to_openfga(&self, prefix: &impl OpenFgaEntity) -> String;
 
     fn openfga_type(&self) -> FgaType;
 }
@@ -214,9 +213,10 @@ impl OpenFgaEntity for WarehouseId {
     }
 }
 
+// TODO(mooori): remove this and do it all via TableIdInWarehouse?
 impl OpenFgaEntityWithPrefix for TableId {
-    fn to_openfga(&self) -> String {
-        format!("{}:{self}", self.openfga_type())
+    fn to_openfga(&self, prefix: &impl OpenFgaEntity) -> String {
+        format!("{}:{}/{self}", self.openfga_type(), prefix.to_openfga())
     }
 
     fn openfga_type(&self) -> FgaType {
@@ -226,11 +226,7 @@ impl OpenFgaEntityWithPrefix for TableId {
 
 impl OpenFgaEntity for TableIdInWarehouse {
     fn to_openfga(&self) -> String {
-        format!(
-            "{}/{}",
-            self.warehouse_id.to_openfga(),
-            self.table_id.to_openfga()
-        )
+        self.table_id.to_openfga(&self.warehouse_id)
     }
 
     fn openfga_type(&self) -> FgaType {

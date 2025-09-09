@@ -643,7 +643,7 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
-  /management/v1/permissions/table/{table_id}/access:
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
     get:
       tags:
         - permissions
@@ -664,6 +664,13 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
         - name: table_id
           in: path
           description: Table ID
@@ -678,7 +685,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAccessResponse'
-  /management/v1/permissions/table/{table_id}/assignments:
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
     get:
       tags:
         - permissions
@@ -693,6 +700,13 @@ paths:
             type: array
             items:
               $ref: '#/components/schemas/TableRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
         - name: table_id
           in: path
           description: Table ID
@@ -713,6 +727,13 @@ paths:
       summary: Update permissions for a table
       operationId: update_table_assignments_by_id
       parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
         - name: table_id
           in: path
           description: Table ID

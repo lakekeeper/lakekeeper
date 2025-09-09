@@ -9,7 +9,9 @@ use super::{
     health::HealthExt, Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
     TabularDetails, ViewId, WarehouseId,
 };
-use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
+use crate::{
+    api::iceberg::v1::Result, request_metadata::RequestMetadata, service::TableIdInWarehouse,
+};
 
 pub mod implementations;
 
@@ -127,6 +129,13 @@ pub enum CatalogViewAction {
     CanUndrop,
 }
 
+pub trait TableInWarehouseUuid {
+    fn table_uuid(&self) -> TableId;
+    fn warehouse_uuid(&self) -> WarehouseId;
+    fn table_id_in_warehouse(&self) -> TableIdInWarehouse;
+}
+
+// TODO(mooori) probably remove this
 pub trait TableUuid {
     fn table_uuid(&self) -> TableId;
 }
@@ -140,6 +149,34 @@ impl TableUuid for TableId {
 impl TableUuid for TabularDetails {
     fn table_uuid(&self) -> TableId {
         self.table_id
+    }
+}
+
+impl TableInWarehouseUuid for TableIdInWarehouse {
+    fn table_uuid(&self) -> TableId {
+        self.table_id
+    }
+
+    fn warehouse_uuid(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn table_id_in_warehouse(&self) -> TableIdInWarehouse {
+        self.table_id.to_prefixed(self.warehouse_id)
+    }
+}
+
+impl TableInWarehouseUuid for TabularDetails {
+    fn table_uuid(&self) -> TableId {
+        self.table_id
+    }
+
+    fn warehouse_uuid(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn table_id_in_warehouse(&self) -> TableIdInWarehouse {
+        self.table_id.to_prefixed(self.warehouse_id)
     }
 }
 
@@ -431,7 +468,7 @@ where
     async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableId,
+        table_id: TableIdInWarehouse,
         action: A,
     ) -> Result<bool>
     where
@@ -440,7 +477,7 @@ where
     async fn is_allowed_table_action<A>(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableId,
+        table_id: TableIdInWarehouse,
         action: A,
     ) -> Result<MustUse<bool>>
     where
@@ -466,7 +503,7 @@ where
     async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        tables_with_actions: Vec<(TableId, A)>,
+        tables_with_actions: Vec<(TableIdInWarehouse, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
@@ -482,7 +519,7 @@ where
     async fn are_allowed_table_actions<A>(
         &self,
         metadata: &RequestMetadata,
-        tables_with_actions: Vec<(TableId, A)>,
+        tables_with_actions: Vec<(TableIdInWarehouse, A)>,
     ) -> Result<MustUse<Vec<bool>>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
@@ -634,13 +671,13 @@ where
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableId,
+        table_id: TableIdInWarehouse,
         parent: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a table is deleted.
     /// This is used to clean up permissions for the table.
-    async fn delete_table(&self, table_id: TableId) -> Result<()>;
+    async fn delete_table(&self, table_id: TableIdInWarehouse) -> Result<()>;
 
     /// Hook that is called when a new view is created.
     /// This is used to set up the initial permissions for the view.
@@ -820,28 +857,32 @@ where
         }
     }
 
-    async fn require_table_action<T: TableUuid + Send>(
+    async fn require_table_action<T: TableInWarehouseUuid + Send>(
         &self,
         metadata: &RequestMetadata,
-        table_id: Result<Option<T>>,
+        table_details: Result<Option<T>>,
         action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
         let actor = metadata.actor();
         let msg = format!("Table not found or action {action} forbidden for {actor}");
         let typ = "TableActionForbidden";
 
-        match table_id {
+        match table_details {
             Ok(None) => {
                 tracing::debug!("Table not found, returning forbidden.");
                 Err(ErrorModel::forbidden(msg, typ, None).into())
             }
-            Ok(Some(table_id)) => {
+            Ok(Some(table_details)) => {
                 if self
-                    .is_allowed_table_action(metadata, table_id.table_uuid(), action)
+                    .is_allowed_table_action(
+                        metadata,
+                        table_details.table_id_in_warehouse(),
+                        action,
+                    )
                     .await?
                     .into_inner()
                 {
-                    Ok(table_id)
+                    Ok(table_details)
                 } else {
                     tracing::trace!("Table action forbidden.");
                     Err(ErrorModel::forbidden(msg, typ, None).into())
@@ -1147,7 +1188,7 @@ pub(crate) mod tests {
         async fn is_allowed_table_action_impl<A>(
             &self,
             _metadata: &RequestMetadata,
-            table_id: TableId,
+            table_id: TableIdInWarehouse,
             action: A,
         ) -> Result<bool>
         where
@@ -1244,13 +1285,13 @@ pub(crate) mod tests {
         async fn create_table(
             &self,
             _metadata: &RequestMetadata,
-            _table_id: TableId,
+            _table_id: TableIdInWarehouse,
             _parent: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn delete_table(&self, _table_id: TableId) -> Result<()> {
+        async fn delete_table(&self, _table_id: TableIdInWarehouse) -> Result<()> {
             Ok(())
         }
 
@@ -1321,6 +1362,10 @@ pub(crate) mod tests {
         CatalogNamespaceAction::CanListViews,
         NamespaceId::new_random()
     );
-    test_block_action!(table, CatalogTableAction::CanDrop, TableId::new_random());
+    test_block_action!(
+        table,
+        CatalogTableAction::CanDrop,
+        TableId::new_random().to_prefixed(WarehouseId::new_random())
+    );
     test_block_action!(view, CatalogViewAction::CanDrop, ViewId::new_random());
 }

@@ -13,8 +13,9 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authz::{Authorizer, CatalogNamespaceAction, CatalogViewAction},
-        Catalog, SecretStore, State, Transaction,
+        Catalog, SecretStore, State, Transaction, ViewId,
     },
+    WarehouseId,
 };
 
 pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
@@ -45,7 +46,9 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-
+    fn new_view_details(_warehouse_id: WarehouseId, view_id: ViewId) -> ViewId {
+        view_id
+    }
     let (identifiers, view_uuids, next_page_token) =
         crate::catalog::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
@@ -57,7 +60,8 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
                 namespace_id,
                 authorizer,
                 request_metadata,
-                warehouse_id
+                warehouse_id,
+                new_view_details
             ),
             &mut t,
         )

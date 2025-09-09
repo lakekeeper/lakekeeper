@@ -13,8 +13,8 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId, ViewId,
-        WarehouseId,
+        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableIdInWarehouse,
+        ViewId, WarehouseId,
     },
 };
 
@@ -127,7 +127,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_table_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
-        _table_id: TableId,
+        _table_id: TableIdInWarehouse,
         _action: A,
     ) -> Result<bool>
     where
@@ -218,13 +218,13 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_table(
         &self,
         _metadata: &RequestMetadata,
-        _table_id: TableId,
+        _table_id: TableIdInWarehouse,
         _parent: NamespaceId,
     ) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_table(&self, _table_id: TableId) -> Result<()> {
+    async fn delete_table(&self, _table_id: TableIdInWarehouse) -> Result<()> {
         Ok(())
     }
 

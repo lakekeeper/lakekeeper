@@ -77,10 +77,10 @@ pub struct NamespaceId(uuid::Uuid);
 #[serde(transparent)]
 pub struct TableId(uuid::Uuid);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 pub struct TableIdInWarehouse {
-    warehouse_id: WarehouseId,
-    table_id: TableId,
+    pub warehouse_id: WarehouseId,
+    pub table_id: TableId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
@@ -102,10 +102,9 @@ impl TableId {
         Self(uuid::Uuid::now_v7())
     }
 
-    // TODO(mooori) pass in whid as param, no random generation
-    pub fn to_prefixed(self) -> TableIdInWarehouse {
+    pub fn to_prefixed(self, warehouse_id: WarehouseId) -> TableIdInWarehouse {
         TableIdInWarehouse {
-            warehouse_id: WarehouseId::new_random(),
+            warehouse_id,
             table_id: self,
         }
     }
@@ -361,6 +360,12 @@ impl From<&uuid::Uuid> for NamespaceId {
     }
 }
 
+impl std::fmt::Display for TableIdInWarehouse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.warehouse_id, self.table_id)
+    }
+}
+
 impl std::fmt::Display for TableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -506,13 +511,18 @@ impl TryFrom<Prefix> for WarehouseId {
 }
 
 #[derive(Debug, Clone)]
-/// Metadata for a tabular dataset, including its unique `table_id` and
-/// the storage `location` where its data lives.
+/// Metadata for a tabular dataset, including its `warehouse_id`, `table_id` and the storage
+/// `location` where its data lives.
+///
+/// Note that `table_id`s can be reused across warehouses. So `table_id` may not be unique, but
+/// `(warehouse_id, table_id)` is.
 pub struct TabularDetails {
+    pub warehouse_id: WarehouseId,
     pub table_id: TableId,
     pub location: String,
 }
 
+// TODO(mooori) remove these or change target to TableIdInWarehouse
 impl Deref for TabularDetails {
     type Target = TableId;
 

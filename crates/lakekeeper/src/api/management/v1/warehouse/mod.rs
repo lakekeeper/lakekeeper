@@ -801,8 +801,13 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
-        undrop::require_undrop_permissions(&request, &context.v1_state.authz, &request_metadata)
-            .await?;
+        undrop::require_undrop_permissions(
+            &warehouse_id,
+            &request,
+            &context.v1_state.authz,
+            &request_metadata,
+        )
+        .await?;
 
         // ------------------- Business Logic -------------------
         let catalog = context.v1_state.catalog;
@@ -896,7 +901,7 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                             ),
                             TabularId::Table(id) => authorizer.is_allowed_table_action(
                                 &request_metadata,
-                                (*id).into(),
+                                TableId::from(*id).to_prefixed(warehouse_id),
                                 crate::service::authz::CatalogTableAction::CanIncludeInList,
                             ),
                         }))

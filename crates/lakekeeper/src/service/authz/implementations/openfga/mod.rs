@@ -25,7 +25,7 @@ use crate::{
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
             ListProjectsResponse, Result,
         },
-        NamespaceId, TableId,
+        NamespaceId, TableIdInWarehouse,
     },
     ProjectId, WarehouseId, CONFIG,
 };
@@ -44,7 +44,7 @@ pub(crate) use client::{new_authorizer_from_config, new_client_from_config};
 pub use client::{
     BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
 };
-use entities::{OpenFgaEntity, OpenFgaEntityWithPrefix, ParseOpenFgaEntity as _};
+use entities::{OpenFgaEntity, ParseOpenFgaEntity as _};
 pub(crate) use error::{OpenFGAError, OpenFGAResult};
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 pub(crate) use migration::migrate;
@@ -356,7 +356,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn is_allowed_table_action_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableId,
+        table_id: TableIdInWarehouse,
         action: A,
     ) -> Result<bool>
     where
@@ -374,7 +374,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn are_allowed_table_actions_impl<A>(
         &self,
         metadata: &RequestMetadata,
-        tables_with_actions: Vec<(TableId, A)>,
+        tables_with_actions: Vec<(TableIdInWarehouse, A)>,
     ) -> Result<Vec<bool>>
     where
         A: From<CatalogTableAction> + std::fmt::Display + Send,
@@ -618,7 +618,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableId,
+        table_id: TableIdInWarehouse,
         parent: NamespaceId,
     ) -> Result<()> {
         let actor = metadata.actor();
@@ -627,7 +627,7 @@ impl Authorizer for OpenFGAAuthorizer {
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
-        self.require_no_relations(&table_id.to_prefixed()).await?;
+        self.require_no_relations(&table_id).await?;
 
         self.write(
             Some(vec![
@@ -656,8 +656,8 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn delete_table(&self, table_id: TableId) -> Result<()> {
-        self.delete_all_relations(&table_id.to_prefixed()).await
+    async fn delete_table(&self, table_details: TableIdInWarehouse) -> Result<()> {
+        self.delete_all_relations(&table_details).await
     }
 
     async fn create_view(

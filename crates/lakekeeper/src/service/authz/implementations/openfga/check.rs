@@ -251,12 +251,19 @@ async fn check_table<C: Catalog, S: SecretStore>(
         AllTableRelations::CanReadAssignments
     });
     Ok(match table {
-        TabularIdentOrUuid::Id { table_id } => {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id,
+            table_id,
+        } => {
             let table_id = TableId::from(*table_id);
             authorizer
-                .require_table_action(metadata, Ok(Some(table_id)), action)
+                .require_table_action(
+                    metadata,
+                    Ok(Some(table_id.to_prefixed(*warehouse_id))),
+                    action,
+                )
                 .await?;
-            table_id
+            table_id.to_openfga(warehouse_id)
         }
         TabularIdentOrUuid::Name {
             namespace,
@@ -282,10 +289,9 @@ async fn check_table<C: Catalog, S: SecretStore>(
             )
             .await?;
             t.commit().await.ok();
-            table_id
+            table_id.to_openfga(warehouse_id)
         }
-    }
-    .to_openfga())
+    })
 }
 
 async fn check_view<C: Catalog, S: SecretStore>(
@@ -299,7 +305,10 @@ async fn check_view<C: Catalog, S: SecretStore>(
         AllViewRelations::CanReadAssignments
     });
     Ok(match view {
-        TabularIdentOrUuid::Id { table_id } => {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id: _,
+            table_id,
+        } => {
             let view_id = ViewId::from(*table_id);
             authorizer
                 .require_view_action(metadata, Ok(Some(view_id)), action)
@@ -390,7 +399,9 @@ pub(super) enum NamespaceIdentOrUuid {
 /// Identifier for a table or view, either a UUID or its name and namespace
 pub(super) enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
-    Id {
+    IdInWarehouse {
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
         #[serde(alias = "view_id")]
         table_id: uuid::Uuid,
     },
