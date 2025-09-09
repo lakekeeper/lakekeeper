@@ -233,13 +233,8 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
         }
         ServerInfo::Bootstrapped {
             server_id,
-            terms_accepted,
         } => {
-            if !terms_accepted {
-                Err(anyhow!(
-                    "The terms of service have not been accepted on bootstrap."
-                ))
-            } else if *server_id != CONFIG.server_id {
+            if *server_id != CONFIG.server_id {
                 Err(anyhow!(
                     "The server ID during bootstrap {} does not match the server ID in the configuration {}.",
                     server_id, CONFIG.server_id

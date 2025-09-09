@@ -203,8 +203,6 @@ pub enum ServerInfo {
     Bootstrapped {
         /// Server ID of the catalog at the time of bootstrapping
         server_id: uuid::Uuid,
-        /// Whether the terms have been accepted
-        terms_accepted: bool,
     },
 }
 
@@ -280,7 +278,6 @@ where
     /// If bootstrapped succeeded, return Ok(true).
     /// If the catalog is already bootstrapped, return Ok(false).
     async fn bootstrap<'a>(
-        terms_accepted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
 

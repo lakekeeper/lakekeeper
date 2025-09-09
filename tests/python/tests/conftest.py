@@ -471,7 +471,7 @@ def server(access_token) -> Server:
         response = requests.post(
             management_url + "v1/bootstrap",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"accept-terms-of-use": True},
+            json={},
         )
         response.raise_for_status()
 

@@ -192,9 +192,7 @@ jobs:
             "$MANAGEMENT_URL/v1/bootstrap" \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{
-              "accept-terms-of-use": true
-            }' \
+            -d '{}' \
             || echo "Bootstrap may have already been completed"
 
       - name: Dump docker logs on failure

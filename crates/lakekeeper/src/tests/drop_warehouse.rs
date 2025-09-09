@@ -34,7 +34,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     ApiServer::bootstrap(
         api_context.clone(),
         random_request_metadata(),
-        BootstrapRequest::builder().accept_terms_of_use().build(),
+        BootstrapRequest::builder().build(),
     )
     .await
     .unwrap();

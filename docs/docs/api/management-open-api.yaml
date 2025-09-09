@@ -2454,12 +2454,7 @@ components:
                 - azure-system-identity
     BootstrapRequest:
       type: object
-      required:
-        - accept-terms-of-use
       properties:
-        accept-terms-of-use:
-          type: boolean
-          description: Set to true if you accept LAKEKEEPER terms of use.
         is-operator:
           type: boolean
           description: |-

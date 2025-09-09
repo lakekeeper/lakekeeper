@@ -37,7 +37,6 @@ pub(super) async fn get_validation_data<
     if let Some(server) = server {
         Ok(ServerInfo::Bootstrapped {
             server_id: server.server_id,
-            terms_accepted: server.terms_accepted,
         })
     } else {
         Ok(ServerInfo::NotBootstrapped)
@@ -45,7 +44,6 @@ pub(super) async fn get_validation_data<
 }
 
 pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
-    terms_accepted: bool,
     connection: E,
 ) -> Result<bool> {
     let server_id = CONFIG.server_id;
@@ -53,14 +51,13 @@ pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx:
     let result = sqlx::query!(
         r#"
         INSERT INTO server (single_row, server_id, open_for_bootstrap, terms_accepted)
-        VALUES (true, $1, false, $2)
+        VALUES (true, $1, false, true)
         ON CONFLICT (single_row)
-        DO UPDATE SET terms_accepted = $2, open_for_bootstrap = false
+        DO UPDATE SET open_for_bootstrap = false, terms_accepted = true
         WHERE server.open_for_bootstrap = true
         returning server_id
         "#,
         server_id,
-        terms_accepted,
     )
     .fetch_one(connection)
     .await;
@@ -94,18 +91,17 @@ mod test {
         let data = get_validation_data(&state.read_pool()).await.unwrap();
         assert_eq!(data, ServerInfo::NotBootstrapped);
 
-        let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
+        let success = bootstrap(&state.read_write.write_pool).await.unwrap();
         assert!(success);
         let data = get_validation_data(&state.read_pool()).await.unwrap();
         assert_eq!(
             data,
             ServerInfo::Bootstrapped {
                 server_id: CONFIG.server_id,
-                terms_accepted: true,
             }
         );
 
-        let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
+        let success = bootstrap(&state.read_write.write_pool).await.unwrap();
         assert!(!success);
     }
 }

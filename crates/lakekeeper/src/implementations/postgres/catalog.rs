@@ -86,10 +86,9 @@ impl Catalog for super::PostgresCatalog {
 
     // ---------------- Bootstrap ----------------
     async fn bootstrap<'a>(
-        terms_accepted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool> {
-        bootstrap(terms_accepted, &mut **transaction).await
+        bootstrap(&mut **transaction).await
     }
 
     async fn get_warehouse_by_name(

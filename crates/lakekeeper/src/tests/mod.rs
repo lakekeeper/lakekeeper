@@ -214,7 +214,6 @@ pub(crate) async fn setup<T: Authorizer>(
         api_context.clone(),
         metadata.clone(),
         BootstrapRequest {
-            accept_terms_of_use: true,
             is_operator: true,
             user_name: None,
             user_email: None,

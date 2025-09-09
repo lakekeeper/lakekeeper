@@ -25,9 +25,6 @@ pub enum AuthZBackend {
 #[derive(Debug, Deserialize, utoipa::ToSchema, TypedBuilder)]
 #[serde(rename_all = "kebab-case")]
 pub struct BootstrapRequest {
-    /// Set to true if you accept LAKEKEEPER terms of use.
-    #[builder(setter(strip_bool))]
-    pub accept_terms_of_use: bool,
     /// If set to true, the calling user is treated as an operator and obtain
     /// a corresponding role. If not specified, the user is treated as a human.
     #[serde(default)]
@@ -89,18 +86,8 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             user_name,
             user_email,
             user_type,
-            accept_terms_of_use,
             is_operator,
         } = request;
-
-        if !accept_terms_of_use {
-            return Err(ErrorModel::builder()
-                .code(http::StatusCode::BAD_REQUEST.into())
-                .message("You must accept the terms of use to bootstrap the catalog.".to_string())
-                .r#type("TermsOfUseNotAccepted".to_string())
-                .build()
-                .into());
-        }
 
         // ------------------- AUTHZ -------------------
         // We check at two places if we can bootstrap: AuthZ and the catalog.
@@ -111,7 +98,7 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
-        let success = C::bootstrap(request.accept_terms_of_use, t.transaction()).await?;
+        let success = C::bootstrap(t.transaction()).await?;
         if !success {
             return Err(ErrorModel::bad_request(
                 "Catalog already bootstrapped",
