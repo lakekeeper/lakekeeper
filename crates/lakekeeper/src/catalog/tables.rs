@@ -1500,7 +1500,6 @@ async fn try_commit_tables<
     Ok(commits)
 }
 
-// TODO(mooori) return TableIdInWarehouse
 pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer: A,
     metadata: &RequestMetadata,
