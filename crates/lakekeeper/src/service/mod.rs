@@ -102,6 +102,7 @@ impl TableId {
         Self(uuid::Uuid::now_v7())
     }
 
+    // TODO(mooori) rename to `in_warehouse`
     pub fn to_prefixed(self, warehouse_id: WarehouseId) -> TableIdInWarehouse {
         TableIdInWarehouse {
             warehouse_id,

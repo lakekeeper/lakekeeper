@@ -299,14 +299,14 @@ async fn check_view<C: Catalog, S: SecretStore>(
     });
     Ok(match view {
         TabularIdentOrUuid::IdInWarehouse {
-            warehouse_id: _,
+            warehouse_id,
             table_id,
         } => {
             let view_id = ViewId::from(*table_id);
             authorizer
-                .require_view_action(metadata, Ok(Some(view_id)), action)
+                .require_view_action(metadata, *warehouse_id, Ok(Some(view_id)), action)
                 .await?;
-            view_id
+            (*warehouse_id, view_id).to_openfga()
         }
         TabularIdentOrUuid::Name {
             namespace,
@@ -327,10 +327,9 @@ async fn check_view<C: Catalog, S: SecretStore>(
             )
             .await?;
             t.commit().await.ok();
-            view_id
+            (*warehouse_id, view_id).to_openfga()
         }
-    }
-    .to_openfga())
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]

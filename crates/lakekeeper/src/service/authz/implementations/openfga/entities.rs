@@ -10,7 +10,7 @@ use crate::{
             openfga::{OpenFGAError, OpenFGAResult},
             FgaType,
         },
-        NamespaceId, RoleId, TableIdInWarehouse, ViewId,
+        NamespaceId, RoleId, TableId, TableIdInWarehouse, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -211,6 +211,17 @@ impl OpenFgaEntity for WarehouseId {
 ///
 /// Table ids can be reused across warehouses, so this context is required to ensure that `table`
 /// entities are unique.
+impl OpenFgaEntity for (WarehouseId, TableId) {
+    fn to_openfga(&self) -> String {
+        format!("{}:{}/{}", self.openfga_type(), self.0, self.1)
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Table
+    }
+}
+
+// TODO(mooori) remove this
 impl OpenFgaEntity for TableIdInWarehouse {
     fn to_openfga(&self) -> String {
         format!(
@@ -236,9 +247,13 @@ impl OpenFgaEntity for NamespaceId {
     }
 }
 
-impl OpenFgaEntity for ViewId {
+/// Adds warehouse context to the OpenFga entity for `view`.
+///
+/// View ids can be reused across warehouses, so this context is required to ensure that `view`
+/// entities are unique.
+impl OpenFgaEntity for (WarehouseId, ViewId) {
     fn to_openfga(&self) -> String {
-        format!("{}:{self}", self.openfga_type())
+        format!("{}:{}/{}", self.openfga_type(), self.0, self.1)
     }
 
     fn openfga_type(&self) -> FgaType {

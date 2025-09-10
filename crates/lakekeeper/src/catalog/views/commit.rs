@@ -70,7 +70,12 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
     let view_id = C::view_to_id(warehouse_id, &identifier, t.transaction()).await; // We can't fail before AuthZ;
     let view_id = authorizer
-        .require_view_action(&request_metadata, view_id, CatalogViewAction::CanCommit)
+        .require_view_action(
+            &request_metadata,
+            warehouse_id,
+            view_id,
+            CatalogViewAction::CanCommit,
+        )
         .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
@@ -92,7 +97,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
     t.commit().await?;
 
     // Verify assertions (only needed once)
-    check_asserts(requirements.as_ref(), view_id)?;
+    check_asserts(requirements.as_ref(), warehouse_id, view_id)?;
 
     // Start the retry loop
     let request = Arc::new(request);
@@ -102,7 +107,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             CommitViewContext {
                 warehouse_id,
                 namespace_id,
-                view_id,
+                view_id: view_id,
                 identifier: &identifier,
                 storage_profile,
                 storage_secret_id,
@@ -288,12 +293,24 @@ async fn try_commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
     ))
 }
 
-fn check_asserts(requirements: Option<&Vec<ViewRequirement>>, view_id: ViewId) -> Result<()> {
+fn check_asserts(
+    requirements: Option<&Vec<ViewRequirement>>,
+    warehouse_id: WarehouseId,
+    view_id: ViewId,
+) -> Result<()> {
     if let Some(requirements) = requirements {
         for assertion in requirements {
             match assertion {
-                ViewRequirement::AssertViewUuid(uuid) => {
-                    if uuid.uuid != *view_id {
+                ViewRequirement::AssertViewUuid(req) => {
+                    if req.warehouse_uuid != *warehouse_id {
+                        return Err(ErrorModel::bad_request(
+                            "View WarehouseId does not match",
+                            "ViewWarehouseIdMismatch",
+                            None,
+                        )
+                        .into());
+                    }
+                    if req.uuid != *view_id {
                         return Err(ErrorModel::bad_request(
                             "View UUID does not match",
                             "ViewUuidMismatch",
@@ -399,6 +416,7 @@ mod test {
             create::test::{create_view, create_view_request},
             test::setup,
         },
+        WarehouseId,
     };
 
     #[sqlx::test]
@@ -415,7 +433,7 @@ mod test {
         .await
         .unwrap();
 
-        let rq: CommitViewRequest = spark_commit_update_request(Some(view.metadata.uuid()));
+        let rq: CommitViewRequest = spark_commit_update_request(whi, Some(view.metadata.uuid()));
 
         let res = Box::pin(super::commit_view(
             views::ViewParameters {
@@ -468,7 +486,7 @@ mod test {
         .await
         .unwrap();
 
-        let rq: CommitViewRequest = spark_commit_update_request(Some(Uuid::now_v7()));
+        let rq: CommitViewRequest = spark_commit_update_request(whi, Some(Uuid::now_v7()));
 
         let err = Box::pin(super::commit_view(
             ViewParameters {
@@ -492,7 +510,10 @@ mod test {
         assert_eq!(err.error.r#type, "ViewUuidMismatch");
     }
 
-    fn spark_commit_update_request(asserted_uuid: Option<Uuid>) -> CommitViewRequest {
+    fn spark_commit_update_request(
+        warehouse_id: WarehouseId,
+        asserted_uuid: Option<Uuid>,
+    ) -> CommitViewRequest {
         let uuid = asserted_uuid.map_or("019059cb-9277-7ff0-b71a-537df05b33f8".into(), |u| {
             u.to_string()
         });
@@ -500,6 +521,7 @@ mod test {
   "requirements": [
     {
       "type": "assert-view-uuid",
+      "warehouse-uuid": *warehouse_id,
       "uuid": &uuid
     }
   ],

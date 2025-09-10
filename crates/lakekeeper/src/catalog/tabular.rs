@@ -13,7 +13,7 @@ pub(crate) fn default_table_flags() -> ListFlags {
 }
 
 macro_rules! list_entities {
-    ($entity:ident, $list_fn:ident, $namespace:ident, $namespace_id:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident, $tabular_details_fn:path) => {
+    ($entity:ident, $list_fn:ident, $namespace:ident, $namespace_id:ident, $authorizer:ident, $request_metadata:ident, $warehouse_id:ident) => {
         |ps, page_token, trx| {
             use ::paste::paste;
             paste! {
@@ -56,8 +56,9 @@ macro_rules! list_entities {
                     paste! {
                         authorizer.[<are_allowed_ $entity:lower _actions>](
                             &request_metadata,
+                            $warehouse_id,
                             ids.iter().map(|id| (
-                                $tabular_details_fn($warehouse_id, *id),
+                                *id,
                                 [<Catalog $entity Action>]::CanIncludeInList)
                             ).collect(),
                         ).await?.into_inner()

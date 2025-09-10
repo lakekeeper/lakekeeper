@@ -13,8 +13,8 @@ use crate::{
             CatalogWarehouseAction, ListProjectsResponse, NamespaceParent,
         },
         health::{Health, HealthExt},
-        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableIdInWarehouse,
-        ViewId, WarehouseId,
+        Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
+        TableIdInWarehouse, ViewId, WarehouseId,
     },
 };
 
@@ -127,7 +127,8 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_table_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
-        _table_id: TableIdInWarehouse,
+        _warehouse_id: WarehouseId,
+        _table_id: TableId,
         _action: A,
     ) -> Result<bool>
     where
@@ -139,6 +140,7 @@ impl Authorizer for AllowAllAuthorizer {
     async fn is_allowed_view_action_impl<A>(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
         _view_id: ViewId,
         _action: A,
     ) -> Result<bool>
@@ -231,13 +233,14 @@ impl Authorizer for AllowAllAuthorizer {
     async fn create_view(
         &self,
         _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
         _view_id: ViewId,
         _parent: NamespaceId,
     ) -> Result<()> {
         Ok(())
     }
 
-    async fn delete_view(&self, _view_id: ViewId) -> Result<()> {
+    async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
         Ok(())
     }
 }

@@ -62,7 +62,7 @@ use crate::{
         },
         Catalog, CreateTableResponse, GetNamespaceResponse, ListFlags,
         LoadTableResponse as CatalogLoadTableResult, State, TableCommit, TableCreation, TableId,
-        TableIdInWarehouse, TabularDetails, TabularId, Transaction, WarehouseStatus,
+        TabularDetails, TabularId, Transaction, WarehouseStatus,
     },
     WarehouseId,
 };
@@ -106,9 +106,6 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
-        fn new_table_details(warehouse_id: WarehouseId, table_id: TableId) -> TableIdInWarehouse {
-            table_id.to_prefixed(warehouse_id)
-        }
         let (identifiers, table_uuids, next_page_token) =
             catalog::fetch_until_full_page::<_, _, _, C>(
                 query.page_size,
@@ -120,8 +117,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                     namespace_id,
                     authorizer,
                     request_metadata,
-                    warehouse_id,
-                    new_table_details
+                    warehouse_id
                 ),
                 &mut t,
             )
@@ -1036,12 +1032,14 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
-                tabular_details.table_id.to_prefixed(warehouse_id),
+                warehouse_id,
+                tabular_details.table_id,
                 CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
-                tabular_details.table_id.to_prefixed(warehouse_id),
+                warehouse_id,
+                tabular_details.table_id,
                 CatalogTableAction::CanWriteData,
             ),
         )?;

@@ -221,7 +221,7 @@ where
             };
 
             authorizer
-                .delete_view(view_id)
+                .delete_view(task.task_metadata.warehouse_id, view_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(
