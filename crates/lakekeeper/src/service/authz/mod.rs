@@ -135,23 +135,6 @@ pub trait TableInWarehouseUuid {
     fn table_id_in_warehouse(&self) -> TableIdInWarehouse;
 }
 
-// TODO(mooori) probably remove this
-pub trait TableUuid {
-    fn table_uuid(&self) -> TableId;
-}
-
-impl TableUuid for TableId {
-    fn table_uuid(&self) -> TableId {
-        *self
-    }
-}
-
-impl TableUuid for TabularDetails {
-    fn table_uuid(&self) -> TableId {
-        self.table_id
-    }
-}
-
 impl TableInWarehouseUuid for TableIdInWarehouse {
     fn table_uuid(&self) -> TableId {
         self.table_id

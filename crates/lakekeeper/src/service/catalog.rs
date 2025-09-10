@@ -13,8 +13,8 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    authz::TableUuid, storage::StorageProfile, NamespaceId, ProjectId, RoleId, TableId,
-    TabularDetails, ViewId, WarehouseId, WarehouseStatus,
+    storage::StorageProfile, NamespaceId, ProjectId, RoleId, TableId, TabularDetails, ViewId,
+    WarehouseId, WarehouseStatus,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -127,12 +127,6 @@ pub struct GetTableMetadataResponse {
     pub metadata_location: Option<String>,
     pub storage_secret_ident: Option<SecretIdent>,
     pub storage_profile: StorageProfile,
-}
-
-impl TableUuid for GetTableMetadataResponse {
-    fn table_uuid(&self) -> TableId {
-        self.table_id
-    }
 }
 
 impl TableInWarehouseUuid for GetTableMetadataResponse {
