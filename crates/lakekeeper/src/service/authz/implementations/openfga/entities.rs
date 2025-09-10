@@ -10,7 +10,7 @@ use crate::{
             openfga::{OpenFGAError, OpenFGAResult},
             FgaType,
         },
-        NamespaceId, RoleId, TableId, TableIdInWarehouse, ViewId,
+        NamespaceId, RoleId, TableIdInWarehouse, ViewId,
     },
     ProjectId, WarehouseId,
 };
@@ -34,12 +34,6 @@ pub(super) trait ParseOpenFgaEntity: Sized {
 
 pub(super) trait OpenFgaEntity: Sized {
     fn to_openfga(&self) -> String;
-
-    fn openfga_type(&self) -> FgaType;
-}
-
-pub(super) trait OpenFgaEntityWithPrefix: Sized {
-    fn to_openfga(&self, prefix: &impl OpenFgaEntity) -> String;
 
     fn openfga_type(&self) -> FgaType;
 }
@@ -213,24 +207,22 @@ impl OpenFgaEntity for WarehouseId {
     }
 }
 
-// TODO(mooori): remove this and do it all via TableIdInWarehouse?
-impl OpenFgaEntityWithPrefix for TableId {
-    fn to_openfga(&self, prefix: &impl OpenFgaEntity) -> String {
-        format!("{}:{}/{self}", self.openfga_type(), prefix.to_openfga())
+/// Adds warehouse context to the OpenFga entity for `table`.
+///
+/// Table ids can be reused across warehouses, so this context is required to ensure that `table`
+/// entities are unique.
+impl OpenFgaEntity for TableIdInWarehouse {
+    fn to_openfga(&self) -> String {
+        format!(
+            "{}:{}/{}",
+            self.openfga_type(),
+            self.warehouse_id,
+            self.table_id
+        )
     }
 
     fn openfga_type(&self) -> FgaType {
         FgaType::Table
-    }
-}
-
-impl OpenFgaEntity for TableIdInWarehouse {
-    fn to_openfga(&self) -> String {
-        self.table_id.to_openfga(&self.warehouse_id)
-    }
-
-    fn openfga_type(&self) -> FgaType {
-        self.table_id.openfga_type()
     }
 }
 
