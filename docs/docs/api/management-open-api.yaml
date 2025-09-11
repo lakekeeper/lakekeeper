@@ -648,7 +648,8 @@ paths:
       tags:
         - permissions
       summary: Get my access to a table
-      operationId: get_table_access_by_id
+      description: This endpoint is deprecated and will be removed in a future version.
+      operationId: get_table_access_by_id_deprecated
       parameters:
         - name: principalUser
           in: query
@@ -678,12 +679,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAccessResponse'
+      deprecated: true
   /management/v1/permissions/table/{table_id}/assignments:
     get:
       tags:
         - permissions
       summary: Get user and role assignments for a table
-      operationId: get_table_assignments_by_id
+      description: This endpoint is deprecated and will be removed in a future version.
+      operationId: get_table_assignments_by_id_deprecated
       parameters:
         - name: relations
           in: query
@@ -707,11 +710,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetTableAssignmentsResponse'
+      deprecated: true
     post:
       tags:
         - permissions
       summary: Update permissions for a table
-      operationId: update_table_assignments_by_id
+      description: This endpoint is deprecated and will be removed in a future version.
+      operationId: update_table_assignments_by_id_deprecated
       parameters:
         - name: table_id
           in: path
@@ -729,12 +734,14 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+      deprecated: true
   /management/v1/permissions/view/{view_id}/access:
     get:
       tags:
         - permissions
       summary: Get my access to a view
-      operationId: get_view_access_by_id
+      description: This endpoint is deprecated and will be removed in a future version.
+      operationId: get_view_access_by_id_deprecated
       parameters:
         - name: principalUser
           in: query
@@ -747,6 +754,13 @@ paths:
         - name: principalRole
           in: query
           required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
           schema:
             type: string
             format: uuid
@@ -764,12 +778,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetViewAccessResponse'
+      deprecated: true
   /management/v1/permissions/view/{view_id}/assignments:
     get:
       tags:
         - permissions
       summary: Get user and role assignments for a view
-      operationId: get_view_assignments_by_id
+      description: This endpoint is deprecated and will be removed in a future version.
+      operationId: get_view_assignments_by_id_deprecated
       parameters:
         - name: relations
           in: query
@@ -793,11 +809,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetViewAssignmentsResponse'
+      deprecated: true
     post:
       tags:
         - permissions
       summary: Update permissions for a view
-      operationId: update_view_assignments_by_id
+      description: This endpoint is deprecated and will be removed in a future version.
+      operationId: update_view_assignments_by_id_deprecated
       parameters:
         - name: view_id
           in: path
@@ -815,6 +833,7 @@ paths:
       responses:
         '204':
           description: Permissions updated successfully
+      deprecated: true
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
@@ -945,6 +964,220 @@ paths:
       responses:
         '200':
           description: ''
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to a table
+      operationId: get_table_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Server Relations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableAccessResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments for a table
+      operationId: get_table_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/TableRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTableAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a table
+      operationId: update_table_assignments_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTableAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access:
+    get:
+      tags:
+        - permissions
+      summary: Get my access to a view
+      operationId: get_view_access_by_id
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user or role to show access for.
+            If not specified, shows access for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetViewAccessResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments:
+    get:
+      tags:
+        - permissions
+      summary: Get user and role assignments for a view
+      operationId: get_view_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ViewRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetViewAssignmentsResponse'
+    post:
+      tags:
+        - permissions
+      summary: Update permissions for a view
+      operationId: update_view_assignments_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateViewAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
   /management/v1/project:
     get:
       tags:
