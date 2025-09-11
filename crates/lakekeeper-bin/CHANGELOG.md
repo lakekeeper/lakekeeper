@@ -2,6 +2,13 @@
 
 
 
+## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-11)
+
+
+### Features
+
+* Random Server IDs ([#1328](https://github.com/lakekeeper/lakekeeper/issues/1328)) ([4a84ce5](https://github.com/lakekeeper/lakekeeper/commit/4a84ce518936494938a3b523ffc2c3e4f7abc304))
+
 ## [0.9.5](https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5) (2025-08-14)
 
 
