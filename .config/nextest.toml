@@ -24,6 +24,9 @@ failure-output = "immediate-final"
 fail-fast = false
 retries = 0
 
+[profile.ci.junit] # this can be some other profile, too
+path = "junit.xml"
+
 # Can require external services but no secrets.
 [profile.ci_no_secrets]
 default-filter = """
@@ -41,5 +44,5 @@ failure-output = "immediate-final"
 fail-fast = false
 retries = 0
 
-[profile.ci.junit] # this can be some other profile, too
+[profile.ci_no_secrets.junit] # this can be some other profile, too
 path = "junit.xml"
