@@ -802,7 +802,6 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     path = "/management/v1/permissions/view/{view_id}/access",
     params(
         GetAccessQuery,
-        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
         ("view_id" = Uuid, Path, description = "View ID"),
     ),
     responses(
