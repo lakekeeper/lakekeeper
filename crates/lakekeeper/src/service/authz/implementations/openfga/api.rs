@@ -687,8 +687,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseId>,
-    Path(table_id): Path<TableId>,
+    Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -726,8 +725,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseId>,
-    Path(view_id): Path<ViewId>,
+    Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetAccessQuery>,
@@ -974,8 +972,7 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseId>,
-    Path(table_id): Path<TableId>,
+    Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetTableAssignmentsQuery>,
@@ -1008,8 +1005,7 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseId>,
-    Path(view_id): Path<ViewId>,
+    Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Query(query): Query<GetViewAssignmentsQuery>,
@@ -1197,8 +1193,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseId>,
-    Path(table_id): Path<TableId>,
+    Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateTableAssignmentsRequest>,
@@ -1231,8 +1226,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     )
 )]
 async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
-    Path(warehouse_id): Path<WarehouseId>,
-    Path(view_id): Path<ViewId>,
+    Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
     AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
     Extension(metadata): Extension<RequestMetadata>,
     Json(request): Json<UpdateViewAssignmentsRequest>,
