@@ -672,6 +672,7 @@ async fn get_namespace_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
+// #1329 will use the `warehouse_id` parameter and remove the corresponding _deprecated endpoint
 /// Get my access to a table
 #[utoipa::path(
     get,
@@ -753,6 +754,7 @@ async fn get_table_access_by_id_deprecated<C: Catalog, S: SecretStore>(
     ))
 }
 
+// #1329 will use the `warehouse_id` parameter and remove the corresponding _deprecated endpoint
 /// Get my access to a view
 #[utoipa::path(
     get,
@@ -1041,6 +1043,7 @@ async fn get_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
+// #1329 will use the `warehouse_id` parameter and remove the corresponding _deprecated endpoint
 /// Get user and role assignments for a table
 #[utoipa::path(
     get,
@@ -1112,6 +1115,7 @@ async fn get_table_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
     ))
 }
 
+// #1329 will use the `warehouse_id` parameter and remove the corresponding _deprecated endpoint
 /// Get user and role assignments for a view
 #[utoipa::path(
     get,
@@ -1339,6 +1343,7 @@ async fn update_namespace_assignments_by_id<C: Catalog, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// #1329 will use the `warehouse_id` parameter and remove the corresponding _deprecated endpoint
 /// Update permissions for a table
 #[utoipa::path(
     post,
@@ -1410,6 +1415,7 @@ async fn update_table_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// #1329 will use the `warehouse_id` parameter and remove the corresponding _deprecated endpoint
 /// Update permissions for a view
 #[utoipa::path(
     post,
