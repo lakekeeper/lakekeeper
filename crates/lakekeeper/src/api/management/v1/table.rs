@@ -32,6 +32,7 @@ where
         authorizer
             .require_table_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(table_id)),
                 CatalogTableAction::CanDrop,
             )
@@ -61,6 +62,7 @@ where
         authorizer
             .require_table_action(
                 &request_metadata,
+                warehouse_id,
                 Ok(Some(table_id)),
                 CatalogTableAction::CanGetMetadata,
             )

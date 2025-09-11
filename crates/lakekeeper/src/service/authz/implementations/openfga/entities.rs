@@ -207,9 +207,13 @@ impl OpenFgaEntity for WarehouseId {
     }
 }
 
-impl OpenFgaEntity for TableId {
+/// Adds warehouse context to the `OpenFga` entity for `table`.
+///
+/// Table ids can be reused across warehouses, so this context is required to ensure that `table`
+/// entities are unique.
+impl OpenFgaEntity for (WarehouseId, TableId) {
     fn to_openfga(&self) -> String {
-        format!("{}:{self}", self.openfga_type())
+        format!("{}:{}/{}", self.openfga_type(), self.0, self.1)
     }
 
     fn openfga_type(&self) -> FgaType {
@@ -227,9 +231,13 @@ impl OpenFgaEntity for NamespaceId {
     }
 }
 
-impl OpenFgaEntity for ViewId {
+/// Adds warehouse context to the `OpenFga` entity for `view`.
+///
+/// View ids can be reused across warehouses, so this context is required to ensure that `view`
+/// entities are unique.
+impl OpenFgaEntity for (WarehouseId, ViewId) {
     fn to_openfga(&self) -> String {
-        format!("{}:{self}", self.openfga_type())
+        format!("{}:{}/{}", self.openfga_type(), self.0, self.1)
     }
 
     fn openfga_type(&self) -> FgaType {

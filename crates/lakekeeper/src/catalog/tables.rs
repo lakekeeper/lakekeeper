@@ -278,7 +278,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         };
 
         authorizer
-            .create_table(&request_metadata, table_id, namespace_id)
+            .create_table(&request_metadata, warehouse_id, table_id, namespace_id)
             .await?;
 
         // Metadata file written, now we can commit the transaction
@@ -286,7 +286,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // If a staged table was overwritten, delete it from authorizer
         if let Some(staged_table_id) = staged_table_id {
-            authorizer.delete_table(staged_table_id).await.ok();
+            authorizer
+                .delete_table(warehouse_id, staged_table_id)
+                .await
+                .ok();
         }
 
         state
@@ -349,12 +352,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
 
         // Check if we need to handle overwrite
-        let mut previous_table_id = None;
+        let mut previous_table = None;
 
         let mut t_write = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if request.overwrite {
             // Check if table exists
-            previous_table_id = C::table_to_id(
+            previous_table = C::table_to_id(
                 warehouse_id,
                 &table,
                 ListFlags {
@@ -366,28 +369,25 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-            if let Some(previous_table_id) = previous_table_id {
+            if let Some(previous_table) = previous_table {
                 tracing::debug!(
-                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table_id} for overwrite operation",
+                    "Register Table: Dropping existing table '{}' in namespace '{:?}' of warehouse '{:?}' with id {previous_table} for overwrite operation",
                     table.name, table.namespace, warehouse.name
                 );
                 // Verify authorization to drop the table first
                 authorizer
                     .require_table_action(
                         &request_metadata,
-                        Ok(Some(previous_table_id)),
+                        warehouse_id,
+                        Ok(Some(previous_table)),
                         CatalogTableAction::CanDrop,
                     )
                     .await?;
 
                 // Drop the existing table to overwrite it
-                let _previous_table_location = C::drop_table(
-                    warehouse_id,
-                    previous_table_id,
-                    false,
-                    t_write.transaction(),
-                )
-                .await?;
+                let _previous_table_location =
+                    C::drop_table(warehouse_id, previous_table, false, t_write.transaction())
+                        .await?;
                 // We don't drop the files for the previous table on overwrite
             }
         }
@@ -427,18 +427,18 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         let mut auth_needs_delete = false;
         // Delete the previous table from authorizer if it exists and differs from the new one
-        if let Some(previous_table_id) = previous_table_id {
-            if previous_table_id != tabular_id {
+        if let Some(previous_table) = previous_table {
+            if previous_table != tabular_id {
                 auth_needs_delete = true;
                 // Only create authorization for the new table if it's different
                 authorizer
-                    .create_table(&request_metadata, tabular_id, namespace_id)
+                    .create_table(&request_metadata, warehouse_id, tabular_id, namespace_id)
                     .await?;
             }
         } else {
             // No previous table, need to create authorization
             authorizer
-                .create_table(&request_metadata, tabular_id, namespace_id)
+                .create_table(&request_metadata, warehouse_id, tabular_id, namespace_id)
                 .await?;
         }
 
@@ -447,11 +447,11 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete {
-            if let Some(previous_table_id) = previous_table_id {
-                authorizer.delete_table(previous_table_id).await.map_err({
+            if let Some(previous_table) = previous_table {
+                authorizer.delete_table(warehouse_id, previous_table).await.map_err({
                     |e| {
                         tracing::warn!(
-                            "Failed to delete previous table {previous_table_id} from authorizer on overwrite via table register endpoint: {}",
+                            "Failed to delete previous table {previous_table} from authorizer on overwrite via table register endpoint: {}",
                             e.error
                         );
                     }
@@ -461,7 +461,10 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
 
         // If a staged table was overwritten, delete it from authorizer
         if let Some(staged_table_id) = staged_table_id {
-            authorizer.delete_table(staged_table_id).await.ok();
+            authorizer
+                .delete_table(warehouse_id, staged_table_id)
+                .await
+                .ok();
         }
 
         // Fire hooks
@@ -730,7 +733,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         let include_active = true;
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let table_id = C::table_to_id(
+        let table_details = C::table_to_id(
             warehouse_id,
             table,
             ListFlags {
@@ -743,7 +746,12 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         .await; // We can't fail before AuthZ
 
         let table_id = authorizer
-            .require_table_action(&request_metadata, table_id, CatalogTableAction::CanDrop)
+            .require_table_action(
+                &request_metadata,
+                warehouse_id,
+                table_details,
+                CatalogTableAction::CanDrop,
+            )
             .await?;
 
         // ------------------- BUSINESS LOGIC -------------------
@@ -782,7 +790,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 }
                 t.commit().await?;
                 authorizer
-                    .delete_table(table_id)
+                    .delete_table(warehouse_id, table_id)
                     .await
                     .inspect_err(|e| {
                         tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
@@ -997,6 +1005,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let tabular_details = authorizer
             .require_table_action(
                 request_metadata,
+                warehouse_id,
                 tabular_details,
                 CatalogTableAction::CanGetMetadata,
             )
@@ -1006,11 +1015,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore> CatalogServer<C, A, S> {
         let (read_access, write_access) = futures::try_join!(
             authorizer.is_allowed_table_action(
                 request_metadata,
+                warehouse_id,
                 tabular_details.table_id,
                 CatalogTableAction::CanReadData,
             ),
             authorizer.is_allowed_table_action(
                 request_metadata,
+                warehouse_id,
                 tabular_details.table_id,
                 CatalogTableAction::CanWriteData,
             ),
@@ -1244,12 +1255,13 @@ async fn commit_tables_with_authz<C: Catalog, A: Authorizer + Clone, S: SecretSt
     // Build futures alongside their idents to preserve pairing
     let authz_checks = table_ids
         .iter()
-        .map(|(ident, table_id)| {
+        .map(|(ident, id)| {
             (
                 ident.clone(),
                 authorizer.require_table_action(
                     &request_metadata,
-                    Ok(*table_id),
+                    warehouse_id,
+                    Ok(*id),
                     CatalogTableAction::CanCommit,
                 ),
             )
@@ -1481,9 +1493,9 @@ pub(crate) async fn authorized_table_ident_to_id<C: Catalog, A: Authorizer>(
     authorizer
         .require_warehouse_action(metadata, warehouse_id, CatalogWarehouseAction::CanUse)
         .await?;
-    let table_id = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
+    let table_details = C::table_to_id(warehouse_id, table_ident, list_flags, transaction).await; // We can't fail before AuthZ
     authorizer
-        .require_table_action(metadata, table_id, action)
+        .require_table_action(metadata, warehouse_id, table_details, action)
         .await
         .map_err(set_not_found_status_code)
 }
@@ -3163,7 +3175,11 @@ pub(crate) mod test {
             .unwrap();
             for (start, end) in hidden_ranges.iter().copied() {
                 if i >= start && i < end {
-                    authz.hide(&format!("table:{}", tab.metadata.uuid()));
+                    authz.hide(&format!(
+                        "table:{}/{}",
+                        warehouse.warehouse_id,
+                        tab.metadata.uuid()
+                    ));
                 }
             }
         }
@@ -3330,7 +3346,7 @@ pub(crate) mod test {
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
-            authz.hide(&format!("table:{t}"));
+            authz.hide(&format!("table:{}/{t}", warehouse.warehouse_id));
         }
 
         let page = CatalogServer::list_tables(

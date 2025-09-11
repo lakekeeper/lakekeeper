@@ -64,6 +64,7 @@ where
     .await?
     .map(|(id, location)| match id {
         TabularId::Table(tab) => Ok(TabularDetails {
+            warehouse_id,
             table_id: tab.into(),
             location,
         }),

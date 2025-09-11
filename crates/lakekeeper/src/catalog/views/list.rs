@@ -45,7 +45,6 @@ pub(crate) async fn list_views<C: Catalog, A: Authorizer + Clone, S: SecretStore
     .await?;
 
     // ------------------- BUSINESS LOGIC -------------------
-
     let (identifiers, view_uuids, next_page_token) =
         crate::catalog::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
@@ -149,7 +148,11 @@ mod test {
             .unwrap();
             for (start, end) in hidden_ranges.iter().copied() {
                 if i >= start && i < end {
-                    authz.hide(&format!("view:{}", view.metadata.uuid()));
+                    authz.hide(&format!(
+                        "view:{}/{}",
+                        warehouse.warehouse_id,
+                        view.metadata.uuid()
+                    ));
                 }
             }
         }
@@ -320,7 +323,7 @@ mod test {
         let mut ids = all.table_uuids.unwrap();
         ids.sort();
         for t in ids.iter().take(6).skip(4) {
-            authz.hide(&format!("view:{t}"));
+            authz.hide(&format!("view:{}/{t}", warehouse.warehouse_id));
         }
 
         let page = CatalogServer::list_views(
