@@ -39,14 +39,13 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         authn::UserId,
-        authz::TableInWarehouseUuid,
+        authz::TableUuid,
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
             Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
             TaskQueueName,
         },
-        TableIdInWarehouse,
     },
     SecretIdent,
 };
@@ -129,17 +128,9 @@ pub struct GetTableMetadataResponse {
     pub storage_profile: StorageProfile,
 }
 
-impl TableInWarehouseUuid for GetTableMetadataResponse {
+impl TableUuid for GetTableMetadataResponse {
     fn table_uuid(&self) -> TableId {
         self.table_id
-    }
-
-    fn warehouse_uuid(&self) -> WarehouseId {
-        self.warehouse_id
-    }
-
-    fn table_id_in_warehouse(&self) -> TableIdInWarehouse {
-        self.table_id.to_prefixed(self.warehouse_id)
     }
 }
 
@@ -438,16 +429,16 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Option<TabularDetails>>;
 
-    async fn table_to_id_in_warehouse<'a>(
+    async fn table_to_id<'a>(
         warehouse_id: WarehouseId,
         table: &TableIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<TableIdInWarehouse>> {
+    ) -> Result<Option<TableId>> {
         Ok(
             Self::resolve_table_ident(warehouse_id, table, list_flags, transaction)
                 .await?
-                .map(|t| t.table_id.to_prefixed(warehouse_id)),
+                .map(|t| t.table_id),
         )
     }
 

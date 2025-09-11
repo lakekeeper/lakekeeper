@@ -77,12 +77,6 @@ pub struct NamespaceId(uuid::Uuid);
 #[serde(transparent)]
 pub struct TableId(uuid::Uuid);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
-pub struct TableIdInWarehouse {
-    pub warehouse_id: WarehouseId,
-    pub table_id: TableId,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(feature = "sqlx", sqlx(transparent))]
@@ -100,14 +94,6 @@ impl TableId {
     #[must_use]
     pub fn new_random() -> Self {
         Self(uuid::Uuid::now_v7())
-    }
-
-    // TODO(mooori) rename to `in_warehouse`
-    pub fn to_prefixed(self, warehouse_id: WarehouseId) -> TableIdInWarehouse {
-        TableIdInWarehouse {
-            warehouse_id,
-            table_id: self,
-        }
     }
 }
 
@@ -358,12 +344,6 @@ impl From<uuid::Uuid> for NamespaceId {
 impl From<&uuid::Uuid> for NamespaceId {
     fn from(uuid: &uuid::Uuid) -> Self {
         Self(*uuid)
-    }
-}
-
-impl std::fmt::Display for TableIdInWarehouse {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.warehouse_id, self.table_id)
     }
 }
 

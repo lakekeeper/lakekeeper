@@ -32,7 +32,8 @@ where
         authorizer
             .require_table_action(
                 &request_metadata,
-                Ok(Some(table_id.to_prefixed(warehouse_id))),
+                warehouse_id,
+                Ok(Some(table_id)),
                 CatalogTableAction::CanDrop,
             )
             .await?;
@@ -61,7 +62,8 @@ where
         authorizer
             .require_table_action(
                 &request_metadata,
-                Ok(Some(table_id.to_prefixed(warehouse_id))),
+                warehouse_id,
+                Ok(Some(table_id)),
                 CatalogTableAction::CanGetMetadata,
             )
             .await?;

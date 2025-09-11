@@ -9,9 +9,7 @@ use super::{
     health::HealthExt, Actor, Catalog, NamespaceId, ProjectId, RoleId, SecretStore, State, TableId,
     TabularDetails, ViewId, WarehouseId,
 };
-use crate::{
-    api::iceberg::v1::Result, request_metadata::RequestMetadata, service::TableIdInWarehouse,
-};
+use crate::{api::iceberg::v1::Result, request_metadata::RequestMetadata};
 
 pub mod implementations;
 
@@ -129,37 +127,19 @@ pub enum CatalogViewAction {
     CanUndrop,
 }
 
-pub trait TableInWarehouseUuid {
+pub trait TableUuid {
     fn table_uuid(&self) -> TableId;
-    fn warehouse_uuid(&self) -> WarehouseId;
-    fn table_id_in_warehouse(&self) -> TableIdInWarehouse;
 }
 
-impl TableInWarehouseUuid for TableIdInWarehouse {
+impl TableUuid for TableId {
     fn table_uuid(&self) -> TableId {
-        self.table_id
-    }
-
-    fn warehouse_uuid(&self) -> WarehouseId {
-        self.warehouse_id
-    }
-
-    fn table_id_in_warehouse(&self) -> TableIdInWarehouse {
-        self.table_id.to_prefixed(self.warehouse_id)
+        *self
     }
 }
 
-impl TableInWarehouseUuid for TabularDetails {
+impl TableUuid for TabularDetails {
     fn table_uuid(&self) -> TableId {
         self.table_id
-    }
-
-    fn warehouse_uuid(&self) -> WarehouseId {
-        self.warehouse_id
-    }
-
-    fn table_id_in_warehouse(&self) -> TableIdInWarehouse {
-        self.table_id.to_prefixed(self.warehouse_id)
     }
 }
 
@@ -670,13 +650,14 @@ where
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableIdInWarehouse,
+        warehouse_id: WarehouseId,
+        table_id: TableId,
         parent: NamespaceId,
     ) -> Result<()>;
 
     /// Hook that is called when a table is deleted.
     /// This is used to clean up permissions for the table.
-    async fn delete_table(&self, table_id: TableIdInWarehouse) -> Result<()>;
+    async fn delete_table(&self, warehouse_id: WarehouseId, table_id: TableId) -> Result<()>;
 
     /// Hook that is called when a new view is created.
     /// This is used to set up the initial permissions for the view.
@@ -857,9 +838,10 @@ where
         }
     }
 
-    async fn require_table_action<T: TableInWarehouseUuid + Send>(
+    async fn require_table_action<T: TableUuid + Send>(
         &self,
         metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
         table_details: Result<Option<T>>,
         action: impl From<CatalogTableAction> + std::fmt::Display + Send,
     ) -> Result<T> {
@@ -876,7 +858,7 @@ where
                 if self
                     .is_allowed_table_action(
                         metadata,
-                        table_details.warehouse_uuid(),
+                        warehouse_id,
                         table_details.table_uuid(),
                         action,
                     )
@@ -1290,13 +1272,14 @@ pub(crate) mod tests {
         async fn create_table(
             &self,
             _metadata: &RequestMetadata,
-            _table_id: TableIdInWarehouse,
+            _warehouse_id: WarehouseId,
+            _table_id: TableId,
             _parent: NamespaceId,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn delete_table(&self, _table_id: TableIdInWarehouse) -> Result<()> {
+        async fn delete_table(&self, _warehouse_id: WarehouseId, _table_id: TableId) -> Result<()> {
             Ok(())
         }
 

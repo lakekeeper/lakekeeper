@@ -25,7 +25,7 @@ use crate::{
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
             ListProjectsResponse, Result,
         },
-        NamespaceId, TableId, TableIdInWarehouse,
+        NamespaceId, TableId,
     },
     ProjectId, WarehouseId, CONFIG,
 };
@@ -622,16 +622,17 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
-        table_id: TableIdInWarehouse,
+        warehouse_id: WarehouseId,
+        table_id: TableId,
         parent: NamespaceId,
     ) -> Result<()> {
         let actor = metadata.actor();
         let parent_id = parent.to_openfga();
-        let this_id = table_id.to_openfga();
+        let this_id = (warehouse_id, table_id).to_openfga();
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
-        self.require_no_relations(&table_id).await?;
+        self.require_no_relations(&(warehouse_id, table_id)).await?;
 
         self.write(
             Some(vec![
@@ -660,8 +661,8 @@ impl Authorizer for OpenFGAAuthorizer {
         .map_err(Into::into)
     }
 
-    async fn delete_table(&self, table_details: TableIdInWarehouse) -> Result<()> {
-        self.delete_all_relations(&table_details).await
+    async fn delete_table(&self, warehouse_id: WarehouseId, table_id: TableId) -> Result<()> {
+        self.delete_all_relations(&(warehouse_id, table_id)).await
     }
 
     async fn create_view(

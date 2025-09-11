@@ -185,7 +185,7 @@ where
             };
 
             authorizer
-                .delete_table(table_id.to_prefixed(task.task_metadata.warehouse_id))
+                .delete_table(task.task_metadata.warehouse_id, table_id)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(

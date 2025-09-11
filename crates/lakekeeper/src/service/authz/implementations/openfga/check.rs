@@ -252,11 +252,11 @@ async fn check_table<C: Catalog, S: SecretStore>(
             warehouse_id,
             table_id,
         } => {
-            let table_id = TableId::from(*table_id).to_prefixed(*warehouse_id);
+            let table_id = TableId::from(*table_id);
             authorizer
-                .require_table_action(metadata, Ok(Some(table_id)), action)
+                .require_table_action(metadata, *warehouse_id, Ok(Some(table_id)), action)
                 .await?;
-            table_id.to_openfga()
+            (*warehouse_id, table_id).to_openfga()
         }
         TabularIdentOrUuid::Name {
             namespace,
@@ -282,7 +282,7 @@ async fn check_table<C: Catalog, S: SecretStore>(
             )
             .await?;
             t.commit().await.ok();
-            table_id.to_prefixed(*warehouse_id).to_openfga()
+            (*warehouse_id, table_id).to_openfga()
         }
     })
 }

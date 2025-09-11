@@ -22,8 +22,7 @@ use crate::{
             s3::S3UrlStyleDetectionMode, S3Credential, S3Profile, StorageCredential,
             ValidationError,
         },
-        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, TableIdInWarehouse,
-        Transaction,
+        Catalog, GetTableMetadataResponse, ListFlags, State, TableId, Transaction,
     },
     WarehouseId,
 };
@@ -144,6 +143,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 authorizer
                     .require_table_action(
                         &request_metadata,
+                        warehouse_id,
                         metadata_by_id,
                         CatalogTableAction::CanGetMetadata,
                     )
@@ -167,7 +167,8 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         authorize_operation::<A>(
             operation,
             &request_metadata,
-            table_id.to_prefixed(warehouse_id),
+            warehouse_id,
+            table_id,
             authorizer,
         )
         .await?;
@@ -415,7 +416,8 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
 async fn authorize_operation<A: Authorizer>(
     method: Operation,
     metadata: &RequestMetadata,
-    table_id: TableIdInWarehouse,
+    warehouse_id: WarehouseId,
+    table_id: TableId,
     authorizer: A,
 ) -> Result<()> {
     // First check - fail fast if requested table is not allowed.
@@ -425,6 +427,7 @@ async fn authorize_operation<A: Authorizer>(
             authorizer
                 .require_table_action(
                     metadata,
+                    warehouse_id,
                     Ok(Some(table_id)),
                     CatalogTableAction::CanReadData,
                 )
@@ -434,6 +437,7 @@ async fn authorize_operation<A: Authorizer>(
             authorizer
                 .require_table_action(
                     metadata,
+                    warehouse_id,
                     Ok(Some(table_id)),
                     CatalogTableAction::CanWriteData,
                 )
@@ -508,6 +512,7 @@ async fn get_table_metadata_by_location<C: Catalog, A: Authorizer + Clone, S: Se
     authorizer
         .require_table_action(
             request_metadata,
+            warehouse_id,
             metadata,
             CatalogTableAction::CanGetMetadata,
         )

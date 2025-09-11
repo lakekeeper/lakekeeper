@@ -698,7 +698,7 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     let relations = get_allowed_actions(
         authorizer,
         metadata.actor(),
-        &table_id.to_prefixed(warehouse_id).to_openfga(),
+        &(warehouse_id, table_id).to_openfga(),
         query.principal.as_ref(),
     )
     .await?;
@@ -981,7 +981,7 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     Query(query): Query<GetTableAssignmentsQuery>,
 ) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
     let authorizer = api_context.v1_state.authz;
-    let object = table_id.to_prefixed(warehouse_id).to_openfga();
+    let object = (warehouse_id, table_id).to_openfga();
     authorizer
         .require_action(&metadata, AllTableRelations::CanReadAssignments, &object)
         .await?;
@@ -1209,7 +1209,7 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
         metadata.actor(),
         request.writes,
         request.deletes,
-        &table_id.to_prefixed(warehouse_id).to_openfga(),
+        &(warehouse_id, table_id).to_openfga(),
     )
     .await?;
 

@@ -107,7 +107,7 @@ pub(crate) async fn commit_view<C: Catalog, A: Authorizer + Clone, S: SecretStor
             CommitViewContext {
                 warehouse_id,
                 namespace_id,
-                view_id: view_id,
+                view_id,
                 identifier: &identifier,
                 storage_profile,
                 storage_secret_id,
