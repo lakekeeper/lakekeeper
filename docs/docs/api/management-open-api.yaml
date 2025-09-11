@@ -757,13 +757,6 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: warehouse_id
-          in: path
-          description: Warehouse ID
-          required: true
-          schema:
-            type: string
-            format: uuid
         - name: view_id
           in: path
           description: View ID
