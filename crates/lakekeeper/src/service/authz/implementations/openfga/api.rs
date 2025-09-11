@@ -6,6 +6,7 @@ use axum::{
     Extension, Json, Router,
 };
 use http::StatusCode;
+use iceberg_ext::catalog::rest::ErrorModel;
 use openfga_client::client::{
     CheckRequestTupleKey, ReadRequestTupleKey, TupleKey, TupleKeyWithoutCondition,
 };
@@ -710,6 +711,38 @@ async fn get_table_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
+/// Get my access to a table
+///
+/// This endpoint is deprecated and will be removed in a future version.
+#[utoipa::path(
+    get,
+    tag = "permissions",
+    path = "/management/v1/permissions/table/{table_id}/access",
+    params(
+        GetAccessQuery,
+        ("table_id" = Uuid, Path, description = "Table ID")
+    ),
+    responses(
+            (status = 200, description = "Server Relations", body = GetTableAccessResponse),
+    )
+)]
+#[deprecated(
+    since = "0.10.0",
+    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access` instead."
+)]
+async fn get_table_access_by_id_deprecated<C: Catalog, S: SecretStore>(
+    Path(_table_id): Path<TableId>,
+    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(_metadata): Extension<RequestMetadata>,
+    Query(_query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetTableAccessResponse>)> {
+    Err(ErrorModel::bad_request(
+        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/access` instead.",
+        "DeprecatedEndpoint",
+        None).into()
+    )
+}
+
 /// Get my access to a view
 #[utoipa::path(
     get,
@@ -748,6 +781,38 @@ async fn get_view_access_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
+/// Get my access to a view
+///
+/// This endpoint is deprecated and will be removed in a future version.
+#[utoipa::path(
+    get,
+    tag = "permissions",
+    path = "/management/v1/permissions/view/{view_id}/access",
+    params(
+        GetAccessQuery,
+        ("warehouse_id" = Uuid, Path, description = "Warehouse ID"),
+        ("view_id" = Uuid, Path, description = "View ID"),
+    ),
+    responses(
+            (status = 200, body = GetViewAccessResponse),
+    )
+)]
+#[deprecated(
+    since = "0.10.0",
+    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access` instead."
+)]
+async fn get_view_access_by_id_deprecated<C: Catalog, S: SecretStore>(
+    Path(_view_id): Path<ViewId>,
+    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(_metadata): Extension<RequestMetadata>,
+    Query(_query): Query<GetAccessQuery>,
+) -> Result<(StatusCode, Json<GetViewAccessResponse>)> {
+    Err(ErrorModel::bad_request(
+        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/access` instead.",
+        "DeprecatedEndpoint",
+        None).into()
+    )
+}
 /// Get user and role assignments of a role
 #[utoipa::path(
     get,
@@ -990,6 +1055,38 @@ async fn get_table_assignments_by_id<C: Catalog, S: SecretStore>(
     ))
 }
 
+/// Get user and role assignments for a table
+///
+/// This endpoint is deprecated and will be removed in a future version.
+#[utoipa::path(
+    get,
+    tag = "permissions",
+    path = "/management/v1/permissions/table/{table_id}/assignments",
+    params(
+        GetTableAssignmentsQuery,
+        ("table_id" = Uuid, Path, description = "Table ID"),
+    ),
+    responses(
+            (status = 200, body = GetTableAssignmentsResponse),
+    )
+)]
+#[deprecated(
+    since = "0.10.0",
+    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead."
+)]
+async fn get_table_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
+    Path(_table_id): Path<TableId>,
+    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(_metadata): Extension<RequestMetadata>,
+    Query(_query): Query<GetTableAssignmentsQuery>,
+) -> Result<(StatusCode, Json<GetTableAssignmentsResponse>)> {
+    Err(ErrorModel::bad_request(
+        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead.",
+        "DeprecatedEndpoint",
+        None).into()
+    )
+}
+
 /// Get user and role assignments for a view
 #[utoipa::path(
     get,
@@ -1021,6 +1118,39 @@ async fn get_view_assignments_by_id<C: Catalog, S: SecretStore>(
         StatusCode::OK,
         Json(GetViewAssignmentsResponse { assignments }),
     ))
+}
+
+/// Get user and role assignments for a view
+///
+/// This endpoint is deprecated and will be removed in a future version.
+#[utoipa::path(
+    get,
+    tag = "permissions",
+    path = "/management/v1/permissions/view/{view_id}/assignments",
+    params(
+        GetViewAssignmentsQuery,
+        ("view_id" = Uuid, Path, description = "View ID"),
+    ),
+    responses(
+            (status = 200, body = GetViewAssignmentsResponse),
+    )
+)]
+#[deprecated(
+    since = "0.10.0",
+    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead."
+)]
+async fn get_view_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
+    Path(_view_id): Path<ViewId>,
+    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(_metadata): Extension<RequestMetadata>,
+    Query(_query): Query<GetViewAssignmentsQuery>,
+) -> Result<(StatusCode, Json<GetViewAssignmentsResponse>)> {
+    Err(ErrorModel::bad_request(
+        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead.",
+        "DeprecatedEndpoint",
+        None,
+    )
+    .into())
 }
 
 /// Update permissions for this server
@@ -1211,6 +1341,38 @@ async fn update_table_assignments_by_id<C: Catalog, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Update permissions for a table
+///
+/// This endpoint is deprecated and will be removed in a future version.
+#[utoipa::path(
+    post,
+    tag = "permissions",
+    path = "/management/v1/permissions/table/{table_id}/assignments",
+    request_body = UpdateTableAssignmentsRequest,
+    params(
+        ("table_id" = Uuid, Path, description = "Table ID"),
+    ),
+    responses(
+            (status = 204, description = "Permissions updated successfully"),
+    )
+)]
+#[deprecated(
+    since = "0.10.0",
+    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead."
+)]
+async fn update_table_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
+    Path(_table_id): Path<TableId>,
+    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(_metadata): Extension<RequestMetadata>,
+    Json(_request): Json<UpdateTableAssignmentsRequest>,
+) -> Result<StatusCode> {
+    Err(ErrorModel::bad_request(
+        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments` instead.",
+        "DeprecatedEndpoint",
+        None).into()
+    )
+}
+
 /// Update permissions for a view
 #[utoipa::path(
     post,
@@ -1242,6 +1404,38 @@ async fn update_view_assignments_by_id<C: Catalog, S: SecretStore>(
     .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Update permissions for a view
+///
+/// This endpoint is deprecated and will be removed in a future version.
+#[utoipa::path(
+    post,
+    tag = "permissions",
+    path = "/management/v1/permissions/view/{view_id}/assignments",
+    request_body = UpdateViewAssignmentsRequest,
+    params(
+        ("view_id" = Uuid, Path, description = "View ID"),
+    ),
+    responses(
+            (status = 204, description = "Permissions updated successfully"),
+    )
+)]
+#[deprecated(
+    since = "0.10.0",
+    note = "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead."
+)]
+async fn update_view_assignments_by_id_deprecated<C: Catalog, S: SecretStore>(
+    Path(_view_id): Path<ViewId>,
+    AxumState(_api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(_metadata): Extension<RequestMetadata>,
+    Json(_request): Json<UpdateViewAssignmentsRequest>,
+) -> Result<StatusCode> {
+    Err(ErrorModel::bad_request(
+        "This endpoint is deprecated and will be removed in a future version. Use `/management/v1/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments` instead.",
+        "DeprecatedEndpoint",
+        None).into()
+    )
 }
 
 /// Update permissions for a role
@@ -1381,12 +1575,22 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             post(set_namespace_managed_access),
         )
         .route(
-            "/permissions/table/{table_id}/access",
+            "/permissions/warehouse/{warehouse_id}/table/{table_id}/access",
             get(get_table_access_by_id),
         )
         .route(
-            "/permissions/view/{view_id}/access",
+            "/permissions/table/{table_id}/access",
+            #[allow(deprecated)]
+            get(get_table_access_by_id_deprecated),
+        )
+        .route(
+            "/permissions/warehouse/{warehouse_id}/view/{view_id}/access",
             get(get_view_access_by_id),
+        )
+        .route(
+            "/permissions/view/{view_id}/access",
+            #[allow(deprecated)]
+            get(get_view_access_by_id_deprecated),
         )
         .route(
             "/permissions/role/{role_id}/assignments",
@@ -1413,12 +1617,24 @@ pub(super) fn new_v1_router<C: Catalog, S: SecretStore>(
             get(get_namespace_assignments_by_id).post(update_namespace_assignments_by_id),
         )
         .route(
-            "/permissions/table/{table_id}/assignments",
+            "/permissions/warehouse/{warehouse_id}/table/{table_id}/assignments",
             get(get_table_assignments_by_id).post(update_table_assignments_by_id),
         )
         .route(
-            "/permissions/view/{view_id}/assignments",
+            "/permissions/table/{table_id}/assignments",
+            #[allow(deprecated)]
+            get(get_table_assignments_by_id_deprecated)
+                .post(update_table_assignments_by_id_deprecated),
+        )
+        .route(
+            "/permissions/warehouse/{warehouse_id}/view/{view_id}/assignments",
             get(get_view_assignments_by_id).post(update_view_assignments_by_id),
+        )
+        .route(
+            "/permissions/view/{view_id}/assignments",
+            #[allow(deprecated)]
+            get(get_view_assignments_by_id_deprecated)
+                .post(update_view_assignments_by_id_deprecated),
         )
         .route("/permissions/check", post(check))
 }
