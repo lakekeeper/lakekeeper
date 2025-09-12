@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_partition_spec(partition_spec_id, table_id, warehouse_id, partition_spec)\n               SELECT sid, $2, $3, s FROM UNNEST($1::INT[], $4::JSONB[]) u(sid, s)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Uuid",
+        "Uuid",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "13259955fa0cef20bbea939dc8820c7fe7ccd3283e71c811caa66a9b2273abd0"
+}

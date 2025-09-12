@@ -63,6 +63,7 @@ where
 }
 
 pub(crate) async fn create_view(
+    warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     metadata_location: &Location,
     transaction: &mut Transaction<'_, Postgres>,
@@ -89,6 +90,7 @@ pub(crate) async fn create_view(
             id: metadata.uuid(),
             name,
             namespace_id: *namespace_id,
+            warehouse_id: *warehouse_id,
             typ: TabularType::View,
             metadata_location: Some(metadata_location),
             location,
@@ -99,10 +101,11 @@ pub(crate) async fn create_view(
 
     let view_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO view (view_id, view_format_version)
-        VALUES ($1, $2)
+        INSERT INTO view (warehouse_id, view_id, view_format_version)
+        VALUES ($1, $2, $3)
         returning view_id
         "#,
+        *warehouse_id,
         tabular_id,
         ViewFormatVersion::from(metadata.format_version()) as _,
     )
@@ -117,7 +120,8 @@ pub(crate) async fn create_view(
 
     tracing::debug!("Inserted base view and tabular.");
     for schema in metadata.schemas_iter() {
-        let schema_id = create_view_schema(view_id, schema.clone(), transaction).await?;
+        let schema_id =
+            create_view_schema(warehouse_id, view_id, schema.clone(), transaction).await?;
         tracing::debug!("Inserted schema with id: '{}'", schema_id);
     }
 
@@ -125,20 +129,35 @@ pub(crate) async fn create_view(
         let ViewVersionResponse {
             version_id,
             view_id,
-        } = create_view_version(namespace_id, view_id, view_version.clone(), transaction).await?;
+            warehouse_id,
+        } = create_view_version(
+            warehouse_id,
+            namespace_id,
+            view_id,
+            view_version.clone(),
+            transaction,
+        )
+        .await?;
 
         tracing::debug!(
-            "Inserted view version with id: '{}' for view_id: '{}'",
+            "Inserted view version with id: '{}' for view_id: '{}' in warehouse with id '{}'",
             version_id,
-            view_id
+            view_id,
+            warehouse_id,
         );
     }
 
-    set_current_view_metadata_version(metadata.current_version_id(), metadata.uuid(), transaction)
-        .await?;
+    set_current_view_metadata_version(
+        warehouse_id,
+        metadata.uuid(),
+        metadata.current_version_id(),
+        transaction,
+    )
+    .await?;
 
     for history in metadata.history() {
         insert_view_version_log(
+            warehouse_id,
             view_id,
             history.version_id(),
             Some(history.timestamp().map_err(|e| {
@@ -153,7 +172,7 @@ pub(crate) async fn create_view(
         .await?;
     }
 
-    set_view_properties(metadata.properties(), view_id, transaction).await?;
+    set_view_properties(warehouse_id, view_id, metadata.properties(), transaction).await?;
 
     tracing::debug!("Inserted view properties for view",);
 
@@ -161,12 +180,14 @@ pub(crate) async fn create_view(
 }
 
 pub(crate) async fn drop_view(
+    warehouse_id: WarehouseId,
     view_id: ViewId,
     force: bool,
     required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     drop_tabular(
+        warehouse_id,
         TabularId::View(*view_id),
         force,
         required_metadata_location,
@@ -197,6 +218,7 @@ pub(crate) async fn rename_view(
 
 // TODO: do we wanna do this via a trigger?
 async fn insert_view_version_log(
+    warehouse_id: WarehouseId,
     view_id: Uuid,
     version_id: ViewVersionId,
     timestamp_ms: Option<DateTime<Utc>>,
@@ -205,9 +227,10 @@ async fn insert_view_version_log(
     if let Some(ts) = timestamp_ms {
         sqlx::query!(
             r#"
-        INSERT INTO view_version_log (view_id, version_id, timestamp)
-        VALUES ($1, $2, $3)
+        INSERT INTO view_version_log (warehouse_id, view_id, version_id, timestamp)
+        VALUES ($1, $2, $3, $4)
         "#,
+            *warehouse_id,
             view_id,
             version_id,
             ts
@@ -215,9 +238,10 @@ async fn insert_view_version_log(
     } else {
         sqlx::query!(
             r#"
-        INSERT INTO view_version_log (view_id, version_id)
-        VALUES ($1, $2)
+        INSERT INTO view_version_log (warehouse_id, view_id, version_id)
+        VALUES ($1, $2, $3)
         "#,
+            *warehouse_id,
             view_id,
             version_id,
         )
@@ -234,8 +258,9 @@ async fn insert_view_version_log(
 }
 
 pub(crate) async fn set_view_properties(
-    properties: &HashMap<String, String>,
+    warehouse_id: WarehouseId,
     view_id: Uuid,
+    properties: &HashMap<String, String>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<()> {
     let (keys, vals): (Vec<String>, Vec<String>) = properties
@@ -243,11 +268,12 @@ pub(crate) async fn set_view_properties(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .unzip();
     sqlx::query!(
-        r#"INSERT INTO view_properties (view_id, key, value)
-           SELECT $1, u.* FROM UNNEST($2::text[], $3::text[]) u
-              ON CONFLICT (view_id, key)
+        r#"INSERT INTO view_properties (warehouse_id, view_id, key, value)
+           SELECT $1, $2, u.* FROM UNNEST($3::text[], $4::text[]) u
+              ON CONFLICT (warehouse_id, view_id, key)
                 DO UPDATE SET value = EXCLUDED.value
            ;"#,
+        *warehouse_id,
         view_id,
         &keys,
         &vals
@@ -263,6 +289,7 @@ pub(crate) async fn set_view_properties(
 }
 
 pub(crate) async fn create_view_schema(
+    warehouse_id: WarehouseId,
     view_id: Uuid,
     schema: SchemaRef,
     transaction: &mut Transaction<'_, Postgres>,
@@ -277,10 +304,11 @@ pub(crate) async fn create_view_schema(
     })?;
     Ok(sqlx::query_scalar!(
         r#"
-        INSERT INTO view_schema (view_id, schema_id, schema)
-        VALUES ($1, $2, $3)
+        INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
+        VALUES ($1, $2, $3, $4)
         RETURNING schema_id
         "#,
+        *warehouse_id,
         view_id,
         schema.schema_id(),
         schema_as_value
@@ -298,9 +326,11 @@ pub(crate) async fn create_view_schema(
 }
 
 #[derive(Debug, FromRow, Clone, Copy)]
+#[allow(clippy::struct_field_names)]
 struct ViewVersionResponse {
     version_id: ViewVersionId,
     view_id: Uuid,
+    warehouse_id: Uuid,
 }
 
 /// Creates a `view_version` in the namespace specified by `namespace_id`.
@@ -309,6 +339,7 @@ struct ViewVersionResponse {
 /// specified separately via `view_version_request`.
 #[allow(clippy::too_many_lines)]
 async fn create_view_version(
+    warehouse_id: WarehouseId,
     namespace_id: NamespaceId,
     view_id: Uuid,
     view_version_request: ViewVersionRef,
@@ -358,10 +389,11 @@ async fn create_view_version(
 
     let insert_response = sqlx::query_as!(ViewVersionResponse,
                 r#"
-                    INSERT INTO view_version (view_id, version_id, schema_id, timestamp, default_namespace_id, default_catalog, summary)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    returning view_id, version_id
+                    INSERT INTO view_version (warehouse_id, view_id, version_id, schema_id, timestamp, default_namespace_id, default_catalog, summary)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    returning warehouse_id, view_id, version_id
                 "#,
+                *warehouse_id,
                 view_id,
                 version_id,
                 schema_id,
@@ -414,20 +446,23 @@ async fn create_view_version(
 }
 
 pub(crate) async fn set_current_view_metadata_version(
-    version_id: ViewVersionId,
+    warehouse_id: WarehouseId,
     view_id: Uuid,
+    version_id: ViewVersionId,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<()> {
     sqlx::query!(
         r#"
-        INSERT INTO current_view_metadata_version (version_id, view_id)
-        VALUES ($1, $2)
-        ON CONFLICT (view_id)
-        DO UPDATE SET version_id = $1
+        INSERT INTO current_view_metadata_version (warehouse_id, view_id, version_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (warehouse_id, view_id)
+        DO UPDATE SET version_id = $3
         WHERE current_view_metadata_version.view_id = $2
+        AND current_view_metadata_version.warehouse_id = $1
         "#,
+        *warehouse_id,
+        view_id,
         version_id,
-        view_id
     )
     .execute(&mut **transaction)
     .await
@@ -488,9 +523,10 @@ async fn insert_representation(
     let ViewRepresentation::Sql(repr) = rep;
     sqlx::query!(
         r#"
-            INSERT INTO view_representation (view_id, view_version_id, typ, sql, dialect)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO view_representation (warehouse_id, view_id, view_version_id, typ, sql, dialect)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
+        view_version_response.warehouse_id,
         view_version_response.view_id,
         view_version_response.version_id,
         ViewRepresentationType::from(rep) as _,
@@ -566,7 +602,7 @@ pub(crate) mod tests {
         WarehouseId,
     };
 
-    fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
+    pub(crate) fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
         serde_json::from_value(json!({
   "format-version": 1,
   "view-uuid": view_id.unwrap_or_else(Uuid::now_v7).to_string(),
@@ -680,6 +716,7 @@ pub(crate) mod tests {
         let request = view_request(Some(*view_uuid), &location);
         let mut tx = pool.begin().await.unwrap();
         super::create_view(
+            warehouse_id,
             namespace_id,
             &format!(
                 "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
@@ -699,6 +736,7 @@ pub(crate) mod tests {
         let mut tx = pool.begin().await.unwrap();
         // recreate with same uuid should fail
         let created_view = super::create_view(
+            warehouse_id,
             namespace_id,
             &format!(
                 "s3://my_bucket/my_table/metadata/barz/metadata-{}.gz.json",
@@ -721,6 +759,7 @@ pub(crate) mod tests {
 
         // recreate with other uuid should fail
         let created_view = super::create_view(
+            warehouse_id,
             namespace_id,
             &format!(
                 "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
@@ -758,19 +797,28 @@ pub(crate) mod tests {
         assert_eq!(view.table_ident.name, "myview");
 
         let mut conn = state.read_pool().acquire().await.unwrap();
-        let metadata = load_view(view_uuid, false, &mut conn).await.unwrap();
+        let metadata = load_view(warehouse_id, view_uuid, false, &mut conn)
+            .await
+            .unwrap();
         assert_eq!(metadata.metadata, request.clone());
     }
 
     #[sqlx::test]
     async fn drop_view_unconditionally(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        super::drop_view(created_meta.uuid().into(), false, None, &mut tx)
-            .await
-            .unwrap();
+        super::drop_view(
+            warehouse_id,
+            created_meta.uuid().into(),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -781,9 +829,10 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_correct_location(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, metadata_location) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, metadata_location) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         super::drop_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             Some(&metadata_location),
@@ -793,6 +842,7 @@ pub(crate) mod tests {
         .unwrap();
         tx.commit().await.unwrap();
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -803,9 +853,10 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn test_drop_view_metadata_mismatch(pool: sqlx::PgPool) {
-        let (state, created_meta, _, _, _, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
         super::drop_view(
+            warehouse_id,
             created_meta.uuid().into(),
             false,
             Some(&Location::parse_value("s3://not-the/old-location").unwrap()),
@@ -836,11 +887,18 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        mark_tabular_as_deleted(TabularId::View(created_meta.uuid()), false, None, &mut tx)
-            .await
-            .unwrap();
+        mark_tabular_as_deleted(
+            warehouse_id,
+            TabularId::View(created_meta.uuid()),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             true,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -849,12 +907,19 @@ pub(crate) mod tests {
         .expect("soft-dropped view should loadable");
         let mut tx = state.write_pool().begin().await.unwrap();
 
-        super::drop_view(created_meta.uuid().into(), false, None, &mut tx)
-            .await
-            .unwrap();
+        super::drop_view(
+            warehouse_id,
+            created_meta.uuid().into(),
+            false,
+            None,
+            &mut tx,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
 
         load_view(
+            warehouse_id,
             created_meta.uuid().into(),
             true,
             &mut state.write_pool().acquire().await.unwrap(),
@@ -865,9 +930,9 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn view_exists(pool: sqlx::PgPool) {
-        let (state, created_meta, warehouse_ident, namespace, name, _) = prepare_view(pool).await;
+        let (state, created_meta, warehouse_id, namespace, name, _) = prepare_view(pool).await;
         let exists = super::view_ident_to_id(
-            warehouse_ident,
+            warehouse_id,
             &TableIdent {
                 namespace: namespace.clone(),
                 name,
@@ -885,7 +950,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             super::view_ident_to_id(
-                warehouse_ident,
+                warehouse_id,
                 &TableIdent {
                     namespace,
                     name: "non_existing".to_string(),
@@ -902,9 +967,9 @@ pub(crate) mod tests {
 
     #[sqlx::test]
     async fn drop_view_not_existing(pool: sqlx::PgPool) {
-        let (state, _, _, _, _, _) = prepare_view(pool).await;
+        let (state, _, warehouse_id, _, _, _) = prepare_view(pool).await;
         let mut tx = state.write_pool().begin().await.unwrap();
-        let e = super::drop_view(Uuid::now_v7().into(), false, None, &mut tx)
+        let e = super::drop_view(warehouse_id, Uuid::now_v7().into(), false, None, &mut tx)
             .await
             .expect_err("dropping random uuid should not succeed");
         tx.commit().await.unwrap();
@@ -944,6 +1009,7 @@ pub(crate) mod tests {
         let request = view_request(None, &location);
         let mut tx = pool.begin().await.unwrap();
         super::create_view(
+            warehouse_id,
             namespace_id,
             &metadata_location,
             &mut tx,
