@@ -177,6 +177,17 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Determine nextest profile
+        run: |
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+            # PR is made off this repo, so workflows have access to secrets and the entire suite
+            # can be run.
+            echo "NEXTEST_PROFILE=ci" >> $GITHUB_ENV
+          else
+            # PR is made off a fork, so secrets are not available in ci workflows.
+            echo "NEXTEST_PROFILE=ci_no_secrets" >> $GITHUB_ENV
+          fi
+
       - name: Migrate database
         run: |
           export DEBIAN_FRONTEND=noninteractive 
@@ -208,7 +219,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
 
       - name: Test
-        run: cargo nextest run --profile ci --all-targets --all-features --workspace
+        run: cargo nextest run --profile ${{ env.NEXTEST_PROFILE }} --all-targets --all-features --workspace
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           LAKEKEEPER_TEST__KV2__URL: http://localhost:8200
