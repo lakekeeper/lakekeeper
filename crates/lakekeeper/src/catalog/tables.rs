@@ -897,17 +897,18 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
-        let namespace_id =
-            C::namespace_to_id(warehouse_id, &source.namespace, t.transaction()).await; // We can't fail before AuthZ
+        let destination_namespace_id =
+            C::namespace_to_id(warehouse_id, &destination.namespace, t.transaction()).await; // We can't fail before AuthZ
 
         // We need to be allowed to delete the old table and create the new one
         authorizer
             .require_namespace_action(
                 &request_metadata,
-                namespace_id,
+                destination_namespace_id,
                 CatalogNamespaceAction::CanCreateTable,
             )
-            .await?;
+            .await
+            .map_err(set_not_found_status_code)?;
 
         // ------------------- BUSINESS LOGIC -------------------
         if source == destination {
