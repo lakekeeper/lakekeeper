@@ -28,4 +28,3 @@ spec:
             - "events-value"
             # - "--throughput"
             # - "1000000000"
-

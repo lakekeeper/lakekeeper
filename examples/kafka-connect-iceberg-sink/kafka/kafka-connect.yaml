@@ -66,23 +66,3 @@ spec:
     value.converter.schema.registry.url: http://internal-schema-registry.kafka.svc.cluster.local:8085
     value.converter.schemas.enable: true
     key.converter.schemas.enable: false
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: kafka-connect-api
-  namespace: kafka
-  labels:
-    strimzi.io/cluster: kafka-connect
-    strimzi.io/kind: KafkaConnect
-spec:
-  type: ClusterIP
-  ports:
-    - name: rest-api
-      port: 8083
-      targetPort: 8083
-      protocol: TCP
-  selector:
-    strimzi.io/cluster: kafka-connect
-    strimzi.io/kind: KafkaConnect
-    strimzi.io/name: kafka-connect-connect
