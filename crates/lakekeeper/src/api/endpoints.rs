@@ -222,11 +222,11 @@ generate_endpoints! {
         GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
         DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
         RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
-        SetTaskQueueConfig(POST, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
-        GetTaskQueueConfig(GET, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
-        ListTasks(POST, "/management/v1/{warehouse_id}/task/list"),
-        GetTaskDetails(GET, "/management/v1/{warehouse_id}/task/by-id/{task_id}"),
-        ControlTasks(POST, "/management/v1/{warehouse_id}/task/control"),
+        SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        GetTaskQueueConfig(GET, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
+        GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
+        ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
     }
 
     enum PermissionV1 {
@@ -235,6 +235,12 @@ generate_endpoints! {
         Head(HEAD, "/management/v1/permissions"),
         Delete(DELETE, "/management/v1/permissions"),
         Put(PUT, "/management/v1/permissions"),
+    }
+}
+
+impl ManagementV1Endpoint {
+    pub fn path_in_management_v1(self) -> &'static str {
+        &self.path()["/management/v1".len()..]
     }
 }
 
