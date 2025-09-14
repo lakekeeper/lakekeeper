@@ -1,0 +1,88 @@
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnect
+metadata:
+  name: kafka-connect
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: my-cluster
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+spec:
+  image: kafka-connect-iceberg-sink-connector:0.1
+  bootstrapServers: my-cluster-kafka-bootstrap:9092
+  replicas: 1
+  config:
+    group.id: kafka-connect-group
+    offset.storage.topic: connect-cluster-offsets
+    config.storage.topic: connect-cluster-configs
+    status.storage.topic: connect-cluster-status
+    offset.storage.replication.factor: 1
+    config.storage.replication.factor: 1
+    status.storage.replication.factor: 1
+  resources:
+    requests:
+      memory: 2Gi
+      cpu: 500m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  jvmOptions:
+    "-Xmx": "2G"
+    "-Xms": "2G"
+  template:
+    pod:
+      tmpDirSizeLimit: 10Gi
+
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: kafka-to-iceberg
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-connect
+spec:
+  class: org.apache.iceberg.connect.IcebergSinkConnector
+  tasksMax: 1
+  config:
+    topics: events
+    iceberg.tables: iceberg_lakehouse.events
+    iceberg.catalog.type: rest
+    iceberg.catalog.uri: http://lakekeeper.catalog.svc.cluster.local:8181/catalog
+    iceberg.catalog.warehouse: demo
+    iceberg.catalog.client.region: local-01
+    iceberg.catalog.s3.access-key-id: minioadmin
+    iceberg.catalog.s3.secret-access-key: minioadmin
+    iceberg.catalog.s3.endpoint: http://minio.kafka.svc.cluster.local:9000
+    iceberg.catalog.s3.path-style-access: true
+    iceberg.catalog.fs.native-s3.enabled: true
+    iceberg.tables.auto-create-enabled: true
+    iceberg.tables.evolve-schema-enabled: true
+    iceberg.tables.write-format: parquet
+    iceberg.tables.parquet.compression-codec: snappy
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: io.confluent.connect.avro.AvroConverter
+    value.converter.schema.registry.url: http://internal-schema-registry.kafka.svc.cluster.local:8085
+    value.converter.schemas.enable: true
+    key.converter.schemas.enable: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-connect-api
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-connect
+    strimzi.io/kind: KafkaConnect
+spec:
+  type: ClusterIP
+  ports:
+    - name: rest-api
+      port: 8083
+      targetPort: 8083
+      protocol: TCP
+  selector:
+    strimzi.io/cluster: kafka-connect
+    strimzi.io/kind: KafkaConnect
+    strimzi.io/name: kafka-connect-connect

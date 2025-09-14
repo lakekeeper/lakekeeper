@@ -1,0 +1,52 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: register-schema
+  namespace: kafka
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: register-schema
+          image: confluentinc/cp-schema-registry:8.0.0
+          command: ['sh', '-c']
+          args:
+            - |
+              set -e
+              
+              # Wait for Schema Registry
+              echo "Waiting for Schema Registry..."
+              while ! curl -sf http://internal-schema-registry:8085/subjects > /dev/null 2>&1; do
+                echo "Schema Registry not ready, waiting..."
+                sleep 10
+              done
+              echo "Schema Registry is ready!"
+              
+              # Create properly escaped JSON payload with the schema
+              cat > /tmp/payload.json << 'EOF'
+              {
+                "schema": "{\"type\":\"record\",\"name\":\"TradeEvent\",\"namespace\":\"demo.kafka\",\"fields\":[{\"name\":\"tradeId\",\"type\":\"string\"},{\"name\":\"symbol\",\"type\":\"string\"},{\"name\":\"price\",\"type\":\"double\"},{\"name\":\"quantity\",\"type\":\"int\"},{\"name\":\"timestamp\",\"type\":{\"type\":\"long\",\"logicalType\":\"timestamp-millis\"}}]}",
+                "schemaType": "AVRO"
+              }
+              EOF
+              
+              # Register the schema
+              echo "Registering schema for events-value..."
+              RESPONSE=$(curl -X POST \
+                -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+                -d @/tmp/payload.json \
+                http://internal-schema-registry:8085/subjects/events-value/versions)
+              
+              echo "Response: $RESPONSE"
+              
+              # Check if successful (look for "id" in response)
+              if echo "$RESPONSE" | grep -q '"id"'; then
+                echo "✅ Schema registered successfully!"
+              else
+                echo "❌ Failed to register schema"
+                exit 1
+              fi

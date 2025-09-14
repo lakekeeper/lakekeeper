@@ -1,0 +1,49 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-schema-registry
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: internal-schema-registry
+  template:
+    metadata:
+      labels:
+        app: internal-schema-registry
+    spec:
+      containers:
+        - name: internal-schema-registry
+          image: confluentinc/cp-schema-registry:8.0.0
+          ports:
+            - containerPort: 8085
+          env:
+            - name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS
+              value: my-cluster-kafka-brokers:9092
+            - name: SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL
+              value: PLAINTEXT
+            - name: SCHEMA_REGISTRY_HOST_NAME
+              value: internal-schema-registry
+            - name: SCHEMA_REGISTRY_LISTENERS
+              value: http://0.0.0.0:8085
+            - name: SCHEMA_REGISTRY_SCHEMA_REGISTRY_INTER_INSTANCE_PROTOCOL
+              value: "http"
+            - name: SCHEMA_REGISTRY_LOG4J_ROOT_LOGLEVEL
+              value: INFO
+            - name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC
+              value: _schemas
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-schema-registry
+  namespace: kafka
+spec:
+  ports:
+    - name: http
+      port: 8085
+      targetPort: 8085
+  selector:
+    app: internal-schema-registry

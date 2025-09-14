@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: producer
+  namespace: kafka
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: producer
+          image: producer:latest
+          imagePullPolicy: Never
+          args:
+            - "--num-records"
+            - "10000"
+            - "--kafka-broker"
+            - "my-cluster-kafka-bootstrap:9092"
+            - "--topic"
+            - "events"
+            - "--schema-registry-url"
+            - "http://internal-schema-registry:8085"
+            - "--schema-subject"
+            - "events-value"
+            # - "--throughput"
+            # - "1000000000"
+

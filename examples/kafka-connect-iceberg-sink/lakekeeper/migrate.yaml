@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: catalog
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 10
+  template:
+    metadata:
+      labels:
+        app: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: quay.io/lakekeeper/catalog:latest-main
+        imagePullPolicy: IfNotPresent
+        args:
+          - migrate
+        env:
+        - name: LAKEKEEPER__PG_ENCRYPTION_KEY
+          value: "This-is-NOT-Secure!"
+        - name: LAKEKEEPER__PG_DATABASE_URL_READ
+          value: "postgresql://postgres:postgres@postgres.storage.svc.cluster.local:5432/catalog"
+        - name: LAKEKEEPER__PG_DATABASE_URL_WRITE
+          value: "postgresql://postgres:postgres@postgres.storage.svc.cluster.local:5432/catalog"
+        - name: RUST_LOG
+          value: "info"

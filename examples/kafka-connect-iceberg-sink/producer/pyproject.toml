@@ -1,0 +1,16 @@
+[project]
+name = "producer"
+version = "0.1.0"
+description = "Producer for demo"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "attrs>=25.3.0",
+    "authlib>=1.6.3",
+    "cachetools>=6.2.0",
+    "confluent-kafka>=2.11.1",
+    "fastavro>=1.12.0",
+    "httpx>=0.28.1",
+    "orjson>=3.11.3",
+    "urllib3>=2.5.0",
+]
