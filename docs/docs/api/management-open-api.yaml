@@ -2390,11 +2390,6 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: queue_name
-          in: path
-          required: true
-          schema:
-            type: string
       responses:
         '200':
           description: ''
@@ -2456,11 +2451,6 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: queue_name
-          in: path
-          required: true
-          schema:
-            type: string
       responses:
         '200':
           description: ''

@@ -1703,6 +1703,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            post.parameters = post.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             post.operation_id = Some(format!(
                 "set_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1731,6 +1737,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            get.parameters = get.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             get.operation_id = Some(format!(
                 "get_task_queue_config_{}",
                 queue_name.replace('-', "_")
