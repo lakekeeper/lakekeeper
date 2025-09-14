@@ -32,7 +32,7 @@ spec:
         - name: LAKEKEEPER__PG_DATABASE_URL_WRITE
           value: "postgresql://postgres:postgres@postgres.storage.svc.cluster.local:5432/catalog"
         - name: RUST_LOG
-          value: "trace,axum=trace,sqlx=trace,lakekeeper=trace"
+          value: "info,axum=info,sqlx=info,lakekeeper=info"
         livenessProbe:
           httpGet:
             path: /health
@@ -54,11 +54,10 @@ metadata:
   labels:
     app: lakekeeper
 spec:
-  type: NodePort
+  type: ClusterIP
   ports:
   - port: 8181
     targetPort: 8181
-    nodePort: 30181
     protocol: TCP
     name: http
   selector:

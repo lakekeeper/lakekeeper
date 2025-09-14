@@ -9,6 +9,10 @@ A simple Python script to produce dummy trade events to a Kafka topic using an A
 * Schema Registry accessible
 * Python dependencies:
 
+```bash
+uv sync
+```
+
 ## Usage
 
 ```bash

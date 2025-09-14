@@ -48,5 +48,5 @@ Deletes the namespace and the Kind cluster.
 ## Cleanup
 
 - `make delete-cluster` – delete only the Kind cluster
-- `make delete-namespace` – delete the `kafka` namespace
+- `make delete-namespaces` – delete the `kafka`, `storage`, `trino`, and `catalog` namespaces
 - `make destroy` – delete both namespace and cluster

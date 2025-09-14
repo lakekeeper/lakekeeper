@@ -6,7 +6,7 @@ metadata:
   namespace: kafka
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 0
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       restartPolicy: Never

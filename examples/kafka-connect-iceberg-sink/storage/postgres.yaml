@@ -44,7 +44,7 @@ spec:
             command:
             - /bin/sh
             - -c
-            - pg_isready -U postgres -p 5432 -d postgres
+            - pg_isready -U postgres -p 5432 -d catalog
           initialDelaySeconds: 10
           periodSeconds: 2
           timeoutSeconds: 10
