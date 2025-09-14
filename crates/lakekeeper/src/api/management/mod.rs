@@ -1893,7 +1893,10 @@ pub mod v1 {
                     ManagementV1Endpoint::SetTaskQueueConfig.path_in_management_v1(),
                     post(set_task_queue_config).get(get_task_queue_config),
                 )
-                .route(ManagementV1Endpoint::ListTasks.path_in_management_v1(), post(list_tasks))
+                .route(
+                    ManagementV1Endpoint::ListTasks.path_in_management_v1(),
+                    post(list_tasks),
+                )
                 .route(
                     ManagementV1Endpoint::GetTaskDetails.path_in_management_v1(),
                     get(get_task_details),

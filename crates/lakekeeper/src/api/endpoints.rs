@@ -372,8 +372,8 @@ mod test {
 
         use crate::api::endpoints::Endpoint;
         let exempt_config_paths = [
-            "management/v1/{warehouse_id}/task-queue/tabular_expiration/config",
-            "management/v1/{warehouse_id}/task-queue/tabular_purge/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
         ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
@@ -474,7 +474,9 @@ mod test {
             .filter(|(_m, path)| {
                 // We filter out the parameterized endpoint here since we expand them using actually
                 // registered queues
-                !path.starts_with("management/v1/{warehouse_id}/task-queue/{queue_name}/config")
+                !path.starts_with(
+                    "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
+                )
             })
             .collect_vec();
         if !extra_endpoints.is_empty() {
