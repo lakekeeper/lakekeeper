@@ -12,5 +12,4 @@ dependencies = [
     "fastavro>=1.12.0",
     "httpx>=0.28.1",
     "orjson>=3.11.3",
-    "urllib3>=2.5.0",
 ]

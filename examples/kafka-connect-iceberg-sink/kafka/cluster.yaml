@@ -15,7 +15,7 @@ spec:
     volumes:
       - id: 0
         type: persistent-claim
-        size: 10Gi
+        size: 20Gi
         deleteClaim: true
         kraftMetadata: shared
 ---

@@ -8,10 +8,20 @@ spec:
   ttlSecondsAfterFinished: 10
   template:
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       restartPolicy: Never
       containers:
       - name: lakekeeper-init
         image: curlimages/curl:8.8.0
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - "ALL"
+          runAsUser: 1000
         command:
           - sh
           - -c

@@ -6,7 +6,8 @@ metadata:
 spec:
   parallelism: 1
   completions: 1
-  backoffLimit: 0
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
   ttlSecondsAfterFinished: 0
   template:
     spec:
@@ -17,7 +18,7 @@ spec:
           imagePullPolicy: Never
           args:
             - "--num-records"
-            - "10000"
+            - "100000"
             - "--kafka-broker"
             - "my-cluster-kafka-bootstrap:9092"
             - "--topic"

@@ -7,4 +7,7 @@ RUN uv pip install --system --no-cache .
 
 COPY producer/main.py main.py
 
-ENTRYPOINT ["python", "main.py"]
+ENV PYTHONUNBUFFERED=1
+RUN useradd -u 10001 -r -s /usr/sbin/nologin appuser && chown -R appuser:appuser /app
+USER appuser
+ENTRYPOINT ["python", "-u", "main.py"]

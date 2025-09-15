@@ -16,13 +16,21 @@ spec:
           command: ['sh', '-c']
           args:
             - |
-              set -e
+              set -euo pipefail
+              
+              MAX_WAIT_SEC=300
+              start=$(date +%s)
               
               # Wait for Schema Registry
               echo "Waiting for Schema Registry..."
               while ! curl -sf http://internal-schema-registry:8085/subjects > /dev/null 2>&1; do
                 echo "Schema Registry not ready, waiting..."
                 sleep 10
+                now=$(date +%s)
+                if [ $((now-start)) -ge "${MAX_WAIT_SEC}" ]; then
+                  echo "Timed out waiting for Schema Registry"
+                  exit 1
+                fi
               done
               echo "Schema Registry is ready!"
               

@@ -111,14 +111,25 @@ if __name__ == "__main__":
             "timestamp": int(time.time() * 1000)
         }
         
-        producer.produce(
-            topic=TOPIC,
-            # key=event["tradeId"],
-            value=event,
-            on_delivery=delivery_report
-        )
-        
+        while True:
+            try:
+                producer.produce(
+                    topic=TOPIC,
+                    # key=event["tradeId"],
+                    value=event,
+                    on_delivery=delivery_report
+                )
+                break
+            except BufferError:
+                # Queue full, serve delivery callbacks and retry
+                producer.poll(0.1)
+                continue
+        # Serve delivery callbacks
+        producer.poll(0)
+        elapsed = time.time() - start_time
         if (i + 1) % 1000 == 0:
+            rate = (i + 1) / elapsed if elapsed > 0 else 0
+            logger.info(f"Produced {i + 1} messages... (Rate: {rate:.2f} msg/s)")
             producer.poll(0)
             elapsed = time.time() - start_time
             rate = (i + 1) / elapsed if elapsed > 0 else 0
