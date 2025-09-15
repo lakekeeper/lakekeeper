@@ -38,8 +38,7 @@ export TOPIC=events
 export SCHEMA_REGISTRY_URL=http://localhost:8085
 export SCHEMA_SUBJECT=events-value
 
-python produce_events.py --throughput 1000 --num-records 5000
-```
+python main.py --throughput 1000 --num-records 5000
 
 ## Behavior
 

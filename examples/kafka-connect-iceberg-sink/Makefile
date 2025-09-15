@@ -35,8 +35,7 @@ install-namespace:
 	kubectl apply -f namespace/namespace.yaml
 
 delete-namespace:
-	kubectl apply -f namespace/namespace.yaml
-
+	kubectl delete -f namespace/namespace.yaml --ignore-not-found
 # ========================
 # STORAGE
 # ========================

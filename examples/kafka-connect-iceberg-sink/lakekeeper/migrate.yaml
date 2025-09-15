@@ -18,6 +18,9 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
           - migrate
+        resources:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "500m", memory: "256Mi"}
         env:
         - name: LAKEKEEPER__PG_ENCRYPTION_KEY
           value: "This-is-NOT-Secure!"
