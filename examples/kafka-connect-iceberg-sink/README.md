@@ -39,6 +39,11 @@ This will:
 make run-producer
 ```
 
+### Forward Ports
+
+- Trino: 8080->8081
+- Kafka UI: 8080->8080
+
 ### Tear everything down
 ```bash
 make destroy
