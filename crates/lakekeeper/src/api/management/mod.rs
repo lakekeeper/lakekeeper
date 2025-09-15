@@ -1665,6 +1665,7 @@ pub mod v1 {
     ///
     /// # Errors
     ///
+    #[allow(clippy::too_many_lines)]
     pub fn api_doc<A: Authorizer>(
         queue_api_configs: Vec<&QueueApiConfig>,
     ) -> utoipa::openapi::OpenApi {
