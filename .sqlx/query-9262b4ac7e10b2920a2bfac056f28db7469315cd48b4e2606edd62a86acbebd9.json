@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH locked_tabular AS (\n                SELECT tabular_id, name, namespace_id\n                FROM tabular\n                WHERE tabular_id = $2 \n                    AND typ = $3\n                    AND metadata_location IS NOT NULL\n                    AND deleted_at IS NULL\n                FOR UPDATE\n            ),\n            warehouse_check AS (\n                SELECT warehouse_id\n                FROM warehouse\n                WHERE warehouse_id = $4 AND status = 'active'\n            )\n            UPDATE tabular\n            SET name = $1\n            FROM locked_tabular lt, warehouse_check wc\n            WHERE tabular.tabular_id = lt.tabular_id\n                AND wc.warehouse_id = $4\n            RETURNING tabular.tabular_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9262b4ac7e10b2920a2bfac056f28db7469315cd48b4e2606edd62a86acbebd9"
+}

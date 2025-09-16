@@ -37,7 +37,7 @@ use crate::{
     ProjectId, WarehouseId,
 };
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ListDeletedTabularsQuery {
     /// Filter by Namespace ID
@@ -816,7 +816,12 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let undrop_tabular_responses =
             C::clear_tabular_deleted_at(&tabs, warehouse_id, transaction.transaction()).await?;
         TabularExpirationTask::cancel_scheduled_tasks::<C>(
-            TaskFilter::TaskIds(undrop_tabular_responses.iter().map(|r| r.task_id).collect()),
+            TaskFilter::TaskIds(
+                undrop_tabular_responses
+                    .iter()
+                    .map(|r| r.expiration_task_id)
+                    .collect(),
+            ),
             transaction.transaction(),
             false,
         )

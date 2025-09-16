@@ -750,7 +750,13 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
             .await?
             .into_result()?;
 
-        match warehouse.tabular_delete_profile {
+        let delete_profile = if force {
+            TabularDeleteProfile::Hard {}
+        } else {
+            warehouse.tabular_delete_profile
+        };
+
+        match delete_profile {
             TabularDeleteProfile::Hard {} => {
                 let location = C::drop_table(table_id, force, t.transaction()).await?;
 
