@@ -1397,7 +1397,7 @@ pub(crate) mod tests {
             name: "MY_TABLE".to_string(),
         };
 
-        let _ = initialize_table(
+        let created = initialize_table(
             warehouse_id,
             state.clone(),
             false,
@@ -1417,7 +1417,6 @@ pub(crate) mod tests {
         // Lower idents are in db and we query upper.
         let existing = table_idents_to_ids(
             warehouse_id,
-            //tables.clone(),
             HashSet::from([&table_ident_upper]),
             ListFlags::default(),
             &state.read_pool(),
@@ -1426,7 +1425,10 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(existing.len(), 1);
         // The queried ident must be the key in the map.
-        assert!(existing.get(&table_ident_upper).unwrap().is_some());
+        assert_eq!(
+            existing.get(&table_ident_upper),
+            Some(&Some(created.table_id))
+        );
 
         // Verify behavior of querying the same table twice with different cases.
         let existing = table_idents_to_ids(

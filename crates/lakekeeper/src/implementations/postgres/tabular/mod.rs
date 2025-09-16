@@ -200,8 +200,8 @@ struct TabularRow {
 /// - The input parameter is `TABLE1`
 /// - `table1` and `TABLE1` match due to collation and the key in the returned map is `TABLE1`
 ///
-/// In line with that, querying both `table1` and `TABLE1` returns a map with two entries, both
-/// both being the same table id.
+/// In line with that, querying both `table1` and `TABLE1` returns a map with two entries,
+/// both mapping to the same table id.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
