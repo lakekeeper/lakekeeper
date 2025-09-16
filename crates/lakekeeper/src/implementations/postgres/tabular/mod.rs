@@ -202,6 +202,7 @@ struct TabularRow {
 ///
 /// In line with that, querying both `table1` and `TABLE1` returns a map with two entries, both
 /// both being the same table id.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn tabular_idents_to_ids<'e, 'c: 'e, E>(
     warehouse_id: WarehouseId,
     tables: HashSet<TabularIdentBorrowed<'_>>,
