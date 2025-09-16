@@ -249,7 +249,10 @@ async fn check_table<C: Catalog, S: SecretStore>(
         AllTableRelations::CanReadAssignments
     });
     Ok(match table {
-        TabularIdentOrUuid::Id { table_id } => {
+        TabularIdentOrUuid::Id {
+            table_id,
+            warehouse_id: _,
+        } => {
             let table_id = TableId::from(*table_id);
             authorizer
                 .require_table_action(metadata, Ok(Some(table_id)), action)
@@ -297,7 +300,10 @@ async fn check_view<C: Catalog, S: SecretStore>(
         AllViewRelations::CanReadAssignments
     });
     Ok(match view {
-        TabularIdentOrUuid::Id { table_id } => {
+        TabularIdentOrUuid::Id {
+            table_id,
+            warehouse_id: _,
+        } => {
             let view_id = ViewId::from(*table_id);
             authorizer
                 .require_view_action(metadata, Ok(Some(view_id)), action)
@@ -391,6 +397,8 @@ pub(super) enum TabularIdentOrUuid {
     Id {
         #[serde(alias = "view_id")]
         table_id: uuid::Uuid,
+        #[schema(value_type = uuid::Uuid)]
+        warehouse_id: WarehouseId,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
