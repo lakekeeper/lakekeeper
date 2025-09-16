@@ -127,7 +127,7 @@ maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_urlencoded = "0.7.1"
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }
 similar = { workspace = true }
 tempfile = { version = "3.20" }
 tokio = { workspace = true, features = ["test-util"] }
