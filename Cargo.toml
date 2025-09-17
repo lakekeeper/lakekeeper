@@ -144,7 +144,6 @@ utoipa = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005
     "uuid",
     "yaml",
 ] }
-serde_yml = "0.0.12"
 utoipa-swagger-ui = { git = "https://github.com/lakekeeper/utoipa.git", rev = "bb1b59f01005ae3199d8a49e7395edcd538a935c", features = [
     "axum",
 ] }
