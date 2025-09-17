@@ -348,12 +348,14 @@ impl GcsProfile {
         }
 
         if let Some(table) = table {
-            table_properties.insert(&gcs::RefreshCredentialsEnabled(
-                CONFIG.enable_refresh_credentials,
-            ));
-            table_properties.insert(&gcs::RefreshCredentialsEndpoint(
-                refresh_credentials_endpoint(warehouse_id, table),
-            ));
+            if CONFIG.enable_refresh_credentials {
+                table_properties.insert(&gcs::RefreshCredentialsEnabled(
+                    CONFIG.enable_refresh_credentials,
+                ));
+                table_properties.insert(&gcs::RefreshCredentialsEndpoint(
+                    refresh_credentials_endpoint(warehouse_id, table),
+                ));
+            }
         }
 
         if let Some(expiry) = token.expires_in {
