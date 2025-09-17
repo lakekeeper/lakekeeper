@@ -10,7 +10,7 @@ use axum::{
 };
 use http::{HeaderMap, Method};
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 use limes::Authentication;
 use uuid::Uuid;
 
@@ -241,18 +241,6 @@ impl RequestMetadata {
     pub fn base_uri_management(&self) -> String {
         format!("{}/management", self.base_url())
     }
-
-    #[must_use]
-    pub fn refresh_credentials_endpoint(
-        &self,
-        warehouse_id: WarehouseId,
-        table: &TableIdent,
-    ) -> String {
-        format!(
-            "v1/{}/namespaces/{}/tables/{}/credentials",
-            warehouse_id, table.namespace, table.name,
-        )
-    }
 }
 
 #[cfg(feature = "router")]
@@ -401,6 +389,18 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
         // as lakekeeper does not terminate TLS. Any external entity that terminates TLS should set the x-forwarded headers.
         host_header.map(|host| format!("http://{host}"))
     }
+}
+
+pub(crate) fn refresh_credentials_endpoint(
+    warehouse_id: WarehouseId,
+    table: &TableIdent,
+) -> String {
+    format!(
+        "v1/{}/namespaces/{}/tables/{}/credentials",
+        warehouse_id,
+        table.namespace.to_url_string(),
+        urlencoding::encode(&table.name),
+    )
 }
 
 #[cfg(test)]

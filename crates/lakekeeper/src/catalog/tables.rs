@@ -259,7 +259,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 table_id.into(),
-                &table,
+                Some(&table),
             )
             .await?;
 
@@ -416,7 +416,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 tabular_id.into(),
-                &table,
+                Some(&table),
             )
             .await?;
 
@@ -559,7 +559,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                         &request_metadata,
                         warehouse_id,
                         table_id.into(),
-                        &table,
+                        Some(&table),
                     )
                     .await?,
             )
@@ -636,8 +636,7 @@ impl<C: Catalog, A: Authorizer + Clone, S: SecretStore>
                 &request_metadata,
                 warehouse_id,
                 tabular_details.table_id.into(),
-                tabular_details.table_uuid().into(),
-                &table,
+                Some(&table),
             )
             .await?;
 
