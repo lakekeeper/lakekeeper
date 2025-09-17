@@ -36,7 +36,7 @@ jobs:
               docker load -i artifacts/lakekeeper-local-amd64.tar
 
           - name: Test ${{ inputs.test_name }}
-            uses: nick-fields/retry@v3
+            uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
             with:
               max_attempts: 2
               timeout_minutes: 10
