@@ -10,10 +10,21 @@ use google_cloud_auth::{
     token::DefaultTokenSourceProvider, token_source::TokenSource as GCloudAuthTokenSource,
 };
 use google_cloud_token::{TokenSource as GCloudTokenSource, TokenSourceProvider as _};
+use iceberg::{
+    io::{GCS_DISABLE_CONFIG_LOAD, GCS_DISABLE_VM_METADATA},
+    TableIdent,
+};
 use iceberg_ext::configs::table::{gcs, TableProperties};
 use lakekeeper_io::{
     gcs::{validate_bucket_name, CredentialsFile, GCSSettings, GcsAuth, GcsStorage},
     InvalidLocationError, Location,
+use iceberg::{
+    io::{GCS_DISABLE_CONFIG_LOAD, GCS_DISABLE_VM_METADATA},
+    TableIdent,
+};
+use iceberg_ext::configs::{
+    table::{gcs, TableProperties},
+    Location,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -312,12 +323,16 @@ impl GcsProfile {
     }
 
     /// Generate the table configuration for GCS.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn generate_table_config(
         &self,
         data_access: DataAccessMode,
         cred: &GcsCredential,
         table_location: &Location,
         storage_permissions: StoragePermissions,
+        request_metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        table: &TableIdent,
     ) -> Result<TableConfig, TableConfigError> {
         let mut table_properties = TableProperties::default();
 
@@ -341,6 +356,13 @@ impl GcsProfile {
         if let Some(ref project_id) = project_id {
             table_properties.insert(&gcs::ProjectId(project_id.clone()));
         }
+
+        table_properties.insert(&gcs::RefreshCredentialsEnabled(
+            CONFIG.enable_refresh_credentials,
+        ));
+        table_properties.insert(&gcs::RefreshCredentialsEndpoint(
+            request_metadata.refresh_credentials_endpoint(warehouse_id, table),
+        ));
 
         if let Some(expiry) = token.expires_in {
             table_properties.insert(&gcs::TokenExpiresAt(

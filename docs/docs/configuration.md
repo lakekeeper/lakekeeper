@@ -10,18 +10,19 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 
 ### General
 
-| Variable                                           | Example                                | Description |
-|----------------------------------------------------|----------------------------------------|-----|
-| <nobr>`LAKEKEEPER__BASE_URI`</nobr>                | <nobr>`https://example.com:8181`<nobr> | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url). |
-| <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr>   | `true`                                 | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
-| `LAKEKEEPER__RESERVED_NAMESPACES`                  | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
-| `LAKEKEEPER__METRICS_PORT`                         | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
-| `LAKEKEEPER__LISTEN_PORT`                          | `8181`                                 | Port Lakekeeper listens on. Default: `8181` |
-| `LAKEKEEPER__BIND_IP`                              | `0.0.0.0`, `::1`, `::`                 | IP Address Lakekeeper binds to. Default: `0.0.0.0` (listen to all incoming IPv4 packages) |
-| `LAKEKEEPER__SECRET_BACKEND`                       | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
-| `LAKEKEEPER__SERVE_SWAGGER_UI`                     | `true`                                 | If `true`, Lakekeeper serves a swagger UI for management & catalog openAPI specs under `/swagger-ui` |
-| `LAKEKEEPER__ALLOW_ORIGIN`                         | `*`                                    | A comma separated list of allowed origins for CORS. |
-| <nobr>`LAKEKEEPER__USE_X_FORWARDED_HEADERS`</nobr> | <nobr>`false`<nobr>                    | If true, Lakekeeper respects the `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port` and `x-forwarded-prefix` headers in incoming requests. This is mostly relevant for the `/config` endpoint. Default: `true` (Headers are respected.) |
+| Variable                                              | Example                                | Description |
+|-------------------------------------------------------|----------------------------------------|-----|
+| <nobr>`LAKEKEEPER__BASE_URI`</nobr>                   | <nobr>`https://example.com:8181`<nobr> | Optional base-URL where the catalog is externally reachable. Default: `None`. See [Routing and Base-URL](#routing-and-base-url). |
+| <nobr>`LAKEKEEPER__ENABLE_DEFAULT_PROJECT`<nobr>      | `true`                                 | If `true`, the NIL Project ID ("00000000-0000-0000-0000-000000000000") is used as a default if the user does not specify a project when connecting. This option is enabled by default, which we recommend for all single-project (single-tenant) setups. Default: `true`. |
+| `LAKEKEEPER__RESERVED_NAMESPACES`                     | `system,examples,information_schema`   | Reserved Namespaces that cannot be created via the REST interface |
+| `LAKEKEEPER__METRICS_PORT`                            | `9000`                                 | Port where the Prometheus metrics endpoint is reachable. Default: `9000` |
+| `LAKEKEEPER__LISTEN_PORT`                             | `8181`                                 | Port Lakekeeper listens on. Default: `8181` |
+| `LAKEKEEPER__BIND_IP`                                 | `0.0.0.0`, `::1`, `::`                 | IP Address Lakekeeper binds to. Default: `0.0.0.0` (listen to all incoming IPv4 packages) |
+| `LAKEKEEPER__SECRET_BACKEND`                          | `postgres`                             | The secret backend to use. If `kv2` (Hashicorp KV Version 2) is chosen, you need to provide [additional parameters](#vault-kv-version-2) Default: `postgres`, one-of: [`postgres`, `kv2`] |
+| `LAKEKEEPER__SERVE_SWAGGER_UI`                        | `true`                                 | If `true`, Lakekeeper serves a swagger UI for management & catalog openAPI specs under `/swagger-ui` |
+| `LAKEKEEPER__ALLOW_ORIGIN`                            | `*`                                    | A comma separated list of allowed origins for CORS. |
+| <nobr>`LAKEKEEPER__USE_X_FORWARDED_HEADERS`</nobr>    | <nobr>`false`<nobr>                    | If true, Lakekeeper respects the `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port` and `x-forwarded-prefix` headers in incoming requests. This is mostly relevant for the `/config` endpoint. Default: `true` (Headers are respected.) |
+| <nobr>`LAKEKEEPER__ENABLE_REFRESH_CREDENTIALS`</nobr> | <nobr>`false`<nobr>                    | If `true`, Lakekeeper enables support for vendor (S3, GCS) automatically refreshing credentials where this is impossible. Default: `false` |
 
 ### Pagination
 
@@ -30,14 +31,12 @@ Lakekeeper has default values for `default` and `max` page sizes of paginated qu
 The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe204f2c7cc61114c128fbf759/open-api/rest-catalog-open-api.yaml#L2030-L2032) requires servers to return *all* results if `pageToken` is not set in the request. To obtain that behavior, set `LAKEKEEPER__PAGINATION_SIZE_MAX` to 4294967295, which corresponds to `u32::MAX`. Larger page sizes would lead to practical problems. Things to keep in mind:
 
 - Retrieving huge numbers of rows is expensive, which might be exploited by malicious requests.
-- Requests may time out or responses may exceed size limits for huge numbers of results. 
+- Requests may time out or responses may exceed size limits for huge numbers of results.
 
 | Variable                                          | Example            | Description |
 |---------------------------------------------------|--------------------|-----|
 | <nobr>`LAKEKEEPER__PAGINATION_SIZE_DEFAULT`<nobr> | <nobr>`1024`<nobr> | The default page size used for paginated queries. This value is used if the request's `pageToken` is set but empty. Default: `100` |
 | <nobr>`LAKEKEEPER__PAGINATION_SIZE_MAX`<nobr>     | <nobr>`2048`<nobr> | The max page size used for paginated queries. This value is used if the request's `pageToken` is not set. Default: `1000` |
- 
-### Storage
 
 | Variable                                                    | Example            | Description |
 |-------------------------------------------------------------|--------------------|-----|
@@ -51,7 +50,7 @@ The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe2
 
 Currently Lakekeeper supports only Postgres as a persistence store. You may either provide connection strings using `PG_DATABASE_URL_*` or use the `PG_*` environment variables. Connection strings take precedence. Postgres needs to be Version 15 or higher.
 
-Lakekeeper supports configuring separate database URLs for read and write operations, allowing you to utilize read replicas for better scalability. By directing read queries to dedicated replicas via `LAKEKEEPER__PG_DATABASE_URL_READ`, you can significantly reduce load on your database primary (specified by `LAKEKEEPER__PG_DATABASE_URL_WRITE`), improving overall system performance as your deployment scales. This separation is particularly beneficial for read-heavy workloads. When using read replicas, be aware that replication lag may occur between the primary and replica databases depending on your Database setup. This means that immediately after a write operation, the changes might not be instantly visible when querying a read-only Lakekeeper endpoint (which uses the read replica). Consider this potential lag when designing applications that require immediate read-after-write consistency. For deployments where read-after-write consistency is critical, you can simply omit the `LAKEKEEPER__PG_DATABASE_URL_READ` setting, which will cause all operations to use the primary database connection. 
+Lakekeeper supports configuring separate database URLs for read and write operations, allowing you to utilize read replicas for better scalability. By directing read queries to dedicated replicas via `LAKEKEEPER__PG_DATABASE_URL_READ`, you can significantly reduce load on your database primary (specified by `LAKEKEEPER__PG_DATABASE_URL_WRITE`), improving overall system performance as your deployment scales. This separation is particularly beneficial for read-heavy workloads. When using read replicas, be aware that replication lag may occur between the primary and replica databases depending on your Database setup. This means that immediately after a write operation, the changes might not be instantly visible when querying a read-only Lakekeeper endpoint (which uses the read replica). Consider this potential lag when designing applications that require immediate read-after-write consistency. For deployments where read-after-write consistency is critical, you can simply omit the `LAKEKEEPER__PG_DATABASE_URL_READ` setting, which will cause all operations to use the primary database connection.
 
 | Variable                                               | Example                                               | Description |
 |--------------------------------------------------------|-------------------------------------------------------|-----|
@@ -186,7 +185,7 @@ The following Authenticators are available. Enabled Authenticators are checked i
    **Accepts JWT if:**<br>
     - Tokens issuer is `kubernetes/serviceaccount` or `https://kubernetes.default.svc.cluster.local`
 
-If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. 
+If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined.
 
 Typical values for `LAKEKEEPER__OPENID_PROVIDER_URI` are:
 

@@ -9,7 +9,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http::{HeaderMap, Method};
-use iceberg_ext::catalog::rest::ErrorModel;
+use iceberg::TableIdent;
+use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use limes::Authentication;
 use uuid::Uuid;
 
@@ -239,6 +240,18 @@ impl RequestMetadata {
     #[must_use]
     pub fn base_uri_management(&self) -> String {
         format!("{}/management", self.base_url())
+    }
+
+    #[must_use]
+    pub fn refresh_credentials_endpoint(
+        &self,
+        warehouse_id: WarehouseId,
+        table: &TableIdent,
+    ) -> String {
+        format!(
+            "v1/{}/namespaces/{}/tables/{}/credentials",
+            warehouse_id, table.namespace, table.name,
+        )
     }
 }
 

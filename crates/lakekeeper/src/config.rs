@@ -124,6 +124,9 @@ pub struct DynAppConfig {
         serialize_with = "serialize_reserved_namespaces"
     )]
     pub reserved_namespaces: ReservedNamespaces,
+
+    /// Controls whether vended credentials should be refreshed or not
+    pub(crate) enable_refresh_credentials: bool,
     // ------------- STORAGE OPTIONS -------------
     /// If true, can create Warehouses with using System Identities.
     pub(crate) enable_aws_system_credentials: bool,
@@ -459,6 +462,7 @@ impl Default for DynAppConfig {
                 "system".to_string(),
                 "examples".to_string(),
             ])),
+            enable_refresh_credentials: false,
             pg_encryption_key: DEFAULT_ENCRYPTION_KEY.to_string(),
             pg_database_url_read: None,
             pg_database_url_write: None,
