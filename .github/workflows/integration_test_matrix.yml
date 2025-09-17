@@ -73,7 +73,6 @@ jobs:
     uses: ./.github/workflows/integration_test_workflow.yml
     with:
         test_name: ${{ matrix.names }}
-        max_attempts: 2
     secrets: inherit
   integration_tests_results:
     if: ${{ always() }}
