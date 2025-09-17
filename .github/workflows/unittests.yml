@@ -135,26 +135,38 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minio-root-user
-          MINIO_ROOT_PASSWORD: minio-root-password
-          MINIO_API_PORT_NUMBER: 9000
-          MINIO_CONSOLE_PORT_NUMBER: 9001
-          MINIO_SCHEME: http
-          MINIO_DEFAULT_BUCKETS: tests
-        volumes:
-          - ${{ github.workspace }}/data:/data
-        ports:
-          - 9000:9000
-          - 9001:9001
-        options: --health-cmd "curl -I http://localhost:9000/minio/health/live"
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start Minio Docker Container
+        run: |
+          docker run -d --name minio -p 9000:9000 -p 9001:9001 \
+            -e "MINIO_ROOT_USER=minio-root-user" \
+            -e "MINIO_ROOT_PASSWORD=minio-root-password" \
+            minio/minio:RELEASE.2025-07-23T15-54-02Z server --console-address ":9001" /data
+      
+      - name: Wait for Minio to be healthy
+        shell: bash
+        run: |
+          for i in {1..10}; do
+            if curl -I http://localhost:9000/minio/health/live; then
+              echo "Minio is healthy"
+              exit 0
+            else
+              echo "Waiting for Minio to be healthy..."
+              sleep 5
+            fi
+          done
+          echo "Minio did not become healthy in time"
+          exit 1
+
+      - name: Create Minio Bucket
+        run: |
+          docker exec minio /usr/bin/mc alias set local http://localhost:9000 minio-root-user minio-root-password
+          docker exec minio /usr/bin/mc mb local/tests
 
       - uses: azure/login@v2
         if: ${{ env.AZURE_CLIENT_ID != '' }}
