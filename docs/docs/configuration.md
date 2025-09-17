@@ -22,7 +22,7 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 | `LAKEKEEPER__SERVE_SWAGGER_UI`                        | `true`                                 | If `true`, Lakekeeper serves a swagger UI for management & catalog openAPI specs under `/swagger-ui` |
 | `LAKEKEEPER__ALLOW_ORIGIN`                            | `*`                                    | A comma separated list of allowed origins for CORS. |
 | <nobr>`LAKEKEEPER__USE_X_FORWARDED_HEADERS`</nobr>    | <nobr>`false`<nobr>                    | If true, Lakekeeper respects the `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-port` and `x-forwarded-prefix` headers in incoming requests. This is mostly relevant for the `/config` endpoint. Default: `true` (Headers are respected.) |
-| <nobr>`LAKEKEEPER__ENABLE_REFRESH_CREDENTIALS`</nobr> | <nobr>`false`<nobr>                    | If `true`, Lakekeeper enables support for vendor (S3, GCS) automatically refreshing credentials where this is impossible. Default: `false` |
+| <nobr>`LAKEKEEPER__ENABLE_REFRESH_CREDENTIALS`</nobr> | <nobr>`true`<nobr>                     | If `true`, Lakekeeper enables support for vendor (S3, GCS) automatically refreshing credentials where this is impossible. Default: `false` |
 
 ### Pagination
 

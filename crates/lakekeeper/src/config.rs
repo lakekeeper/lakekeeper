@@ -462,7 +462,7 @@ impl Default for DynAppConfig {
                 "system".to_string(),
                 "examples".to_string(),
             ])),
-            enable_refresh_credentials: false,
+            enable_refresh_credentials: true,
             pg_encryption_key: DEFAULT_ENCRYPTION_KEY.to_string(),
             pg_database_url_read: None,
             pg_database_url_write: None,
