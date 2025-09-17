@@ -437,7 +437,7 @@ mod tests {
     use crate::service::UserId;
 
     #[test]
-    fn test_serde_check_action_table_id() {
+    fn test_serde_check_action_namespace_id() {
         let action = CheckOperation::Namespace {
             action: NamespaceAction::CreateTable,
             namespace: NamespaceIdentOrUuid::Id {
@@ -452,6 +452,53 @@ mod tests {
                 "namespace": {
                     "action": "create_table",
                     "namespace-id": "00000000-0000-0000-0000-000000000000"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_serde_check_action_table_id_variant() {
+        let action = CheckOperation::Table {
+            action: TableAction::GetMetadata,
+            table: TabularIdentOrUuid::Id {
+                table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                    .unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "table": {
+                    "action": "get_metadata",
+                    "table-id": "00000000-0000-0000-0000-000000000001",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_serde_check_action_view_id_alias() {
+        let action = CheckOperation::View {
+            action: ViewAction::GetMetadata,
+            view: TabularIdentOrUuid::Id {
+                table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+                warehouse_id: WarehouseId::from_str("490cbf7a-cbfe-11ef-84c5-178606d4cab3")
+                    .unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        // Accepts "view_id" as alias on input; on output it should be "table-id".
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "view": {
+                    "action": "get_metadata",
+                    "table-id": "00000000-0000-0000-0000-000000000002",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
                 }
             })
         );
