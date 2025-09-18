@@ -885,7 +885,7 @@ where
     async fn resolve_tasks_impl(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>>;
 
     /// Resolve tasks among all known active and historical tasks.
@@ -894,7 +894,7 @@ where
     async fn resolve_tasks(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
         if task_ids.is_empty() {
             return Ok(HashMap::new());
@@ -922,7 +922,7 @@ where
             return Ok(cached_results);
         }
         let resolve_uncached_result =
-            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, transaction).await?;
+            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, state).await?;
         for (id, value) in resolve_uncached_result {
             cached_results.insert(id, value.clone());
             TASKS_CACHE.insert(id, value).await;
@@ -933,9 +933,9 @@ where
     async fn resolve_required_tasks(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
-        let tasks = Self::resolve_tasks(warehouse_id, task_ids, transaction).await?;
+        let tasks = Self::resolve_tasks(warehouse_id, task_ids, state).await?;
 
         for task_id in task_ids {
             if !tasks.contains_key(task_id) {
@@ -987,7 +987,7 @@ where
         warehouse_id: WarehouseId,
         task_id: TaskId,
         num_attempts: u16, // Number of attempts to retrieve in the task details
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>>;
 
     /// Get task details by task id.
@@ -996,9 +996,9 @@ where
         warehouse_id: WarehouseId,
         task_id: TaskId,
         num_attempts: u16,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>> {
-        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, transaction).await
+        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, state).await
     }
 
     /// List tasks

@@ -727,9 +727,9 @@ impl Catalog for super::PostgresCatalog {
     async fn resolve_tasks_impl(
         warehouse_id: Option<WarehouseId>,
         task_ids: &[TaskId],
-        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
-        resolve_tasks(warehouse_id, task_ids, transaction).await
+        resolve_tasks(warehouse_id, task_ids, &state.read_pool()).await
     }
 
     async fn record_task_success_impl(
@@ -753,9 +753,9 @@ impl Catalog for super::PostgresCatalog {
         warehouse_id: WarehouseId,
         task_id: TaskId,
         num_attempts: u16,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        state: Self::State,
     ) -> Result<Option<GetTaskDetailsResponse>> {
-        get_task_details(warehouse_id, task_id, num_attempts, &mut *transaction).await
+        get_task_details(warehouse_id, task_id, num_attempts, &state.read_pool()).await
     }
 
     /// List tasks
