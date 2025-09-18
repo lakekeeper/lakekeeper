@@ -330,15 +330,14 @@ CREATE INDEX tabular_warehouse_id_location_idx
 
 -- Re-Create this unique index to include warehouse_id. Also makes separate index for tabular_ident_to_id query obsolete
 ALTER TABLE tabular
-    DROP CONSTRAINT IF EXISTS unique_name_per_namespace_id;
-DROP INDEX IF EXISTS unique_name_per_namespace_id;
-CREATE UNIQUE INDEX unique_name_per_namespace_id
-    ON tabular USING btree (warehouse_id, namespace_id, name, deleted_at);
+    DROP CONSTRAINT IF EXISTS unique_name_per_namespace_id,
+    ADD constraint unique_name_per_namespace_id unique NULLS not distinct (warehouse_id, namespace_id, name, deleted_at);
 
 -- Index required to create FK constraint from 'tabular' to 'namespace'
 -- on (warehouse_id, namespace_id)
-CREATE UNIQUE INDEX unique_namespace_id_per_warehouse
-    ON namespace USING btree (warehouse_id, namespace_id);
+ALTER TABLE namespace
+    DROP CONSTRAINT IF EXISTS unique_namespace_id_per_warehouse,
+    ADD CONSTRAINT unique_namespace_id_per_warehouse UNIQUE (warehouse_id, namespace_id);
     
 -- =================================================================================================
 -- 7: Re-add all Foreign Key constraints with composite keys.
