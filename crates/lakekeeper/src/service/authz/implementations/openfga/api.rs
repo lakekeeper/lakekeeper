@@ -1703,11 +1703,11 @@ async fn get_relations<RA: Assignment>(
     let relations = relations.iter().map(|relation| async {
         authorizer
             .clone()
-            .read_all(ReadRequestTupleKey {
+            .read_all(Some(ReadRequestTupleKey {
                 user: String::new(),
                 relation: relation.to_openfga().to_string(),
                 object: object.to_string(),
-            })
+            }))
             .await?
             .into_iter()
             .filter_map(|t| t.key)
