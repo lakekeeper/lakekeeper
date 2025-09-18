@@ -819,7 +819,14 @@ pub trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
             TaskFilter::TaskIds(
                 undrop_tabular_responses
                     .iter()
-                    .map(|r| r.expiration_task_id)
+                    .filter_map(|r| {
+                        if r.expiration_task_id.is_none() {
+                            tracing::warn!(
+                                "No expiration task found for tabular with soft deletion marker set {:?}",
+                                r.table_id
+                            );
+                        }
+                        r.expiration_task_id})
                     .collect(),
             ),
             transaction.transaction(),

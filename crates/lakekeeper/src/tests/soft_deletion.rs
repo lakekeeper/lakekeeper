@@ -144,7 +144,10 @@ async fn test_soft_deletion(pool: PgPool) {
             .unwrap();
         })
     });
-    join_all(delete_futs).await;
+    let drops = join_all(delete_futs).await;
+    for j in drops {
+        j.expect("drop_table task panicked");
+    }
 
     // Verify that half of the tables are dropped
     let tables = CatalogServer::list_tables(

@@ -591,16 +591,32 @@ pub(crate) async fn rename_tabular(
                     AND deleted_at IS NULL
                 FOR UPDATE
             ),
+            locked_source_namespace AS ( -- source namespace of the tabular
+                SELECT n.namespace_id
+                FROM namespace n
+                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
+                WHERE n.warehouse_id = $2
+                FOR UPDATE
+            ),
             warehouse_check AS (
                 SELECT warehouse_id
                 FROM warehouse
                 WHERE warehouse_id = $4 AND status = 'active'
+            ),
+            conflict_check AS (
+                SELECT 1
+                FROM tabular t
+                JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id
+                WHERE t.name = $1
+                FOR UPDATE
             )
             UPDATE tabular
             SET name = $1
-            FROM locked_tabular lt, warehouse_check wc
+            FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn
             WHERE tabular.tabular_id = lt.tabular_id
                 AND wc.warehouse_id = $4
+                AND lsn.namespace_id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM conflict_check)
             RETURNING tabular.tabular_id
             "#,
             &**dest_name,
@@ -621,34 +637,49 @@ pub(crate) async fn rename_tabular(
     } else {
         let _ = sqlx::query_scalar!(
             r#"
-            WITH locked_namespace AS (
-                SELECT namespace_id
-                FROM namespace
-                WHERE warehouse_id = $2 AND namespace_name = $3
-                FOR UPDATE
-            ),
-            locked_tabular AS (
+            WITH locked_tabular AS (
                 SELECT tabular_id, name, namespace_id
                 FROM tabular
-                WHERE tabular_id = $4 
+                WHERE tabular_id = $4
                     AND typ = $5
                     AND metadata_location IS NOT NULL
                     AND name = $6
                     AND deleted_at IS NULL
                 FOR UPDATE
             ),
+            locked_namespace AS ( -- target namespace
+                SELECT namespace_id
+                FROM namespace
+                WHERE warehouse_id = $2 AND namespace_name = $3
+                FOR UPDATE
+            ),
+            locked_source_namespace AS ( -- source namespace of the tabular
+                SELECT n.namespace_id
+                FROM namespace n
+                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
+                WHERE n.warehouse_id = $2
+                FOR UPDATE
+            ),
             warehouse_check AS (
-                SELECT warehouse_id
-                FROM warehouse
+                SELECT warehouse_id FROM warehouse
                 WHERE warehouse_id = $2 AND status = 'active'
+            ),
+            conflict_check AS (
+                SELECT 1
+                FROM tabular t
+                JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id
+                WHERE t.name = $1
+                FOR UPDATE
             )
-            UPDATE tabular
+            UPDATE tabular t
             SET name = $1, namespace_id = ln.namespace_id
-            FROM locked_tabular lt, locked_namespace ln, warehouse_check wc
-            WHERE tabular.tabular_id = lt.tabular_id
-                AND ln.namespace_id IS NOT NULL
-                AND wc.warehouse_id = $2
-            RETURNING tabular.tabular_id
+            FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
+            WHERE t.tabular_id = lt.tabular_id
+            AND ln.namespace_id IS NOT NULL
+            AND wc.warehouse_id = $2
+            AND lsn.namespace_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM conflict_check)
+            RETURNING t.tabular_id;
             "#,
             &**dest_name,
             *warehouse_id,
@@ -740,7 +771,7 @@ pub(crate) async fn clear_tabular_deleted_at(
         RETURNING
             tabular.name,
             tabular.tabular_id,
-            lta.task_id,
+            lta.task_id as "task_id?",
             lt.namespace_name,
             (SELECT all_found FROM validation) as "all_found!";"#,
         tabular_ids,
@@ -779,7 +810,7 @@ pub(crate) async fn clear_tabular_deleted_at(
         .into_iter()
         .map(|undrop_tabular_information| UndropTabularResponse {
             table_id: TableId::from(undrop_tabular_information.tabular_id),
-            expiration_task_id: TaskId::from(undrop_tabular_information.task_id),
+            expiration_task_id: undrop_tabular_information.task_id.map(TaskId::from),
             name: undrop_tabular_information.name,
             namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
                 .unwrap_or(NamespaceIdent::new("unknown".into())),
@@ -802,15 +833,23 @@ pub(crate) async fn mark_tabular_as_deleted(
             FROM tabular
             WHERE tabular_id = $1
             FOR UPDATE
+        ),
+        marked AS (
+            UPDATE tabular
+            SET deleted_at = $2
+            FROM locked_tabular lt
+            WHERE tabular.tabular_id = lt.tabular_id
+                AND ((NOT lt.protected) OR $3)
+            RETURNING tabular.tabular_id
         )
-        UPDATE tabular
-        SET deleted_at = $2
+        SELECT 
+            lt.protected as "protected!",
+            (SELECT tabular_id FROM marked) IS NOT NULL as "was_marked!"
         FROM locked_tabular lt
-        WHERE tabular.tabular_id = lt.tabular_id
-        RETURNING tabular.tabular_id, lt.protected as "protected!"
         "#,
         *tabular_id,
         delete_date.unwrap_or(Utc::now()),
+        force,
     )
     .fetch_one(&mut **transaction)
     .await

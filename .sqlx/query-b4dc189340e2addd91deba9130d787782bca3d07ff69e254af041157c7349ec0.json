@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH locked_tabular AS (\n            SELECT tabular_id, protected\n            FROM tabular\n            WHERE tabular_id = $1\n            FOR UPDATE\n        ),\n        marked AS (\n            UPDATE tabular\n            SET deleted_at = $2\n            FROM locked_tabular lt\n            WHERE tabular.tabular_id = lt.tabular_id\n                AND ((NOT lt.protected) OR $3)\n            RETURNING tabular.tabular_id\n        )\n        SELECT \n            lt.protected as \"protected!\",\n            (SELECT tabular_id FROM marked) IS NOT NULL as \"was_marked!\"\n        FROM locked_tabular lt\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "protected!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "was_marked!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "b4dc189340e2addd91deba9130d787782bca3d07ff69e254af041157c7349ec0"
+}
