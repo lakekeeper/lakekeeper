@@ -837,7 +837,7 @@ mod tests {
             pool.clone(),
             prof,
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             Some(UserId::new_unchecked("oidc", "test-user-id")),
         )

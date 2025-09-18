@@ -2908,7 +2908,7 @@ pub(crate) mod test {
             pool.clone(),
             prof,
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             None,
         )

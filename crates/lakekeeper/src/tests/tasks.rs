@@ -181,7 +181,7 @@ async fn setup_tasks_test(pool: PgPool) -> TasksSetup {
         pool.clone(),
         prof,
         None,
-        AllowAllAuthorizer,
+        AllowAllAuthorizer::default(),
         TabularDeleteProfile::Hard {},
         Some(UserId::new_unchecked("oidc", "test-user-id")),
         1,

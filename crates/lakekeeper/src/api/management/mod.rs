@@ -1665,6 +1665,7 @@ pub mod v1 {
     ///
     /// # Errors
     ///
+    #[allow(clippy::too_many_lines)]
     pub fn api_doc<A: Authorizer>(
         queue_api_configs: Vec<&QueueApiConfig>,
     ) -> utoipa::openapi::OpenApi {
@@ -1703,6 +1704,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            post.parameters = post.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             post.operation_id = Some(format!(
                 "set_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1731,6 +1738,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            get.parameters = get.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             get.operation_id = Some(format!(
                 "get_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1890,16 +1903,19 @@ pub mod v1 {
                     post(set_warehouse_protection),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
+                    ManagementV1Endpoint::SetTaskQueueConfig.path_in_management_v1(),
                     post(set_task_queue_config).get(get_task_queue_config),
                 )
-                .route(ManagementV1Endpoint::ListTasks.path(), post(list_tasks))
                 .route(
-                    ManagementV1Endpoint::GetTaskDetails.path(),
+                    ManagementV1Endpoint::ListTasks.path_in_management_v1(),
+                    post(list_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTaskDetails.path_in_management_v1(),
                     get(get_task_details),
                 )
                 .route(
-                    ManagementV1Endpoint::ControlTasks.path(),
+                    ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
                 )
                 .merge(authorizer.new_router())

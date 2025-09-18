@@ -21,7 +21,8 @@ use crate::ui;
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
-    let authorizer = get_default_authorizer_from_config().await?;
+    let server_id = <PostgresCatalog as Catalog>::determine_server_id(catalog.clone()).await?;
+    let authorizer = get_default_authorizer_from_config(server_id).await?;
     let stats = vec![stats];
 
     match authorizer {

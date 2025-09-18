@@ -151,7 +151,6 @@ pub struct ServeConfiguration<
 ///
 /// # Errors
 /// - If the service cannot bind to the specified address.
-/// - If the server is bootstrapped but the server ID does not match the configuration.
 /// - If the terms of service have not been accepted during bootstrap.
 #[allow(clippy::too_many_lines)]
 pub async fn serve<C: Catalog, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
@@ -498,20 +497,23 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
         }
         ServerInfo::Bootstrapped {
             server_id,
+            open_for_bootstrap,
             terms_accepted,
         } => {
-            if !terms_accepted {
+            if *open_for_bootstrap {
+                tracing::warn!(
+                    open_for_bootstrap = true,
+                    "The catalog is bootstrapped but still open for bootstrap. Re-run the bootstrap to set a new administrator and close the window (management v1 bootstrap endpoint)."
+                );
+            }
+
+            if *terms_accepted {
+                tracing::info!(%server_id, "The catalog is bootstrapped.");
+                Ok(())
+            } else {
                 Err(anyhow!(
                     "The terms of service have not been accepted on bootstrap."
                 ))
-            } else if *server_id != CONFIG.server_id {
-                Err(anyhow!(
-                    "The server ID during bootstrap {} does not match the server ID in the configuration {}.",
-                    server_id, CONFIG.server_id
-                ))
-            } else {
-                tracing::info!("The catalog is bootstrapped. Server ID: {server_id}");
-                Ok(())
             }
         }
     }
