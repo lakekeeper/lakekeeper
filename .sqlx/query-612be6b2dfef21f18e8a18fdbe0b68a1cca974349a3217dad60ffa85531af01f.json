@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT w.storage_secret_id,\n        w.storage_profile as \"storage_profile: Json<StorageProfile>\"\n        FROM \"table\" t\n        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id\n        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id\n        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1\n            AND t.\"table_id\" = $2\n            AND w.status = 'active'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_secret_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_profile: Json<StorageProfile>",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "612be6b2dfef21f18e8a18fdbe0b68a1cca974349a3217dad60ffa85531af01f"
+}

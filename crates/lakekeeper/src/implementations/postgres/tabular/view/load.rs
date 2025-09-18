@@ -124,9 +124,9 @@ SELECT v.view_id,
        vvr.sql                           AS "view_representation_sql: Json<Vec<Vec<String>>>",
        vvr.dialect                       AS "view_representation_dialect: Json<Vec<Vec<String>>>"
 FROM view v
-         INNER JOIN tabular ta ON v.warehouse_id = $1 AND ta.tabular_id = v.view_id
+         INNER JOIN tabular ta ON ta.warehouse_id = $1 AND ta.tabular_id = v.view_id
          INNER JOIN current_view_metadata_version cvv
-             ON v.warehouse_id = $1 AND v.view_id = cvv.view_id
+             ON cvv.warehouse_id = $1 AND v.view_id = cvv.view_id
          LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(schema_id) AS schema_ids,
                            ARRAY_AGG(schema)    AS schemas
