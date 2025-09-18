@@ -168,6 +168,7 @@ FROM view v
                                         WHERE warehouse_id = $1 and view_id = $2
                                         GROUP BY view_version_id, view_id) vr
                                         ON vv.version_id = vr.view_version_id AND vv.view_id = vr.view_id
+                    WHERE vv.warehouse_id = $1 and vv.view_id = $2
                     GROUP BY vv.view_id) vvr ON v.view_id = vvr.view_id
          WHERE v.warehouse_id = $1 AND v.view_id = $2 AND (ta.deleted_at is NULL OR $3)"#,
             *warehouse_id,
