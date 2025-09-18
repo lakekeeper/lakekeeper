@@ -147,9 +147,11 @@ where
         SELECT t.tabular_id, t.typ as "typ: TabularType", fs_protocol, fs_location
         FROM tabular t
         INNER JOIN namespace n
-            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
-        WHERE t.warehouse_id = $3 AND n.namespace_name = $1 AND t.name = $2
+            ON n.warehouse_id = $3 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $3
+        WHERE t.warehouse_id = $3 
+        AND n.namespace_name = $1 
+        AND t.name = $2
         AND w.status = 'active'
         AND t.typ = $4
         AND (t.deleted_at IS NULL OR $5)
@@ -236,8 +238,8 @@ where
                t.typ as "typ: TabularType"
         FROM tabular t
         INNER JOIN namespace n
-            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+            ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE t.warehouse_id = $1 AND w.status = 'active'
             AND (t.deleted_at is NULL OR $2)
             AND (t.metadata_location is not NULL OR $3) "#,
@@ -474,9 +476,8 @@ where
             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
-        INNER JOIN namespace n
-            ON t.warehouse_id = n.warehouse_id AND t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+        INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
         WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
             AND (namespace_name = $2 OR $2 IS NULL)
@@ -594,6 +595,7 @@ pub(crate) async fn rename_tabular(
                 AND ti.deleted_at IS NULL
                 AND $4 IN (
                     SELECT warehouse_id FROM warehouse WHERE status = 'active'
+                    AND warehouse_id = $4
                 )
             RETURNING tabular_id
             "#,
@@ -630,6 +632,7 @@ pub(crate) async fn rename_tabular(
                 AND ns_id.namespace_id IS NOT NULL
                 AND $2 IN (
                     SELECT warehouse_id FROM warehouse WHERE status = 'active'
+                    AND warehouse_id = $2
                 )
             RETURNING tabular_id
             "#,
@@ -838,8 +841,8 @@ pub(crate) async fn drop_tabular(
                WHERE warehouse_id = $1 AND tabular_id = $2 AND typ = $3
                    AND EXISTS (
                        SELECT 1 FROM active_tabulars at
-                       WHERE at.warehouse_id = tabular.warehouse_id
-                       AND at.tabular_id = tabular.tabular_id
+                       WHERE at.warehouse_id = $1
+                       AND at.tabular_id = $2
                    )
            ),
            deleted as (
@@ -849,8 +852,8 @@ pub(crate) async fn drop_tabular(
                    AND typ = $3
                    AND EXISTS (
                        SELECT 1 FROM active_tabulars at
-                       WHERE at.warehouse_id = tabular.warehouse_id
-                       AND at.tabular_id = tabular.tabular_id
+                       WHERE at.warehouse_id = $1
+                       AND at.tabular_id = $2
                    )
                    AND ((NOT protected) OR $4)
               RETURNING metadata_location, fs_location, fs_protocol)

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            t.\"table_id\",\n            ti.name as \"table_name\",\n            ti.fs_location as \"table_fs_location\",\n            ti.fs_protocol as \"table_fs_protocol\",\n            namespace_name,\n            ti.namespace_id,\n            t.\"metadata\" as \"metadata: Json<TableMetadata>\",\n            ti.\"metadata_location\",\n            w.storage_profile as \"storage_profile: Json<StorageProfile>\",\n            w.\"storage_secret_id\"\n        FROM \"table\" t\n        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id\n        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id\n        WHERE t.warehouse_id = $1 AND t.\"table_id\" = $2\n            AND w.status = 'active'\n            AND (ti.deleted_at IS NULL OR $3)\n        ",
+  "query": "\n        SELECT\n            t.\"table_id\",\n            ti.name as \"table_name\",\n            ti.fs_location as \"table_fs_location\",\n            ti.fs_protocol as \"table_fs_protocol\",\n            namespace_name,\n            ti.namespace_id,\n            t.\"metadata\" as \"metadata: Json<TableMetadata>\",\n            ti.\"metadata_location\",\n            w.storage_profile as \"storage_profile: Json<StorageProfile>\",\n            w.\"storage_secret_id\"\n        FROM \"table\" t\n        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id\n        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON t.warehouse_id = ti.warehouse_id\n        WHERE t.warehouse_id = $1 AND t.\"table_id\" = $2\n            AND w.status = 'active'\n            AND (ti.deleted_at IS NULL OR $3)\n        ",
   "describe": {
     "columns": [
       {
@@ -74,5 +74,5 @@
       true
     ]
   },
-  "hash": "fb66276424ba6965dccd2cb2096552c7323178b9cd22e4ed5d99b412c46e88ad"
+  "hash": "b523b67b37da5e99cd7a44dbabf232db16fb29b193a3ce7a6a9569f1a5221868"
 }

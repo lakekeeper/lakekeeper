@@ -39,7 +39,7 @@ pub(crate) async fn get_namespace(
             n.warehouse_id,
             namespace_properties as "properties: Json<Option<HashMap<String, String>>>"
         FROM namespace n
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE n.warehouse_id = $1 AND n.namespace_id = $2
         AND w.status = 'active'
         "#,
@@ -123,7 +123,7 @@ pub(crate) async fn list_namespaces(
                 n.created_at,
                 n.protected
             FROM namespace n
-            INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+            INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
             AND w.status = 'active'
             AND array_length("namespace_name", 1) = $2 + 1
@@ -155,7 +155,7 @@ pub(crate) async fn list_namespaces(
                 n.created_at,
                 n.protected
             FROM namespace n
-            INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+            INNER JOIN warehouse w ON w.warehouse_id = $1
             WHERE n.warehouse_id = $1
             AND array_length("namespace_name", 1) = 1
             AND w.status = 'active'
@@ -308,7 +308,7 @@ pub(crate) async fn namespace_to_id(
         r#"
         SELECT namespace_id
         FROM namespace n
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE n.warehouse_id = $1 AND namespace_name = $2
         AND w.status = 'active'
         "#,
@@ -467,7 +467,7 @@ pub(crate) async fn drop_namespace(
 
     if record.rows_affected() == 0 {
         return Err(ErrorModel::internal(
-            format!("Namespace {namespace_id} naaot found in warehouse {warehouse_id}"),
+            format!("Namespace {namespace_id} not found in warehouse {warehouse_id}"),
             "NamespaceNotFound",
             None,
         )

@@ -213,7 +213,8 @@ fn verify_commit_completeness(verification_data: CommitVerificationData) -> api:
         updated_tabulars_ids,
     } = verification_data;
 
-    // Update for "table" table filters on `(warehouse_id, tabular_id)`
+    // Update for "table" table filters on `(warehouse_id, tabular_id)`, so that all tabular
+    // IDs are guaranteed to be unique, as they are in the same warehouse.
     if tabular_ids_in_commit != updated_tables_ids {
         let missing_ids = tabular_ids_in_commit
             .difference(&updated_tables_ids)

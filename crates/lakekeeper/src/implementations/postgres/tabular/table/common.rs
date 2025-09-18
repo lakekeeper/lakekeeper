@@ -42,7 +42,6 @@ pub(super) async fn insert_schemas(
     let num_schemas = schema_iter.len();
     let mut ids = Vec::with_capacity(num_schemas);
     let mut schemas = Vec::with_capacity(num_schemas);
-    let warehouse_ids = vec![*warehouse_id; num_schemas];
     let table_ids = vec![tabular_id; num_schemas];
 
     for s in schema_iter {
@@ -57,11 +56,11 @@ pub(super) async fn insert_schemas(
     }
 
     let _ = sqlx::query!(
-        r#"INSERT INTO table_schema(schema_id, table_id, warehouse_id, schema)
-           SELECT * FROM UNNEST($1::INT[], $2::UUID[], $3::UUID[], $4::JSONB[])"#,
+        r#"INSERT INTO table_schema(schema_id, table_id, schema, warehouse_id)
+           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[], $4::JSONB[])"#,
         &ids,
         &table_ids,
-        &warehouse_ids,
+        *warehouse_id,
         &schemas
     )
     .execute(&mut **transaction)
@@ -514,10 +513,6 @@ pub(super) async fn insert_snapshots(
     let mut schemas = Vec::with_capacity(snap_cnt);
     let mut timestamps = Vec::with_capacity(snap_cnt);
 
-    // Column values the same for every row.
-    let warehouses = vec![*warehouse_id; snap_cnt];
-    let tabs = vec![tabular_id; snap_cnt];
-
     for snap in snapshots {
         ids.push(snap.snapshot_id());
         parents.push(snap.parent_snapshot_id());
@@ -534,19 +529,17 @@ pub(super) async fn insert_snapshots(
         timestamps.push(snap.timestamp_ms());
     }
     let _ = sqlx::query!(
-        r#"INSERT INTO table_snapshot(snapshot_id,
-                                          table_id,
-                                          warehouse_id,
-                                          parent_snapshot_id,
-                                          sequence_number,
-                                          manifest_list,
-                                          summary,
-                                          schema_id,
-                                          timestamp_ms)
-            SELECT * FROM UNNEST(
+        r#"INSERT INTO table_snapshot(warehouse_id,
+                                      table_id,
+                                      snapshot_id,
+                                      parent_snapshot_id,
+                                      sequence_number,
+                                      manifest_list,
+                                      summary,
+                                      schema_id,
+                                      timestamp_ms)
+            SELECT $3, $2, * FROM UNNEST(
                 $1::BIGINT[],
-                $2::UUID[],
-                $3::UUID[],
                 $4::BIGINT[],
                 $5::BIGINT[],
                 $6::TEXT[],
@@ -555,8 +548,8 @@ pub(super) async fn insert_snapshots(
                 $9::BIGINT[]
             )"#,
         &ids,
-        &tabs,
-        &warehouses,
+        tabular_id,
+        *warehouse_id,
         &parents as _,
         &seqs,
         &manifs,

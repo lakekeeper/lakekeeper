@@ -10,35 +10,30 @@
 -- 5. Update all Primary Keys and indices to their new composite form.
 -- 6. Re-establish all Foreign Keys to reference the new composite keys.
 -- 7. Recreate views
-
 -- =================================================================================================
 -- 0: Cleanup some indices and FK constraints that are not needed anymore.-- =================================================================================================
 DROP INDEX IF EXISTS tabular_namespace_id_idx;
-DROP INDEX IF EXISTS tabular_typ_tabular_id_idx;
-DROP INDEX IF EXISTS idx_task_warehouse_id;
 
-ALTER TABLE table_current_schema
-    DROP CONSTRAINT IF EXISTS table_current_schema_table_id_fkey;
-ALTER TABLE table_default_partition_spec
-    DROP CONSTRAINT IF EXISTS table_default_partition_spec_table_id_fkey;
-ALTER TABLE table_default_sort_order
-    DROP CONSTRAINT IF EXISTS table_default_sort_order_table_id_fkey;
-ALTER TABLE table_snapshot
-    DROP CONSTRAINT IF EXISTS table_snapshot_table_id_fkey;
-ALTER TABLE table_statistics
-    DROP CONSTRAINT IF EXISTS table_statistics_table_id_fkey;
-ALTER TABLE view_representation
-    DROP CONSTRAINT IF EXISTS view_representation_view_id_fkey;
-ALTER TABLE view_version
-    DROP CONSTRAINT IF EXISTS view_version_view_id_fkey;
+DROP INDEX IF EXISTS tabular_typ_tabular_id_idx;
+
+DROP INDEX IF EXISTS tabular_namespace_id_location_idx;
+
+DROP INDEX IF EXISTS tabular_namespace_id_name_idx;
+
+DROP INDEX IF EXISTS view_representation_view_id_version_id_idx;
+
+-- Not required anymore, PK already covers this case
+DROP INDEX IF EXISTS view_version_log_view_id_version_id_idx;
 
 -- =================================================================================================
 -- 1: Drop all Foreign Key constraints that will be affected by Primary Key changes.
 -- =================================================================================================
-
 -- FKs referencing 'tabular'
-ALTER TABLE "table" DROP CONSTRAINT IF EXISTS tabular_ident_fk;
-ALTER TABLE "view" DROP CONSTRAINT IF EXISTS tabular_ident_fk;
+ALTER TABLE "table"
+DROP CONSTRAINT IF EXISTS tabular_ident_fk;
+
+ALTER TABLE "view"
+DROP CONSTRAINT IF EXISTS tabular_ident_fk;
 
 -- FKs referencing 'view'
 ALTER TABLE current_view_metadata_version
@@ -60,7 +55,20 @@ ALTER TABLE view_representation
 ALTER TABLE view_version_log
     DROP CONSTRAINT IF EXISTS view_version_log_view_id_version_id_fkey;
 
+ALTER TABLE view_representation
+    DROP CONSTRAINT IF EXISTS view_representation_view_id_fkey;
+
+ALTER TABLE view_version
+DROP CONSTRAINT IF EXISTS view_version_view_id_fkey;
+
+
 -- FKs referencing 'table'
+ALTER TABLE table_current_schema
+    DROP CONSTRAINT IF EXISTS table_current_schema_table_id_fkey;
+ALTER TABLE table_default_partition_spec
+    DROP CONSTRAINT IF EXISTS table_default_partition_spec_table_id_fkey;
+ALTER TABLE table_default_sort_order
+    DROP CONSTRAINT IF EXISTS table_default_sort_order_table_id_fkey;
 ALTER TABLE table_metadata_log
     DROP CONSTRAINT IF EXISTS table_metadata_log_table_id_fkey;
 ALTER TABLE table_partition_spec
@@ -71,10 +79,14 @@ ALTER TABLE table_refs
     DROP CONSTRAINT IF EXISTS table_refs_table_id_fkey;
 ALTER TABLE table_schema
     DROP CONSTRAINT IF EXISTS table_schema_table_id_fkey;
+ALTER TABLE table_snapshot
+    DROP CONSTRAINT IF EXISTS table_snapshot_table_id_fkey;
 ALTER TABLE table_snapshot_log
     DROP CONSTRAINT IF EXISTS table_snapshot_log_table_id_fkey;
 ALTER TABLE table_sort_order
     DROP CONSTRAINT IF EXISTS table_sort_order_table_id_fkey;
+ALTER TABLE table_statistics
+    DROP CONSTRAINT IF EXISTS table_statistics_table_id_fkey;
 ALTER TABLE partition_statistics
     DROP CONSTRAINT IF EXISTS partition_statistics_table_id_fkey;
 
@@ -97,7 +109,6 @@ ALTER TABLE table_statistics
 -- =================================================================================================
 -- 2: Migrate 'tabular' and 'view' tables
 -- =================================================================================================
-
 -- Section 2.1: Migrate the 'tabular' table
 ALTER TABLE "tabular" ADD COLUMN warehouse_id UUID;
 UPDATE "tabular" tab SET warehouse_id = n.warehouse_id
@@ -225,136 +236,120 @@ ALTER TABLE partition_statistics ALTER COLUMN warehouse_id SET NOT NULL;
 -- =================================================================================================
 -- 5: Modify all Primary Keys and indices to include 'warehouse_id'.
 -- =================================================================================================
-
 -- Drop and Add PK for 'tabular'
-ALTER TABLE "tabular" DROP CONSTRAINT tabular_pkey;
-ALTER TABLE "tabular" ADD CONSTRAINT tabular_pkey
-    PRIMARY KEY (warehouse_id, tabular_id);
+ALTER TABLE "tabular" 
+    DROP CONSTRAINT tabular_pkey,
+    ADD CONSTRAINT tabular_pkey PRIMARY KEY (warehouse_id, tabular_id);
 
 -- Drop and Add PK for 'view'
-ALTER TABLE "view" DROP CONSTRAINT view_pkey;
-ALTER TABLE "view" ADD CONSTRAINT view_pkey
-    PRIMARY KEY (warehouse_id, view_id);
+ALTER TABLE "view" 
+    DROP CONSTRAINT view_pkey,
+    ADD CONSTRAINT view_pkey PRIMARY KEY (warehouse_id, view_id);
 
 -- Drop and Add PKs for 'view_*' tables
 ALTER TABLE current_view_metadata_version
-    DROP CONSTRAINT current_view_metadata_version_pkey;
-ALTER TABLE current_view_metadata_version
-    ADD CONSTRAINT current_view_metadata_version_pkey
-    PRIMARY KEY (warehouse_id, view_id);
+    DROP CONSTRAINT current_view_metadata_version_pkey,
+    ADD CONSTRAINT current_view_metadata_version_pkey PRIMARY KEY (warehouse_id, view_id);
 
-ALTER TABLE view_properties DROP CONSTRAINT view_properties_pkey;
-ALTER TABLE view_properties ADD CONSTRAINT view_properties_pkey
-    PRIMARY KEY (warehouse_id, view_id, key);
+ALTER TABLE view_properties 
+    DROP CONSTRAINT view_properties_pkey, 
+    ADD CONSTRAINT view_properties_pkey PRIMARY KEY (warehouse_id, view_id, key);
 
-ALTER TABLE view_representation DROP CONSTRAINT view_representation_pkey;
-ALTER TABLE view_representation ADD CONSTRAINT view_representation_pkey
-    PRIMARY KEY (warehouse_id, view_representation_id);
+ALTER TABLE view_representation 
+    DROP CONSTRAINT view_representation_pkey, 
+    ADD CONSTRAINT view_representation_pkey PRIMARY KEY (warehouse_id, view_representation_id);
 
-ALTER TABLE view_schema DROP CONSTRAINT unique_schema_per_view;
-ALTER TABLE view_schema ADD CONSTRAINT unique_schema_per_view
-    PRIMARY KEY (warehouse_id, view_id, schema_id);
+ALTER TABLE view_schema 
+    DROP CONSTRAINT unique_schema_per_view, 
+    ADD CONSTRAINT unique_schema_per_view PRIMARY KEY (warehouse_id, view_id, schema_id);
 
-ALTER TABLE view_version DROP CONSTRAINT unique_version_per_metadata;
-ALTER TABLE view_version ADD CONSTRAINT unique_version_per_metadata
-    PRIMARY KEY (warehouse_id, view_id, version_id);
+ALTER TABLE view_version 
+    DROP CONSTRAINT unique_version_per_metadata, 
+    ADD CONSTRAINT unique_version_per_metadata PRIMARY KEY (warehouse_id, view_id, version_id);
 
-ALTER TABLE view_version_log DROP CONSTRAINT view_version_log_pkey;
-ALTER TABLE view_version_log ADD CONSTRAINT view_version_log_pkey
-    PRIMARY KEY (warehouse_id, view_id, version_id, "timestamp");
+ALTER TABLE view_version_log 
+    DROP CONSTRAINT view_version_log_pkey, 
+    ADD CONSTRAINT view_version_log_pkey PRIMARY KEY (warehouse_id, view_id, version_id, "timestamp");
 
-ALTER TABLE "table" DROP CONSTRAINT table_pkey;
-ALTER TABLE "table" ADD CONSTRAINT table_pkey
-    PRIMARY KEY (warehouse_id, table_id);
+ALTER TABLE "table" 
+    DROP CONSTRAINT table_pkey,
+    ADD CONSTRAINT table_pkey PRIMARY KEY (warehouse_id, table_id);
 
 -- Drop and Add PKs for 'table_*' tables
 ALTER TABLE table_current_schema
-    DROP CONSTRAINT table_current_schema_pkey;
-ALTER TABLE table_current_schema
+    DROP CONSTRAINT table_current_schema_pkey,
     ADD CONSTRAINT table_current_schema_pkey PRIMARY KEY (warehouse_id, table_id);
-
 ALTER TABLE table_default_partition_spec
-    DROP CONSTRAINT table_default_partition_spec_pkey;
-ALTER TABLE table_default_partition_spec
+    DROP CONSTRAINT table_default_partition_spec_pkey,
     ADD CONSTRAINT table_default_partition_spec_pkey PRIMARY KEY (warehouse_id, table_id);
-
 ALTER TABLE table_default_sort_order
-    DROP CONSTRAINT table_default_sort_order_pkey;
-ALTER TABLE table_default_sort_order
+    DROP CONSTRAINT table_default_sort_order_pkey,
     ADD CONSTRAINT table_default_sort_order_pkey PRIMARY KEY (warehouse_id, table_id);
-
 ALTER TABLE partition_statistics
-    DROP CONSTRAINT partition_statistics_pkey;
-ALTER TABLE partition_statistics
-    ADD CONSTRAINT partition_statistics_pkey
-    PRIMARY KEY (warehouse_id, table_id, snapshot_id);
-
+    DROP CONSTRAINT partition_statistics_pkey,
+    ADD CONSTRAINT partition_statistics_pkey PRIMARY KEY (warehouse_id, table_id, snapshot_id);
 ALTER TABLE table_metadata_log
-    DROP CONSTRAINT table_metadata_log_pkey;
-ALTER TABLE table_metadata_log
-    ADD CONSTRAINT table_metadata_log_pkey
-    PRIMARY KEY (warehouse_id, table_id, sequence_number);
-
+    DROP CONSTRAINT table_metadata_log_pkey,
+    ADD CONSTRAINT table_metadata_log_pkey PRIMARY KEY (warehouse_id, table_id, sequence_number);
 ALTER TABLE table_partition_spec
-    DROP CONSTRAINT table_partition_spec_pkey;
-ALTER TABLE table_partition_spec
-    ADD CONSTRAINT table_partition_spec_pkey
-    PRIMARY KEY (warehouse_id, table_id, partition_spec_id);
-
+    DROP CONSTRAINT table_partition_spec_pkey,
+    ADD CONSTRAINT table_partition_spec_pkey PRIMARY KEY (warehouse_id, table_id, partition_spec_id);
 ALTER TABLE table_properties
-    DROP CONSTRAINT table_properties_pkey;
-ALTER TABLE table_properties
+    DROP CONSTRAINT table_properties_pkey,
     ADD CONSTRAINT table_properties_pkey PRIMARY KEY (warehouse_id, table_id, key);
-
 ALTER TABLE table_refs
-    DROP CONSTRAINT table_refs_pkey;
-ALTER TABLE table_refs
+    DROP CONSTRAINT table_refs_pkey,
     ADD CONSTRAINT table_refs_pkey PRIMARY KEY (warehouse_id, table_id, table_ref_name);
-
 ALTER TABLE table_schema
-    DROP CONSTRAINT table_schema_pkey;
-ALTER TABLE table_schema
+    DROP CONSTRAINT table_schema_pkey,
     ADD CONSTRAINT table_schema_pkey PRIMARY KEY (warehouse_id, table_id, schema_id);
-
 ALTER TABLE table_snapshot
-    DROP CONSTRAINT table_snapshot_pkey;
-ALTER TABLE table_snapshot
+    DROP CONSTRAINT table_snapshot_pkey,
     ADD CONSTRAINT table_snapshot_pkey PRIMARY KEY (warehouse_id, table_id, snapshot_id);
-
 ALTER TABLE table_snapshot_log
-    DROP CONSTRAINT table_snapshot_log_pkey;
-ALTER TABLE table_snapshot_log
-    ADD CONSTRAINT table_snapshot_log_pkey
-    PRIMARY KEY (warehouse_id, table_id, sequence_number);
-
+    DROP CONSTRAINT table_snapshot_log_pkey,
+    ADD CONSTRAINT table_snapshot_log_pkey PRIMARY KEY (warehouse_id, table_id, sequence_number);
 ALTER TABLE table_sort_order
-    DROP CONSTRAINT table_sort_order_pkey;
-ALTER TABLE table_sort_order
-    ADD CONSTRAINT table_sort_order_pkey
-    PRIMARY KEY (warehouse_id, table_id, sort_order_id);
-
+    DROP CONSTRAINT table_sort_order_pkey,
+    ADD CONSTRAINT table_sort_order_pkey PRIMARY KEY (warehouse_id, table_id, sort_order_id);
 ALTER TABLE table_statistics
-    DROP CONSTRAINT table_statistics_pkey;
-ALTER TABLE table_statistics
-    ADD CONSTRAINT table_statistics_pkey
-    PRIMARY KEY (warehouse_id, table_id, snapshot_id);
+    DROP CONSTRAINT table_statistics_pkey,
+    ADD CONSTRAINT table_statistics_pkey PRIMARY KEY (warehouse_id, table_id, snapshot_id);
 
--- Update indices to include warehouse_id
-DROP INDEX IF EXISTS view_representation_view_id_version_id_idx;
+-- =================================================================================================
+-- 6: Re-Create indices
+-- =================================================================================================
+
+-- Business key (non-unique). Multiple dialects possible for same (warehouse_id, namespace_id, name).
 CREATE INDEX view_representation_view_id_version_id_idx
     ON view_representation USING btree (warehouse_id, view_id, view_version_id);
+-- Index supports create table lookup by location for create table conflict checks
+-- and s3_location lookup for remote signing
+CREATE INDEX tabular_warehouse_id_location_idx
+    ON tabular USING btree (warehouse_id, fs_location);
 
-DROP INDEX IF EXISTS view_version_log_view_id_version_id_idx;
-CREATE INDEX view_version_log_view_id_version_id_idx
-    ON view_version_log USING btree (warehouse_id, view_id, version_id);
+-- Re-Create this unique index to include warehouse_id. Also makes separate index for tabular_ident_to_id query obsolete
+ALTER TABLE tabular
+    DROP CONSTRAINT IF EXISTS unique_name_per_namespace_id;
+DROP INDEX IF EXISTS unique_name_per_namespace_id;
+CREATE UNIQUE INDEX unique_name_per_namespace_id
+    ON tabular USING btree (warehouse_id, namespace_id, name, deleted_at);
 
+-- Index required to create FK constraint from 'tabular' to 'namespace'
+-- on (warehouse_id, namespace_id)
+CREATE UNIQUE INDEX unique_namespace_id_per_warehouse
+    ON namespace USING btree (warehouse_id, namespace_id);
+    
 -- =================================================================================================
--- 6: Re-add all Foreign Key constraints with composite keys.
+-- 7: Re-add all Foreign Key constraints with composite keys.
 -- =================================================================================================
 
--- Add FK from 'tabular' to 'warehouse'
-ALTER TABLE "tabular" ADD CONSTRAINT tabular_warehouse_id_fkey
-    FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id) ON DELETE CASCADE;
+-- Add FK from 'tabular' to 'namespace', indirectly to 'warehouse'
+ALTER TABLE "tabular"
+    DROP CONSTRAINT IF EXISTS tabular_warehouse_id_fkey,
+    DROP CONSTRAINT IF EXISTS tabular_namespace_id_fkey,
+    ADD CONSTRAINT tabular_warehouse_id_namespace_id_fkey
+        FOREIGN KEY (warehouse_id, namespace_id) REFERENCES namespace(warehouse_id, namespace_id) ON DELETE CASCADE;
 
 -- Add FKs for 'view' and 'table' to 'tabular'
 ALTER TABLE "view" ADD CONSTRAINT tabular_ident_fk
@@ -429,7 +424,7 @@ ALTER TABLE table_statistics ADD CONSTRAINT table_statistics_table_id_snapshot_i
     REFERENCES table_snapshot(warehouse_id, table_id, snapshot_id) ON DELETE CASCADE;
 
 -- =================================================================================================
--- 7: Recreate views
+-- 8: Recreate views
 -- =================================================================================================
 
 DROP VIEW IF EXISTS active_tables;
