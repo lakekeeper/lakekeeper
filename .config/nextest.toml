@@ -1,3 +1,4 @@
+# Tests that can run without secrets and external services.
 [profile.default]
 default-filter = """
     not (package(lakekeeper-io) and binary(integration_tests))
@@ -23,6 +24,25 @@ failure-output = "immediate-final"
 fail-fast = false
 retries = 0
 
-
 [profile.ci.junit] # this can be some other profile, too
+path = "junit.xml"
+
+# Can require external services but no secrets.
+[profile.ci_no_secrets]
+default-filter = """
+    not (package(lakekeeper-io) and binary(integration_tests))
+    and not test(::aws_integration_tests::)
+    and not test(::aws_kms_integration_tests::)
+    and not test(::azure_integration_tests::)
+    and not test(::azure_system_credentials_integration_tests::)
+    and not test(::gcs_integration_tests::)
+    and not test(::gcs_hns_integration_tests::)
+    and not test(::gcp_system_credentials_integration_tests::)
+    and not test(::r2_integration_tests::)
+"""
+failure-output = "immediate-final"
+fail-fast = false
+retries = 0
+
+[profile.ci_no_secrets.junit] # this can be some other profile, too
 path = "junit.xml"

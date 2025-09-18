@@ -222,11 +222,11 @@ generate_endpoints! {
         GetDefaultProjectDeprecated(GET, "/management/v1/default-project"),
         DeleteDefaultProjectDeprecated(DELETE, "/management/v1/default-project"),
         RenameDefaultProjectDeprecated(POST, "/management/v1/default-project/rename"),
-        SetTaskQueueConfig(POST, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
-        GetTaskQueueConfig(GET, "/management/v1/{warehouse_id}/task-queue/{queue_name}/config"),
-        ListTasks(POST, "/management/v1/{warehouse_id}/task/list"),
-        GetTaskDetails(GET, "/management/v1/{warehouse_id}/task/by-id/{task_id}"),
-        ControlTasks(POST, "/management/v1/{warehouse_id}/task/control"),
+        SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        GetTaskQueueConfig(GET, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
+        GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
+        ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
     }
 
     enum PermissionV1 {
@@ -235,6 +235,12 @@ generate_endpoints! {
         Head(HEAD, "/management/v1/permissions"),
         Delete(DELETE, "/management/v1/permissions"),
         Put(PUT, "/management/v1/permissions"),
+    }
+}
+
+impl ManagementV1Endpoint {
+    pub fn path_in_management_v1(self) -> &'static str {
+        &self.path()["/management/v1".len()..]
     }
 }
 
@@ -366,8 +372,8 @@ mod test {
 
         use crate::api::endpoints::Endpoint;
         let exempt_config_paths = [
-            "management/v1/{warehouse_id}/task-queue/tabular_expiration/config",
-            "management/v1/{warehouse_id}/task-queue/tabular_purge/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
         ];
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
@@ -468,7 +474,9 @@ mod test {
             .filter(|(_m, path)| {
                 // We filter out the parameterized endpoint here since we expand them using actually
                 // registered queues
-                !path.starts_with("management/v1/{warehouse_id}/task-queue/{queue_name}/config")
+                !path.starts_with(
+                    "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
+                )
             })
             .collect_vec();
         if !extra_endpoints.is_empty() {
