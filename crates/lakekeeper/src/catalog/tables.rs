@@ -1089,7 +1089,7 @@ fn commit_tables_validate(request: &CommitTransactionRequest) -> Result<()> {
         }
         let dups = counts
             .into_iter()
-            .filter(|&(_i, c)| (c > 1))
+            .filter(|&(_i, c)| c > 1)
             .map(|(i, _c)| i.to_string())
             .collect::<Vec<_>>()
             .join(", ");
@@ -2908,7 +2908,7 @@ pub(crate) mod test {
             pool.clone(),
             prof,
             None,
-            AllowAllAuthorizer,
+            AllowAllAuthorizer::default(),
             TabularDeleteProfile::Hard {},
             None,
         )

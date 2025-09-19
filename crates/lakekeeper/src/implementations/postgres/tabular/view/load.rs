@@ -101,7 +101,8 @@ async fn query(
     conn: &mut PgConnection,
 ) -> Result<Query, IcebergErrorResponse> {
     let rs = sqlx::query_as!(Query,
-            r#"SELECT v.view_id,
+            r#"
+SELECT v.view_id,
        v.view_format_version            as "view_format_version: ViewFormatVersion",
        ta.fs_location                      AS view_fs_location,
        ta.fs_protocol                      AS view_fs_protocol,
@@ -123,32 +124,31 @@ async fn query(
        vvr.sql                           AS "view_representation_sql: Json<Vec<Vec<String>>>",
        vvr.dialect                       AS "view_representation_dialect: Json<Vec<Vec<String>>>"
 FROM view v
-         INNER JOIN tabular ta ON v.warehouse_id = ta.warehouse_id AND v.view_id = ta.tabular_id
+         INNER JOIN tabular ta ON ta.warehouse_id = $1 AND ta.tabular_id = v.view_id
          INNER JOIN current_view_metadata_version cvv
-             ON v.warehouse_id = cvv.warehouse_id AND v.view_id = cvv.view_id
-         LEFT JOIN (SELECT warehouse_id,
-                           view_id,
+             ON cvv.warehouse_id = $1 AND v.view_id = cvv.view_id
+         LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(schema_id) AS schema_ids,
                            ARRAY_AGG(schema)    AS schemas
                     FROM view_schema
-                    GROUP BY warehouse_id, view_id) vs
-                    ON v.warehouse_id = vs.warehouse_id AND v.view_id = vs.view_id
-         LEFT JOIN (SELECT warehouse_id,
-                           view_id,
+                    WHERE warehouse_id = $1 and view_id = $2
+                    GROUP BY view_id) vs
+                    ON v.view_id = vs.view_id
+         LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(version_id) AS version_log_ids,
                            ARRAY_AGG(timestamp)  AS version_log_timestamps
                     FROM view_version_log
-                    GROUP BY warehouse_id, view_id) vvl
-                    ON v.warehouse_id = vvl.warehouse_id AND v.view_id = vvl.view_id
-         LEFT JOIN (SELECT warehouse_id,
-                           view_id,
+                    WHERE warehouse_id = $1 and view_id = $2
+                    GROUP BY view_id) vvl
+                    ON v.view_id = vvl.view_id
+         LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(key)   AS view_properties_keys,
                            ARRAY_AGG(value) AS view_properties_values
                     FROM view_properties
-                    GROUP BY warehouse_id, view_id) vp
-                    ON v.warehouse_id = vp.warehouse_id AND v.view_id = vp.view_id
-         LEFT JOIN (SELECT vv.warehouse_id,
-                           vv.view_id,
+                    WHERE warehouse_id = $1 and view_id = $2
+                    GROUP BY view_id) vp
+                    ON v.view_id = vp.view_id
+         LEFT JOIN (SELECT vv.view_id,
                            JSONB_AGG(version_id)           AS version_ids,
                            ARRAY_AGG(summary)              AS summaries,
                            ARRAY_AGG(schema_id)            AS version_schema_ids,
@@ -159,16 +159,17 @@ FROM view v
                            JSONB_AGG(sql)                  as "sql",
                            JSONB_AGG(dialect)              as "dialect"
                     FROM view_version vv
-                             LEFT JOIN (SELECT warehouse_id,
-                                               view_id,
+                             LEFT JOIN (SELECT view_id,
                                                view_version_id,
                                                ARRAY_AGG(typ)     as typ,
                                                ARRAY_AGG(sql)     as sql,
                                                ARRAY_AGG(dialect) as dialect
                                         FROM view_representation
-                                        GROUP BY view_version_id, view_id, warehouse_id) vr
-                                        ON vv.version_id = vr.view_version_id AND vv.warehouse_id = vr.warehouse_id AND vv.view_id = vr.view_id
-                    GROUP BY vv.warehouse_id, vv.view_id) vvr ON v.warehouse_id = vvr.warehouse_id AND v.view_id = vvr.view_id
+                                        WHERE warehouse_id = $1 and view_id = $2
+                                        GROUP BY view_version_id, view_id) vr
+                                        ON vv.version_id = vr.view_version_id AND vv.view_id = vr.view_id
+                    WHERE vv.warehouse_id = $1 and vv.view_id = $2
+                    GROUP BY vv.view_id) vvr ON v.view_id = vvr.view_id
          WHERE v.warehouse_id = $1 AND v.view_id = $2 AND (ta.deleted_at is NULL OR $3)"#,
             *warehouse_id,
             view_id,

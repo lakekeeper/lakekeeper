@@ -253,14 +253,6 @@ pub struct DynAppConfig {
     )]
     pub endpoint_stat_flush_interval: Duration,
 
-    // ------------- Internal -------------
-    /// Optional server id. We recommend to not change this unless multiple catalogs
-    /// are sharing the same Authorization system.
-    /// If not specified, 00000000-0000-0000-0000-000000000000 is used.
-    /// This ID must not be changed after start!
-    #[serde(default = "uuid::Uuid::nil")]
-    pub server_id: uuid::Uuid,
-
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
 }
@@ -519,7 +511,6 @@ impl Default for DynAppConfig {
             pagination_size_default: 100,
             pagination_size_max: 1000,
             endpoint_stat_flush_interval: Duration::from_secs(30),
-            server_id: uuid::Uuid::nil(),
             serve_swagger_ui: true,
             skip_storage_validation: false,
         }

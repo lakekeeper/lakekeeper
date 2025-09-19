@@ -160,6 +160,7 @@ pub(crate) mod tests {
             client.clone(),
             Some(store_name),
             ConsistencyPreference::HigherConsistency,
+            uuid::Uuid::new_v4(), // random server id for test
         )
         .await
         .unwrap();

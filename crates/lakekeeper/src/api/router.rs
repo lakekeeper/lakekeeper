@@ -38,7 +38,7 @@ static ICEBERG_OPENAPI_SPEC_YAML: LazyLock<serde_json::Value> = LazyLock::new(||
     let mut yaml_str =
         include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml").to_string();
     yaml_str = yaml_str.replace("  /v1/", "  /catalog/v1/");
-    serde_yml::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
+    serde_norway::from_str(&yaml_str).expect("Failed to parse Iceberg API model V1 as JSON")
 });
 
 pub struct RouterArgs<C: Catalog, A: Authorizer + Clone, S: SecretStore, N: Authenticator> {

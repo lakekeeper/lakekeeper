@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT \n            namespace_name as \"namespace_name: Vec<String>\",\n            n.namespace_id,\n            n.warehouse_id,\n            namespace_properties as \"properties: Json<Option<HashMap<String, String>>>\"\n        FROM namespace n\n        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id\n        WHERE n.warehouse_id = $1 AND n.namespace_id = $2\n        AND w.status = 'active'\n        ",
+  "query": "\n        SELECT \n            namespace_name as \"namespace_name: Vec<String>\",\n            n.namespace_id,\n            n.warehouse_id,\n            namespace_properties as \"properties: Json<Option<HashMap<String, String>>>\"\n        FROM namespace n\n        INNER JOIN warehouse w ON w.warehouse_id = $1\n        WHERE n.warehouse_id = $1 AND n.namespace_id = $2\n        AND w.status = 'active'\n        ",
   "describe": {
     "columns": [
       {
@@ -37,5 +37,5 @@
       false
     ]
   },
-  "hash": "c55a718665b391b12d46e0e3e3fa165160719ce6d16ce3b1c86fbc128eb4c6cb"
+  "hash": "18350f83096ee58ebbf7672a9630a3b3acdd052d4fbfa9e19ef3ce14f4d7b295"
 }

@@ -433,10 +433,9 @@ pub(crate) async fn load_storage_profile(
         SELECT w.storage_secret_id,
         w.storage_profile as "storage_profile: Json<StorageProfile>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.warehouse_id = $1
+        INNER JOIN tabular ti ON t.table_id = ti.tabular_id AND t.warehouse_id = ti.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE w.warehouse_id = $1 AND t.warehouse_id = $1
             AND t."table_id" = $2
             AND w.status = 'active'
         "#,
@@ -515,15 +514,15 @@ pub(crate) async fn load_tables(
             tstat.key_metadatas as "table_stats_key_metadata: Vec<Option<String>>",
             tstat.blob_metadatas as "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>"
         FROM "table" t
-        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         INNER JOIN table_current_schema tcs
-            ON tcs.warehouse_id = t.warehouse_id AND tcs.table_id = t.table_id
+            ON tcs.warehouse_id = $1 AND tcs.table_id = t.table_id
         LEFT JOIN table_default_partition_spec tdps
-            ON tdps.warehouse_id = t.warehouse_id AND tdps.table_id = t.table_id
+            ON tdps.warehouse_id = $1 AND tdps.table_id = t.table_id
         LEFT JOIN table_default_sort_order tdsort
-            ON tdsort.warehouse_id = t.warehouse_id AND tdsort.table_id = t.table_id
+            ON tdsort.warehouse_id = $1 AND tdsort.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(schema_id) as schema_ids,
                           ARRAY_AGG(schema) as schemas
@@ -678,9 +677,9 @@ pub(crate) async fn get_table_metadata_by_id(
             w.storage_profile as "storage_profile: Json<StorageProfile>",
             w."storage_secret_id"
         FROM "table" t
-        INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
+        INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE t.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
             AND (ti.deleted_at IS NULL OR $3)
@@ -747,9 +746,9 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              w.storage_profile as "storage_profile: Json<StorageProfile>",
              w."storage_secret_id"
          FROM "table" t
-         INNER JOIN tabular ti ON t.warehouse_id = ti.warehouse_id AND t.table_id = ti.tabular_id
+         INNER JOIN tabular ti ON t.warehouse_id = $1 AND t.table_id = ti.tabular_id
          INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
-         INNER JOIN warehouse w ON t.warehouse_id = w.warehouse_id
+         INNER JOIN warehouse w ON w.warehouse_id = $1
          WHERE t.warehouse_id = $1
              AND ti.fs_location = ANY($2)
              AND LENGTH(ti.fs_location) <= $3
@@ -862,7 +861,7 @@ impl From<&[TableUpdate]> for TableUpdates {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    // Desired behaviour:
+    // Desired behavior:
     // - Stage-Create => Load fails with 404
     // - No Stage-Create => Next create fails with 409, load succeeds
     // - Stage-Create => Next stage-create works & overwrites
