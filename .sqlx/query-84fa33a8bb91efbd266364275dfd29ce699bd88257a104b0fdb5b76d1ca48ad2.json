@@ -1,0 +1,157 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            queue_name AS \"queue_name!\",\n            entity_id AS \"entity_id!\",\n            entity_type as \"entity_type!: EntityType\",\n            task_status as \"task_status: TaskStatus\",\n            task_log_status as \"task_log_status: TaskOutcome\",\n            attempt_scheduled_for as \"attempt_scheduled_for!\",\n            started_at,\n            attempt as \"attempt!\",\n            last_heartbeat_at,\n            progress as \"progress!\",\n            parent_task_id,\n            task_created_at as \"task_created_at!\",\n            attempt_created_at,\n            updated_at,\n            task_data as \"task_data!\",\n            execution_details,\n            duration,\n            message\n         FROM (\n        SELECT\n            queue_name,\n            entity_id,\n            entity_type,\n            status as task_status,\n            null as task_log_status,\n            scheduled_for as attempt_scheduled_for,\n            picked_up_at as started_at,\n            attempt,\n            last_heartbeat_at,\n            progress,\n            parent_task_id,\n            created_at as task_created_at,\n            null::timestamptz as attempt_created_at,\n            updated_at,\n            task_data,\n            execution_details,\n            case when picked_up_at is not null\n                then now() - picked_up_at\n                else null\n            end as duration,\n            null as message\n        FROM task\n        WHERE warehouse_id = $1 AND task_id = $2\n        UNION ALL\n        (SELECT\n            queue_name,\n            entity_id,\n            entity_type,\n            null as task_status,\n            status as task_log_status,\n            attempt_scheduled_for,\n            started_at,\n            attempt,\n            last_heartbeat_at,\n            progress,\n            parent_task_id,\n            task_created_at,\n            created_at as attempt_created_at,\n            null as updated_at,\n            task_data,\n            execution_details,\n            duration,\n            message\n        FROM task_log        \n        WHERE warehouse_id = $1 AND task_id = $2\n        ORDER BY attempt desc \n        LIMIT $3 + 1\n        )) as combined\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "queue_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "entity_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "entity_type!: EntityType",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "tabular"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "task_status: TaskStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "task_log_status: TaskOutcome",
+        "type_info": {
+          "Custom": {
+            "name": "task_final_status",
+            "kind": {
+              "Enum": [
+                "failed",
+                "cancelled",
+                "success"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "attempt_scheduled_for!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "attempt!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_heartbeat_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "progress!",
+        "type_info": "Float4"
+      },
+      {
+        "ordinal": 10,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "task_created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "attempt_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "task_data!",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 15,
+        "name": "execution_details",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 16,
+        "name": "duration",
+        "type_info": "Interval"
+      },
+      {
+        "ordinal": 17,
+        "name": "message",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "84fa33a8bb91efbd266364275dfd29ce699bd88257a104b0fdb5b76d1ca48ad2"
+}

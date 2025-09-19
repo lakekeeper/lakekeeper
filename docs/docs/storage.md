@@ -51,6 +51,7 @@ The following table describes all configuration parameters for an S3 storage pro
 | `assume-role-arn`             | String  | No       | None                       | Optional ARN to assume when accessing the bucket from Lakekeeper. This is also used as the default for `sts-role-arn` if that is not specified. |
 | `sts-role-arn`                | String  | No       | Value of `assume-role-arn` | Optional role ARN to assume for STS vended-credentials. Either `assume-role-arn` or `sts-role-arn` must be provided if `sts-enabled` is true and `flavor` is `aws`. |
 | `sts-token-validity-seconds`  | Integer | No       | `3600`                     | The validity period of STS tokens in seconds. Controls how long the vended credentials remain valid before they need to be refreshed. |
+| `sts-session-tags`            | Object  | No       | `{}`                       | An optional JSON object containing key-value pairs of session tags to apply when assuming roles via STS. These tags are attached to the temporary credentials and can be used for access control, auditing, or cost allocation. Each key and value must be a string. Example: `{"Environment": "production", "Team": "data-engineering"}` |
 | `allow-alternative-protocols` | Boolean | No       | `false`                    | Whether to allow `s3a://` and `s3n://` in locations. This is disabled by default and should only be enabled for migrating legacy Hadoop-based tables via the register endpoint. Tables with `s3a` paths are not accessible outside the Java ecosystem. |
 | `remote-signing-url-style`    | String  | No       | `auto`                     | S3 URL style detection mode for remote signing. Options: `auto`, `path-style`, or `virtual-host`. When set to `auto`, Lakekeeper tries virtual-host style first, then path style. |
 | `push-s3-delete-disabled`     | Boolean | No       | `true`                     | Controls whether the `s3.delete-enabled=false` flag is sent to clients. Only has an effect if "soft-deletion" is enabled for this Warehouse. This prevents clients like Spark from directly deleting files during operations like `DROP TABLE xxx PURGE`, ensuring soft-deletion works properly. However, it also affects operations like `expire_snapshots` that require file deletion. For more information, please check the [Soft Deletion Documentation](./concepts.md#soft-deletion). |
@@ -66,38 +67,38 @@ Secondly we need to create an AWS role that can access and delegate access to th
 
 ```json
 {
-	"Version": "2012-10-17",
-	"Statement": [
-		{
-			"Sid": "ListBuckets",
-			"Action": [
-				"s3:ListAllMyBuckets",
-				"s3:GetBucketLocation"
-			],
-			"Effect": "Allow",
-			"Resource": [
-				"arn:aws:s3:::*"
-			]
-		},
-		{
-			"Sid": "ListBucketContent",
-			"Action": [
-				"s3:ListBucket"
-			],
-			"Effect": "Allow",
-			"Resource": "arn:aws:s3:::lakekeeper-aws-demo"
-		},
-		{
-			"Sid": "DataAccess",
-			"Effect": "Allow",
-			"Action": [
-				"s3:*"
-			],
-			"Resource": [
-				"arn:aws:s3:::lakekeeper-aws-demo/*"
-			]
-		}
-	]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ListBuckets",
+            "Action": [
+                "s3:ListAllMyBuckets",
+                "s3:GetBucketLocation"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::*"
+            ]
+        },
+        {
+            "Sid": "ListBucketContent",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::lakekeeper-aws-demo"
+        },
+        {
+            "Sid": "DataAccess",
+            "Effect": "Allow",
+            "Action": [
+                "s3:*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::lakekeeper-aws-demo/*"
+            ]
+        }
+    ]
 }
 ```
 
@@ -106,17 +107,17 @@ Now create a new user, we call the user `LakekeeperWarehouseDev`, and attach the
 We are done if we only rely on remote signing. For vended credentials, we need to perform one more step. Create a new role that we call `LakekeeperWarehouseDevRole`. This role needs to be trusted by the user, which is achieved via with the following trust policy:
 ```json
 {
-	"Version": "2012-10-17",
-	"Statement": [
-		{
-			"Sid": "TrustLakekeeperWarehouseDev",
-			"Effect": "Allow",
-			"Principal": {
-				"AWS": "arn:aws:iam::<aws-account-id>:user/LakekeeperWarehouseDev"
-			},
-			"Action": "sts:AssumeRole"
-		}
-	]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "TrustLakekeeperWarehouseDev",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::<aws-account-id>:user/LakekeeperWarehouseDev"
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
 }
 ```
 
@@ -203,30 +204,30 @@ When creating a warehouse, users must configure an IAM role with an appropriate 
 The role also needs S3 access, so attach a policy like this:
 ```json
 {
-	"Version": "2012-10-17",
-	"Statement": [
-		{
-			"Sid": "AllowAllAccessInWarehouseFolder",
-			"Action": [
-				"s3:*"
-			],
-			"Resource": [
-				"arn:aws:s3:::<bucket-name>/<key-prefix if used>/*"
-			],
-			"Effect": "Allow"
-		},
-		{
-			"Sid": "AllowRootAndHomeListing",
-			"Action": [
-				"s3:ListBucket"
-			],
-			"Effect": "Allow",
-			"Resource": [
-				"arn:aws:s3:::<bucket-name>",
-				"arn:aws:s3:::<bucket-name>/"
-			]
-		}
-	]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowAllAccessInWarehouseFolder",
+            "Action": [
+                "s3:*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::<bucket-name>/<key-prefix if used>/*"
+            ],
+            "Effect": "Allow"
+        },
+        {
+            "Sid": "AllowRootAndHomeListing",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+                "arn:aws:s3:::<bucket-name>",
+                "arn:aws:s3:::<bucket-name>/*"
+            ]
+        }
+    ]
 }
 ```
 
@@ -254,7 +255,73 @@ We are now ready to create the Warehouse using the system identity:
 }
 ```
 
-The specified `assume-role-arn` is used for Lakekeeper's reads and writes of the object store. It is also used as a default for `sts-role-arn`, which is the role that is assumed when generating vended credentials for clients (with an attached policy for the accessed table). 
+The specified `assume-role-arn` is used for Lakekeeper's reads and writes of the object store. It is also used as a default for `sts-role-arn`, which is the role that is assumed when generating vended credentials for clients (with an attached policy for the accessed table).
+
+##### STS Session Tags
+The optional `sts-session-tags` setting can be used to provide Session Tags when assuming roles via STS. Doing so requires that the IAM Role's Trust Relationship also allow `sts:TagSession`. Here's the above example with this addition:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowAssumeRole",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::123:user/lakekeeper-system-identity"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {
+                "StringEquals": {
+                    "sts:ExternalId": "<Use a secure random string that cannot be guessed. Treat it like a password.>"
+                }
+            }
+        },
+        {
+            "Sid": "AllowSessionTagging",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::123:user/lakekeeper-system-identity"
+            },
+            "Action": "sts:TagSession"
+        }
+    ]
+}
+```
+
+If wanting to use a session tag in an ABAC policy, one can reference that tag via `${aws:PrincipalTag/<tag name>}`. For example, here's a policy that dynamically sets the S3 path based on a `tenant` tag:
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowAllAccessInTenantWarehouse",
+            "Action": [
+                "s3:*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::<bucket-name>/${aws:PrincipalTag/tenant}/*"
+            ],
+            "Effect": "Allow"
+        },
+        {
+            "Sid": "AllowListingInTenantWarehouse",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::<bucket-name>",
+            "Condition": {
+                "StringLike": {
+                    "s3:prefix": [
+                        "${aws:PrincipalTag/tenant}/*"
+                    ]
+                }
+            }
+        }
+    ]
+}
+```
 
 ### S3 Compatible
 

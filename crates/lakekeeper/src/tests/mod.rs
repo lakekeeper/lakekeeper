@@ -1,6 +1,7 @@
 mod drop_recursive;
 mod drop_warehouse;
 mod endpoint_stats;
+mod soft_deletion;
 mod stats;
 mod tasks;
 

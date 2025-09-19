@@ -6,6 +6,7 @@ pub mod v1 {
     pub mod project;
     pub mod role;
     pub mod table;
+    pub mod tasks;
     pub mod user;
     pub mod view;
     pub mod warehouse;
@@ -56,6 +57,10 @@ pub mod v1 {
             iceberg::{types::PageToken, v1::PaginationQuery},
             management::v1::{
                 project::{EndpointStatisticsResponse, GetEndpointStatisticsRequest},
+                tasks::{
+                    ControlTasksRequest, GetTaskDetailsQuery, GetTaskDetailsResponse,
+                    ListTasksRequest, ListTasksResponse, Service,
+                },
                 user::{ListUsersQuery, ListUsersResponse},
                 warehouse::{
                     GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, UndropTabularsRequest,
@@ -65,16 +70,14 @@ pub mod v1 {
         },
         request_metadata::RequestMetadata,
         service::{
-            authn::UserId, authz::Authorizer, task_queue::QueueApiConfig, Actor, Catalog,
-            CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State, TableId,
-            TabularId, ViewId,
+            authn::UserId,
+            authz::Authorizer,
+            task_queue::{QueueApiConfig, TaskId},
+            Actor, Catalog, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore, State,
+            TableId, TabularId, ViewId,
         },
         ProjectId, WarehouseId,
     };
-
-    pub(crate) fn default_page_size() -> i64 {
-        100
-    }
 
     #[derive(Debug, OpenApi)]
     #[openapi(
@@ -86,6 +89,7 @@ pub mod v1 {
             (name = "server", description = "Manage Server"),
             (name = "project", description = "Manage Projects"),
             (name = "warehouse", description = "Manage Warehouses"),
+            (name = "tasks", description = "View & Manage Tasks"),
             (name = "user", description = "Manage Users"),
             (name = "role", description = "Manage Roles")
         ),
@@ -95,6 +99,7 @@ pub mod v1 {
         paths(
             activate_warehouse,
             bootstrap,
+            control_tasks,
             create_project,
             create_role,
             create_user,
@@ -112,12 +117,14 @@ pub mod v1 {
             get_project_by_id,
             get_role,
             get_server_info,
+            get_task_details,
             get_user,
             get_warehouse,
             get_warehouse_statistics,
             list_deleted_tabulars,
             list_projects,
             list_roles,
+            list_tasks,
             list_user,
             list_warehouses,
             rename_default_project,
@@ -1015,14 +1022,6 @@ pub mod v1 {
         .await
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct RecursiveDeleteQuery {
-        #[serde(default)]
-        force: bool,
-        #[serde(default)]
-        purge: bool,
-    }
-
     #[derive(Deserialize, Debug, ToSchema)]
     pub struct SetProtectionRequest {
         /// Setting this to `true` will prevent the entity from being deleted unless `force` is used.
@@ -1459,10 +1458,12 @@ pub mod v1 {
         .await
     }
 
-    /// Set task-queue config
+    /// Set the configuration for a Task Queue.
+    ///
+    /// These configurations are global per warehouse and shared across all instances of this kind of task.
     #[utoipa::path(
         post,
-        tag = "warehouse",
+        tag = "tasks",
         path = ManagementV1Endpoint::SetTaskQueueConfig.path(),
         params(("warehouse_id" = Uuid,)),
         responses(
@@ -1476,9 +1477,10 @@ pub mod v1 {
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Json(request): Json<SetTaskQueueConfigRequest>,
     ) -> Result<StatusCode> {
+        let queue_name = queue_name.into();
         ApiServer::<C, A, S>::set_task_queue_config(
             warehouse_id.into(),
-            queue_name,
+            &queue_name,
             request,
             api_context,
             metadata,
@@ -1487,11 +1489,13 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    /// Get task-queue config
+    /// Get the configuration for a Task Queue.
+    ///
+    /// These configurations are global per warehouse and shared across all instances of this kind of task.
     #[utoipa::path(
         get,
-        tag = "warehouse",
-        path = ManagementV1Endpoint::SetTaskQueueConfig.path(),
+        tag = "tasks",
+        path = ManagementV1Endpoint::GetTaskQueueConfig.path(),
         params(("warehouse_id" = Uuid,),("queue_name" = String,)),
         responses(
             (status = 200, body = GetTaskQueueConfigResponse),
@@ -1503,6 +1507,7 @@ pub mod v1 {
         Extension(metadata): Extension<RequestMetadata>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
     ) -> Result<GetTaskQueueConfigResponse> {
+        let queue_name = queue_name.into();
         ApiServer::<C, A, S>::get_task_queue_config(
             warehouse_id.into(),
             &queue_name,
@@ -1510,6 +1515,75 @@ pub mod v1 {
             metadata,
         )
         .await
+    }
+
+    /// List active and historic tasks.
+    #[utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ListTasks.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = ListTasksRequest,
+        responses(
+            (status = 200, body = ListTasksResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn list_tasks<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ListTasksRequest>,
+    ) -> Result<ListTasksResponse> {
+        ApiServer::<C, A, S>::list_tasks(warehouse_id.into(), request, api_context, metadata).await
+    }
+
+    /// Get Details about a specific task by its ID.
+    #[utoipa::path(
+        get,
+        tag = "tasks",
+        path = ManagementV1Endpoint::GetTaskDetails.path(),
+        params(("warehouse_id" = Uuid,),("task_id" = Uuid,),GetTaskDetailsQuery),
+        responses(
+            (status = 200, body = GetTaskDetailsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn get_task_details<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, task_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Query(query): Query<GetTaskDetailsQuery>,
+    ) -> Result<GetTaskDetailsResponse> {
+        let warehouse_id = WarehouseId::from(warehouse_id);
+        let task_id = TaskId::from(task_id);
+        ApiServer::<C, A, S>::get_task_details(warehouse_id, task_id, query, api_context, metadata)
+            .await
+    }
+
+    /// Control a set of tasks by their IDs (e.g., cancel, request stop, run now)
+    ///
+    /// Accepts at most 100 task IDs in one request.
+    #[utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ControlTasks.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = ControlTasksRequest,
+        responses(
+            (status = 204, description = "All requested actions were successful"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    )]
+    async fn control_tasks<C: Catalog, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ControlTasksRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::control_tasks(warehouse_id.into(), request, api_context, metadata)
+            .await?;
+        Ok(StatusCode::NO_CONTENT)
     }
 
     #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1583,6 +1657,7 @@ pub mod v1 {
     ///
     /// # Errors
     ///
+    #[allow(clippy::too_many_lines)]
     pub fn api_doc<A: Authorizer>(
         queue_api_configs: Vec<&QueueApiConfig>,
     ) -> utoipa::openapi::OpenApi {
@@ -1621,6 +1696,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            post.parameters = post.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             post.operation_id = Some(format!(
                 "set_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1649,6 +1730,12 @@ pub mod v1 {
                 );
                 return doc;
             };
+            get.parameters = get.parameters.take().map(|params| {
+                params
+                    .into_iter()
+                    .filter(|param| param.name != "queue_name")
+                    .collect()
+            });
             get.operation_id = Some(format!(
                 "get_task_queue_config_{}",
                 queue_name.replace('-', "_")
@@ -1808,8 +1895,20 @@ pub mod v1 {
                     post(set_warehouse_protection),
                 )
                 .route(
-                    "/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
+                    ManagementV1Endpoint::SetTaskQueueConfig.path_in_management_v1(),
                     post(set_task_queue_config).get(get_task_queue_config),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTasks.path_in_management_v1(),
+                    post(list_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTaskDetails.path_in_management_v1(),
+                    get(get_task_details),
+                )
+                .route(
+                    ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
+                    post(control_tasks),
                 )
                 .merge(authorizer.new_router())
         }

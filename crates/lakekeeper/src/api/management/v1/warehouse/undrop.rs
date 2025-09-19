@@ -1,10 +1,12 @@
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
-    api,
-    api::management::v1::warehouse::UndropTabularsRequest,
+    api::{self, management::v1::warehouse::UndropTabularsRequest},
     request_metadata::RequestMetadata,
-    service::{authz::Authorizer, TabularId},
+    service::{
+        authz::{Authorizer, MustUse},
+        TabularId,
+    },
 };
 
 pub(crate) async fn require_undrop_permissions<A: Authorizer>(
@@ -31,7 +33,7 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     authorizer: &A,
     tabs: &[TabularId],
 ) -> api::Result<bool> {
-    let mut futs = vec![];
+    let mut futs = Vec::with_capacity(tabs.len());
 
     for t in tabs {
         match t {
@@ -54,6 +56,6 @@ async fn can_undrop_all_specified_tabulars<A: Authorizer>(
     let all_allowed = futures::future::try_join_all(futs)
         .await?
         .into_iter()
-        .all(|t| t);
+        .all(MustUse::into_inner);
     Ok(all_allowed)
 }

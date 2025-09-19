@@ -1,0 +1,109 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH picked_task AS (\n            SELECT t.*, config\n            FROM task t\n            LEFT JOIN task_config tc\n                ON tc.queue_name = t.queue_name\n                    AND tc.warehouse_id = t.warehouse_id\n            WHERE (t.queue_name = $1 AND scheduled_for <= now()) \n                AND (\n                    (status = 'scheduled') OR \n                    (status != 'scheduled' AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))\n                )\n            -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other\n            -- transactions locked\n            FOR UPDATE OF t SKIP LOCKED\n            LIMIT 1\n        ),\n        inserted AS (\n            INSERT INTO task_log(\n                task_id,\n                warehouse_id,\n                queue_name,\n                task_data,\n                status,\n                entity_id,\n                entity_type,\n                message,\n                attempt,\n                started_at,\n                duration,\n                progress,\n                execution_details,\n                attempt_scheduled_for,\n                last_heartbeat_at,\n                parent_task_id,\n                task_created_at\n            )\n            SELECT task_id,\n                    warehouse_id,\n                    queue_name,\n                    task_data,\n                    'failed',\n                    entity_id,\n                    entity_type,\n                    'Attempt timed out.',\n                    attempt,\n                    picked_up_at,\n                    now() - picked_up_at,\n                    progress,\n                    execution_details,\n                    scheduled_for,\n                    last_heartbeat_at,\n                    parent_task_id,\n                    created_at\n            FROM picked_task p\n            WHERE p.status != 'scheduled'\n            ON CONFLICT (task_id, attempt) DO NOTHING\n        )\n        UPDATE task\n        SET status = 'running',\n            progress = 0.0,\n            execution_details = NULL,\n            picked_up_at = now(),\n            last_heartbeat_at = now(),\n            attempt = task.attempt + 1\n        FROM picked_task p\n        WHERE task.task_id = p.task_id AND task.attempt = p.attempt\n        RETURNING\n            task.task_id,\n            task.entity_id,\n            task.entity_type as \"entity_type: EntityType\",\n            task.warehouse_id,\n            task.task_data,\n            task.scheduled_for,\n            task.status as \"status: TaskStatus\",\n            task.picked_up_at,\n            task.attempt,\n            task.parent_task_id,\n            task.queue_name,\n            (select config from picked_task)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "entity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "entity_type: EntityType",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "tabular"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "task_data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "scheduled_for",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "status: TaskStatus",
+        "type_info": {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "picked_up_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "attempt",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "queue_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "config",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Interval"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "69c43466c567e4cbde919f938d92ec50196af1bc516ef4238b068ab3fe9cd26a"
+}

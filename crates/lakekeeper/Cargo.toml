@@ -91,7 +91,7 @@ rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
-serde_yml = { workspace = true }
+serde_norway = { workspace = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -127,7 +127,6 @@ maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_urlencoded = "0.7.1"
-serde_yaml = { workspace = true }
 similar = { workspace = true }
 tempfile = { version = "3.20" }
 tokio = { workspace = true, features = ["test-util"] }

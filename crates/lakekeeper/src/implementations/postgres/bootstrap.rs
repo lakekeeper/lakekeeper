@@ -3,7 +3,6 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use crate::{
     implementations::postgres::dbutils::DBErrorHandler,
     service::{Result, ServerInfo},
-    CONFIG,
 };
 
 pub(super) async fn get_validation_data<
@@ -37,6 +36,7 @@ pub(super) async fn get_validation_data<
     if let Some(server) = server {
         Ok(ServerInfo::Bootstrapped {
             server_id: server.server_id,
+            open_for_bootstrap: server.open_for_bootstrap,
             terms_accepted: server.terms_accepted,
         })
     } else {
@@ -46,17 +46,16 @@ pub(super) async fn get_validation_data<
 
 pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     terms_accepted: bool,
+    server_id: uuid::Uuid,
     connection: E,
 ) -> Result<bool> {
-    let server_id = CONFIG.server_id;
-
     let result = sqlx::query!(
         r#"
         INSERT INTO server (single_row, server_id, open_for_bootstrap, terms_accepted)
         VALUES (true, $1, false, $2)
         ON CONFLICT (single_row)
         DO UPDATE SET terms_accepted = $2, open_for_bootstrap = false
-        WHERE server.open_for_bootstrap = true
+        WHERE server.open_for_bootstrap = true AND server.server_id = $1
         returning server_id
         "#,
         server_id,
@@ -90,22 +89,35 @@ mod test {
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let server_id = uuid::Uuid::new_v4();
 
         let data = get_validation_data(&state.read_pool()).await.unwrap();
         assert_eq!(data, ServerInfo::NotBootstrapped);
 
-        let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
+        let success = bootstrap(true, server_id, &state.read_write.write_pool)
+            .await
+            .unwrap();
         assert!(success);
         let data = get_validation_data(&state.read_pool()).await.unwrap();
         assert_eq!(
             data,
             ServerInfo::Bootstrapped {
-                server_id: CONFIG.server_id,
+                server_id,
+                open_for_bootstrap: false,
                 terms_accepted: true,
             }
         );
 
-        let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
+        let success = bootstrap(true, server_id, &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert!(!success);
+
+        // Different server_id must also fail
+        let other_id = uuid::Uuid::new_v4();
+        let success = bootstrap(true, other_id, &state.read_write.write_pool)
+            .await
+            .unwrap();
         assert!(!success);
     }
 }

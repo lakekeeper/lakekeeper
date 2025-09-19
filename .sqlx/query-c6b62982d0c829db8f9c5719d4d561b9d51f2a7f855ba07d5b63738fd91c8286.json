@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_schema(schema_id, table_id, schema, warehouse_id)\n           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[], $4::JSONB[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "UuidArray",
+        "Uuid",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c6b62982d0c829db8f9c5719d4d561b9d51f2a7f855ba07d5b63738fd91c8286"
+}

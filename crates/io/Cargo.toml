@@ -69,7 +69,6 @@ tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
-utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 veil = { workspace = true }
 

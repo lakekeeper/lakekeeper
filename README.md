@@ -34,7 +34,7 @@ cd lakekeeper/examples/minimal
 docker compose up
 ```
 
-Then open your browser and head to [localhost:8888](localhost:8888) to load the example Jupyter notebooks or head to [localhost:8181](localhost:8181) for the Lakekeeper UI.
+Then open your browser and head to [localhost:8888](http://localhost:8888) to load the example Jupyter notebooks or head to [localhost:8181](http://localhost:8181) for the Lakekeeper UI.
 
 For more information on deployment, please check the [Getting Started Guide](https://docs.lakekeeper.io/getting-started/).
 

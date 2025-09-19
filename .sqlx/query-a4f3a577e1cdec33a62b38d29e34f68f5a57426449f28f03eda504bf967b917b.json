@@ -1,0 +1,99 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.tabular_id,\n            t.name as \"tabular_name\",\n            namespace_name,\n            t.typ as \"typ: TabularType\",\n            t.created_at,\n            t.deleted_at,\n            tt.scheduled_for as \"cleanup_at?\",\n            tt.task_id as \"cleanup_task_id?\",\n            t.protected\n        FROM tabular t\n        INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id\n        INNER JOIN warehouse w ON w.warehouse_id = $1\n        LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)\n        WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)\n            AND (namespace_name = $2 OR $2 IS NULL)\n            AND (n.namespace_id = $10 OR $10 IS NULL)\n            AND w.status = 'active'\n            AND (t.typ = $3 OR $3 IS NULL)\n            -- active tables are tables that are not staged and not deleted\n            AND ((t.deleted_at IS NOT NULL OR t.metadata_location IS NULL) OR $4)\n            AND (t.deleted_at IS NULL OR $5)\n            AND (t.metadata_location IS NOT NULL OR $6)\n            AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))\n            ORDER BY t.created_at, t.tabular_id ASC\n            LIMIT $9\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tabular_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_name",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "typ: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "cleanup_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "cleanup_task_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "protected",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Bool",
+        "Bool",
+        "Bool",
+        "Timestamptz",
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a4f3a577e1cdec33a62b38d29e34f68f5a57426449f28f03eda504bf967b917b"
+}

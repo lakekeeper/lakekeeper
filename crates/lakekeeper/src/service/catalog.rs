@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use iceberg::{
     spec::{TableMetadata, ViewMetadata},
@@ -22,6 +26,7 @@ use crate::{
         management::v1::{
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::{ListRolesResponse, Role, SearchRoleResponse},
+            tasks::{GetTaskDetailsResponse, ListTasksRequest, ListTasksResponse},
             user::{ListUsersResponse, SearchUserResponse, User, UserLastUpdatedWith, UserType},
             warehouse::{
                 GetTaskQueueConfigResponse, SetTaskQueueConfigRequest, TabularDeleteProfile,
@@ -37,13 +42,27 @@ use crate::{
         health::HealthExt,
         tabular_idents::{TabularId, TabularIdentOwned},
         task_queue::{
-            tabular_expiration_queue, tabular_expiration_queue::TabularExpirationPayload,
-            tabular_purge_queue, tabular_purge_queue::TabularPurgePayload, Task, TaskCheckState,
-            TaskFilter, TaskId, TaskInput, TaskMetadata,
+            Task, TaskAttemptId, TaskCheckState, TaskEntity, TaskFilter, TaskId, TaskInput,
+            TaskQueueName,
         },
     },
     SecretIdent,
 };
+
+struct TasksCacheExpiry;
+const TASKS_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+impl<K, V> moka::Expiry<K, V> for TasksCacheExpiry {
+    fn expire_after_create(&self, _key: &K, _value: &V, _created_at: Instant) -> Option<Duration> {
+        Some(TASKS_CACHE_TTL)
+    }
+}
+static TASKS_CACHE: LazyLock<moka::future::Cache<TaskId, (TaskEntity, TaskQueueName)>> =
+    LazyLock::new(|| {
+        moka::future::Cache::builder()
+            .max_capacity(10000)
+            .expire_after(TasksCacheExpiry)
+            .build()
+    });
 
 #[async_trait::async_trait]
 pub trait Transaction<D>
@@ -159,6 +178,7 @@ pub struct TableCommit {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit<'a> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub view_id: ViewId,
     pub view_ident: &'a TableIdent,
@@ -170,6 +190,7 @@ pub struct ViewCommit<'a> {
 
 #[derive(Debug, Clone)]
 pub struct TableCreation<'c> {
+    pub warehouse_id: WarehouseId,
     pub namespace_id: NamespaceId,
     pub table_ident: &'c TableIdent,
     pub metadata_location: Option<&'c Location>,
@@ -184,8 +205,8 @@ pub enum CreateOrUpdateUserResponse {
 
 #[derive(Debug, Clone)]
 pub struct UndropTabularResponse {
-    pub table_ident: TableId,
-    pub task_id: TaskId,
+    pub table_id: TableId,
+    pub expiration_task_id: Option<TaskId>,
     pub name: String,
     pub namespace: NamespaceIdent,
 }
@@ -200,7 +221,27 @@ pub enum ServerInfo {
         server_id: uuid::Uuid,
         /// Whether the terms have been accepted
         terms_accepted: bool,
+        /// Whether the catalog is open for re-bootstrap,
+        /// i.e. to recover admin access.
+        open_for_bootstrap: bool,
     },
+}
+
+impl ServerInfo {
+    /// Returns the server ID if the catalog is bootstrapped.
+    #[must_use]
+    pub fn server_id(&self) -> Option<uuid::Uuid> {
+        match self {
+            ServerInfo::NotBootstrapped => None,
+            ServerInfo::Bootstrapped { server_id, .. } => Some(*server_id),
+        }
+    }
+
+    /// Returns true if the catalog is bootstrapped.
+    #[must_use]
+    pub fn is_bootstrapped(&self) -> bool {
+        matches!(self, ServerInfo::Bootstrapped { .. })
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -264,18 +305,31 @@ where
     type Transaction: Transaction<Self::State>;
     type State: Clone + std::fmt::Debug + Send + Sync + 'static + HealthExt;
 
+    async fn determine_server_id(state: Self::State) -> anyhow::Result<uuid::Uuid> {
+        let server_info = Self::get_server_info(state.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!(e).context("Failed to determine server id"))?;
+        let previous_server_id = match server_info {
+            ServerInfo::Bootstrapped { server_id, .. } => Some(server_id),
+            ServerInfo::NotBootstrapped => None,
+        };
+
+        let server_id = previous_server_id.unwrap_or_else(uuid::Uuid::now_v7);
+        Ok(server_id)
+    }
+
     /// Get data required for startup validations and server info endpoint
     async fn get_server_info(
         catalog_state: Self::State,
     ) -> std::result::Result<ServerInfo, ErrorModel>;
 
     /// Bootstrap the catalog.
-    /// Use this hook to store the current `CONFIG.server_id`.
-    /// Must not update anything if the catalog is already bootstrapped.
-    /// If bootstrapped succeeded, return Ok(true).
-    /// If the catalog is already bootstrapped, return Ok(false).
+    /// Use this hook to persist the provided `server_id`.
+    /// Must return Ok(false) if the catalog is not open for bootstrap.
+    /// If bootstrapping succeeds, return Ok(true).
     async fn bootstrap<'a>(
         terms_accepted: bool,
+        server_id: uuid::Uuid,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
 
@@ -400,14 +454,26 @@ where
     ///
     /// We use this function also to handle the `table_exists` endpoint.
     /// Also return Ok(None) if the warehouse is not active.
+    async fn resolve_table_ident<'a>(
+        warehouse_id: WarehouseId,
+        table: &TableIdent,
+        list_flags: ListFlags,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<TabularDetails>>;
+
     async fn table_to_id<'a>(
         warehouse_id: WarehouseId,
         table: &TableIdent,
         list_flags: ListFlags,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<TableId>>;
+    ) -> Result<Option<TableId>> {
+        Ok(
+            Self::resolve_table_ident(warehouse_id, table, list_flags, transaction)
+                .await?
+                .map(|t| t.table_id),
+        )
+    }
 
-    /// Same as `table_ident_to_id`, but for multiple tables.
     async fn table_idents_to_ids(
         warehouse_id: WarehouseId,
         tables: HashSet<&TableIdent>,
@@ -461,6 +527,7 @@ where
     ///
     /// Returns the table location
     async fn drop_table<'a>(
+        warehouse_id: WarehouseId,
         table_id: TableId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -470,13 +537,14 @@ where
     ///
     /// Undrops a soft-deleted table. Does not work if the table was hard-deleted.
     /// Returns the task id of the expiration task associated with the soft-deletion.
-    async fn undrop_tabulars(
+    async fn clear_tabular_deleted_at(
         table_id: &[TableId],
         warehouse_id: WarehouseId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<UndropTabularResponse>>;
 
     async fn mark_tabular_as_deleted(
+        warehouse_id: WarehouseId,
         table_id: TabularId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
@@ -699,6 +767,7 @@ where
     ) -> Result<Option<ViewId>>;
 
     async fn create_view<'a>(
+        warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
         view: &TableIdent,
         request: ViewMetadata,
@@ -708,6 +777,7 @@ where
     ) -> Result<()>;
 
     async fn load_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         include_deleted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -729,6 +799,7 @@ where
     /// Returns location of the dropped view.
     /// Used for cleanup
     async fn drop_view<'a>(
+        warehouse_id: WarehouseId,
         view_id: ViewId,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
@@ -756,20 +827,15 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<(Option<SecretIdent>, StorageProfile)>;
 
-    async fn resolve_table_ident(
-        warehouse_id: WarehouseId,
-        table: &TableIdent,
-        list_flags: ListFlags,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TabularDetails>>;
-
     async fn set_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
     async fn get_tabular_protected(
+        warehouse_id: WarehouseId,
         tabular_id: TabularId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
@@ -791,23 +857,165 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<ProtectionResponse>;
 
-    // Tasks
-    async fn pick_new_task(
-        queue_name: &str,
-        max_time_since_last_heartbeat: chrono::Duration,
+    // ------------- Tasks -------------
+
+    async fn pick_new_task_impl(
+        queue_name: &TaskQueueName,
+        default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
-    async fn record_task_success(
-        id: TaskId,
+
+    /// `default_max_time_since_last_heartbeat` is only used if no task configuration is found
+    /// in the DB for the given `queue_name`, typically before a user has configured the value explicitly.
+    #[tracing::instrument(
+        name = "catalog_pick_new_task",
+        skip(state, default_max_time_since_last_heartbeat)
+    )]
+    async fn pick_new_task(
+        queue_name: &TaskQueueName,
+        default_max_time_since_last_heartbeat: chrono::Duration,
+        state: Self::State,
+    ) -> Result<Option<Task>> {
+        Self::pick_new_task_impl(queue_name, default_max_time_since_last_heartbeat, state).await
+    }
+
+    /// Resolve tasks among all known active and historical tasks.
+    /// Returns a map of task_id to (TaskEntity, queue_name).
+    /// If `warehouse_id` is `Some`, only resolve tasks for that warehouse.
+    async fn resolve_tasks_impl(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        state: Self::State,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>>;
+
+    /// Resolve tasks among all known active and historical tasks.
+    /// Returns a map of task_id to (TaskEntity, queue_name).
+    /// If a task does not exist, it is not included in the map.
+    async fn resolve_tasks(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        state: Self::State,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+        if task_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut cached_results = HashMap::new();
+        for id in task_ids {
+            if let Some(cached_value) = TASKS_CACHE.get(id).await {
+                if let Some(w) = warehouse_id {
+                    match &cached_value.0 {
+                        TaskEntity::Table {
+                            warehouse_id: wid, ..
+                        } if *wid != w => continue,
+                        TaskEntity::Table { .. } => (),
+                    }
+                }
+                cached_results.insert(*id, cached_value);
+            }
+        }
+        let not_cached_ids: Vec<TaskId> = task_ids
+            .iter()
+            .copied()
+            .filter(|id| !cached_results.contains_key(id))
+            .collect();
+        if not_cached_ids.is_empty() {
+            return Ok(cached_results);
+        }
+        let resolve_uncached_result =
+            Self::resolve_tasks_impl(warehouse_id, &not_cached_ids, state).await?;
+        for (id, value) in resolve_uncached_result {
+            cached_results.insert(id, value.clone());
+            TASKS_CACHE.insert(id, value).await;
+        }
+        Ok(cached_results)
+    }
+
+    async fn resolve_required_tasks(
+        warehouse_id: Option<WarehouseId>,
+        task_ids: &[TaskId],
+        state: Self::State,
+    ) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>> {
+        let tasks = Self::resolve_tasks(warehouse_id, task_ids, state).await?;
+
+        for task_id in task_ids {
+            if !tasks.contains_key(task_id) {
+                return Err(ErrorModel::not_found(
+                    format!("Task with id `{task_id}` not found"),
+                    "TaskNotFound",
+                    None,
+                )
+                .into());
+            }
+        }
+
+        Ok(tasks)
+    }
+
+    async fn record_task_success_impl(
+        id: TaskAttemptId,
         message: Option<&str>,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
+
+    async fn record_task_success(
+        id: TaskAttemptId,
+        message: Option<&str>,
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()> {
+        Self::record_task_success_impl(id, message, transaction).await
+    }
+
+    async fn record_task_failure_impl(
+        id: TaskAttemptId,
+        error_details: &str,
+        max_retries: i32, // Max retries from task config, used to determine if we should mark the task as failed or retry
+        transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
     async fn record_task_failure(
-        id: TaskId,
+        id: TaskAttemptId,
         error_details: &str,
         max_retries: i32,
         transaction: &mut <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        Self::record_task_failure_impl(id, error_details, max_retries, transaction).await
+    }
+
+    /// Get task details by task id.
+    /// Return Ok(None) if the task does not exist.
+    async fn get_task_details_impl(
+        warehouse_id: WarehouseId,
+        task_id: TaskId,
+        num_attempts: u16, // Number of attempts to retrieve in the task details
+        state: Self::State,
+    ) -> Result<Option<GetTaskDetailsResponse>>;
+
+    /// Get task details by task id.
+    /// Return Ok(None) if the task does not exist.
+    async fn get_task_details(
+        warehouse_id: WarehouseId,
+        task_id: TaskId,
+        num_attempts: u16,
+        state: Self::State,
+    ) -> Result<Option<GetTaskDetailsResponse>> {
+        Self::get_task_details_impl(warehouse_id, task_id, num_attempts, state).await
+    }
+
+    /// List tasks
+    async fn list_tasks_impl(
+        warehouse_id: WarehouseId,
+        query: ListTasksRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ListTasksResponse>;
+
+    /// List tasks
+    async fn list_tasks(
+        warehouse_id: WarehouseId,
+        query: ListTasksRequest,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<ListTasksResponse> {
+        Self::list_tasks_impl(warehouse_id, query, transaction).await
+    }
 
     /// Enqueue a batch of tasks to a task queue.
     ///
@@ -815,121 +1023,94 @@ where
     /// Any resubmitted pending/running task will be omitted from the returned task ids.
     ///
     /// CAUTION: `tasks` may be longer than the returned `Vec<TaskId>`.
-    async fn enqueue_task_batch(
-        queue_name: &'static str,
+    async fn enqueue_tasks(
+        queue_name: &'static TaskQueueName,
         tasks: Vec<TaskInput>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Vec<TaskId>>;
 
     /// Enqueue a single task to a task queue.
     ///
-    /// There can only be a single task running or pending for a (entity_id, queue_name) tuple.
+    /// There can only be a single active task for a (entity_id, queue_name) tuple.
     /// Resubmitting a pending/running task will return a `None` instead of a new `TaskId`
     async fn enqueue_task(
-        queue_name: &'static str,
+        queue_name: &'static TaskQueueName,
         task: TaskInput,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<TaskId>> {
-        Ok(
-            Self::enqueue_task_batch(queue_name, vec![task], transaction)
-                .await
-                .map(|v| v.into_iter().next())?,
-        )
+        Ok(Self::enqueue_tasks(queue_name, vec![task], transaction)
+            .await
+            .map(|v| v.into_iter().next())?)
     }
-    async fn cancel_pending_tasks(
-        queue_name: &str,
+
+    /// Cancel scheduled tasks matching the filter.
+    ///
+    /// If `cancel_running_and_should_stop` is true, also cancel tasks in the `running` and `should-stop` states.
+    /// If `queue_name` is `None`, cancel tasks in all queues.
+    async fn cancel_scheduled_tasks(
+        queue_name: Option<&TaskQueueName>,
         filter: TaskFilter,
-        force: bool,
+        cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
-    #[tracing::instrument(skip(transaction))]
-    async fn queue_tabular_expiration(
-        task_metadata: TaskMetadata,
-        payload: TabularExpirationPayload,
+    /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
+    async fn check_and_heartbeat_task(
+        id: TaskAttemptId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskId>> {
-        Self::enqueue_task(
-            tabular_expiration_queue::QUEUE_NAME,
-            TaskInput {
-                task_metadata,
-                payload: serde_json::to_value(&payload).map_err(|e| {
-                    ErrorModel::internal(
-                        format!("Failed to serialize task payload: {e}"),
-                        "TaskPayloadSerializationError",
-                        Some(Box::new(e)),
-                    )
-                })?,
-            },
-            transaction,
-        )
-        .await
+        progress: f32,
+        execution_details: Option<serde_json::Value>,
+    ) -> Result<TaskCheckState> {
+        Self::check_and_heartbeat_task_impl(id, transaction, progress, execution_details).await
     }
 
-    #[tracing::instrument(skip(transaction))]
-    async fn cancel_tabular_expiration(
-        filter: TaskFilter,
+    /// Report progress and heartbeat the task. Also checks whether the task should continue to run.
+    async fn check_and_heartbeat_task_impl(
+        id: TaskAttemptId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+        progress: f32,
+        execution_details: Option<serde_json::Value>,
+    ) -> Result<TaskCheckState>;
+
+    /// Sends stop signals to the tasks.
+    /// Only affects tasks in the `running` state.
+    ///
+    /// It is up to the task handler to decide if it can stop.
+    async fn stop_tasks(
+        task_ids: &[TaskId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<()>;
+
+    /// Reschedule tasks to run at a specific time by setting `scheduled_for` to the provided timestamp.
+    /// If no `scheduled_for` is `None`, the tasks will be scheduled to run immediately.
+    /// Only affects tasks in the `Scheduled` or `Stopping` state.
+    async fn run_tasks_at(
+        task_ids: &[TaskId],
+        scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        Self::cancel_pending_tasks(
-            tabular_expiration_queue::QUEUE_NAME,
-            filter,
-            false,
-            transaction,
-        )
-        .await
+        Self::run_tasks_at_impl(task_ids, scheduled_for, transaction).await
     }
 
-    #[tracing::instrument(skip(transaction))]
-    async fn queue_tabular_purge(
-        task_metadata: TaskMetadata,
-        task: TabularPurgePayload,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskId>> {
-        Self::enqueue_task(
-            tabular_purge_queue::QUEUE_NAME,
-            TaskInput {
-                task_metadata,
-                payload: serde_json::to_value(&task).map_err(|e| {
-                    ErrorModel::internal(
-                        format!("Failed to serialize task payload: {e}"),
-                        "TaskPayloadSerializationError",
-                        Some(Box::new(e)),
-                    )
-                })?,
-            },
-            transaction,
-        )
-        .await
-    }
-
-    /// Checks task state and sends a hearbeat.
-    ///
-    /// This is used to send a heartbeat and check whether this task should continue to run.
-    async fn check_and_heartbeat_task(
-        task_id: TaskId,
-        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
-    ) -> Result<Option<TaskCheckState>>;
-
-    /// Sends a stop signal to the task.
-    ///
-    /// This does by no means guarantee that the task will be actually stop. It is up to the task
-    /// handler to decide if it can stop.
-    async fn stop_task(
-        task_id: TaskId,
+    /// Reschedule tasks to run at a specific time by setting `scheduled_for` to the provided timestamp.
+    /// If no `scheduled_for` is `None`, the tasks will be scheduled to run immediately.
+    /// Only affects tasks in the `Scheduled` or `Stopping` state.
+    async fn run_tasks_at_impl(
+        task_ids: &[TaskId],
+        scheduled_for: Option<chrono::DateTime<chrono::Utc>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
     async fn set_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         config: SetTaskQueueConfigRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()>;
 
     async fn get_task_queue_config(
         warehouse_id: WarehouseId,
-        queue_name: &str,
+        queue_name: &TaskQueueName,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<Option<GetTaskQueueConfigResponse>>;
 }

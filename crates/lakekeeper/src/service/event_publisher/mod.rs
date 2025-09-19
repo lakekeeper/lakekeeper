@@ -395,7 +395,7 @@ impl EndpointHook for CloudEventsPublisher {
                     "undropTabulars",
                     serde_json::Value::Null,
                     EventMetadata {
-                        tabular_id: TabularId::from(utr.table_ident),
+                        tabular_id: TabularId::from(utr.table_id),
                         warehouse_id,
                         name: utr.name.clone(),
                         namespace: utr.namespace.to_url_string(),

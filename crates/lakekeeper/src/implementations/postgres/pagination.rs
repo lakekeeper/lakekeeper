@@ -35,6 +35,28 @@ where
     }
 }
 
+impl<T> TryFrom<&String> for PaginateToken<T>
+where
+    T: FromStr + Display,
+    <T as FromStr>::Err: Display,
+{
+    type Error = ErrorModel;
+    fn try_from(s: &String) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
+    }
+}
+
+impl<T> TryFrom<String> for PaginateToken<T>
+where
+    T: FromStr + Display,
+    <T as FromStr>::Err: Display,
+{
+    type Error = ErrorModel;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
+    }
+}
+
 impl<T> TryFrom<&str> for PaginateToken<T>
 where
     T: FromStr + Display,

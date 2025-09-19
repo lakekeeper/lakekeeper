@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_snapshot(warehouse_id,\n                                      table_id,\n                                      snapshot_id,\n                                      parent_snapshot_id,\n                                      sequence_number,\n                                      manifest_list,\n                                      summary,\n                                      schema_id,\n                                      timestamp_ms)\n            SELECT $3, $2, * FROM UNNEST(\n                $1::BIGINT[],\n                $4::BIGINT[],\n                $5::BIGINT[],\n                $6::TEXT[],\n                $7::JSONB[],\n                $8::INT[],\n                $9::BIGINT[]\n            )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Uuid",
+        "Uuid",
+        "Int8Array",
+        "Int8Array",
+        "TextArray",
+        "JsonbArray",
+        "Int4Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d1724dd159b68617d1939da89c8acdf06f22bdc6c0318eda61138fc4cbb5aa49"
+}

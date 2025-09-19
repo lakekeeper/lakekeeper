@@ -11,11 +11,13 @@ pub mod openfga;
 /// Default model is not obtainable, i.e. if the model is not found in openfga
 // Return error model here to convert it into anyhow in bin. IcebergErrorResponse does
 // not implement StdError
-pub async fn get_default_authorizer_from_config() -> Result<BuiltInAuthorizers, ErrorModel> {
+pub async fn get_default_authorizer_from_config(
+    server_id: uuid::Uuid,
+) -> Result<BuiltInAuthorizers, ErrorModel> {
     match &CONFIG.authz_backend {
-        AuthZBackend::AllowAll => Ok(allow_all::AllowAllAuthorizer.into()),
+        AuthZBackend::AllowAll => Ok(allow_all::AllowAllAuthorizer { server_id }.into()),
         #[cfg(feature = "authz-openfga")]
-        AuthZBackend::OpenFGA => Ok(openfga::new_authorizer_from_config().await?.into()),
+        AuthZBackend::OpenFGA => Ok(openfga::new_authorizer_from_config(server_id).await?.into()),
     }
 }
 

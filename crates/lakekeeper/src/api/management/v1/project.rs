@@ -383,8 +383,8 @@ pub struct GetEndpointStatisticsRequest {
     pub status_codes: Option<Vec<u16>>,
     /// Range specifier
     ///
-    /// Either for a explicit range or a page token to paginate through the results. See the docs of
-    /// `RangeSpecifier` for more details.
+    /// Either for an explicit range or a page token to paginate through the results. See the docs of
+    /// `TimeWindowSelector` for more details.
     pub range_specifier: Option<TimeWindowSelector>,
 }
 
@@ -393,11 +393,9 @@ pub struct GetEndpointStatisticsRequest {
 pub enum WarehouseFilter {
     /// Filter for a specific warehouse
     WarehouseId { id: Uuid },
-    /// Filter for requests that could not be associated with any warehouse, e.g. some management
-    /// endpoints
+    /// Filter for items that are not associated with a warehouse
     Unmapped,
-    /// Do not filter by warehouse and return all statistics for all warehouses and unmapped requests
-    /// for the current project.
+    /// Return all items in the current project, regardless of warehouse association
     All,
 }
 

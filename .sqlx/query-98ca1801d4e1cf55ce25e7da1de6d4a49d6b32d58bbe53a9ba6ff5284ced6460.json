@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH input_rows AS (\n            SELECT\n                task_id,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                payload,\n                entity_ids,\n                entity_types,\n                $2 as queue_name\n            FROM unnest(\n                $1::uuid[],\n                $3::uuid[],\n                $4::uuid[],\n                $5::timestamptz[],\n                $6::jsonb[],\n                $7::uuid[],\n                $8::entity_type[]\n            ) AS t(\n                task_id,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                payload,\n                entity_ids,\n                entity_types\n            )\n        )\n        INSERT INTO task(\n                task_id,\n                queue_name,\n                status,\n                parent_task_id,\n                warehouse_id,\n                scheduled_for,\n                task_data,\n                entity_id,\n                entity_type)\n        SELECT\n            i.task_id,\n            i.queue_name,\n            $9,\n            i.parent_task_id,\n            i.warehouse_id,\n            coalesce(i.scheduled_for, now()),\n            i.payload,\n            i.entity_ids,\n            i.entity_types\n        FROM input_rows i\n        ON CONFLICT (warehouse_id, entity_type, entity_id, queue_name) DO NOTHING\n        RETURNING task_id, queue_name, entity_id, entity_type as \"entity_type: EntityType\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "queue_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "entity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_type: EntityType",
+        "type_info": {
+          "Custom": {
+            "name": "entity_type",
+            "kind": {
+              "Enum": [
+                "tabular"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text",
+        "UuidArray",
+        "UuidArray",
+        "TimestamptzArray",
+        "JsonbArray",
+        "UuidArray",
+        {
+          "Custom": {
+            "name": "entity_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "entity_type",
+                  "kind": {
+                    "Enum": [
+                      "tabular"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "task_intermediate_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "scheduled",
+                "should-stop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "98ca1801d4e1cf55ce25e7da1de6d4a49d6b32d58bbe53a9ba6ff5284ced6460"
+}
