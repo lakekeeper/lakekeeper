@@ -41,9 +41,9 @@ mod tests {
         use openfga_client::client::ConsistencyPreference;
 
         use super::super::*;
-        use crate::service::authz::implementations::openfga::{
+        use crate::service::{ServerId, authz::implementations::openfga::{
             client::new_authorizer, migrate, new_client_from_config,
-        };
+        }};
 
         #[tokio::test]
         async fn test_health() {
@@ -56,7 +56,7 @@ mod tests {
                 client.clone(),
                 Some(store_name),
                 ConsistencyPreference::HigherConsistency,
-                uuid::Uuid::new_v4(), // random server id for test
+                ServerId::new_random(),
             )
             .await
             .unwrap();

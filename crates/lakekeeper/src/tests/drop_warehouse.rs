@@ -13,14 +13,13 @@ use crate::{
             },
         },
         management::v1::{
-            bootstrap::{BootstrapRequest, Service as _},
-            warehouse::{CreateWarehouseRequest, Service},
+            warehouse::{CreateWarehouseRequest, Service, TabularDeleteProfile},
             ApiServer, DeleteWarehouseQuery,
         },
     },
     catalog::CatalogServer,
     service::authz::AllowAllAuthorizer,
-    tests::{get_api_context, random_request_metadata, spawn_build_in_queues},
+    tests::{random_request_metadata, spawn_build_in_queues},
 };
 
 #[sqlx::test]
@@ -28,16 +27,16 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     let storage_profile = crate::tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
 
-    let api_context = get_api_context(&pool, authorizer).await;
-
-    // Bootstrap
-    ApiServer::bootstrap(
-        api_context.clone(),
-        random_request_metadata(),
-        BootstrapRequest::builder().accept_terms_of_use().build(),
+    let (api_context, _) = crate::tests::setup(
+        pool.clone(),
+        storage_profile.clone(),
+        None,
+        authorizer,
+        TabularDeleteProfile::default(),
+        None,
+        1,
     )
-    .await
-    .unwrap();
+    .await;
 
     // Create a warehouse
     let warehouse_name = format!("test_warehouse_{}", Uuid::now_v7());
