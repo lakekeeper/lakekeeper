@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.10.0](https://github.com/lakekeeper/lakekeeper/compare/v0.9.5...v0.10.0) (2025-09-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* add `warehouse_id` to PKs of all `table_*` and `view_*` tables ([#1254](https://github.com/lakekeeper/lakekeeper/issues/1254))
+* Require warehouse_id when checking permissions on views or tables via ID ([#1340](https://github.com/lakekeeper/lakekeeper/issues/1340))
+* Simplify Task interface, extend SpecializedTask interface ([#1310](https://github.com/lakekeeper/lakekeeper/issues/1310))
+* Move to Lakekeeper IO based on hyperscaler SDKs ([#1285](https://github.com/lakekeeper/lakekeeper/issues/1285))
+
+### Features
+
+* Add `RunNow` and `RunAt` to Controls for Tasks ([#1322](https://github.com/lakekeeper/lakekeeper/issues/1322)) ([75f771e](https://github.com/lakekeeper/lakekeeper/commit/75f771e6b22008ebff1c266db4c308fb77d463eb))
+* add `warehouse_id` to PKs of all `table_*` and `view_*` tables ([#1254](https://github.com/lakekeeper/lakekeeper/issues/1254)) ([f345db4](https://github.com/lakekeeper/lakekeeper/commit/f345db4c1638887e76c04bbe5350db890eb08853))
+* Add optional STS session-tags in S3 STS requests for ABAC authorization ([#1230](https://github.com/lakekeeper/lakekeeper/issues/1230)) ([c84390d](https://github.com/lakekeeper/lakekeeper/commit/c84390d4bb5782c0dc05a9724285b24186751013))
+* Add tasks heartbeat with Catalog state ([#1324](https://github.com/lakekeeper/lakekeeper/issues/1324)) ([f13bd8a](https://github.com/lakekeeper/lakekeeper/commit/f13bd8ae7781d910cf9e8704780f792c3996d5ce))
+* **authz:** Deprecate Permission Endpoints for Tables without WarehouseIDs ([#1334](https://github.com/lakekeeper/lakekeeper/issues/1334)) ([39bea3e](https://github.com/lakekeeper/lakekeeper/commit/39bea3e84b31193eb272ea5df80fe22be1e9ebc2))
+* Enable write.metadata.delete-after-commit.enabled by default ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Improve authorizer `are_allowed_*` batch check signature ([#1315](https://github.com/lakekeeper/lakekeeper/issues/1315)) ([9f901c1](https://github.com/lakekeeper/lakekeeper/commit/9f901c1592f0d05cacef317f66f5fadad337683d))
+* Introduce `RequestMetadata` for Internal Principals which bypass AuthZ ([#1306](https://github.com/lakekeeper/lakekeeper/issues/1306)) ([c3c45ce](https://github.com/lakekeeper/lakekeeper/commit/c3c45ce2f6f972e665bdd1f365e51b5f4b0585e4))
+* Minor namespace join performance improvements ([f3bccd8](https://github.com/lakekeeper/lakekeeper/commit/f3bccd8245a9d841794849a11f1bbe5c73fd425a))
+* Move to Lakekeeper IO based on hyperscaler SDKs ([#1285](https://github.com/lakekeeper/lakekeeper/issues/1285)) ([1658ae6](https://github.com/lakekeeper/lakekeeper/commit/1658ae612e0d218431b16fcb160b95fb7da2660c))
+* Provide `ApiContext` to externally registered tasks ([#1307](https://github.com/lakekeeper/lakekeeper/issues/1307)) ([7977b45](https://github.com/lakekeeper/lakekeeper/commit/7977b454ecb2fef107ce76ad493b29867a0d45d0))
+* Random Server IDs ([#1328](https://github.com/lakekeeper/lakekeeper/issues/1328)) ([4a84ce5](https://github.com/lakekeeper/lakekeeper/commit/4a84ce518936494938a3b523ffc2c3e4f7abc304))
+* Remove serde_yaml & serde_yml ([#1341](https://github.com/lakekeeper/lakekeeper/issues/1341)) ([be020da](https://github.com/lakekeeper/lakekeeper/commit/be020da7d8b1bbfd862acad22b27f9a7bc928a2d))
+* Require warehouse_id when checking permissions on views or tables via ID ([#1340](https://github.com/lakekeeper/lakekeeper/issues/1340)) ([d659eea](https://github.com/lakekeeper/lakekeeper/commit/d659eea74750c309227d7fa6cf40933c8c104978))
+* Return Error Stacks for non-internal errors ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Simplify Task interface, extend SpecializedTask interface ([#1310](https://github.com/lakekeeper/lakekeeper/issues/1310)) ([8ffb3f3](https://github.com/lakekeeper/lakekeeper/commit/8ffb3f3b1ed54bfab3ac1d14d1145e8461f3a4f5))
+* Simplify task interface, re-exports ([8fec31f](https://github.com/lakekeeper/lakekeeper/commit/8fec31f339c87e97d755409a4d974315547b1688))
+* Task Management APIs ([1ee7bf2](https://github.com/lakekeeper/lakekeeper/commit/1ee7bf28bfc48df59dff0a13bdffbabfc7799b21))
+
+
+### Bug Fixes
+
+* accept "disable" as PG sslmode as documented ([#1303](https://github.com/lakekeeper/lakekeeper/issues/1303)) ([8cc32a6](https://github.com/lakekeeper/lakekeeper/commit/8cc32a6df597613a5cd055cbdb33894c4cac5cb4))
+* Potential Race Condition when undropping Tabulars ([#1342](https://github.com/lakekeeper/lakekeeper/issues/1342)) ([71528bd](https://github.com/lakekeeper/lakekeeper/commit/71528bd3aa139bcfb41dd75b1b9de40464317163))
+* table rename authz and error handling ([#1346](https://github.com/lakekeeper/lakekeeper/issues/1346)) ([be273cf](https://github.com/lakekeeper/lakekeeper/commit/be273cf8a13c4439ca7d97b337b67e7950910480))
+* Tasks endpoints in router ([#1335](https://github.com/lakekeeper/lakekeeper/issues/1335)) ([8ac5ccf](https://github.com/lakekeeper/lakekeeper/commit/8ac5ccf50b3bd36fe1f0e415cfca2b05d79c5093))
+* Warehouse permissions are directly used for task retrieval & control ([#1347](https://github.com/lakekeeper/lakekeeper/issues/1347)) ([97d9853](https://github.com/lakekeeper/lakekeeper/commit/97d9853ad46058574b48b7f9a2766e04453f9385))
+
+
+### Miscellaneous Chores
+
+* **authz:** Enforce use of AuthZ decisions with #[must_use] ([#1317](https://github.com/lakekeeper/lakekeeper/issues/1317)) ([e16f834](https://github.com/lakekeeper/lakekeeper/commit/e16f83451e66a17842bfe762b99201bc2feb94e0))
+* Move to parallel `unnests` in postgres ([1ee7bf2](https://github.com/lakekeeper/lakekeeper/commit/1ee7bf28bfc48df59dff0a13bdffbabfc7799b21))
+* **test:** use nextest filterset instead of needs_env_var ([#1304](https://github.com/lakekeeper/lakekeeper/issues/1304)) ([51d310d](https://github.com/lakekeeper/lakekeeper/commit/51d310dffd4c100afd1a50b28886f0cd7f4942a4))
+
 ## [0.9.5](https://github.com/lakekeeper/lakekeeper/compare/v0.9.4...v0.9.5) (2025-08-14)
 
 
