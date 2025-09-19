@@ -13,9 +13,10 @@ use sqlx::{
 
 use crate::{
     implementations::postgres::{
-        migrations::split_table_metadata::SplitTableMetadataHook, CatalogState, PostgresTransaction,
+        bootstrap::get_or_set_server_id, migrations::split_table_metadata::SplitTableMetadataHook,
+        CatalogState, PostgresTransaction,
     },
-    service::Transaction,
+    service::{ServerId, Transaction},
 };
 
 mod patch_migration_hash;
@@ -23,7 +24,7 @@ mod split_table_metadata;
 
 /// # Errors
 /// Returns an error if the migration fails.
-pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<ServerId> {
     let migrator = sqlx::migrate!();
     let mut data_migration_hooks = get_data_migrations();
     let mut sha_patches = get_changed_migration_ids();
@@ -83,13 +84,15 @@ pub async fn migrate(pool: &sqlx::PgPool) -> anyhow::Result<()> {
         }
     }
 
+    let server_id = get_or_set_server_id(&mut **transaction).await?;
+
     // unlock the migrator to allow other migrators to run
     // but do nothing as we already migrated
     if locking {
         transaction.unlock().await?;
     }
     trx.commit().await.map_err(|e| anyhow::anyhow!(e.error))?;
-    Ok(())
+    Ok(server_id)
 }
 
 async fn run_checks(

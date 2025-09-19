@@ -54,8 +54,38 @@ pub struct State<A: Authorizer + Clone, C: Catalog, S: SecretStore> {
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> ServiceState for State<A, C, S> {}
 
 impl<A: Authorizer + Clone, C: Catalog, S: SecretStore> State<A, C, S> {
-    pub fn server_id(&self) -> uuid::Uuid {
+    pub fn server_id(&self) -> ServerId {
         self.authz.server_id()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]
+pub struct ServerId(uuid::Uuid);
+
+impl ServerId {
+    #[must_use]
+    pub fn new_random() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl Deref for ServerId {
+    type Target = uuid::Uuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<uuid::Uuid> for ServerId {
+    fn from(value: uuid::Uuid) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for ServerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

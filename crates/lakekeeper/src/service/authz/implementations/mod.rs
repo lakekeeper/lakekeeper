@@ -1,4 +1,7 @@
-use crate::{service::authz::ErrorModel, AuthZBackend, CONFIG};
+use crate::{
+    service::{authz::ErrorModel, ServerId},
+    AuthZBackend, CONFIG,
+};
 
 pub(super) mod allow_all;
 
@@ -12,7 +15,7 @@ pub mod openfga;
 // Return error model here to convert it into anyhow in bin. IcebergErrorResponse does
 // not implement StdError
 pub async fn get_default_authorizer_from_config(
-    server_id: uuid::Uuid,
+    server_id: ServerId,
 ) -> Result<BuiltInAuthorizers, ErrorModel> {
     match &CONFIG.authz_backend {
         AuthZBackend::AllowAll => Ok(allow_all::AllowAllAuthorizer { server_id }.into()),

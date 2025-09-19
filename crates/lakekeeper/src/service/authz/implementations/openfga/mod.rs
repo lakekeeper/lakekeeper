@@ -25,7 +25,7 @@ use crate::{
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, ErrorModel,
             ListProjectsResponse, Result,
         },
-        NamespaceId, TableId,
+        NamespaceId, ServerId, TableId,
     },
     ProjectId, WarehouseId, CONFIG,
 };
@@ -95,13 +95,13 @@ static CONFIGURED_MODEL_VERSION: LazyLock<Option<AuthorizationModelVersion>> = L
 pub struct OpenFGAAuthorizer {
     client: BasicOpenFgaClient,
     health: Arc<RwLock<Vec<Health>>>,
-    server_id: uuid::Uuid,
+    server_id: ServerId,
     // Pre-formatted "server:<uuid>" for OpenFGA object ids
     openfga_server: String,
 }
 
 impl OpenFGAAuthorizer {
-    pub fn new(client: BasicOpenFgaClient, server_id: uuid::Uuid) -> Self {
+    pub fn new(client: BasicOpenFgaClient, server_id: ServerId) -> Self {
         let openfga_server = format!("server:{server_id}");
         Self {
             client,
@@ -115,7 +115,7 @@ impl OpenFGAAuthorizer {
 /// Implements batch checks for the `are_allowed_x_actions` methods.
 #[async_trait::async_trait]
 impl Authorizer for OpenFGAAuthorizer {
-    fn server_id(&self) -> uuid::Uuid {
+    fn server_id(&self) -> ServerId {
         self.server_id
     }
 
@@ -1091,7 +1091,7 @@ pub(crate) mod tests {
                 client,
                 Some(store_name),
                 TEST_CONSISTENCY,
-                uuid::Uuid::now_v7(), // random server id
+                ServerId::new_random(),
             )
             .await
             .unwrap()

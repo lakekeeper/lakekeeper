@@ -149,7 +149,8 @@ async fn main() -> anyhow::Result<()> {
 
             // This embeds database migrations in the application binary so we can ensure the database
             // is migrated correctly on startup
-            lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
+            let _server_id =
+                lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
             println!("Database migration complete.");
         }
         Some(Commands::Serve { force_start }) => {
