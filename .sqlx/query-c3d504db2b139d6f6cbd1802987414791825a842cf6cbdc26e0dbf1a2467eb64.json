@@ -1,0 +1,153 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nSELECT v.view_id,\n       v.view_format_version            as \"view_format_version: ViewFormatVersion\",\n       ta.fs_location                      AS view_fs_location,\n       ta.fs_protocol                      AS view_fs_protocol,\n       ta.metadata_location             AS \"metadata_location!\",\n       cvv.version_id                   AS current_version_id,\n       vs.schema_ids,\n       vs.schemas                       as \"schemas: Vec<Json<Schema>>\",\n       vp.view_properties_keys,\n       vp.view_properties_values,\n       vvr.version_ids                  as \"version_ids!: Json<Vec<ViewVersionId>>\",\n       vvr.version_schema_ids,\n       vvr.version_timestamps,\n       vvr.version_default_namespace_ids AS \"version_default_namespace_ids!: Vec<Option<Uuid>>\",\n       vvr.version_default_catalogs      AS \"version_default_catalogs!: Vec<Option<String>>\",\n       vvr.summaries                     AS \"version_metadata_summaries: Vec<Json<HashMap<String, String>>>\",\n       vvl.version_log_ids,\n       vvl.version_log_timestamps,\n       vvr.typ                           AS \"view_representation_typ: Json<Vec<Vec<ViewRepresentationType>>>\",\n       vvr.sql                           AS \"view_representation_sql: Json<Vec<Vec<String>>>\",\n       vvr.dialect                       AS \"view_representation_dialect: Json<Vec<Vec<String>>>\"\nFROM view v\n         INNER JOIN tabular ta ON ta.warehouse_id = $1 AND ta.tabular_id = v.view_id\n         INNER JOIN current_view_metadata_version cvv\n             ON cvv.warehouse_id = $1 AND v.view_id = cvv.view_id\n         LEFT JOIN (SELECT view_id,\n                           ARRAY_AGG(schema_id) AS schema_ids,\n                           ARRAY_AGG(schema)    AS schemas\n                    FROM view_schema\n                    WHERE warehouse_id = $1 and view_id = $2\n                    GROUP BY view_id) vs\n                    ON v.view_id = vs.view_id\n         LEFT JOIN (SELECT view_id,\n                           ARRAY_AGG(version_id) AS version_log_ids,\n                           ARRAY_AGG(timestamp)  AS version_log_timestamps\n                    FROM view_version_log\n                    WHERE warehouse_id = $1 and view_id = $2\n                    GROUP BY view_id) vvl\n                    ON v.view_id = vvl.view_id\n         LEFT JOIN (SELECT view_id,\n                           ARRAY_AGG(key)   AS view_properties_keys,\n                           ARRAY_AGG(value) AS view_properties_values\n                    FROM view_properties\n                    WHERE warehouse_id = $1 and view_id = $2\n                    GROUP BY view_id) vp\n                    ON v.view_id = vp.view_id\n         LEFT JOIN (SELECT vv.view_id,\n                           JSONB_AGG(version_id)           AS version_ids,\n                           ARRAY_AGG(summary)              AS summaries,\n                           ARRAY_AGG(schema_id)            AS version_schema_ids,\n                           ARRAY_AGG(timestamp)            AS version_timestamps,\n                           ARRAY_AGG(default_namespace_id) AS version_default_namespace_ids,\n                           ARRAY_AGG(default_catalog)      AS version_default_catalogs,\n                           JSONB_AGG(typ)                  as \"typ\",\n                           JSONB_AGG(sql)                  as \"sql\",\n                           JSONB_AGG(dialect)              as \"dialect\"\n                    FROM view_version vv\n                             LEFT JOIN (SELECT view_id,\n                                               view_version_id,\n                                               ARRAY_AGG(typ)     as typ,\n                                               ARRAY_AGG(sql)     as sql,\n                                               ARRAY_AGG(dialect) as dialect\n                                        FROM view_representation\n                                        WHERE warehouse_id = $1 and view_id = $2\n                                        GROUP BY view_version_id, view_id) vr\n                                        ON vv.version_id = vr.view_version_id AND vv.view_id = vr.view_id\n                    WHERE vv.warehouse_id = $1 and vv.view_id = $2\n                    GROUP BY vv.view_id) vvr ON v.view_id = vvr.view_id\n         WHERE v.warehouse_id = $1 AND v.view_id = $2 AND (ta.deleted_at is NULL OR $3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "view_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "view_format_version: ViewFormatVersion",
+        "type_info": {
+          "Custom": {
+            "name": "view_format_version",
+            "kind": {
+              "Enum": [
+                "v1"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "view_fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "view_fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "metadata_location!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "current_version_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "schema_ids",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 7,
+        "name": "schemas: Vec<Json<Schema>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "view_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "view_properties_values",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 10,
+        "name": "version_ids!: Json<Vec<ViewVersionId>>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 11,
+        "name": "version_schema_ids",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 12,
+        "name": "version_timestamps",
+        "type_info": "TimestamptzArray"
+      },
+      {
+        "ordinal": 13,
+        "name": "version_default_namespace_ids!: Vec<Option<Uuid>>",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 14,
+        "name": "version_default_catalogs!: Vec<Option<String>>",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 15,
+        "name": "version_metadata_summaries: Vec<Json<HashMap<String, String>>>",
+        "type_info": "JsonbArray"
+      },
+      {
+        "ordinal": 16,
+        "name": "version_log_ids",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 17,
+        "name": "version_log_timestamps",
+        "type_info": "TimestamptzArray"
+      },
+      {
+        "ordinal": 18,
+        "name": "view_representation_typ: Json<Vec<Vec<ViewRepresentationType>>>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 19,
+        "name": "view_representation_sql: Json<Vec<Vec<String>>>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 20,
+        "name": "view_representation_dialect: Json<Vec<Vec<String>>>",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "c3d504db2b139d6f6cbd1802987414791825a842cf6cbdc26e0dbf1a2467eb64"
+}

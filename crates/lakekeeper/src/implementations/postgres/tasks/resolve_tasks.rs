@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
-use itertools::Itertools;
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::EntityType;
@@ -15,11 +13,14 @@ use crate::{
 /// Resolve tasks among all known active and historical tasks.
 /// Returns a map of `task_id` to (`TaskEntity`, `queue_name`).
 /// Only includes task IDs that exist - missing task IDs are not included in the result.
-pub(crate) async fn resolve_tasks(
+pub(crate) async fn resolve_tasks<'e, 'c: 'e, E>(
     warehouse_id: Option<WarehouseId>,
     task_ids: &[TaskId],
-    transaction: &mut PgConnection,
-) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>, IcebergErrorResponse> {
+    state: E,
+) -> Result<HashMap<TaskId, (TaskEntity, TaskQueueName)>, IcebergErrorResponse>
+where
+    E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
     if task_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -27,27 +28,61 @@ pub(crate) async fn resolve_tasks(
     let warehouse_id_is_none = warehouse_id.is_none();
     let warehouse_id = warehouse_id.map_or_else(Uuid::nil, |id| *id);
 
-    // Query both active tasks and historical tasks (task_log)
-    let active_tasks = sqlx::query!(
+    // Query both active tasks and historical tasks using CTE and UNION ALL
+    let tasks = sqlx::query!(
         r#"
+        WITH active_tasks AS (
+            SELECT 
+                task_id,
+                warehouse_id,
+                entity_id,
+                entity_type,
+                queue_name
+            FROM task
+            WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)
+        ),
+        missing_task_ids AS (
+            SELECT unnest($1::uuid[]) as task_id
+            EXCEPT
+            SELECT task_id FROM active_tasks
+        ),
+        historical_tasks AS (
+            SELECT DISTINCT ON (task_id)
+                task_id,
+                warehouse_id,
+                entity_id,
+                entity_type,
+                queue_name
+            FROM task_log
+            WHERE task_id IN (SELECT task_id FROM missing_task_ids) 
+              AND (warehouse_id = $2 OR $3)
+            ORDER BY task_id, attempt DESC
+        )
         SELECT 
-            task_id,
-            warehouse_id,
-            entity_id,
-            entity_type as "entity_type: EntityType",
-            queue_name
-        FROM task
-        WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)
+            task_id as "task_id!",
+            warehouse_id as "warehouse_id!",
+            entity_id as "entity_id!",
+            entity_type as "entity_type!: EntityType",
+            queue_name as "queue_name!"
+        FROM active_tasks
+        UNION ALL
+        SELECT 
+            task_id as "task_id!",
+            warehouse_id as "warehouse_id!",
+            entity_id as "entity_id!",
+            entity_type as "entity_type!: EntityType",
+            queue_name as "queue_name!"
+        FROM historical_tasks
         "#,
         &task_ids.iter().map(|id| **id).collect::<Vec<_>>()[..],
         warehouse_id,
         warehouse_id_is_none
     )
-    .fetch_all(&mut *transaction)
+    .fetch_all(state)
     .await
-    .map_err(|e| e.into_error_model("Failed to resolve active tasks"))?;
+    .map_err(|e| e.into_error_model("Failed to resolve tasks"))?;
 
-    let mut result = active_tasks
+    let result = tasks
         .into_iter()
         .map(|record| {
             let task_id = TaskId::from(record.task_id);
@@ -61,43 +96,6 @@ pub(crate) async fn resolve_tasks(
             (task_id, (entity, queue_name))
         })
         .collect::<HashMap<_, _>>();
-    let missing_ids = task_ids
-        .iter()
-        .filter(|id| !result.contains_key(id))
-        .map(|id| **id)
-        .collect_vec();
-
-    let historical_tasks = sqlx::query!(
-        r#"
-        SELECT DISTINCT ON (task_id)
-            task_id,
-            warehouse_id,
-            entity_id,
-            entity_type as "entity_type: EntityType",
-            queue_name
-        FROM task_log
-        WHERE task_id = ANY($1) AND (warehouse_id = $2 OR $3)
-        ORDER BY task_id, attempt DESC
-        "#,
-        &missing_ids,
-        warehouse_id,
-        warehouse_id_is_none
-    )
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|e| e.into_error_model("Failed to resolve historical tasks"))?;
-
-    for record in historical_tasks {
-        let task_id = TaskId::from(record.task_id);
-        let entity = match record.entity_type {
-            EntityType::Tabular => TaskEntity::Table {
-                table_id: record.entity_id.into(),
-                warehouse_id: record.warehouse_id.into(),
-            },
-        };
-        let queue_name = TaskQueueName::from(record.queue_name);
-        result.entry(task_id).or_insert((entity, queue_name));
-    }
 
     Ok(result)
 }
@@ -156,19 +154,15 @@ mod tests {
 
     #[sqlx::test]
     async fn test_resolve_tasks_empty_input(pool: PgPool) {
-        let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
 
-        let result = resolve_tasks(Some(warehouse_id), &[], &mut conn)
-            .await
-            .unwrap();
+        let result = resolve_tasks(Some(warehouse_id), &[], &pool).await.unwrap();
 
         assert!(result.is_empty());
     }
 
     #[sqlx::test]
     async fn test_resolve_tasks_nonexistent_tasks(pool: PgPool) {
-        let mut conn = pool.acquire().await.unwrap();
         let warehouse_id = setup_warehouse(pool.clone()).await;
 
         let nonexistent_task_ids = vec![
@@ -177,7 +171,7 @@ mod tests {
             TaskId::from(Uuid::now_v7()),
         ];
 
-        let result = resolve_tasks(Some(warehouse_id), &nonexistent_task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &nonexistent_task_ids, &pool)
             .await
             .unwrap();
 
@@ -233,7 +227,7 @@ mod tests {
 
         // Resolve both tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -317,7 +311,7 @@ mod tests {
 
         // Resolve both completed tasks
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -411,7 +405,7 @@ mod tests {
 
         // Resolve all three tasks
         let task_ids = vec![task_id1, task_id2, task_id3];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -468,7 +462,7 @@ mod tests {
 
         // Resolve tasks with warehouse_id1 filter
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(Some(warehouse_id1), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id1), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -523,7 +517,7 @@ mod tests {
 
         // Resolve tasks without warehouse filter (None)
         let task_ids = vec![task_id1, task_id2];
-        let result = resolve_tasks(None, &task_ids, &mut conn).await.unwrap();
+        let result = resolve_tasks(None, &task_ids, &pool).await.unwrap();
 
         // Both tasks should be found regardless of warehouse
         assert_eq!(result.len(), 2);
@@ -573,7 +567,7 @@ mod tests {
 
         // Resolve both existing and non-existing tasks
         let task_ids = vec![existing_task_id, nonexistent_task_id];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -631,7 +625,7 @@ mod tests {
 
         // Resolve the task (should find it in active tasks, not task_log)
         let task_ids = vec![task_id];
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 
@@ -694,7 +688,7 @@ mod tests {
         task_ids.extend(nonexistent_ids.iter());
 
         // Resolve all tasks
-        let result = resolve_tasks(Some(warehouse_id), &task_ids, &mut conn)
+        let result = resolve_tasks(Some(warehouse_id), &task_ids, &pool)
             .await
             .unwrap();
 

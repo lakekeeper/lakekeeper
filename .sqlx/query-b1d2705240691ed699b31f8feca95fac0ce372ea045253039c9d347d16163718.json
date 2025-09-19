@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n               SELECT 1\n               FROM tabular ta\n               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR\n                      -- TODO: revisit this after knowing performance impact, may need an index\n                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))\n               ) AND tabular_id != $3\n           ) as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b1d2705240691ed699b31f8feca95fac0ce372ea045253039c9d347d16163718"
+}

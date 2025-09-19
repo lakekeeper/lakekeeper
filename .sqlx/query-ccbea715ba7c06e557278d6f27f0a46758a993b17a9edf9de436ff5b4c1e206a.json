@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT namespace_id\n        FROM namespace n\n        INNER JOIN warehouse w ON w.warehouse_id = $1\n        WHERE n.warehouse_id = $1 AND namespace_name = $2\n        AND w.status = 'active'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ccbea715ba7c06e557278d6f27f0a46758a993b17a9edf9de436ff5b4c1e206a"
+}
