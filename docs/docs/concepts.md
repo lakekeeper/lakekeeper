@@ -37,7 +37,7 @@ Project, Server, User and Roles are entities unknown to the Iceberg Rest Specifi
 1. The Lakekeeper Management API is served at endpoints prefixed with `/management`. It is used to configure Lakekeeper and manage entities that are not part of the Iceberg REST Catalog specification, such as permissions.
 
 ### Server
-The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). By default, this `Server ID` is set to `00000000-0000-0000-0000-000000000000`. It can be changed by setting the `LAKEKEEPER__SERVER_ID` environment variable. We recommend to not set the `Server ID` explicitly, unless multiple Lakekeeper instances share a single Authorization system. The `Server ID` must not be changed after the initial [bootstrapping](./bootstrap.md) or permissions might not work.
+The Server is the highest entity in Lakekeeper, representing a single instance or a cluster of Lakekeeper pods sharing a common state. Each server has a unique identifier (UUID). The Server ID is generated randomly on first startup and stored in the Database Backend.
 
 ### Project
 For single-company setups, we recommend using a single Project setup, which is the default. Unless `LAKEKEEPER__ENABLE_DEFAULT_PROJECT` is explicitly set to `false`, a default project is created during [bootstrapping](./bootstrap.md) with the nil UUID.
@@ -165,8 +165,13 @@ DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 
 Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
 
+## Upgrades & Migration
+Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.
 
-## Migration
-Migration is a crucial step that must be performed before starting the Lakekeeper. It initializes the persistent backend storage and, if enabled, the authorization system. 
+**Migration is required before each Lakekeeper upgrade.** You must run the migration before starting the `lakekeeper serve` command to ensure all system components are properly updated and configured. Without running the migration first, the `lakekeeper serve` command will fail to start with the error: "Database is not up to date with binary, make sure to run the migrate command before starting the server." Migrations are designed to be resilient - you can safely skip intermediate versions and migrate directly to your target version. If the system is already up to date, the migration command will exit immediately without making any changes.
 
-For each Lakekeeper update, migration must be executed before the `serve` command can be called. This ensures that all necessary updates and configurations are applied to the system. It is possible to skip Lakekeeper versions during migration.
+**All migrations run within a transaction,** ensuring that either the entire migration completes successfully or the database remains unchanged. This prevents partial migrations that could leave your system in an inconsistent state.
+
+**Always create a backup of your Postgres database before running migrations.** While migrations are designed to be safe, having a backup ensures you can restore your system to a known good state if needed.
+
+When using the Lakekeeper Helm Chart, migrations are handled automatically through a dedicated job during deployment.

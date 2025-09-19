@@ -26,12 +26,12 @@ const QN_STR: &str = "tabular_expiration";
 pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
     queue_name: &QUEUE_NAME,
-    utoipa_type_name: ExpirationQueueConfig::name(),
-    utoipa_schema: ExpirationQueueConfig::schema(),
+    utoipa_type_name: TabularExpirationQueueConfig::name(),
+    utoipa_schema: TabularExpirationQueueConfig::schema(),
 });
 
 pub type TabularExpirationTask = SpecializedTask<
-    ExpirationQueueConfig,
+    TabularExpirationQueueConfig,
     TabularExpirationPayload,
     TabularExpirationExecutionDetails,
 >;
@@ -61,10 +61,10 @@ pub struct TabularExpirationExecutionDetails {}
 impl TaskExecutionDetails for TabularExpirationExecutionDetails {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
-/// Warehouse-specific configuration for the expiration queue.
-pub struct ExpirationQueueConfig {}
+/// Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
+pub struct TabularExpirationQueueConfig {}
 
-impl TaskConfig for ExpirationQueueConfig {
+impl TaskConfig for TabularExpirationQueueConfig {
     fn queue_name() -> &'static TaskQueueName {
         &QUEUE_NAME
     }
@@ -141,6 +141,7 @@ async fn instrumented_expire<C: Catalog, A: Authorizer>(
     };
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_table<C, A>(
     catalog_state: C::State,
     authorizer: A,
@@ -160,7 +161,13 @@ where
     let tabular_location = match task.data.tabular_type {
         TabularType::Table => {
             let table_id = TableId::from(tabular_id);
-            let drop_result = C::drop_table(table_id, true, trx.transaction()).await;
+            let drop_result = C::drop_table(
+                task.task_metadata.warehouse_id,
+                table_id,
+                true,
+                trx.transaction(),
+            )
+            .await;
 
             let location = match drop_result {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
@@ -191,7 +198,14 @@ where
         TabularType::View => {
             let view_id = ViewId::from(tabular_id);
 
-            let location = match C::drop_view(view_id, true, trx.transaction()).await {
+            let location = match C::drop_view(
+                task.task_metadata.warehouse_id,
+                view_id,
+                true,
+                trx.transaction(),
+            )
+            .await
+            {
                 Err(e) if e.error.r#type == ErrorKind::TableNotFound.to_string() => {
                     tracing::warn!(
                         "View with id `{view_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
@@ -287,7 +301,7 @@ mod test {
             crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
         let cat = catalog_state.clone();
         let sec = secrets.clone();
-        let auth = AllowAllAuthorizer;
+        let auth = AllowAllAuthorizer::default();
         queues
             .register_built_in_queues::<PostgresCatalog, SecretsState, AllowAllAuthorizer>(
                 cat,
@@ -313,6 +327,7 @@ mod test {
             warehouse,
             catalog_state.clone(),
             false,
+            None,
             None,
             Some("tab".to_string()),
         )
@@ -356,6 +371,7 @@ mod test {
         .unwrap();
 
         <PostgresCatalog as Catalog>::mark_tabular_as_deleted(
+            warehouse,
             tab.table_id.into(),
             false,
             trx.transaction(),
