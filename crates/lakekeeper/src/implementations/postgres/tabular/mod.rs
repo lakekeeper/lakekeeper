@@ -1040,6 +1040,12 @@ impl From<TabularId> for TabularType {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
+    use iceberg::ErrorKind;
+    use lakekeeper_io::Location;
+    use uuid::Uuid;
+
     use super::*;
     use crate::{
         catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
@@ -1049,10 +1055,6 @@ mod tests {
         },
         service::NamespaceId,
     };
-    use iceberg::ErrorKind;
-    use lakekeeper_io::Location;
-    use std::str::FromStr as _;
-    use uuid::Uuid;
 
     async fn setup_test_table(
         pool: &sqlx::PgPool,
@@ -1066,10 +1068,9 @@ mod tests {
             initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
 
         let table_name = format!("test_table_{}", Uuid::now_v7());
-        let location = Location::from_str(&format!("s3://test-bucket/{}/", table_name)).unwrap();
+        let location = Location::from_str(&format!("s3://test-bucket/{table_name}/")).unwrap();
         let metadata_location =
-            Location::from_str(&format!("s3://test-bucket/{}/metadata/v1.json", table_name))
-                .unwrap();
+            Location::from_str(&format!("s3://test-bucket/{table_name}/metadata/v1.json")).unwrap();
 
         let mut transaction = pool.begin().await.unwrap();
 
