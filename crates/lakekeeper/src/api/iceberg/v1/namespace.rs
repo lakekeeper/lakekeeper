@@ -166,14 +166,6 @@ where
     Ok(url.map(NamespaceIdent::from))
 }
 
-#[derive(Serialize, Deserialize)]
-struct RecursiveDeleteQuery {
-    #[serde(default)]
-    force: bool,
-    #[serde(default)]
-    purge: bool,
-}
-
 #[allow(clippy::too_many_lines)]
 pub fn router<I: NamespaceService<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
     Router::new()

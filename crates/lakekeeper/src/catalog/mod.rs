@@ -247,12 +247,18 @@ pub(crate) mod test {
     pub(crate) use crate::tests::memory_io_profile;
     use crate::{
         api::{
-            iceberg::{types::Prefix, v1::namespace::NamespaceService},
+            iceberg::{
+                types::Prefix,
+                v1::{namespace::NamespaceService, NamespaceParameters},
+            },
             management::v1::warehouse::TabularDeleteProfile,
             ApiContext,
         },
         catalog::CatalogServer,
-        implementations::postgres::{PostgresCatalog, SecretsState},
+        implementations::{
+            postgres::{tabular::table::tests::get_namespace_id, PostgresCatalog, SecretsState},
+            CatalogState,
+        },
         request_metadata::RequestMetadata,
         service::{
             authz::{AllowAllAuthorizer, Authorizer},
@@ -260,8 +266,9 @@ pub(crate) mod test {
                 s3::S3AccessKeyCredential, S3Credential, S3Flavor, S3Profile, StorageCredential,
                 StorageProfile,
             },
-            State, UserId,
+            NamespaceId, State, UserId,
         },
+        WarehouseId,
     };
 
     pub(crate) fn s3_compatible_profile() -> (StorageProfile, StorageCredential) {
@@ -351,6 +358,53 @@ pub(crate) mod test {
             None,
         )
         .await;
+    }
+
+    /// Setups up `num_warehouses` in the same project and creates one namespace in each warehouse.
+    pub(crate) async fn tabular_test_multi_warehouse_setup(
+        pool: PgPool,
+        num_warehouses: usize,
+        delete_profile: TabularDeleteProfile,
+    ) -> (
+        ApiContext<State<AllowAllAuthorizer, PostgresCatalog, SecretsState>>,
+        Vec<(WarehouseId, NamespaceId, NamespaceParameters)>,
+        String,
+    ) {
+        let prof = crate::catalog::test::memory_io_profile();
+        let base_loc = prof.base_location().unwrap().to_string();
+        let (ctx, res) = crate::tests::setup(
+            pool.clone(),
+            prof,
+            None,
+            AllowAllAuthorizer::default(),
+            delete_profile,
+            None,
+            num_warehouses,
+        )
+        .await;
+
+        let mut wh_ids = Vec::with_capacity(num_warehouses);
+        wh_ids.push(res.warehouse_id);
+        for (wh_id, _) in &res.additional_warehouses {
+            wh_ids.push(*wh_id);
+        }
+        assert_eq!(wh_ids.len(), num_warehouses);
+
+        let mut wh_ns_data = Vec::with_capacity(num_warehouses);
+        for wh_id in wh_ids {
+            let ns =
+                crate::catalog::test::create_ns(ctx.clone(), wh_id.to_string(), "myns".to_string())
+                    .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(wh_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let state = CatalogState::from_pools(pool.clone(), pool.clone());
+            let ns_id = get_namespace_id(state.clone(), wh_id, &ns.namespace).await;
+            wh_ns_data.push((wh_id, ns_id, ns_params));
+        }
+
+        (ctx, wh_ns_data, base_loc)
     }
 
     macro_rules! impl_pagination_tests {

@@ -33,7 +33,7 @@ impl From<&str> for Prefix {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub enum PageToken {
     /// The value is present and not ""
@@ -41,6 +41,8 @@ pub enum PageToken {
     /// The value is not present
     NotSpecified,
     /// Specified but empty
+    #[default]
+    // Empty indicates pagination is supported by the client, hence its default.
     Empty,
 }
 

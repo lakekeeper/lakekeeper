@@ -154,16 +154,16 @@ Protected entities within the hierarchy will prevent recursive deletion unless f
 
 ### Force Deletion
 Force deletion is an administrative override that allows deletion of protected entities and bypasses certain safety checks:
+
 - Bypasses protection settings
 - Overrides soft-deletion mechanisms for immediate hard deletion
-- Requires appropriate administrative permissions
 
 Add the `force=true` query parameter to deletion requests:
 ```
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 
-Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy.
+Force can be combined with recursive deletion (`recursive=true&force=true`) to delete an entire protected hierarchy. The `purgeRequested` flag for tables is still respected and determines if the physical data of the table should be removed. Purge defaults to true for tables managed by Lakekeeper.
 
 ## Upgrades & Migration
 Lakekeeper relies on a persistent backend (Postgres) and an optional authorization system (OpenFGA). As Lakekeeper evolves, these systems may need schema or configuration updates to support new features and improvements. The `lakekeeper migrate` command initializes and updates both Postgres schemas (creating necessary tables and structures) and authorization models to ensure compatibility with your current Lakekeeper version.

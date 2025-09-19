@@ -20,6 +20,9 @@ use crate::{
 
 const GET_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanCommit;
 const CONTROL_TASK_PERMISSION: CatalogTableAction = CatalogTableAction::CanDrop;
+const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction = CatalogWarehouseAction::CanDelete;
+const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
+    CatalogWarehouseAction::CanListEverything;
 const DEFAULT_ATTEMPTS: u16 = 5;
 
 // -------------------- REQUEST/RESPONSE TYPES --------------------
@@ -320,21 +323,31 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
-        authorizer
-            .require_warehouse_action(
+        let (authz_can_use, authz_warehouse) = tokio::join!(
+            authorizer.require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
                 CatalogWarehouseAction::CanUse,
+            ),
+            authorizer.is_allowed_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION
             )
-            .await
+        );
+        authz_can_use
             .map_err(|e| e.append_detail("Not authorized to get tasks in the Warehouse."))?;
+        let authz_warehouse = authz_warehouse?.into_inner();
 
         // -------------------- Business Logic --------------------
         let num_attempts = query.num_attempts.unwrap_or(DEFAULT_ATTEMPTS);
-
-        let mut t = C::Transaction::begin_read(context.v1_state.catalog).await?;
-        let r = C::get_task_details(warehouse_id, task_id, num_attempts, t.transaction()).await?;
-        t.commit().await?;
+        let r = C::get_task_details(
+            warehouse_id,
+            task_id,
+            num_attempts,
+            context.v1_state.catalog,
+        )
+        .await?;
 
         let task_details = r.ok_or_else(|| {
             ErrorModel::not_found(
@@ -347,10 +360,22 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         let entity = &task_details.task.entity;
         let TaskEntity::Table {
             table_id,
-            warehouse_id,
+            warehouse_id: entity_warehouse_id,
         } = entity;
-        authorize_task_for_table_id(&authorizer, &request_metadata, *warehouse_id, *table_id)
-            .await?;
+
+        if *entity_warehouse_id != warehouse_id {
+            return Err(ErrorModel::internal(
+                "The specified task does not belong to the specified warehouse.",
+                "TaskWarehouseMismatch",
+                None,
+            )
+            .into());
+        }
+
+        if !authz_warehouse {
+            authorize_get_task_details_for_table_id(&authorizer, &request_metadata, *table_id)
+                .await?;
+        }
 
         Ok(task_details)
     }
@@ -374,23 +399,32 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
         // -------------------- AUTHZ --------------------
         let authorizer = context.v1_state.authz;
 
-        authorizer
-            .require_warehouse_action(
+        let (authz_can_use, authz_warehouse) = tokio::join!(
+            authorizer.require_warehouse_action(
                 &request_metadata,
                 warehouse_id,
                 CatalogWarehouseAction::CanUse,
+            ),
+            authorizer.is_allowed_warehouse_action(
+                &request_metadata,
+                warehouse_id,
+                CONTROL_TASK_WAREHOUSE_PERMISSION
             )
-            .await?;
+        );
+        authz_can_use?;
+        let authz_warehouse = authz_warehouse?.into_inner();
 
         if query.task_ids.is_empty() {
             return Ok(());
         }
 
-        let mut t = C::Transaction::begin_read(context.v1_state.catalog.clone()).await?;
-        let entities =
-            C::resolve_required_tasks(Some(warehouse_id), &query.task_ids, &mut t.transaction())
-                .await?;
-        t.commit().await?;
+        // If some tasks are not part of this warehouse, this will return an error.
+        let entities = C::resolve_required_tasks(
+            Some(warehouse_id),
+            &query.task_ids,
+            context.v1_state.catalog.clone(),
+        )
+        .await?;
 
         let expire_snapshots_table_ids = entities
             .iter()
@@ -404,30 +438,32 @@ pub(crate) trait Service<C: Catalog, A: Authorizer, S: SecretStore> {
                 }
             })
             .collect::<Vec<TableId>>();
-        let task_to_table_map = entities
-            .into_iter()
-            .map(|(task_id, (entity, queue_name))| match entity {
-                TaskEntity::Table {
-                    table_id,
-                    warehouse_id: _,
-                } => (
-                    task_id,
-                    table_id,
-                    if queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
-                        CatalogTableAction::CanUndrop
-                    } else {
-                        CONTROL_TASK_PERMISSION
-                    },
-                ),
-            })
-            .collect::<Vec<_>>();
-        authorize_task_for_table_ids(
-            &authorizer,
-            &request_metadata,
-            warehouse_id,
-            &task_to_table_map,
-        )
-        .await?;
+        if !authz_warehouse {
+            let task_to_table_map = entities
+                .into_iter()
+                .map(|(task_id, (entity, queue_name))| match entity {
+                    TaskEntity::Table {
+                        table_id,
+                        warehouse_id: _,
+                    } => (
+                        task_id,
+                        table_id,
+                        if queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
+                            CatalogTableAction::CanUndrop
+                        } else {
+                            CONTROL_TASK_PERMISSION
+                        },
+                    ),
+                })
+                .collect::<Vec<_>>();
+            authorize_control_tasks_for_table_ids(
+                &authorizer,
+                &request_metadata,
+                warehouse_id,
+                &task_to_table_map,
+            )
+            .await?;
+        }
 
         // -------------------- Business Logic --------------------
         let task_ids: Vec<TaskId> = query.task_ids;
@@ -517,10 +553,9 @@ async fn authorize_list_tasks<A: Authorizer>(
     Ok(())
 }
 
-async fn authorize_task_for_table_id<A: Authorizer>(
+async fn authorize_get_task_details_for_table_id<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
-    _warehouse_id: WarehouseId,
     table_id: TableId,
 ) -> Result<()> {
     if !authorizer
@@ -539,7 +574,7 @@ async fn authorize_task_for_table_id<A: Authorizer>(
     Ok(())
 }
 
-async fn authorize_task_for_table_ids<A: Authorizer>(
+async fn authorize_control_tasks_for_table_ids<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
     _warehouse_id: WarehouseId,

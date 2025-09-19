@@ -42,6 +42,7 @@ pub(crate) enum TabularType {
 }
 
 pub(crate) async fn set_tabular_protected(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     protected: bool,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -55,10 +56,11 @@ pub(crate) async fn set_tabular_protected(
     let row = sqlx::query!(
         r#"
         UPDATE tabular
-        SET protected = $2
-        WHERE tabular_id = $1
+        SET protected = $3
+        WHERE warehouse_id = $1 AND tabular_id = $2
         RETURNING protected, updated_at
         "#,
+        *warehouse_id,
         *tabular_id,
         protected
     )
@@ -86,12 +88,12 @@ pub(crate) async fn set_tabular_protected(
 }
 
 pub(crate) async fn get_tabular_protected(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ProtectionResponse> {
     tracing::debug!(
-        "Getting tabular protection status for {} ({})",
-        tabular_id,
+        "Getting tabular protection status for {tabular_id} ({}) in {warehouse_id}",
         tabular_id.typ_str()
     );
 
@@ -99,8 +101,9 @@ pub(crate) async fn get_tabular_protected(
         r#"
         SELECT protected, updated_at
         FROM tabular
-        WHERE tabular_id = $1
+        WHERE warehouse_id = $1 AND tabular_id = $2
         "#,
+        *warehouse_id,
         *tabular_id
     )
     .fetch_one(&mut **transaction)
@@ -143,10 +146,12 @@ where
         r#"
         SELECT t.tabular_id, t.typ as "typ: TabularType", fs_protocol, fs_location
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE n.namespace_name = $1 AND t.name = $2
-        AND n.warehouse_id = $3
+        INNER JOIN namespace n
+            ON n.warehouse_id = $3 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $3
+        WHERE t.warehouse_id = $3 
+        AND n.namespace_name = $1 
+        AND t.name = $2
         AND w.status = 'active'
         AND t.typ = $4
         AND (t.deleted_at IS NULL OR $5)
@@ -213,7 +218,7 @@ where
         return Ok(HashMap::new());
     }
 
-    if batch_tables.len() > (MAX_PARAMETERS / 2) {
+    if batch_tables.len() > (MAX_PARAMETERS / 3) {
         return Err(ErrorModel::bad_request(
             "Too many tables or views to fetch",
             "TooManyTablesOrViews",
@@ -232,9 +237,10 @@ where
                t.name as tabular_name,
                t.typ as "typ: TabularType"
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
-        WHERE w.status = 'active' and n."warehouse_id" = $1
+        INNER JOIN namespace n
+            ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        WHERE t.warehouse_id = $1 AND w.status = 'active'
             AND (t.deleted_at is NULL OR $2)
             AND (t.metadata_location is not NULL OR $3) "#,
         *warehouse_id,
@@ -338,6 +344,7 @@ pub(crate) struct CreateTabular<'a> {
     pub(crate) id: Uuid,
     pub(crate) name: &'a str,
     pub(crate) namespace_id: Uuid,
+    pub(crate) warehouse_id: Uuid,
     pub(crate) typ: TabularType,
     pub(crate) metadata_location: Option<&'a Location>,
     pub(crate) location: &'a Location,
@@ -361,6 +368,7 @@ pub(crate) async fn create_tabular(
         id,
         name,
         namespace_id,
+        warehouse_id,
         typ,
         metadata_location,
         location,
@@ -372,13 +380,14 @@ pub(crate) async fn create_tabular(
 
     let tabular_id = sqlx::query_scalar!(
         r#"
-        INSERT INTO tabular (tabular_id, name, namespace_id, typ, metadata_location, fs_protocol, fs_location)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO tabular (tabular_id, name, namespace_id, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING tabular_id
         "#,
         id,
         name,
         namespace_id,
+        warehouse_id,
         typ as _,
         metadata_location.map(Location::as_str),
         fs_protocol,
@@ -395,13 +404,12 @@ pub(crate) async fn create_tabular(
         r#"SELECT EXISTS (
                SELECT 1
                FROM tabular ta
-               JOIN namespace n ON ta.namespace_id = n.namespace_id
-               JOIN warehouse w ON w.warehouse_id = n.warehouse_id
-               WHERE (fs_location = ANY($1) OR
+               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
                       -- TODO: revisit this after knowing performance impact, may need an index
-                      (length($3) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $3 || '/%'))
-               ) AND tabular_id != $2
+                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
+               ) AND tabular_id != $3
            ) as "exists!""#,
+        warehouse_id,
         &partial_locations,
         id,
         fs_location
@@ -468,11 +476,10 @@ where
             tt.task_id as "cleanup_task_id?",
             t.protected
         FROM tabular t
-        INNER JOIN namespace n ON t.namespace_id = n.namespace_id
-        INNER JOIN warehouse w ON n.warehouse_id = w.warehouse_id
+        INNER JOIN namespace n ON n.warehouse_id = $1 AND t.namespace_id = n.namespace_id
+        INNER JOIN warehouse w ON w.warehouse_id = $1
         LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type = 'tabular' AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
-        WHERE (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
-            AND n.warehouse_id = $1
+        WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
             AND (namespace_name = $2 OR $2 IS NULL)
             AND (n.namespace_id = $10 OR $10 IS NULL)
             AND w.status = 'active'
@@ -562,6 +569,7 @@ where
 }
 
 /// Rename a tabular. Tabulars may be moved across namespaces.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_tabular(
     warehouse_id: WarehouseId,
     source_id: TabularId,
@@ -569,6 +577,10 @@ pub(crate) async fn rename_tabular(
     destination: &TableIdent,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<()> {
+    if source == destination {
+        return Ok(());
+    }
+
     let TableIdent {
         namespace: source_namespace,
         name: source_name,
@@ -581,15 +593,44 @@ pub(crate) async fn rename_tabular(
     if source_namespace == dest_namespace {
         let _ = sqlx::query_scalar!(
             r#"
-            UPDATE tabular ti
+            WITH locked_tabular AS (
+                SELECT tabular_id, name, namespace_id
+                FROM tabular
+                WHERE tabular_id = $2
+                    AND warehouse_id = $4
+                    AND typ = $3
+                    AND metadata_location IS NOT NULL
+                    AND deleted_at IS NULL
+                FOR UPDATE
+            ),
+            locked_source_namespace AS ( -- source namespace of the tabular
+                SELECT n.namespace_id
+                FROM namespace n
+                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
+                WHERE n.warehouse_id = $4
+                FOR UPDATE
+            ),
+            warehouse_check AS (
+                SELECT warehouse_id
+                FROM warehouse
+                WHERE warehouse_id = $4 AND status = 'active'
+            ),
+            conflict_check AS (
+                SELECT 1
+                FROM tabular t
+                JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
+                WHERE t.name = $1
+                FOR UPDATE
+            )
+            UPDATE tabular
             SET name = $1
-            WHERE tabular_id = $2 AND typ = $3
-                AND metadata_location IS NOT NULL
-                AND ti.deleted_at IS NULL
-                AND $4 IN (
-                    SELECT warehouse_id FROM warehouse WHERE status = 'active'
-                )
-            RETURNING tabular_id
+            FROM locked_tabular lt, warehouse_check wc, locked_source_namespace lsn
+            WHERE tabular.tabular_id = lt.tabular_id
+                AND tabular.warehouse_id = $4
+                AND wc.warehouse_id = $4
+                AND lsn.namespace_id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM conflict_check)
+            RETURNING tabular.tabular_id
             "#,
             &**dest_name,
             *source_id,
@@ -609,22 +650,51 @@ pub(crate) async fn rename_tabular(
     } else {
         let _ = sqlx::query_scalar!(
             r#"
-            WITH ns_id AS (
+            WITH locked_tabular AS (
+                SELECT tabular_id, name, namespace_id
+                FROM tabular
+                WHERE tabular_id = $4
+                    AND warehouse_id = $2
+                    AND typ = $5
+                    AND metadata_location IS NOT NULL
+                    AND name = $6
+                    AND deleted_at IS NULL
+                FOR UPDATE
+            ),
+            locked_namespace AS ( -- target namespace
                 SELECT namespace_id
                 FROM namespace
                 WHERE warehouse_id = $2 AND namespace_name = $3
+                FOR UPDATE
+            ),
+            locked_source_namespace AS ( -- source namespace of the tabular
+                SELECT n.namespace_id
+                FROM namespace n
+                JOIN locked_tabular lt ON lt.namespace_id = n.namespace_id
+                WHERE n.warehouse_id = $2
+                FOR UPDATE
+            ),
+            warehouse_check AS (
+                SELECT warehouse_id FROM warehouse
+                WHERE warehouse_id = $2 AND status = 'active'
+            ),
+            conflict_check AS (
+                SELECT 1
+                FROM tabular t
+                JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $2
+                WHERE t.name = $1
+                FOR UPDATE
             )
-            UPDATE tabular ti
-            SET name = $1, namespace_id = ns_id.namespace_id
-            FROM ns_id
-            WHERE tabular_id = $4 AND typ = $5 AND metadata_location IS NOT NULL
-                AND ti.name = $6
-                AND ti.deleted_at IS NULL
-                AND ns_id.namespace_id IS NOT NULL
-                AND $2 IN (
-                    SELECT warehouse_id FROM warehouse WHERE status = 'active'
-                )
-            RETURNING tabular_id
+            UPDATE tabular t
+            SET name = $1, namespace_id = ln.namespace_id
+            FROM locked_tabular lt, locked_namespace ln, locked_source_namespace lsn, warehouse_check wc
+            WHERE t.tabular_id = lt.tabular_id
+            AND t.warehouse_id = $2
+            AND ln.namespace_id IS NOT NULL
+            AND wc.warehouse_id = $2
+            AND lsn.namespace_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM conflict_check)
+            RETURNING t.tabular_id;
             "#,
             &**dest_name,
             *warehouse_id,
@@ -685,26 +755,41 @@ pub(crate) async fn clear_tabular_deleted_at(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Vec<UndropTabularResponse>> {
     let undrop_tabular_informations = sqlx::query!(
-        r#"WITH validation AS (
-                SELECT NOT EXISTS (
-                    SELECT 1 FROM unnest($1::uuid[]) AS id
-                    WHERE id NOT IN (SELECT tabular_id FROM tabular)
-                ) AS all_found
-            )
-            UPDATE tabular
-            SET deleted_at = NULL
-            FROM tabular t JOIN namespace n ON t.namespace_id = n.namespace_id
-            LEFT JOIN task ta ON t.tabular_id = ta.entity_id AND ta.entity_type = 'tabular' AND ta.warehouse_id = $2
-            WHERE tabular.namespace_id = n.namespace_id
-                AND n.warehouse_id = $2
-                AND tabular.tabular_id = ANY($1::uuid[])
+        r#"WITH locked_tabulars AS (
+            SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name
+            FROM tabular t 
+            JOIN namespace n ON t.namespace_id = n.namespace_id
+            WHERE n.warehouse_id = $2
+                AND t.warehouse_id = $2
+                AND t.tabular_id = ANY($1::uuid[])
+            FOR UPDATE OF t
+        ),
+        validation AS (
+            SELECT NOT EXISTS (
+                SELECT 1 FROM unnest($1::uuid[]) AS id
+                WHERE id NOT IN (SELECT tabular_id FROM locked_tabulars)
+            ) AS all_found
+        ),
+        locked_tasks AS (
+            SELECT ta.task_id, ta.entity_id
+            FROM task ta
+            JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
+            WHERE ta.entity_type = 'tabular' 
+                AND ta.warehouse_id = $2
                 AND ta.queue_name = 'tabular_expiration'
-            RETURNING
-                tabular.name,
-                tabular.tabular_id,
-                ta.task_id,
-                n.namespace_name,
-                (SELECT all_found FROM validation) as "all_found!";"#,
+            FOR UPDATE OF ta
+        )
+        UPDATE tabular
+        SET deleted_at = NULL
+        FROM locked_tabulars lt
+        LEFT JOIN locked_tasks lta ON lt.tabular_id = lta.entity_id
+        WHERE tabular.tabular_id = lt.tabular_id AND tabular.warehouse_id = $2
+        RETURNING
+            tabular.name,
+            tabular.tabular_id,
+            lta.task_id as "task_id?",
+            lt.namespace_name,
+            (SELECT all_found FROM validation) as "all_found!";"#,
         tabular_ids,
         *warehouse_id,
     )
@@ -713,29 +798,25 @@ pub(crate) async fn clear_tabular_deleted_at(
     .map_err(|e| {
         tracing::warn!("Error marking tabular as undeleted: {e}");
         match &e {
-            sqlx::Error::Database(db_err) => {
-                match db_err.constraint() {
-                    Some("unique_name_per_namespace_id") => {
-                        ErrorModel::bad_request(
-                            "Tabular with the same name already exists in the namespace.",
-                            "TabularNameAlreadyExists",
-                            Some(Box::new(e)),
-                        )
-                    }
-                    _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
-                }
-            }
+            sqlx::Error::Database(db_err) => match db_err.constraint() {
+                Some("unique_name_per_namespace_id") => ErrorModel::bad_request(
+                    "Tabular with the same name already exists in the namespace.",
+                    "TabularNameAlreadyExists",
+                    Some(Box::new(e)),
+                ),
+                _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
+            },
             _ => e.into_error_model("Error marking tabulars as undeleted".to_string()),
         }
     })?;
 
-    if undrop_tabular_informations
+    let all_found = undrop_tabular_informations
         .first()
-        .is_some_and(|r| !r.all_found)
-    {
-        return Err(ErrorModel::forbidden(
-            "Not allowed to undrop at least one specified tabular.",
-            "NotAuthorized",
+        .map_or(tabular_ids.is_empty(), |r| r.all_found);
+    if !all_found {
+        return Err(ErrorModel::not_found(
+            "One or more tabular IDs to undrop not found",
+            "NoSuchTabularError",
             None,
         )
         .into());
@@ -744,8 +825,8 @@ pub(crate) async fn clear_tabular_deleted_at(
     let undrop_tabular_informations = undrop_tabular_informations
         .into_iter()
         .map(|undrop_tabular_information| UndropTabularResponse {
-            table_ident: TableId::from(undrop_tabular_information.tabular_id),
-            task_id: TaskId::from(undrop_tabular_information.task_id),
+            table_id: TableId::from(undrop_tabular_information.tabular_id),
+            expiration_task_id: undrop_tabular_information.task_id.map(TaskId::from),
             name: undrop_tabular_information.name,
             namespace: NamespaceIdent::from_vec(undrop_tabular_information.namespace_name)
                 .unwrap_or(NamespaceIdent::new("unknown".into())),
@@ -756,6 +837,7 @@ pub(crate) async fn clear_tabular_deleted_at(
 }
 
 pub(crate) async fn mark_tabular_as_deleted(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     force: bool,
     delete_date: Option<chrono::DateTime<Utc>>,
@@ -763,19 +845,27 @@ pub(crate) async fn mark_tabular_as_deleted(
 ) -> Result<()> {
     let r = sqlx::query!(
         r#"
-        WITH update_info as (
-            SELECT protected
+        WITH locked_tabular AS (
+            SELECT tabular_id, protected
             FROM tabular
-            WHERE tabular_id = $1
-        ), update as (
+            WHERE tabular_id = $2 AND warehouse_id = $1
+            FOR UPDATE
+        ),
+        marked AS (
             UPDATE tabular
-            SET deleted_at = $2
-            WHERE tabular_id = $1
-                AND ((NOT protected) OR $3)
-            RETURNING tabular_id
+            SET deleted_at = $3
+            FROM locked_tabular lt
+            WHERE tabular.tabular_id = lt.tabular_id
+                AND tabular.warehouse_id = $1
+                AND ((NOT lt.protected) OR $4)
+            RETURNING tabular.tabular_id
         )
-        SELECT protected as "protected!", (SELECT tabular_id from update) from update_info
+        SELECT 
+            lt.protected as "protected!",
+            (SELECT tabular_id FROM marked) IS NOT NULL as "was_marked!"
+        FROM locked_tabular lt
         "#,
+        *warehouse_id,
         *tabular_id,
         delete_date.unwrap_or(Utc::now()),
         force,
@@ -785,20 +875,23 @@ pub(crate) async fn mark_tabular_as_deleted(
     .map_err(|e| {
         if let sqlx::Error::RowNotFound = e {
             ErrorModel::not_found(
-                format!("{} not found", tabular_id.typ_str()),
+                format!("Table with id {} not found", tabular_id.typ_str()),
                 "NoSuchTabularError".to_string(),
                 Some(Box::new(e)),
             )
         } else {
             tracing::warn!("Error marking tabular as deleted: {}", e);
-            e.into_error_model(format!("Error marking {} as deleted", tabular_id.typ_str()))
+            e.into_error_model(format!(
+                "Error marking {} in {warehouse_id} as deleted",
+                tabular_id.typ_str()
+            ))
         }
     })?;
 
     if r.protected && !force {
         return Err(ErrorModel::conflict(
             format!(
-                "{} is protected and cannot be deleted",
+                "{} in warehouse {warehouse_id} is protected and cannot be deleted",
                 tabular_id.typ_str()
             ),
             "ProtectedTabularError",
@@ -811,33 +904,44 @@ pub(crate) async fn mark_tabular_as_deleted(
 }
 
 pub(crate) async fn drop_tabular(
+    warehouse_id: WarehouseId,
     tabular_id: TabularId,
     force: bool,
     required_metadata_location: Option<&Location>,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String> {
     let location = sqlx::query!(
-        r#"WITH delete_info as (
-               SELECT
-                   protected
-               FROM tabular
-               WHERE tabular_id = $1 AND typ = $2
-                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-           ),
-           deleted as (
-           DELETE FROM tabular
-               WHERE tabular_id = $1
-                   AND typ = $2
-                   AND tabular_id IN (SELECT tabular_id FROM active_tabulars)
-                   AND ((NOT protected) OR $3)
-              RETURNING metadata_location, fs_location, fs_protocol)
-              SELECT protected as "protected!",
-                     (SELECT metadata_location from deleted),
-                     (SELECT fs_protocol from deleted),
-                     (SELECT fs_location from deleted) from delete_info"#,
+        r#"WITH locked_tabular AS (
+            SELECT tabular_id, protected, metadata_location, fs_location, fs_protocol
+            FROM tabular
+            WHERE tabular_id = $2
+                AND warehouse_id = $1
+                AND typ = $3
+                AND tabular_id in (SELECT tabular_id FROM active_tabulars WHERE warehouse_id = $1 AND tabular_id = $2)
+            FOR UPDATE
+        ),
+        deleted AS (
+            DELETE FROM tabular
+            WHERE tabular_id IN (
+                SELECT tabular_id FROM locked_tabular 
+                WHERE ((NOT protected) OR $4)
+                AND ($5::text IS NULL OR metadata_location = $5)
+            )
+            AND warehouse_id = $1
+            RETURNING tabular_id
+        )
+        SELECT 
+            lt.protected as "protected!",
+            lt.metadata_location,
+            lt.fs_protocol,
+            lt.fs_location,
+            (SELECT tabular_id FROM deleted) IS NOT NULL as "was_deleted!"
+        FROM locked_tabular lt"#,
+        *warehouse_id,
         *tabular_id,
         TabularType::from(tabular_id) as _,
-        force
+        force,
+        required_metadata_location.map(ToString::to_string)
     )
     .fetch_one(&mut **transaction)
     .await
@@ -888,16 +992,12 @@ pub(crate) async fn drop_tabular(
         }
     }
 
-    if let (Some(fs_protocol), Some(fs_location)) = (location.fs_protocol, location.fs_location) {
-        Ok(join_location(&fs_protocol, &fs_location))
-    } else {
-        Err(ErrorModel::internal(
-            format!("{} has no location", tabular_id.typ_str()),
-            "InternalDatabaseError",
-            None,
-        )
-        .into())
-    }
+    debug_assert!(
+        location.was_deleted,
+        "If we didn't delete anything, we should have errored out earlier"
+    );
+
+    Ok(join_location(&location.fs_protocol, &location.fs_location))
 }
 
 fn try_parse_namespace_ident(namespace: Vec<String>) -> Result<NamespaceIdent> {
@@ -935,5 +1035,279 @@ impl From<TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr as _;
+
+    use iceberg::ErrorKind;
+    use lakekeeper_io::Location;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        catalog::tables::CONCURRENT_UPDATE_ERROR_TYPE,
+        implementations::postgres::{
+            namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
+            CatalogState,
+        },
+        service::NamespaceId,
+    };
+
+    async fn setup_test_table(
+        pool: &sqlx::PgPool,
+        protected: bool,
+    ) -> (WarehouseId, TabularId, Location, NamespaceId) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["test_namespace".to_string()]).unwrap();
+        let (namespace_id, _) =
+            initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+
+        let table_name = format!("test_table_{}", Uuid::now_v7());
+        let location = Location::from_str(&format!("s3://test-bucket/{table_name}/")).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("s3://test-bucket/{table_name}/metadata/v1.json")).unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let table_id = Uuid::now_v7();
+        let tabular_id = create_tabular(
+            CreateTabular {
+                id: table_id,
+                name: &table_name,
+                namespace_id: *namespace_id,
+                warehouse_id: *warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+
+        // Set protection status if needed
+        if protected {
+            set_tabular_protected(
+                warehouse_id,
+                TabularId::Table(tabular_id),
+                true,
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+        }
+
+        transaction.commit().await.unwrap();
+
+        (
+            warehouse_id,
+            TabularId::Table(tabular_id),
+            metadata_location,
+            namespace_id,
+        )
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_table_not_found_returns_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let nonexistent_table_id = TabularId::Table(Uuid::now_v7());
+
+        let result = drop_tabular(
+            warehouse_id,
+            nonexistent_table_id,
+            false,
+            None,
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+        assert!(error.error.message.contains("Table with ID"));
+        assert!(error.error.message.contains("not found"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_protected_table_without_force_returns_protected_error(
+        pool: sqlx::PgPool,
+    ) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false, // force = false
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 409);
+        assert_eq!(error.error.r#type, "ProtectedTabularError");
+        assert!(error
+            .error
+            .message
+            .contains("is protected and cannot be dropped"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_protected_table_with_force_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            true, // force = true
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_concurrent_update_error_wrong_metadata_location(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, _actual_metadata_location, _) =
+            setup_test_table(&pool, false).await;
+
+        let wrong_metadata_location =
+            Location::from_str("s3://wrong-bucket/wrong/metadata/v1.json").unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&wrong_metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 400);
+        assert_eq!(error.error.r#type, CONCURRENT_UPDATE_ERROR_TYPE);
+        assert!(error
+            .error
+            .message
+            .contains("Concurrent update on tabular with id"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_with_correct_metadata_location_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, false).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_without_metadata_location_check_succeeds(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, _metadata_location, _) =
+            setup_test_table(&pool, false).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            None, // No metadata location check
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let location = result.unwrap();
+        assert!(location.starts_with("s3://test-bucket/"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_view_not_found_returns_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let warehouse_id = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let nonexistent_view_id = TabularId::View(Uuid::now_v7());
+
+        let result = drop_tabular(
+            warehouse_id,
+            nonexistent_view_id,
+            false,
+            None,
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
+        assert!(error.error.message.contains("View with ID"));
+        assert!(error.error.message.contains("not found"));
+    }
+
+    #[sqlx::test]
+    async fn test_drop_tabular_inactive_warehouse_returns_404(pool: sqlx::PgPool) {
+        let (warehouse_id, tabular_id, metadata_location, _) = setup_test_table(&pool, false).await;
+
+        // Deactivate the warehouse
+        let mut transaction = pool.begin().await.unwrap();
+        crate::implementations::postgres::warehouse::set_warehouse_status(
+            warehouse_id,
+            crate::api::management::v1::warehouse::WarehouseStatus::Inactive,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+
+        let result = drop_tabular(
+            warehouse_id,
+            tabular_id,
+            false,
+            Some(&metadata_location),
+            &mut transaction,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.error.code, 404);
+        assert_eq!(error.error.r#type, ErrorKind::TableNotFound.to_string());
     }
 }
