@@ -678,7 +678,7 @@ pub(crate) async fn get_table_metadata_by_id(
             w."storage_secret_id"
         FROM "table" t
         INNER JOIN tabular ti ON ti.warehouse_id = $1 AND t.table_id = ti.tabular_id
-        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
+        INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
         INNER JOIN warehouse w ON w.warehouse_id = $1
         WHERE t.warehouse_id = $1 AND t."table_id" = $2
             AND w.status = 'active'
@@ -747,7 +747,7 @@ pub(crate) async fn get_table_metadata_by_s3_location(
              w."storage_secret_id"
          FROM "table" t
          INNER JOIN tabular ti ON t.warehouse_id = $1 AND t.table_id = ti.tabular_id
-         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id
+         INNER JOIN namespace n ON ti.namespace_id = n.namespace_id AND n.warehouse_id = $1
          INNER JOIN warehouse w ON w.warehouse_id = $1
          WHERE t.warehouse_id = $1
              AND ti.fs_location = ANY($2)
