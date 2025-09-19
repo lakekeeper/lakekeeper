@@ -205,8 +205,8 @@ pub enum CreateOrUpdateUserResponse {
 
 #[derive(Debug, Clone)]
 pub struct UndropTabularResponse {
-    pub table_ident: TableId,
-    pub task_id: TaskId,
+    pub table_id: TableId,
+    pub expiration_task_id: Option<TaskId>,
     pub name: String,
     pub namespace: NamespaceIdent,
 }
