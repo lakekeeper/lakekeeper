@@ -82,6 +82,7 @@ pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx:
     terms_accepted: bool,
     connection: E,
 ) -> Result<bool> {
+    // The table has a restriction that only one row can exist
     let result = sqlx::query!(
         r#"
         UPDATE server
